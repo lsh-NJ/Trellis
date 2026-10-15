@@ -14,6 +14,26 @@ import dev.trellis.kernel.extension.OrderedContribution
  */
 interface SlotContribution : OrderedContribution
 
+/**
+ * 内容由**模板**生成的卡片，例如：
+ *
+ * ```
+ * { "id": "due", "order": 10,
+ *   "title": "今日待办",
+ *   "body": "{{ summary.todo }} 项待办，{{ summary.overdue }} 项逾期" }
+ * ```
+ *
+ * 求值**不在内核里做**  内核只提供 `renderTemplate()`。
+ * 谁来调、什么时候重新求值，归渲染层管：控制台渲染器画之前求一次，
+ * Compose 渲染器按帧/按数据变化求。内核不假装知道这些。
+ */
+data class TemplateSlot(
+    override val id: String,
+    override val order: Int = 100,
+    val title: String,
+    val body: String,
+) : SlotContribution
+
 /** 纯文本贡献：控制台假渲染器用。用来验证装卸逻辑，不负责好看。 */
 data class TextSlot(
     override val id: String,

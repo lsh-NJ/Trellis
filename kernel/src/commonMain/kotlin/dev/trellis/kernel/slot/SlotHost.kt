@@ -3,6 +3,7 @@ package dev.trellis.kernel.slot
 import dev.trellis.kernel.core.ExtensionPointId
 import dev.trellis.kernel.extension.ExtensionPoint
 import dev.trellis.kernel.extension.ExtensionRegistry
+import dev.trellis.kernel.slot.TemplateSlot
 
 /** 渲染单个贡献。**允许抛异常**  ErrorBoundary 在 [SlotHost] 里。 */
 fun interface SlotRenderer {
@@ -39,6 +40,34 @@ class SlotHost(
 
     fun render(point: ExtensionPoint<SlotContribution>): List<String> =
         registry.all(point).map { renderSafely(point.id, it) }
+
+    /**
+     * 求值之后再渲染。
+     *
+     * [TemplateSlot] 的内容要问数据源，而那是挂起的  所以有了这个变体。
+     * 求值失败的部分降级成 `--`，**单张卡片照样能画出来**。
+     */
+    suspend fun renderResolved(
+        point: ExtensionPoint<SlotContribution>,
+        onFailure: (String) -> Unit = {},
+    ): List<String> =
+        registry.all(point).map { contribution ->
+            renderSafely(point.id, resolveTemplate(contribution, onFailure))
+        }
+
+    private suspend fun resolveTemplate(
+        contribution: SlotContribution,
+        onFailure: (String) -> Unit,
+    ): SlotContribution = if (contribution is TemplateSlot) {
+        TextSlot(
+            id = contribution.id,
+            order = contribution.order,
+            title = registry.renderTemplate(contribution.title, onFailure),
+            body = registry.renderTemplate(contribution.body, onFailure),
+        )
+    } else {
+        contribution
+    }
 
     fun render(pointId: ExtensionPointId, contributions: List<SlotContribution>): List<String> =
         contributions.map { renderSafely(pointId, it) }
