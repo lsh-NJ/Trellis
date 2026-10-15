@@ -63,6 +63,16 @@ class AppRuntime private constructor() {
     var pluginInfos by mutableStateOf<List<PluginInfo>>(emptyList())
         private set
 
+    /**
+     * 每次刷新加一。模板卡片拿它当「该重新求值了吗」的信号。
+     *
+     * 这是**轮询方案的一部分**，不是最终形态：真实产品里应该由领域层发变更通知，
+     * 渲染层订阅。但先让它动起来  一个每秒更新一次的假信号，
+     * 比一个永远不会更新的真架构更早暴露问题。
+     */
+    var tick by mutableStateOf(0)
+        private set
+
     /** 被停用的插件。它们不加载，但随时能启用回来。 */
     var disabledPlugins by mutableStateOf<Set<PluginId>>(emptySet())
         private set
@@ -102,6 +112,7 @@ class AppRuntime private constructor() {
         // 从**已安装目录**（不是运行列表）填缓存  停用的插件也要能显示名字
         for (manifest in kernel.catalog()) manifestCache[manifest.id] = manifest
         disabledPlugins = kernel.disabledPlugins()
+        tick++
     }
 
     suspend fun addTask(title: String) {

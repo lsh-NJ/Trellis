@@ -58,6 +58,18 @@ object KernelPoints {
         Cardinality.MANY,
         "ServiceBinding",
     )
+
+    /**
+     * 数据提供者。声明式插件通过它拿到真实数据。
+     *
+     * 同一个命名空间只能有一个提供者  否则 `{{ summary.todo }}`
+     * 不知道该问谁。重复的会记 K007，取排序最前的那个（确定的，不是随机的）。
+     */
+    val Data: ExtensionPoint<DataProvider> = ExtensionPoint(
+        ExtensionPointId("kernel.data"),
+        Cardinality.MANY,
+        "DataProvider",
+    )
 }
 
 /** 内核内部实现。[MutableExtensionRegistry] 上的一层只读视图。 */

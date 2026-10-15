@@ -29,8 +29,10 @@ import dev.trellis.kernel.storage.storageNamespaceOf
 import dev.trellis.kernel.core.SemVer
 import dev.trellis.kernel.diag.ErrorCode
 import dev.trellis.kernel.diag.KernelError
+import dev.trellis.kernel.extension.Contribution
 import dev.trellis.kernel.extension.ExtensionRegistrar
 import dev.trellis.kernel.extension.ExtensionRegistry
+import dev.trellis.kernel.extension.KernelPoints
 import dev.trellis.kernel.extension.MutableExtensionRegistry
 import dev.trellis.kernel.extension.PluginRegistrar
 import dev.trellis.kernel.extension.RegistryServiceAccess
@@ -857,6 +859,24 @@ private fun validateRegistrations(
             recordInto(
                 errorSink, ErrorCode.CONTRIBUTION_CONFLICT, loser.owner, detail, nowMs,
                 entries.firstOrNull { it.manifest.id == loser.owner },
+            )
+        }
+    }
+
+    // 同一个数据命名空间被两个插件提供  只留一个，另一个记 K007。
+    // 不报的话，{{ summary.todo }} 就会「时好时坏」，而且没人知道为什么。
+    for ((namespace, group) in registry.raw(KernelPoints.Data.id).groupBy { it.id }) {
+        if (group.size <= 1) continue
+        val sorted = group.sortedWith(Contribution.COMPARATOR)
+        val winner = sorted.first()
+        for (loser in sorted.drop(1)) {
+            val key = "data#" + namespace + "#" + loser.owner.value
+            if (!reported.add(key)) continue
+            recordInto(
+                errorSink, ErrorCode.CONTRIBUTION_CONFLICT, loser.owner,
+                "数据命名空间「" + namespace + "」已经由 " + winner.owner.value +
+                    " 提供；" + loser.owner.value + " 的被忽略",
+                nowMs, entries.firstOrNull { it.manifest.id == loser.owner },
             )
         }
     }

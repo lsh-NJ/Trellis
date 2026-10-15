@@ -13,6 +13,7 @@ import dev.trellis.kernel.plugin.PluginContext
 import dev.trellis.kernel.plugin.PluginManifest
 import dev.trellis.kernel.plugin.PluginRequirement
 import dev.trellis.kernel.slot.Slots
+import dev.trellis.kernel.slot.TemplateSlot
 import dev.trellis.kernel.slot.TextSlot
 import dev.trellis.kernel.spi.DiscoveredPlugin
 import dev.trellis.kernel.spi.DiscoveryResult
@@ -254,6 +255,9 @@ class DslLoader(
     }
 }
 
+private fun containsPlaceholder(text: String): Boolean =
+    text.contains("{{") && text.contains("}}")
+
 /** 一个只会注册卡片、不会做别的事的插件。它的全部内容都来自磁盘。 */
 private class DslPlugin(
     override val manifest: PluginManifest,
@@ -267,10 +271,15 @@ private class DslPlugin(
                 ctx.log("跳过未知挂载点 " + slot.point)
                 continue
             }
-            val accepted = ctx.extensions.register(
-                point,
-                TextSlot(slot.id, slot.order, slot.title, slot.body),
-            )
+            // 有占位符就产 TemplateSlot（渲染时求值），没有就产 TextSlot（静态）。
+            // 区分不是为了省事：静态卡片没有「重新求值」这回事，
+            // 让它永远不刷新，比每秒白跑一遍求值器更诚实。
+            val card = if (containsPlaceholder(slot.title) || containsPlaceholder(slot.body)) {
+                TemplateSlot(slot.id, slot.order, slot.title, slot.body)
+            } else {
+                TextSlot(slot.id, slot.order, slot.title, slot.body)
+            }
+            val accepted = ctx.extensions.register(point, card)
             if (!accepted) {
                 ctx.log("挂载点 " + slot.point + " 拒绝了卡片 " + slot.id + "（见诊断）")
             }

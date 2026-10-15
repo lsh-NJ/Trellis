@@ -111,7 +111,7 @@ private fun TasksTab(runtime: AppRuntime, modifier: Modifier) {
         Spacer(Modifier.height(16.dp))
 
         // 插件贡献的卡片长在这里  界面上预留的「插座」
-        SlotArea(runtime.kernel.extensions, Slots.HomeSection)
+        SlotArea(runtime.kernel.extensions, Slots.HomeSection, refreshKey = runtime.tick)
 
         Spacer(Modifier.height(16.dp))
         TaskList(runtime, Modifier.weight(1f))

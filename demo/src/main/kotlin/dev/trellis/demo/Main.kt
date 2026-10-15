@@ -42,10 +42,11 @@ private fun banner(title: String) {
     println("=".repeat(74))
 }
 
-private fun show(host: SlotHost, title: String) {
+private suspend fun show(host: SlotHost, title: String) {
     println()
     println("  [ " + title + " ]")
-    val lines = host.render(Slots.HomeHeader)
+    // renderResolved 会先把 {{ }} 求值再画：模板卡片要的就是这个
+    val lines = host.renderResolved(Slots.HomeHeader) { println("    [求值失败] " + it) }
     if (lines.isEmpty()) println("    (空)") else lines.forEach { println("    " + it) }
 }
 
@@ -134,11 +135,15 @@ fun main() = runBlocking {
     println("    3. 声明式插件        磁盘上的两份 JSON，没有编译过任何东西")
 
     // ---- 声明式插件：磁盘上的两份 JSON ----
+    // 这个插件是纯 JSON，但内容是活的：三个数字都从存储里算出来。
+    // 它没编译过任何东西，也没碰过存储，只知道有个叫 summary 的数据源。
     writePlugin(
         workspace, "dev.focus",
-        """{ "id": "dev.focus", "version": "1.0.0", "name": "专注计时" }""",
+        """{ "id": "dev.focus", "version": "1.0.0", "name": "今日概览（JSON）",
+             "dependsOn": [{ "id": "core.plan", "range": ">=1.0.0" }] }""",
         """{ "slots": [ { "point": "slot.home.header", "id": "timer", "order": 50,
-                        "title": "专注计时", "body": "还剩 18:20" } ] }""",
+                        "title": "今日概览（JSON 求值）",
+                        "body": "{{ summary.todo }} 项待办 / {{ summary.overdue }} 项逾期 / 已投入 {{ summary.spentMinutes }} 分钟" } ] }""",
     )
 
     // 三个加载器各管一种插件来源：
@@ -196,7 +201,7 @@ fun main() = runBlocking {
     val installed = kernel.install(PluginId("dev.summary"))
     println()
     println("  install() -> " + describe(installed))
-    show(host, "首页头部  dev.summary 那行是真数据，dev.focus 那行是写死的 JSON")
+    show(host, "首页头部：两行都是真数据，其中一行来自纯 JSON 插件")
     showPlugins("插件列表", kernel.plugins())
 
     // ---- 第三幕：Agent 写插件 ----
@@ -210,18 +215,18 @@ fun main() = runBlocking {
     println()
     println("  已写入 " + workspace.absolutePath + "/ai.streak/{manifest.json, main.dsl.json}")
     println("  install() -> " + describe(kernel.install(PluginId("ai.streak"))))
-    show(host, "首页头部  order 10 的新卡片排到了最前")
+    show(host, "首页头部：新卡片按 order 排到了最前")
     showPlugins("插件列表", kernel.plugins())
 
     // ---- 第四幕：卸载 ----
     banner("第四幕：卸载")
     println("  " + kernel.uninstall(PluginId("ai.streak")))
-    show(host, "首页头部  立刻消失，没有残留")
+    show(host, "首页头部：立刻消失，没有残留")
 
     // ---- 收尾 ----
     banner("收尾：这些卡片里哪些数字是真的")
-    println("  dev.summary 的三个数字  真的，从存储里算出来的。")
-    println("  dev.focus / ai.streak 的内容  写死的，因为声明式插件还没有数据绑定。")
+    println("  dev.summary 和 dev.focus 的数字：真的，从存储里算出来的。")
+    println("  ai.streak 的内容：写死的（那个插件本来就没写占位符）。")
     println()
     println("  它们走的是同一条生命周期、同一套扩展点、同一套权限模型。")
     println("  差别只在「谁写的」：一个是 Kotlin，一个是 JSON。")

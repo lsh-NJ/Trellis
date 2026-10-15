@@ -138,4 +138,60 @@ class ExtensionRegistry internal constructor(
     /** 某个插件发布了哪些服务。 */
     fun servicesOf(owner: PluginId): List<ServiceBinding> =
         mutable.allServices().filter { it.owner == owner }
+
+    /** 某个插件提供了哪些数据命名空间。 */
+    fun dataProvidersOf(owner: PluginId): List<Contribution> =
+        mutable.raw(KernelPoints.Data.id).filter { it.owner == owner }
+
+    /**
+     * 按 `命名空间.路径` 取一个值。
+     *
+     * 找不到提供者、路径不存在、提供者抛异常  一律返回 null。
+     * **求值的失败必须隔离**：一个数据源崩了，坏掉的应该是那个占位符，不是整张卡片。
+     */
+    suspend fun resolveData(namespace: String, path: String): String? {
+        val contribution = mutable.effective(KernelPoints.Data.id)
+            .firstOrNull { it.id == namespace } ?: return null
+        val provider = contribution.value as? DataProvider ?: return null
+        return provider.resolve(path)
+    }
+
+    /**
+     * 把 `{{ 命名空间.路径 }}` 换成值。其余部分原样保留。
+     *
+     * 换不出来的地方渲染成 `--`，并调用 [onFailure]  **不是抛异常**。
+     * 一张卡片上有一个字段取不到，不该让整张卡片消失。
+     */
+    suspend fun renderTemplate(text: String, onFailure: (String) -> Unit = {}): String {
+        val placeholders = Template.parse(text)
+        if (placeholders.isEmpty()) return text
+
+        val out = StringBuilder()
+        var cursor = 0
+        for (p in placeholders) {
+            out.append(text, cursor, p.start)
+            val value = try {
+                resolveData(p.namespace, p.path)
+            } catch (cancel: kotlin.coroutines.cancellation.CancellationException) {
+                throw cancel
+            } catch (t: Throwable) {
+                onFailure("数据源 " + p.namespace + " 取 " + p.path + " 时出错：" + t.message)
+                null
+            }
+            if (value == null) {
+                onFailure("没有数据源提供 " + p.namespace + "." + p.path)
+                out.append(FALLBACK)
+            } else {
+                out.append(value)
+            }
+            cursor = p.end
+        }
+        out.append(text, cursor, text.length)
+        return out.toString()
+    }
+
+    private companion object {
+        /** 取不到值时显示的东西。刻意是「--」而不是空字符串  空字符串看不出是坏了还是本来就空。 */
+        const val FALLBACK = "--"
+    }
 }

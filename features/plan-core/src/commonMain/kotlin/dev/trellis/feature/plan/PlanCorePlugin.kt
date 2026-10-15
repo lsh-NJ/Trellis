@@ -33,13 +33,16 @@ class PlanCorePlugin : Plugin {
         required = true,
         contributes = mapOf(
             KernelPoints.Service.id to listOf(ContributionDecl("PlanService")),
+            // 给声明式插件用的数据源，命名空间是 summary
+            KernelPoints.Data.id to listOf(ContributionDecl("summary")),
         ),
     )
 
     override suspend fun init(ctx: PluginContext) {
-        ctx.extensions.publish(
-            PlanService::class,
-            KvPlanService(ctx.kv, ctx.clock) { message -> ctx.log(message) },
-        )
+        val service = KvPlanService(ctx.kv, ctx.clock) { message -> ctx.log(message) }
+        ctx.extensions.publish(PlanService::class, service)
+
+        // 同一个 service 换个面：把统计数字暴露给声明式插件
+        ctx.extensions.register(KernelPoints.Data, PlanSummaryDataProvider(service, ctx.clock))
     }
 }

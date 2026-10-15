@@ -9,12 +9,18 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.trellis.kernel.extension.ExtensionPoint
 import dev.trellis.kernel.extension.ExtensionRegistry
 import dev.trellis.kernel.slot.SlotContribution
+import dev.trellis.kernel.slot.TemplateSlot
 import dev.trellis.kernel.slot.TextSlot
 
 /**
@@ -53,6 +59,14 @@ fun SlotArea(
     registry: ExtensionRegistry,
     point: ExtensionPoint<SlotContribution>,
     modifier: Modifier = Modifier,
+    /**
+     * 模板卡片什么时候重新求值。
+     *
+     * 由调用方给  内核不假装知道数据什么时候会变。
+     * 现在传的是一个每秒加一的计数（应用在轮询），
+     * 以后领域层能发变更通知了，这里换成那个 Flow 就行。
+     */
+    refreshKey: Any? = Unit,
 ) {
     val contributions = registry.all(point)
     if (contributions.isEmpty()) return
@@ -60,14 +74,18 @@ fun SlotArea(
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         for (contribution in contributions) {
             key(contribution.id) {
-                SlotCard(contribution)
+                SlotCard(registry, contribution, refreshKey)
             }
         }
     }
 }
 
 @Composable
-private fun SlotCard(contribution: SlotContribution) {
+private fun SlotCard(
+    registry: ExtensionRegistry,
+    contribution: SlotContribution,
+    refreshKey: Any?,
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -75,19 +93,43 @@ private fun SlotCard(contribution: SlotContribution) {
         Column(Modifier.padding(12.dp)) {
             when (contribution) {
                 is ComposeSlot -> contribution.content()
-                is TextSlot -> TextSlotView(contribution)
+                is TextSlot -> TextSlotView(contribution.title, contribution.body)
+                is TemplateSlot -> TemplateSlotView(registry, contribution, refreshKey)
                 else -> Text("此卡片类型当前未接入界面", style = MaterialTheme.typography.bodySmall)
             }
         }
     }
 }
 
+/**
+ * 模板卡片：先求值，再画。
+ *
+ * 求值是挂起的（数据源可能要读存储），所以放进 [LaunchedEffect]；
+ * 求值结果落在本地 state 里，取值失败的部分会变成 `--`，**不会让整张卡片消失**。
+ */
 @Composable
-private fun TextSlotView(slot: TextSlot) {
-    if (slot.title.isNotEmpty()) {
-        Text(slot.title, style = MaterialTheme.typography.titleSmall)
+private fun TemplateSlotView(
+    registry: ExtensionRegistry,
+    slot: TemplateSlot,
+    refreshKey: Any?,
+) {
+    var title by remember(slot.id) { mutableStateOf(slot.title) }
+    var body by remember(slot.id) { mutableStateOf(slot.body) }
+
+    LaunchedEffect(slot.id, refreshKey) {
+        title = registry.renderTemplate(slot.title)
+        body = registry.renderTemplate(slot.body)
     }
-    if (slot.body.isNotEmpty()) {
-        Text(slot.body, style = MaterialTheme.typography.bodyMedium)
+
+    TextSlotView(title, body)
+}
+
+@Composable
+private fun TextSlotView(title: String, body: String) {
+    if (title.isNotEmpty()) {
+        Text(title, style = MaterialTheme.typography.titleSmall)
+    }
+    if (body.isNotEmpty()) {
+        Text(body, style = MaterialTheme.typography.bodyMedium)
     }
 }
