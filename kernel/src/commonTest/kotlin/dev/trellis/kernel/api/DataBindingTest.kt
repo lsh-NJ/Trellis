@@ -2,7 +2,9 @@ package dev.trellis.kernel.api
 
 import dev.trellis.kernel.core.PluginId
 import dev.trellis.kernel.diag.ErrorCode
+import dev.trellis.kernel.extension.DataContext
 import dev.trellis.kernel.extension.DataProvider
+import dev.trellis.kernel.extension.ExtensionRegistry
 import dev.trellis.kernel.extension.KernelPoints
 import dev.trellis.kernel.extension.Template
 import dev.trellis.kernel.plugin.Plugin
@@ -19,7 +21,7 @@ private class FixedProvider(
     private val values: Map<String, String> = emptyMap(),
     private val boom: Boolean = false,
 ) : DataProvider {
-    override suspend fun resolve(path: String): String? {
+    override suspend fun resolve(path: String, context: DataContext): String? {
         if (boom) error("这个提供者炸了")
         return values[path]
     }
@@ -79,6 +81,14 @@ class TemplateSyntaxTest {
     }
 }
 
+/** 测试里固定一个「今天」：00:00 到 24:00。真实界面会按时区算。 */
+private val CONTEXT = DataContext.ofNow(nowMs = 1_000L)
+
+private suspend fun ExtensionRegistry.render(
+    template: String,
+    onFailure: (String) -> Unit = {},
+): String = renderTemplate(template, CONTEXT, onFailure)
+
 class DataBindingTest {
 
     private suspend fun bootWith(vararg providers: DataProvider): Kernel {
@@ -99,7 +109,7 @@ class DataBindingTest {
 
         assertEquals(
             "3 项待办，1 项逾期",
-            kernel.extensions.renderTemplate("{{ summary.todo }} 项待办，{{ summary.overdue }} 项逾期"),
+            kernel.extensions.render("{{ summary.todo }} 项待办，{{ summary.overdue }} 项逾期"),
         )
         kernel.shutdown()
     }
@@ -110,7 +120,7 @@ class DataBindingTest {
         val kernel = bootWith(FixedProvider("summary", values = mapOf("todo" to "3")))
         val failures = mutableListOf<String>()
 
-        val text = kernel.extensions.renderTemplate(
+        val text = kernel.extensions.render(
             "{{ nope.x }} / {{ summary.nope }} / {{ summary.todo }}",
         ) { failures += it }
 
@@ -127,7 +137,7 @@ class DataBindingTest {
             FixedProvider("good", order = 20, values = mapOf("x" to "OK")),
         )
 
-        assertEquals("-- 然后 OK", kernel.extensions.renderTemplate("{{ bad.x }} 然后 {{ good.x }}"))
+        assertEquals("-- 然后 OK", kernel.extensions.render("{{ bad.x }} 然后 {{ good.x }}"))
         kernel.shutdown()
     }
 
@@ -143,7 +153,7 @@ class DataBindingTest {
             kernel.errors.any { it.code == ErrorCode.CONTRIBUTION_CONFLICT },
             "静默覆盖不可接受：" + kernel.errors.toString(),
         )
-        assertEquals("A", kernel.extensions.renderTemplate("{{ summary.todo }}"))
+        assertEquals("A", kernel.extensions.render("{{ summary.todo }}"))
         kernel.shutdown()
     }
 
@@ -158,7 +168,7 @@ class DataBindingTest {
             m2Config(CatalogLoader(listOf(plugin), listOf(PluginId("dev.sneaky")))),
         )
 
-        assertEquals("--", kernel.extensions.renderTemplate("{{ summary.todo }}"))
+        assertEquals("--", kernel.extensions.render("{{ summary.todo }}"))
         assertTrue(
             kernel.plugin(PluginId("dev.sneaky"))!!.errors.any { it.code == ErrorCode.CONTRIBUTION_REJECTED },
         )

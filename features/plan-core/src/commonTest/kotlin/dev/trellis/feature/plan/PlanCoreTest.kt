@@ -5,6 +5,7 @@ import dev.trellis.domain.PlanSummary
 import dev.trellis.domain.TaskQuery
 import dev.trellis.domain.TaskStatus
 import dev.trellis.kernel.api.BootMode
+import dev.trellis.kernel.extension.DataContext
 import dev.trellis.kernel.api.Kernel
 import dev.trellis.kernel.api.KernelConfig
 import dev.trellis.kernel.api.KernelState
@@ -223,5 +224,52 @@ class PlanCoreTest {
         assertTrue(rejected is dev.trellis.kernel.api.UninstallResult.Rejected, rejected.toString())
         assertEquals(1, first.plan.plans().size)
         first.kernel.shutdown()
+    }
+
+    /**
+     * 这条测试守的是一个**设计边界**：
+     *
+     * `dueToday` 说「今天」，但这一层**不猜时区**  边界从 [DataContext] 来，
+     * 由渲染层用用户的时区算好传下来。
+     *
+     * 所以同一个任务、同一个「现在」，只要给的边界不同，`dueToday` 就该不同。
+     * 如果哪天有人把这里改成「现在 + 24 小时」写死，这条会红。
+     */
+    @Test
+    fun dueTodayObeysTheBoundaryItIsGiven() = runTest {
+        val h = boot()
+        val now = h.clock.nowMs()
+
+        // 一个「两小时后到期」的任务
+        h.plan.addTask("两小时后", dueAt = now + 2 * HOUR)
+
+        val provider = PlanSummaryDataProvider(h.plan, h.clock)
+
+        // 边界只到半小时后 -> 它不算「今天」
+        assertEquals(
+            "0",
+            provider.resolve("dueToday", DataContext(nowMs = now, dayStartMs = now, dayEndMs = now + 30 * 60 * 1000L)),
+            "边界在任务到期之前，就不该算进今天",
+        )
+
+        // 边界延到三小时后 -> 它算「今天」
+        assertEquals(
+            "1",
+            provider.resolve("dueToday", DataContext(nowMs = now, dayStartMs = now, dayEndMs = now + 3 * HOUR)),
+            "边界盖住了任务到期时间，就该算进今天",
+        )
+
+        // 换个字段确认上下文也被用上了：逾期用的是 nowMs，不是 dayEnd
+        assertEquals(
+            "0",
+            provider.resolve("overdue", DataContext(nowMs = now, dayStartMs = now, dayEndMs = now + 3 * HOUR)),
+        )
+        assertEquals(
+            "1",
+            provider.resolve("overdue", DataContext(nowMs = now + 3 * HOUR, dayStartMs = now, dayEndMs = now + 6 * HOUR)),
+            "把现在往后推，它就逾期了",
+        )
+
+        h.kernel.shutdown()
     }
 }
