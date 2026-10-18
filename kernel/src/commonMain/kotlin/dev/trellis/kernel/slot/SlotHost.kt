@@ -2,6 +2,7 @@ package dev.trellis.kernel.slot
 
 import dev.trellis.kernel.core.ExtensionPointId
 import dev.trellis.kernel.extension.ExtensionPoint
+import dev.trellis.kernel.extension.DataContext
 import dev.trellis.kernel.extension.ExtensionRegistry
 import dev.trellis.kernel.slot.TemplateSlot
 
@@ -49,21 +50,23 @@ class SlotHost(
      */
     suspend fun renderResolved(
         point: ExtensionPoint<SlotContribution>,
+        context: DataContext,
         onFailure: (String) -> Unit = {},
     ): List<String> =
         registry.all(point).map { contribution ->
-            renderSafely(point.id, resolveTemplate(contribution, onFailure))
+            renderSafely(point.id, resolveTemplate(contribution, context, onFailure))
         }
 
     private suspend fun resolveTemplate(
         contribution: SlotContribution,
+        context: DataContext,
         onFailure: (String) -> Unit,
     ): SlotContribution = if (contribution is TemplateSlot) {
         TextSlot(
             id = contribution.id,
             order = contribution.order,
-            title = registry.renderTemplate(contribution.title, onFailure),
-            body = registry.renderTemplate(contribution.body, onFailure),
+            title = registry.renderTemplate(contribution.title, context, onFailure),
+            body = registry.renderTemplate(contribution.body, context, onFailure),
         )
     } else {
         contribution

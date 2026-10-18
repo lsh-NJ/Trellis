@@ -149,11 +149,11 @@ class ExtensionRegistry internal constructor(
      * 找不到提供者、路径不存在、提供者抛异常  一律返回 null。
      * **求值的失败必须隔离**：一个数据源崩了，坏掉的应该是那个占位符，不是整张卡片。
      */
-    suspend fun resolveData(namespace: String, path: String): String? {
+    suspend fun resolveData(namespace: String, path: String, context: DataContext): String? {
         val contribution = mutable.effective(KernelPoints.Data.id)
             .firstOrNull { it.id == namespace } ?: return null
         val provider = contribution.value as? DataProvider ?: return null
-        return provider.resolve(path)
+        return provider.resolve(path, context)
     }
 
     /**
@@ -162,7 +162,11 @@ class ExtensionRegistry internal constructor(
      * 换不出来的地方渲染成 `--`，并调用 [onFailure]  **不是抛异常**。
      * 一张卡片上有一个字段取不到，不该让整张卡片消失。
      */
-    suspend fun renderTemplate(text: String, onFailure: (String) -> Unit = {}): String {
+    suspend fun renderTemplate(
+        text: String,
+        context: DataContext,
+        onFailure: (String) -> Unit = {},
+    ): String {
         val placeholders = Template.parse(text)
         if (placeholders.isEmpty()) return text
 
@@ -171,7 +175,7 @@ class ExtensionRegistry internal constructor(
         for (p in placeholders) {
             out.append(text, cursor, p.start)
             val value = try {
-                resolveData(p.namespace, p.path)
+                resolveData(p.namespace, p.path, context)
             } catch (cancel: kotlin.coroutines.cancellation.CancellationException) {
                 throw cancel
             } catch (t: Throwable) {

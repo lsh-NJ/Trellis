@@ -117,8 +117,10 @@ private fun TemplateSlotView(
     var body by remember(slot.id) { mutableStateOf(slot.body) }
 
     LaunchedEffect(slot.id, refreshKey) {
-        title = registry.renderTemplate(slot.title)
-        body = registry.renderTemplate(slot.body)
+        // 每次都重新算一遍「今天」：用户可能跨过午夜，也可能改了系统时区
+        val context = currentDataContext()
+        title = registry.renderTemplate(slot.title, context)
+        body = registry.renderTemplate(slot.body, context)
     }
 
     TextSlotView(title, body)

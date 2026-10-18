@@ -12,6 +12,7 @@ import dev.trellis.kernel.api.UninstallResult
 import dev.trellis.kernel.core.PluginId
 import dev.trellis.kernel.core.SemVer
 import dev.trellis.kernel.core.VersionRange
+import dev.trellis.kernel.extension.DataContext
 import dev.trellis.kernel.plugin.ContributionDecl
 import dev.trellis.kernel.plugin.Plugin
 import dev.trellis.kernel.plugin.PluginContext
@@ -35,6 +36,21 @@ private const val HOUR = 60L * 60L * 1000L
 private const val DAY = 24L * HOUR
 private const val RULE = "--------------------------------------------------------------------------"
 
+/**
+ * 控制台版本：用系统时区算「今天」。
+ * 和 ui-kernel 里那个 actual 实现是同一份逻辑  只是这里没有 expect/actual 的约束。
+ */
+private fun currentDataContext(): DataContext {
+    val zone = java.time.ZoneId.systemDefault()
+    val now = java.time.Instant.now()
+    val today = now.atZone(zone).toLocalDate()
+    return DataContext(
+        nowMs = now.toEpochMilli(),
+        dayStartMs = today.atStartOfDay(zone).toInstant().toEpochMilli(),
+        dayEndMs = today.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli(),
+    )
+}
+
 private fun banner(title: String) {
     println()
     println("=".repeat(74))
@@ -46,7 +62,9 @@ private suspend fun show(host: SlotHost, title: String) {
     println()
     println("  [ " + title + " ]")
     // renderResolved 会先把 {{ }} 求值再画：模板卡片要的就是这个
-    val lines = host.renderResolved(Slots.HomeHeader) { println("    [求值失败] " + it) }
+    val lines = host.renderResolved(Slots.HomeHeader, currentDataContext()) {
+        println("    [求值失败] " + it)
+    }
     if (lines.isEmpty()) println("    (空)") else lines.forEach { println("    " + it) }
 }
 
@@ -143,7 +161,7 @@ fun main() = runBlocking {
              "dependsOn": [{ "id": "core.plan", "range": ">=1.0.0" }] }""",
         """{ "slots": [ { "point": "slot.home.header", "id": "timer", "order": 50,
                         "title": "今日概览（JSON 求值）",
-                        "body": "{{ summary.todo }} 项待办 / {{ summary.overdue }} 项逾期 / 已投入 {{ summary.spentMinutes }} 分钟" } ] }""",
+                        "body": "{{ summary.todo }} 项待办 / {{ summary.dueToday }} 项今天到期 / {{ summary.overdue }} 项逾期" } ] }""",
     )
 
     // 三个加载器各管一种插件来源：

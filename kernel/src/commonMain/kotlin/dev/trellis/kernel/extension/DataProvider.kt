@@ -19,5 +19,40 @@ interface DataProvider : OrderedContribution {
      * 返回 null 表示「这个路径不存在」；抛异常表示「取值时出错了」。
      * **两种情况都会被渲染层隔离成占位符**，不会让整张卡片崩掉。
      */
-    suspend fun resolve(path: String): String?
+    suspend fun resolve(path: String, context: DataContext): String?
+}
+
+/**
+ * 求值时的「现在」和「今天」。
+ *
+ * ### 为什么要有这个
+ *
+ * 「今天」需要时区，而时区是**展示层**的事实  内核和领域层都不该猜。
+ * 但数据源又确实需要它（`{{ summary.dueToday }}` 就是典型的例子）。
+ *
+ * 解决办法不是砍掉概念，而是**把上下文往下传**：
+ * 渲染层用用户的时区算好三个时刻，传给求值器，再传给数据源。
+ *
+ * 这样每一层都只做自己知道的事：
+ *  - 展示层知道时区  算出「今天」的边界
+ *  - 数据源知道怎么按边界统计  但不猜边界在哪
+ *  - 内核只管把值塞进模板  什么都不知道
+ */
+data class DataContext(
+    /** 现在。 */
+    val nowMs: Long,
+    /** 今天开始（含）。 */
+    val dayStartMs: Long,
+    /** 明天开始（不含）。 */
+    val dayEndMs: Long,
+) {
+    companion object {
+        /**
+         * 退化版本：只有「现在」，把「今天」当作「未来 24 小时」。
+         *
+         * **只给测试和没有时区概念的场景用。** 真实界面请用时区算好的那个。
+         */
+        fun ofNow(nowMs: Long, dayLengthMs: Long = 24L * 60L * 60L * 1000L): DataContext =
+            DataContext(nowMs, nowMs, nowMs + dayLengthMs)
+    }
 }

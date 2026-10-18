@@ -4,7 +4,9 @@ import dev.trellis.kernel.api.Kernel
 import dev.trellis.kernel.api.KernelConfig
 import dev.trellis.kernel.core.PluginId
 import dev.trellis.kernel.core.SemVer
+import dev.trellis.kernel.extension.DataContext
 import dev.trellis.kernel.extension.DataProvider
+import dev.trellis.kernel.extension.ExtensionRegistry
 import dev.trellis.kernel.extension.KernelPoints
 import dev.trellis.kernel.plugin.Plugin
 import dev.trellis.kernel.plugin.PluginContext
@@ -30,7 +32,7 @@ private class FakeSummaryProvider(
     var calls = 0
         private set
 
-    override suspend fun resolve(path: String): String? {
+    override suspend fun resolve(path: String, context: DataContext): String? {
         calls++
         return when (path) {
             "todo" -> "7"
@@ -56,6 +58,11 @@ private class ProviderPlugin(
  *   扩展点  数据提供者  模板解析  求值  渲染
  * 而插件那一侧，从头到尾只有两个 JSON 文件。
  */
+private val CONTEXT = DataContext.ofNow(nowMs = 1_000L)
+
+private suspend fun ExtensionRegistry.render(template: String): String =
+    renderTemplate(template, CONTEXT)
+
 class DslDataBindingTest {
 
     private fun jsonPluginFiles(pluginDir: String, manifest: String, entry: String) = mapOf(
@@ -108,7 +115,7 @@ class DslDataBindingTest {
             "带占位符的卡片应当是 TemplateSlot，而不是别的贡献类型",
         )
 
-        assertEquals("7 项待办，2 项逾期", kernel.extensions.renderTemplate(card.body))
+        assertEquals("7 项待办，2 项逾期", kernel.extensions.render(card.body))
         kernel.shutdown()
     }
 
@@ -146,7 +153,7 @@ class DslDataBindingTest {
         val kernel = boot(fs, FakeSummaryProvider())
 
         val card = assertIs<TemplateSlot>(kernel.extensions.all(Slots.HomeHeader).single())
-        assertEquals("-- 项", kernel.extensions.renderTemplate(card.body))
+        assertEquals("-- 项", kernel.extensions.render(card.body))
         kernel.shutdown()
     }
 }
