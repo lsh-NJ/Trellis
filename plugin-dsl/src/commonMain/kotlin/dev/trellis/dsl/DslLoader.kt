@@ -1,5 +1,12 @@
 package dev.trellis.dsl
 
+import dev.trellis.kernel.expr.Expression
+import dev.trellis.kernel.expr.ExpressionException
+import dev.trellis.kernel.extension.DataField
+import dev.trellis.kernel.extension.DerivedFieldProvider
+import dev.trellis.kernel.extension.KernelPoints
+import dev.trellis.kernel.extension.SELF_NAMESPACE
+
 import dev.trellis.kernel.core.CapabilityId
 import dev.trellis.kernel.core.ExtensionPointId
 import dev.trellis.kernel.core.PluginId
@@ -84,7 +91,7 @@ class DslLoader(
                 "DslLoader 没有发现过插件 " + manifest.id.value +
                     "；load 必须发生在 discover 之后（内核的正常流程总是如此）",
             )
-        return DslPlugin(record.manifest, record.slots)
+        return DslPlugin(record.manifest, record.slots, record.fields)
     }
 
     // ---------------------------------------------------------------- 解析
@@ -205,7 +212,48 @@ class DslLoader(
             builtin = raw.builtin,
             required = raw.required,
         )
-        return ParsedPlugin(manifest, slots, directory)
+        // ---- 派生字段：加载时就解析掉，坏的当场报，不要等渲染才炸 ----
+        val fields = mutableMapOf<String, Expression>()
+        entry.fields.forEach { (rawName, source) ->
+            val name = rawName.trim()
+            if (!FIELD_NAME.matches(name)) {
+                errors += reject(
+                    pluginId,
+                    entryPath + " 的字段名「" + rawName + "」不合规：只能用字母、数字、下划线，不能带点",
+                )
+                return@forEach
+            }
+            try {
+                val expression = Expression.parse(source)
+                if (expression.references.any { it == SELF_NAMESPACE || it.startsWith(SELF_NAMESPACE + ".") }) {
+                    errors += reject(
+                        pluginId,
+                        entryPath + " 的字段「" + name + "」引用了 self，这是自己引用自己，不允许",
+                    )
+                } else {
+                    fields[name] = expression
+                }
+            } catch (t: ExpressionException) {
+                errors += reject(
+                    pluginId,
+                    entryPath + " 的字段「" + name + "」表达式有问题：" + t.message,
+                )
+            }
+        }
+
+        // 声明了派生字段，就等于要用 kernel.data 这个扩展点。
+        // contributes 是从 slot 推出来的，不会自动带上它 ——
+        // 不补这一行，注册会被 K019 拒掉，然后 self.xxx 永远显示 --。
+        val finalManifest = if (fields.isEmpty()) {
+            manifest
+        } else {
+            manifest.copy(
+                contributes = manifest.contributes +
+                    (KernelPoints.Data.id to listOf(ContributionDecl(SELF_NAMESPACE))),
+            )
+        }
+
+        return ParsedPlugin(finalManifest, slots, fields, directory)
     }
 
     private fun parseVersion(
@@ -240,6 +288,7 @@ class DslLoader(
     private data class ParsedPlugin(
         val manifest: PluginManifest,
         val slots: List<DslSlotJson>,
+        val fields: Map<String, Expression>,
         val directory: String,
     )
 
@@ -262,12 +311,27 @@ private fun containsPlaceholder(text: String): Boolean =
     text.contains("{{") && text.contains("}}")
 
 /** 一个只会注册卡片、不会做别的事的插件。它的全部内容都来自磁盘。 */
+/** 插件自己算出来的那几个字段。求值由内核做，这里只负责交出表达式。 */
+private class DerivedFields(
+    override val expressions: Map<String, Expression>,
+) : DerivedFieldProvider {
+    override val id: String = SELF_NAMESPACE
+    override val order: Int = 100
+    override val fields: List<DataField> = expressions.keys.map { DataField(it, "插件自己算出来的") }
+}
+
+private val FIELD_NAME = Regex("^[A-Za-z_][A-Za-z0-9_]*$")
+
 private class DslPlugin(
     override val manifest: PluginManifest,
     private val slots: List<DslSlotJson>,
+    private val fields: Map<String, Expression>,
 ) : Plugin {
 
     override suspend fun init(ctx: PluginContext) {
+        if (fields.isNotEmpty()) {
+            ctx.extensions.register(KernelPoints.Data, DerivedFields(fields))
+        }
         for (slot in slots) {
             val point = Slots.byId(ExtensionPointId(slot.point))
             if (point == null) {
@@ -278,7 +342,7 @@ private class DslPlugin(
             // 区分不是为了省事：静态卡片没有「重新求值」这回事，
             // 让它永远不刷新，比每秒白跑一遍求值器更诚实。
             val card = if (containsPlaceholder(slot.title) || containsPlaceholder(slot.body)) {
-                TemplateSlot(slot.id, slot.order, slot.title, slot.body)
+                TemplateSlot(slot.id, slot.order, slot.title, slot.body, owner = ctx.id)
             } else {
                 TextSlot(slot.id, slot.order, slot.title, slot.body)
             }

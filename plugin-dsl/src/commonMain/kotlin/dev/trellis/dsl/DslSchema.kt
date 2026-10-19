@@ -41,6 +41,11 @@ internal data class DslRequirementJson(
 @Serializable
 internal data class DslEntryJson(
     val schemaVersion: Int = 1,
+    /**
+     * 插件**自己算出来的**字段。键是字段名，值是表达式。
+     * 模板里用 {{ self.字段名 }} 引用，每个插件各有一份。
+     */
+    val fields: Map<String, String> = emptyMap(),
     val slots: List<DslSlotJson> = emptyList(),
 )
 

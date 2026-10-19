@@ -1,6 +1,7 @@
 package dev.trellis.kernel.slot
 
 import dev.trellis.kernel.core.ExtensionPointId
+import dev.trellis.kernel.core.PluginId
 import dev.trellis.kernel.extension.Cardinality
 import dev.trellis.kernel.extension.ExtensionPoint
 import dev.trellis.kernel.extension.OrderedContribution
@@ -32,6 +33,13 @@ data class TemplateSlot(
     override val order: Int = 100,
     val title: String,
     val body: String,
+    /**
+     * 这张卡是谁提供的。
+     *
+     * 求值 `{{ self.xxx }}` 时要用它去定位**这个插件自己的**字段 ——
+     * 没有它，十个插件的 `self` 就只能抢一个位置。
+     */
+    val owner: PluginId? = null,
 ) : SlotContribution
 
 /** 纯文本贡献：控制台假渲染器用。用来验证装卸逻辑，不负责好看。 */
