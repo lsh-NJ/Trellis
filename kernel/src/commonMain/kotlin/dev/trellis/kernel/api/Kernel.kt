@@ -29,8 +29,12 @@ import dev.trellis.kernel.storage.storageNamespaceOf
 import dev.trellis.kernel.core.SemVer
 import dev.trellis.kernel.diag.ErrorCode
 import dev.trellis.kernel.diag.KernelError
+import dev.trellis.kernel.event.DefaultEventBus
 import dev.trellis.kernel.event.EventBus
+import dev.trellis.kernel.action.KernelAction
 import dev.trellis.kernel.extension.Contribution
+import dev.trellis.kernel.rule.RuleDecl
+import dev.trellis.kernel.rule.RuleEngine
 import dev.trellis.kernel.rule.RuleRegistrar
 import dev.trellis.kernel.extension.ExtensionRegistrar
 import dev.trellis.kernel.extension.ExtensionRegistry
@@ -187,8 +191,8 @@ private class SimplePluginContext(
     private val capabilityAccess: CapabilityAccess,
     private val approvalBroker: ApprovalBroker,
     private val kvStore: KvStore,
-    private val eventBus: EventBus = dev.trellis.kernel.event.NoEventBus,
-    private val ruleRegistrar: RuleRegistrar = dev.trellis.kernel.rule.NoRules,
+    override val events: EventBus,
+    override val rules: RuleRegistrar,
     private val sink: (String) -> Unit,
 ) : PluginContext {
     override val extensions: ExtensionRegistrar get() = registrar
@@ -196,8 +200,6 @@ private class SimplePluginContext(
     override val capabilities: CapabilityAccess get() = capabilityAccess
     override val approvals: ApprovalBroker get() = approvalBroker
     override val kv: KvStore get() = kvStore
-    override val events: EventBus get() = eventBus
-    override val rules: RuleRegistrar get() = ruleRegistrar
     override fun log(message: String) {
         sink(message)
     }
@@ -228,7 +230,12 @@ class Kernel private constructor(
      *  - 已停用 = 在 catalog 里但不在 bootOrder 里
      */
     private val catalog: MutableMap<PluginId, PluginManifest>,
+    private val eventBus: EventBus,
+    private val ruleEngine: RuleEngine,
 ) {
+
+    /** 事件总线。领域层发，规则收。 */
+    val events: EventBus get() = eventBus
 
     /**
      * 不变量 I3（设计文档 4.8）：所有注册表变更必须串行。
@@ -354,7 +361,7 @@ class Kernel private constructor(
 
         val activated = runLifecycle(
             entry, loader!!, mutableExtensions, errorSink, config,
-            grantedCapabilities, approvalGate,
+            grantedCapabilities, approvalGate, eventBus, ruleEngine,
         )
         entries.add(entry)
 
@@ -649,6 +656,12 @@ class Kernel private constructor(
             // ---- 步骤 2b：指纹校验（必须早于依赖解析）----
             // 放这里的原因：如果等依赖解析先跑，被篡改的插件会先以「缺少依赖」之类的
             // 理由被拒，K011 就永远没机会出现  那会让一次安全拦截伪装成一次配置错误。
+            // 动作从扩展点现查，所以引擎只拿一个查询函数，不认识任何具体动作
+            val ruleEngine = RuleEngine {
+                registry.raw(KernelPoints.Action.id).mapNotNull { it.value as? KernelAction }
+            }
+            val eventBus = DefaultEventBus()
+
             val ordered = mutableListOf<PluginEntry>()
             val tampered = mutableSetOf<PluginId>()
             for ((id, entry) in entries) {
@@ -720,7 +733,7 @@ class Kernel private constructor(
                 if (
                     runLifecycle(
                         entry, loader, registry, allErrors, config,
-                        grantedCapabilities, approvalGate,
+                        grantedCapabilities, approvalGate, eventBus, ruleEngine,
                     )
                 ) {
                     broken.remove(id)
@@ -754,6 +767,7 @@ class Kernel private constructor(
 
             val kernel = Kernel(
                 config, ordered, registry, finalState, allErrors, conflicts, approvalGate, catalog,
+                eventBus, ruleEngine,
             )
 
             // 启动时顺手回收过期数据。
@@ -789,6 +803,8 @@ private suspend fun runLifecycle(
     config: KernelConfig,
     grantedCapabilities: Set<CapabilityId>,
     approvalGate: ApprovalGate,
+    eventBus: EventBus,
+    ruleEngine: RuleEngine,
 ): Boolean {
     val clock = config.clock
     val id = entry.manifest.id
@@ -810,6 +826,10 @@ private suspend fun runLifecycle(
         approvalBroker = PluginApprovalBroker(id, approvalGate),
         kvStore = NamespacedKvStore(config.storage, storageNamespaceOf(id), id.value, config.storageQuota),
         sink = { entry.logs.add(it) },
+        events = eventBus,
+        rules = object : RuleRegistrar {
+            override fun declare(rules: List<RuleDecl>) = ruleEngine.install(id.value, rules)
+        },
     )
 
     val loaded = guard { withTimeout(config.loadTimeoutMs) { loader.load(entry.manifest, ctx) } }

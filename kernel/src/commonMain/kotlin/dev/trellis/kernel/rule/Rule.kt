@@ -3,8 +3,6 @@ package dev.trellis.kernel.rule
 import dev.trellis.kernel.action.ActionArgs
 import dev.trellis.kernel.action.KernelAction
 import dev.trellis.kernel.event.KernelEvent
-import dev.trellis.kernel.extension.ExtensionRegistry
-import dev.trellis.kernel.extension.KernelPoints
 
 /** 一次动作调用：用哪个动作、填什么参数。参数值支持 {{ event.xxx }}。 */
 data class ActionCall(val action: String, val args: Map<String, String> = emptyMap())
@@ -28,7 +26,7 @@ data class RuleExecution(
  * 它不认识任何一个具体动作，也不认识任何一个具体事件 ——
  * 动作从扩展点里查，事件从总线来。所以内核依然是领域中立的。
  */
-class RuleEngine(private val registry: ExtensionRegistry) {
+class RuleEngine(private val actions: () -> List<KernelAction>) {
 
     private val rulesByOwner = mutableMapOf<String, List<RuleDecl>>()
 
@@ -82,7 +80,7 @@ class RuleEngine(private val registry: ExtensionRegistry) {
     }
 
     private fun findAction(id: String): KernelAction? =
-        registry.all(KernelPoints.Action).firstOrNull { it.id == id }
+        actions().firstOrNull { it.id == id }
 }
 
 /**
