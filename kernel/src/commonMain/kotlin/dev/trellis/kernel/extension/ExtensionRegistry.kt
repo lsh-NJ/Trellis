@@ -2,6 +2,8 @@ package dev.trellis.kernel.extension
 
 import dev.trellis.kernel.core.ExtensionPointId
 import dev.trellis.kernel.core.PluginId
+import dev.trellis.kernel.expr.ExprValue
+import dev.trellis.kernel.expr.render
 import kotlin.reflect.KClass
 
 /**
@@ -149,11 +151,59 @@ class ExtensionRegistry internal constructor(
      * 找不到提供者、路径不存在、提供者抛异常  一律返回 null。
      * **求值的失败必须隔离**：一个数据源崩了，坏掉的应该是那个占位符，不是整张卡片。
      */
-    suspend fun resolveData(namespace: String, path: String, context: DataContext): String? {
-        val contribution = mutable.effective(KernelPoints.Data.id)
-            .firstOrNull { it.id == namespace } ?: return null
+    suspend fun resolveData(
+        namespace: String,
+        path: String,
+        context: DataContext,
+        owner: PluginId? = null,
+    ): String? {
+        val all = mutable.effective(KernelPoints.Data.id)
+
+        // 1) 插件自己的字段优先。self 按 owner 解析，所以多个插件能同时用它。
+        if (owner != null) {
+            val own = all.firstOrNull { it.id == namespace && it.owner == owner }
+            if (own != null) return resolveContribution(own, path, context)
+        }
+
+        // 2) self 不参与全局解析：没有 owner 的时候它没有意义
+        if (namespace == SELF_NAMESPACE) return null
+
+        val global = all.firstOrNull { it.id == namespace } ?: return null
+        return resolveContribution(global, path, context)
+    }
+
+    /**
+     * 一个数据源取一个值。
+     *
+     * 派生字段特殊对待：**内核替它把依赖取回来，再求值**。
+     * 依赖只允许指向全局命名空间 —— 指向 self 就是自己引用自己，直接当没有。
+     */
+    private suspend fun resolveContribution(
+        contribution: Contribution,
+        path: String,
+        context: DataContext,
+    ): String? {
         val provider = contribution.value as? DataProvider ?: return null
-        return provider.resolve(path, context)
+        if (provider !is DerivedFieldProvider) return provider.resolve(path, context)
+
+        val expression = provider.expressions[path] ?: return null
+        val values = expression.references.associateWith { reference ->
+            val dot = reference.indexOf('.')
+            if (dot <= 0) {
+                ExprValue.Absent
+            } else {
+                val namespace = reference.substring(0, dot)
+                if (namespace == SELF_NAMESPACE) {
+                    ExprValue.Absent
+                } else {
+                    resolveData(namespace, reference.substring(dot + 1), context)
+                        ?.let { ExprValue.Text(it) }
+                        ?: ExprValue.Absent
+                }
+            }
+        }
+        val value = expression.evaluate(values)
+        return if (value is ExprValue.Absent) null else value.render()
     }
 
     /**
@@ -166,6 +216,7 @@ class ExtensionRegistry internal constructor(
         text: String,
         context: DataContext,
         onFailure: (String) -> Unit = {},
+        owner: PluginId? = null,
     ): String {
         val placeholders = Template.parse(text)
         if (placeholders.isEmpty()) return text
@@ -175,7 +226,7 @@ class ExtensionRegistry internal constructor(
         for (p in placeholders) {
             out.append(text, cursor, p.start)
             val value = try {
-                resolveData(p.namespace, p.path, context)
+                resolveData(p.namespace, p.path, context, owner)
             } catch (cancel: kotlin.coroutines.cancellation.CancellationException) {
                 throw cancel
             } catch (t: Throwable) {

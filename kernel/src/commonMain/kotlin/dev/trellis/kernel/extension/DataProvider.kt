@@ -1,5 +1,7 @@
 package dev.trellis.kernel.extension
 
+import dev.trellis.kernel.expr.Expression
+
 /**
  * 数据提供者：把「一个命名空间下的若干字段」暴露给**声明式插件**。
  *
@@ -30,6 +32,30 @@ interface DataProvider : OrderedContribution {
      * **两种情况都会被渲染层隔离成占位符**，不会让整张卡片崩掉。
      */
     suspend fun resolve(path: String, context: DataContext): String?
+}
+
+/**
+ * 「插件自己的字段」用的命名空间。
+ *
+ * 它和别的命名空间不一样：**按 owner 解析**。
+ * 所以十个插件可以同时提供 `self.rate`，各是各的，不会撞车。
+ */
+const val SELF_NAMESPACE: String = "self"
+
+/**
+ * 派生字段：**算出来的**，不是直接读来的。
+ *
+ * 插件只交出「我依赖哪些字段」和「怎么算」，**取数由内核做**。
+ * 这一点很关键：插件因此不需要拿到全局读取权限，
+ * 它只能看见自己在表达式里点名要的那几个字段。
+ */
+interface DerivedFieldProvider : DataProvider {
+
+    /** 字段名 -> 表达式。 */
+    val expressions: Map<String, Expression>
+
+    /** 派生字段由内核统一求值，这个方法不会被调用。 */
+    override suspend fun resolve(path: String, context: DataContext): String? = null
 }
 
 /** 数据源的一个字段：路径（不含命名空间）和一句人话解释。 */

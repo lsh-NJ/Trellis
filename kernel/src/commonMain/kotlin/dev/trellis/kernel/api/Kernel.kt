@@ -34,6 +34,7 @@ import dev.trellis.kernel.extension.ExtensionRegistrar
 import dev.trellis.kernel.extension.ExtensionRegistry
 import dev.trellis.kernel.extension.KernelPoints
 import dev.trellis.kernel.extension.MutableExtensionRegistry
+import dev.trellis.kernel.extension.SELF_NAMESPACE
 import dev.trellis.kernel.extension.PluginRegistrar
 import dev.trellis.kernel.extension.RegistryServiceAccess
 import dev.trellis.kernel.extension.ServiceAccess
@@ -872,6 +873,8 @@ private fun validateRegistrations(
     // 不报的话，{{ summary.todo }} 就会「时好时坏」，而且没人知道为什么。
     for ((namespace, group) in registry.raw(KernelPoints.Data.id).groupBy { it.id }) {
         if (group.size <= 1) continue
+        // self 是按 owner 解析的，多个插件同时用它天经地义，不算冲突
+        if (namespace == SELF_NAMESPACE) continue
         val sorted = group.sortedWith(Contribution.COMPARATOR)
         val winner = sorted.first()
         for (loser in sorted.drop(1)) {

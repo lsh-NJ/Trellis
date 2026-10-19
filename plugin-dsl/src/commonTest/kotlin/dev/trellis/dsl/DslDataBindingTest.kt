@@ -36,6 +36,7 @@ private class FakeSummaryProvider(
         calls++
         return when (path) {
             "todo" -> "7"
+            "total" -> "10"
             "overdue" -> "2"
             else -> null
         }
@@ -156,4 +157,55 @@ class DslDataBindingTest {
         assertEquals("-- 项", kernel.extensions.render(card.body))
         kernel.shutdown()
     }
+
+    /**
+     * 这一条是「让插件自己造字段」的端到端证明。
+     *
+     * 没有任何 Kotlin 代码参与计算：插件声明了 `rate` 这个字段，
+     * 表达式是 percent(summary.todo, summary.total)，内核负责取数、求值，
+     * 再把结果塞进模板的 {{ self.rate }}。
+     *
+     * 从此插件不再只是「挑我们给好的字段」，它可以自己造。
+     */
+    @Test
+    fun aPluginCanDefineItsOwnComputedFields() = runTest {
+        val fs = InMemoryFileSystem(
+            jsonPluginFiles(
+                "ai.rate",
+                """{"id":"ai.rate","version":"1.0.0","name":"完成率","usage":"在首页看","dependsOn":[{"id":"dev.data","range":">=1.0.0"}]}""",
+                """{"fields":{"rate":"percent(summary.todo, summary.total)"},"slots":[{"point":"slot.home.header","id":"r","title":"进度","body":"还剩 {{ self.rate }}%"}]}""",
+            ),
+        )
+        val kernel = boot(fs, FakeSummaryProvider())
+
+        val card = assertIs<TemplateSlot>(kernel.extensions.all(Slots.HomeHeader).single())
+        assertTrue(card.owner != null, "卡片要记住自己属于谁，否则 self 找不到归属")
+
+        // todo=7, total=10 -> 70%
+        assertEquals(
+            "还剩 70%",
+            kernel.extensions.renderTemplate(card.body, CONTEXT, owner = card.owner),
+        )
+        kernel.shutdown()
+    }
+
+    /** 字段表达式里引用 self 就是自己引用自己，加载时就该被拒。 */
+    @Test
+    fun aFieldMayNotReferenceItself() = runTest {
+        val fs = InMemoryFileSystem(
+            jsonPluginFiles(
+                "ai.loop",
+                """{"id":"ai.loop","version":"1.0.0","name":"自引用"}""",
+                """{"fields":{"a":"self.b + 1","b":"self.a + 1"},"slots":[]}""",
+            ),
+        )
+        val kernel = boot(fs, FakeSummaryProvider())
+
+        assertTrue(
+            kernel.errors.any { it.detail.contains("自己引用自己") },
+            "要明确拒绝自引用：" + kernel.errors.map { it.detail },
+        )
+        kernel.shutdown()
+    }
+
 }
