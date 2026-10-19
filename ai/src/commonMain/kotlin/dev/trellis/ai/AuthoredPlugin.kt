@@ -25,11 +25,24 @@ import kotlinx.serialization.json.putJsonArray
  */
 @Serializable
 data class AuthoredPlugin(
-    val id: String,
+    // 有默认值：拒绝时输出的是 {"cannotDo": "..."}，里面**没有 id**。
+    // 不给默认值的话，那条最该被接受的输出反而会反序列化失败。
+    val id: String = "",
     val name: String = "",
     val description: String = "",
     val slots: List<AuthoredSlot> = emptyList(),
+    /**
+     * 非空表示**模型主动拒绝**：这个需求超出了「只能显示卡片」的范围。
+     *
+     * 这是整套设计里最重要的一条诚实性约束。没有它，模型会生成一张
+     * 写着「已按你的精力曲线排好顺序」的卡片，而它一个字都没排。
+     * 那种输出比直接失败更糟：**它看起来是能用的。**
+     */
+    val cannotDo: String? = null,
 ) {
+
+    /** 这是一次「老实说做不到」，不是插件。 */
+    val isRefusal: Boolean get() = !cannotDo.isNullOrBlank()
 
     /**
      * 展开成真正的两个文件。
@@ -78,6 +91,9 @@ data class AuthoredPlugin(
      * 说清楚哪一项不对、正确选项有哪些。
      */
     fun validate(catalog: CapabilityCatalog): List<String> {
+        // 拒绝是合法结局，不校验插件本身
+        if (isRefusal) return emptyList()
+
         val problems = mutableListOf<String>()
 
         if (!ID_PATTERN.matches(id)) {

@@ -20,11 +20,19 @@ sealed interface AgentEvent {
     data class SelfCheckFailed(val problems: List<String>) : AgentEvent
     data class InstallFailed(val reason: String) : AgentEvent
     data class Installed(val pluginId: String) : AgentEvent
+    data class Refused(val reason: String) : AgentEvent
 }
 
 /** 一次生成的最终结果。 */
 sealed interface AgentOutcome {
     data class Installed(val pluginId: String, val attempts: Int) : AgentOutcome
+
+    /**
+     * 模型**主动拒绝**：这个需求超出了声明式插件能做的范围。
+     *
+     * 这是好结局，不是失败：它比生成一张假装做到事情的卡片强得多。
+     */
+    data class Refused(val reason: String, val attempts: Int) : AgentOutcome
 
     /** 放弃。带着最后一轮的毛病，方便界面告诉用户「它卡在哪」。 */
     data class GaveUp(val attempts: Int, val problems: List<String>) : AgentOutcome
@@ -33,6 +41,7 @@ sealed interface AgentOutcome {
 /** 单轮的结局。成功带 id，失败带病灶。 */
 private sealed interface Attempt {
     data class Ok(val pluginId: String) : Attempt
+    data class Refused(val reason: String) : Attempt
     data class Bad(val problems: List<String>) : Attempt
 }
 
@@ -88,6 +97,11 @@ class PluginAgent(
                     return AgentOutcome.Installed(result.pluginId, attempt)
                 }
 
+                is Attempt.Refused -> {
+                    onEvent(AgentEvent.Refused(result.reason))
+                    return AgentOutcome.Refused(result.reason, attempt)
+                }
+
                 is Attempt.Bad -> {
                     lastProblems = result.problems
                     val installFailure = result.problems
@@ -128,6 +142,8 @@ class PluginAgent(
                 ),
             )
         }
+
+        if (authored.isRefusal) return Attempt.Refused(authored.cannotDo.orEmpty())
 
         val problems = authored.validate(catalog)
         if (problems.isNotEmpty()) return Attempt.Bad(problems)
