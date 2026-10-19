@@ -215,4 +215,30 @@ class AgentFlowTest {
         runtime.shutdown()
     }
 
+
+    /** 退了一步的插件，预览里必须把这句话摆出来。 */
+    @Test
+    fun aDowngradeSurfacesItsLimitationInThePreview() = runTest {
+        val home = tempHome()
+        File(home, "llm.json").configureFakeKey()
+
+        val runtime = AppRuntime.create(home)
+        runtime.llmOverride = FakeLlm(
+            """{"id":"ai.review","name":"复习进度","description":"显示复习数量","howToUse":"在首页看","limitation":"你要的是安排复习，我只做了显示数量，没有安排。","slots":[{"point":"slot.home.section","title":"今天的复习","body":"还剩 {{ summary.todo }} 项"}]}""",
+        )
+
+        val outcome = runtime.generatePlugin("按我的精力曲线安排复习")
+        assertIs<AgentOutcome.Installed>(outcome)
+
+        val preview = runtime.lastGenerated
+        assertTrue(preview != null)
+        assertEquals(
+            "你要的是安排复习，我只做了显示数量，没有安排。",
+            preview!!.limitation,
+            "退步说明必须一路传到预览里，否则界面显示不出来",
+        )
+
+        runtime.shutdown()
+    }
+
 }

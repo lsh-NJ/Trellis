@@ -37,6 +37,12 @@ data class AuthoredPlugin(
      * 没有这句话，用户只能反复开关插件玩「找不同」。
      */
     val howToUse: String = "",
+    /**
+     * 这个插件**少做了什么**。没退步就留空。
+     *
+     * 退一步不是错，**不吭声地退一步**才是错：用户会以为这就是他要的。
+     */
+    val limitation: String = "",
     val slots: List<AuthoredSlot> = emptyList(),
     /**
      * 非空表示**模型主动拒绝**：这个需求超出了「只能显示卡片」的范围。
@@ -71,6 +77,7 @@ data class AuthoredPlugin(
             if (name.isNotBlank()) put("name", name)
             if (description.isNotBlank()) put("description", description)
             if (howToUse.isNotBlank()) put("usage", howToUse)
+            if (limitation.isNotBlank()) put("limitation", limitation)
         },
     )
 

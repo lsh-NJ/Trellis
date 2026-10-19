@@ -3,11 +3,12 @@ package dev.trellis.ai
 /**
  * 把「程序现在能做什么」翻译成模型能照着写的说明书。
  *
- * 这个文件是整套 harness 里**最值钱的一段文字**。它同时承担四件事：
- *  1. 告诉模型有哪些挂载点、哪些数据字段 -> 减少幻觉
- *  2. 说清楚**做不到什么** -> 减少「假装做到」
- *  3. 用一个完整例子示范输出格式 -> 比十条规则管用
- *  4. 把硬边界写死（只能这些、只能这么长）-> 让本地自查有据可依
+ * 这个文件是整套 harness 里最值钱的一段文字。它承担五件事：
+ *  1. 有哪些挂载点、哪些数据字段 -> 减少幻觉
+ *  2. **做不到什么** -> 减少「假装做到」
+ *  3. **什么时候该退一步、什么时候该拒绝** -> 减少「不吭声的糊弄」
+ *  4. 一个完整例子 -> 比十条规则管用
+ *  5. 硬边界（只能这些、只能这么长）-> 让本地自查有据可依
  */
 object PromptBuilder {
 
@@ -50,10 +51,27 @@ object PromptBuilder {
         appendLine("所以**卡片正文只能陈述现在的事实**。绝对不能出现")
         appendLine("「我会」「已经帮你」「按…排好了」这类描述了一个**没有发生过**的动作的话。")
         appendLine()
-        appendLine("用户要的东西你做不到时，有两种正确做法：")
-        appendLine("1. 能退一步就退一步。比如「按精力曲线安排复习」退成")
-        appendLine("   「显示今天到期多少、还剩多少」，正常输出插件。")
-        appendLine("2. 退不了就直说，输出 {\"cannotDo\": \"一句大白话说明为什么做不到\"}")
+
+        appendLine("# 关于「退一步」：什么时候该做，什么时候该拒绝")
+        appendLine()
+        appendLine("用户要的东西你做不到时，你可以把它降级成「显示现状」。但先问自己一句：")
+        appendLine()
+        appendLine("  **降级之后的这张卡片，用户自己在界面上看不出来吗？**")
+        appendLine()
+        appendLine("- 如果你打算显示的，就是界面上统计栏里**已经有的那几个数字，原样抄一遍** ——")
+        appendLine("  那不如不做。用户已经看见了，再抄一遍只会让他觉得这个插件很没用。")
+        appendLine("- 如果你能把这些数字**换一个说法、换一个角度、加一句人话** —— 那有价值。")
+        appendLine("  数字是界面上的，但「你已经走了很远，还有 1 项在路上」这句话不是。")
+        appendLine()
+        appendLine("**你真正擅长的是表达，不是计算。**")
+        appendLine("同样是那几个数字，「还剩 2 项」谁都会看；「还有 2 项在路上，继续加油」是你给的。")
+        appendLine()
+        appendLine("降级了就**必须**在 limitation 里说清楚：")
+        appendLine("  \"你要的是安排复习，我只做了显示数量，没有安排。\"")
+        appendLine("没有退步就留空。**不吭声地退一步，比直接拒绝更糟** ——")
+        appendLine("用户会以为这就是他要的，然后觉得你很没用，却根本不知道你已经退了一步。")
+        appendLine()
+        appendLine("宁可说「做不到」，也不要给一个不吭声的替代品。")
         appendLine()
 
         appendLine("# 输出什么")
@@ -71,6 +89,7 @@ object PromptBuilder {
         appendLine("- description：一句大白话，说明这个插件干什么")
         appendLine("- howToUse：（**必填**）告诉用户「在哪儿看、什么时候看」，最多 30 个字。")
         appendLine("  别写「点击即可使用」这种废话，用户要的是「去首页待办上面看」。")
+        appendLine("- limitation：你少做了什么。**退了一步就必须填**，没退步就留空或者不写。")
         appendLine("- slots：1 到 3 张卡片")
         appendLine("  - point：必须逐字匹配上面列出的挂载点 id")
         appendLine("  - title：最多 " + AuthoredPlugin.MAX_TITLE + " 个字")
@@ -90,20 +109,29 @@ object PromptBuilder {
         appendLine("5. 卡片正文不能承诺任何没有发生的动作")
         appendLine("6. 真的做不到就输出 {\"cannotDo\": \"...\"}，不要硬凑一张卡")
         appendLine("7. howToUse 必须填，而且要具体到「在哪儿看」")
+        appendLine("8. 退了一步就必须写 limitation")
         appendLine()
+
         appendLine("# 例子")
         appendLine()
+        appendLine("## 用户要的就是「看」：直接做")
         appendLine("用户：我想要一个卡片，一眼看到今天还剩多少事")
-        appendLine("输出：")
         appendLine(EXAMPLE_ANSWER)
         appendLine()
-        appendLine("用户：按我的精力曲线安排每天的复习任务")
-        appendLine("这个要**修改数据**，你做不到。但能退一步显示现状，所以正常输出插件：")
-        appendLine(EXAMPLE_DOWNGRADE)
-        appendLine("注意标题是「今天的复习」，正文只陈述事实，**没有**说「已经帮你排好了」。")
+        appendLine("## 用户要的是「做」，但你能换个说法给他价值：退一步，并且说出来")
+        appendLine("用户：给一个鼓励我坚持下去的小卡片")
+        appendLine("这是**好的降级**：数字是界面上的，但这句话不是。")
+        appendLine(EXAMPLE_GOOD_DOWNGRADE)
+        appendLine("注意 limitation 空着 —— 用户要的就是「鼓励」，你确实给了鼓励，没有退步。")
         appendLine()
+        appendLine("## 用户要的是「做」，而且退一步也只是抄数字：拒绝")
+        appendLine("用户：按我的精力曲线安排每天的复习任务")
+        appendLine("你想降级成「显示今天到期几项、还剩几项」—— 但这两个数字界面上本来就有，")
+        appendLine("这个降级**没有增量**。所以正确答案是拒绝，并说清楚为什么：")
+        appendLine(EXAMPLE_BAD_DOWNGRADE)
+        appendLine()
+        appendLine("## 用户要的是「做」，而且没有任何能显示的东西：拒绝")
         appendLine("用户：我没完成任务时自动发通知催我")
-        appendLine("这个**退不了**（要执行动作，而且没有能显示的东西），所以输出：")
         append(EXAMPLE_REFUSAL)
     }
 
@@ -116,9 +144,11 @@ object PromptBuilder {
     private const val EXAMPLE_ANSWER =
         """{"id":"ai.today","name":"今日待办","description":"一眼看到今天还剩多少事","howToUse":"进应用就能看到，在统计数字下面","slots":[{"point":"slot.home.section","title":"今天","body":"还有 {{ summary.dueToday }} 项今天到期，{{ summary.overdue }} 项已经逾期"}]}"""
 
-    /** 做不到时的样子：退一步，只显示现状，绝不承诺。 */
-    private const val EXAMPLE_DOWNGRADE =
-        """{"id":"ai.energy-status","name":"精力复习","description":"显示今天到期和还剩多少任务","howToUse":"在首页看，每完成一项数字会跟着变","slots":[{"point":"slot.home.section","title":"今天的复习","body":"今天到期 {{ summary.dueToday }} 项，还剩 {{ summary.todo }} 项"}]}"""
+    private const val EXAMPLE_GOOD_DOWNGRADE =
+        """{"id":"ai.encourage","name":"坚持鼓励","description":"用真实进度给你一句鼓励","howToUse":"在首页看，完成任务后数字会变","slots":[{"point":"slot.home.section","title":"你已经走了很远","body":"已完成 {{ summary.done }} 项，还有 {{ summary.todo }} 项在路上，继续加油"}]}"""
+
+    private const val EXAMPLE_BAD_DOWNGRADE =
+        """{"cannotDo":"按精力曲线安排复习需要给任务排序改期，我只能显示卡片，做不到。而仅仅把界面上已有的「今天到期」「待办」两个数字再抄一遍，对你没有任何新信息，所以我不做。"}"""
 
     private const val EXAMPLE_REFUSAL =
         """{"cannotDo":"自动提醒需要定时执行动作，而我现在只能显示卡片，做不到。"}"""

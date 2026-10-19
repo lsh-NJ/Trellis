@@ -195,6 +195,7 @@ class DslLoader(
             name = raw.name.ifBlank { rawId },
             description = raw.description,
             usage = raw.usage,
+            limitation = raw.limitation,
             sdkRange = sdkRange,
             loader = raw.loader,
             dependsOn = dependsOn,

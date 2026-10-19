@@ -69,6 +69,8 @@ data class GeneratedPreview(
     val name: String,
     val description: String,
     val usage: String,
+    /** 模型自己承认「少做了什么」。空表示没退步。 */
+    val limitation: String,
     val cards: List<PreviewCard>,
 )
 
@@ -204,6 +206,7 @@ class AppRuntime private constructor() {
             name = manifest.name,
             description = manifest.description,
             usage = manifest.usage,
+            limitation = manifest.limitation,
             cards = cards,
         )
     }

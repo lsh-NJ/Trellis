@@ -197,6 +197,9 @@ private fun PluginCard(
                 if (info.manifest.usage.isNotBlank()) {
                     Field("用法", info.manifest.usage)
                 }
+                if (info.manifest.limitation.isNotBlank()) {
+                    Field("局限", info.manifest.limitation)
+                }
 
                 // ---- 权限 ----
                 //
