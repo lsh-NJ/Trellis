@@ -1,5 +1,8 @@
 package dev.trellis.kernel.plugin
 
+import dev.trellis.kernel.event.EventBus
+import dev.trellis.kernel.rule.RuleRegistrar
+
 import dev.trellis.kernel.core.PluginId
 import dev.trellis.kernel.approval.ApprovalBroker
 import dev.trellis.kernel.capability.CapabilityAccess
@@ -37,6 +40,12 @@ interface PluginContext {
 
     /** 特权能力检查。默认拒绝：没在 manifest 里声明的能力，这里一律拿不到。 */
     val capabilities: CapabilityAccess
+
+    /** 事件总线。领域层用它广播「发生了一件事」，规则靠它触发。 */
+    val events: EventBus
+
+    /** 登记规则。owner 自动是当前插件。 */
+    val rules: RuleRegistrar
 
     /** 危险动作的审批门。需要人工点头的动作走这里。 */
     val approvals: ApprovalBroker
