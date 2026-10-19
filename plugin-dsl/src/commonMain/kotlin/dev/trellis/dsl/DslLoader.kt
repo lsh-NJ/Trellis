@@ -193,6 +193,8 @@ class DslLoader(
             id = pluginId,
             version = version,
             name = raw.name.ifBlank { rawId },
+            description = raw.description,
+            usage = raw.usage,
             sdkRange = sdkRange,
             loader = raw.loader,
             dependsOn = dependsOn,

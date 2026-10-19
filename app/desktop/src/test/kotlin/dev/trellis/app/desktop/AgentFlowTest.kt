@@ -10,6 +10,7 @@ import java.io.File
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -28,7 +29,7 @@ private class FakeLlm(vararg private val replies: String) : LlmClient {
 }
 
 private fun jsonCard(point: String = "slot.home.section", body: String = "还有 {{ summary.todo }} 项待办"): String =
-    """{"id":"ai.mine","name":"我的卡片","description":"测试用","slots":[{"point":"$point","title":"标题","body":"$body"}]}"""
+    """{"id":"ai.mine","name":"我的卡片","description":"测试用","howToUse":"在首页看","slots":[{"point":"$point","title":"标题","body":"$body"}]}"""
 
 class AgentFlowTest {
 
@@ -140,4 +141,78 @@ class AgentFlowTest {
         )
         runtime.shutdown()
     }
+
+    /**
+     * 模型只能被告知**界面上真的渲染了的**挂载点。
+     *
+     * 以前目录里列了 9 个，界面只渲染了 1 个 —— 模型很热心地
+     * 往 slot.detail.aside 挂卡片，用户装完在界面上根本找不到，
+     * 只能反复开关插件玩「找不同」。
+     */
+    @Test
+    fun theAgentOnlyLearnsAboutMountPointsTheAppActuallyRenders() = runTest {
+        val home = tempHome()
+        File(home, "llm.json").configureFakeKey()
+
+        val runtime = AppRuntime.create(home)
+        val fake = FakeLlm(jsonCard())
+        runtime.llmOverride = fake
+
+        runtime.generatePlugin("随便")
+
+        val system = runtime.agentLog.joinToString("\n")
+        // agentLog 里没有 prompt，所以直接验目录：界面上没渲染的位置不该出现
+        assertTrue(
+            RENDERED_MOUNT_POINTS == setOf(dev.trellis.kernel.slot.Slots.HomeSection.id),
+            "当前界面只渲染了首页区块，这个常量必须和 AppScreen 同步",
+        )
+
+        val catalog = dev.trellis.ai.CapabilityCatalog.of(runtime.kernel.extensions, RENDERED_MOUNT_POINTS)
+        assertTrue(catalog.mountPointIds.contains("slot.home.section"))
+        assertFalse(
+            catalog.mountPointIds.contains("slot.detail.aside"),
+            "界面没渲染 detail.aside，就不该告诉模型它能用：" + catalog.mountPointIds,
+        )
+        assertTrue(catalog.mountPointIds.size == 1, "现在只渲染了一个位置：" + catalog.mountPointIds)
+
+        runtime.shutdown()
+    }
+
+    /**
+     * 生成之后必须能「看见自己生成了什么」。
+     *
+     * 以前只有一句「装好了：ai.xxx」，用户得回首页一个字一个字地找不同，
+     * 而且分不清「没生成」「挂在看不见的地方了」「生成了但内容不对」。
+     */
+    @Test
+    fun thePreviewShowsTheCardTheUsageAndWhereItLives() = runTest {
+        val home = tempHome()
+        File(home, "llm.json").configureFakeKey()
+
+        val runtime = AppRuntime.create(home)
+        runtime.llmOverride = FakeLlm(jsonCard())
+
+        runtime.planService.createPlan("测试计划")
+        val plan = runtime.planService.plans().first()
+        runtime.planService.addTask("任务一", planId = plan.id)
+
+        runtime.generatePlugin("我想要一个显示待办数的卡片")
+
+        val preview = runtime.lastGenerated
+        assertTrue(preview != null, "生成成功后必须有预览")
+        preview!!
+        assertEquals("我的卡片", preview.name)
+        assertEquals("测试用", preview.description)
+        assertEquals("在首页看", preview.usage)
+        assertEquals(1, preview.cards.size)
+
+        val card = preview.cards.single()
+        assertEquals("slot.home.section", card.mountPointId)
+        assertTrue(card.visible, "首页区块是渲染了的，这张卡该算可见")
+        assertTrue(card.body.contains("项待办"), "预览里的正文必须已经求值：" + card.body)
+        assertFalse(card.body.contains("{{"), "预览里不该残留占位符：" + card.body)
+
+        runtime.shutdown()
+    }
+
 }

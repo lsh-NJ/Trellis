@@ -20,6 +20,7 @@ internal data class DslManifestJson(
     val schemaVersion: Int = 1,
     val name: String = "",
     val description: String = "",
+    val usage: String = "",
     val sdkRange: String = "*",
     val loader: String = "dsl",
     val builtin: Boolean = false,

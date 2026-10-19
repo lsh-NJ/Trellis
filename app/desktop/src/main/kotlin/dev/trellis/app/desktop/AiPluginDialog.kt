@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -129,7 +130,67 @@ fun AiPluginDialog(runtime: AppRuntime, onClose: () -> Unit) {
                 verdict?.let {
                     Text(it, style = MaterialTheme.typography.bodySmall)
                 }
+
+                runtime.lastGenerated?.let { GeneratedPreviewView(it) }
                 Spacer(Modifier.height(0.dp))
+            }
+        }
+    }
+}
+
+/**
+ * 「刚才到底生成了什么」。
+ *
+ * 这是这次改动里最要紧的一块。以前生成完只有一句「装好了」，
+ * 用户得回首页一个字一个字地找不同 —— 而且找不到的时候
+ * 根本不知道是「没生成」还是「挂在了一个界面上还不存在的位置」。
+ *
+ * 现在：卡片长什么样、挂在哪儿、**眼下看不看得见**，全摊在这儿。
+ * 数据直接读内核里的真实贡献，不是模型说了什么。
+ */
+@Composable
+private fun GeneratedPreviewView(preview: GeneratedPreview) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                preview.name + "　" + preview.pluginId,
+                style = MaterialTheme.typography.titleSmall,
+            )
+            if (preview.description.isNotBlank()) {
+                Text(preview.description, style = MaterialTheme.typography.bodySmall)
+            }
+            if (preview.usage.isNotBlank()) {
+                Text("怎么用：" + preview.usage, style = MaterialTheme.typography.bodySmall)
+            }
+
+            if (preview.cards.isEmpty()) {
+                Text(
+                    "这个插件没有往界面上放任何卡片。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            } else {
+                HorizontalDivider()
+                for (card in preview.cards) {
+                    Column(Modifier.fillMaxWidth()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "挂在：" + card.mountPointLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                            if (!card.visible) {
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    "这个位置界面上还没做，装了也看不见",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        }
+                        Text(card.title, style = MaterialTheme.typography.titleSmall)
+                        Text(card.body, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
             }
         }
     }

@@ -15,6 +15,7 @@ class AuthoredPluginTest {
         id = "ai.today",
         name = "今日待办",
         description = "一眼看到今天还剩多少事",
+        howToUse = "进应用就能看到，在统计数字下面",
         slots = listOf(
             AuthoredSlot("slot.home.section", "今天", "还有 {{ summary.dueToday }} 项"),
             AuthoredSlot("slot.home.header", "小提示", "纯文字", order = 20),

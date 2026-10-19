@@ -1,5 +1,6 @@
 package dev.trellis.ai
 
+import dev.trellis.kernel.core.ExtensionPointId
 import dev.trellis.kernel.extension.ExtensionRegistry
 import dev.trellis.kernel.extension.KernelPoints
 import dev.trellis.kernel.slot.Slots
@@ -28,10 +29,21 @@ data class CapabilityCatalog(
 
     companion object {
 
-        /** 从运行中的内核现取 —— 装了什么插件，清单就是什么。 */
-        fun of(registry: ExtensionRegistry): CapabilityCatalog {
+        /**
+         * 从运行中的内核现取。装了什么插件，数据字段清单就是什么。
+         *
+         * [renderedPoints] 是**界面上真的渲染了的**挂载点。默认全给，但真实应用
+         * 必须传实际渲染的那几个。否则模型会往看不见的地方挂卡片，
+         * 用户装完之后在界面上找不到，只能反复开关插件玩「找不同」。
+         */
+        fun of(
+            registry: ExtensionRegistry,
+            renderedPoints: Set<ExtensionPointId> = Slots.knownIds,
+        ): CapabilityCatalog {
             // Slots.point(id, label) 把人类可读的名字放在 contractName 里
-            val mounts = Slots.all.map { CatalogMountPoint(it.id.value, it.contractName) }
+            val mounts = Slots.all
+                .filter { it.id in renderedPoints }
+                .map { CatalogMountPoint(it.id.value, it.contractName) }
 
             // all() 已经把 value 取出来了，所以这里拿到的就是 DataProvider 本身
             val fields = registry.all(KernelPoints.Data).flatMap { provider ->

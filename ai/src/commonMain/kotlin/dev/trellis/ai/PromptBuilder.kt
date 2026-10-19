@@ -69,6 +69,8 @@ object PromptBuilder {
         appendLine("- id：小写字母、数字、点、横线，必须以 ai. 开头，给一个描述性的名字")
         appendLine("- name：插件名，最多 12 个字")
         appendLine("- description：一句大白话，说明这个插件干什么")
+        appendLine("- howToUse：（**必填**）告诉用户「在哪儿看、什么时候看」，最多 30 个字。")
+        appendLine("  别写「点击即可使用」这种废话，用户要的是「去首页待办上面看」。")
         appendLine("- slots：1 到 3 张卡片")
         appendLine("  - point：必须逐字匹配上面列出的挂载点 id")
         appendLine("  - title：最多 " + AuthoredPlugin.MAX_TITLE + " 个字")
@@ -87,6 +89,7 @@ object PromptBuilder {
         appendLine("4. 不要在 JSON 外面写任何文字")
         appendLine("5. 卡片正文不能承诺任何没有发生的动作")
         appendLine("6. 真的做不到就输出 {\"cannotDo\": \"...\"}，不要硬凑一张卡")
+        appendLine("7. howToUse 必须填，而且要具体到「在哪儿看」")
         appendLine()
         appendLine("# 例子")
         appendLine()
@@ -108,14 +111,14 @@ object PromptBuilder {
 
     // 例子单独拿出来：它们是**模型模仿的模板**，改的时候要格外小心。
     private const val EXAMPLE_PLUGIN =
-        """{"id": "ai.exam-countdown", "name": "考试倒计时", "description": "一眼看到距离考试还有多少天", "slots": [{"point": "slot.home.section", "title": "软考倒计时", "body": "还有 {{ summary.dueToday }} 项今天到期"}]}"""
+        """{"id": "ai.exam-countdown", "name": "考试倒计时", "description": "一眼看到距离考试还有多少天", "howToUse": "在首页看，每天打开就能看到剩余天数", "slots": [{"point": "slot.home.section", "title": "软考倒计时", "body": "还有 {{ summary.dueToday }} 项今天到期"}]}"""
 
     private const val EXAMPLE_ANSWER =
-        """{"id":"ai.today","name":"今日待办","description":"一眼看到今天还剩多少事","slots":[{"point":"slot.home.section","title":"今天","body":"还有 {{ summary.dueToday }} 项今天到期，{{ summary.overdue }} 项已经逾期"}]}"""
+        """{"id":"ai.today","name":"今日待办","description":"一眼看到今天还剩多少事","howToUse":"进应用就能看到，在统计数字下面","slots":[{"point":"slot.home.section","title":"今天","body":"还有 {{ summary.dueToday }} 项今天到期，{{ summary.overdue }} 项已经逾期"}]}"""
 
     /** 做不到时的样子：退一步，只显示现状，绝不承诺。 */
     private const val EXAMPLE_DOWNGRADE =
-        """{"id":"ai.energy-status","name":"精力复习","description":"显示今天到期和还剩多少任务","slots":[{"point":"slot.home.section","title":"今天的复习","body":"今天到期 {{ summary.dueToday }} 项，还剩 {{ summary.todo }} 项"}]}"""
+        """{"id":"ai.energy-status","name":"精力复习","description":"显示今天到期和还剩多少任务","howToUse":"在首页看，每完成一项数字会跟着变","slots":[{"point":"slot.home.section","title":"今天的复习","body":"今天到期 {{ summary.dueToday }} 项，还剩 {{ summary.todo }} 项"}]}"""
 
     private const val EXAMPLE_REFUSAL =
         """{"cannotDo":"自动提醒需要定时执行动作，而我现在只能显示卡片，做不到。"}"""
