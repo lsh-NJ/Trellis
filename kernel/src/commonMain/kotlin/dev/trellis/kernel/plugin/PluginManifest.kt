@@ -43,6 +43,14 @@ data class PluginManifest(
      * 「它长什么样、去哪儿找」。没有这句话，用户只能反复开关插件玩找不同。
      */
     val usage: String = "",
+    /**
+     * 这个插件**少做了什么**。留空表示完全按用户说的做了。
+     *
+     * 用户要「安排复习」、插件只做了「显示数量」时，这句话必须写出来。
+     * 不写的话，用户会以为这就是他要的东西，然后觉得这个插件很没用 ——
+     * 而实际上插件作者（可能是 AI）心里清楚自己退了一步，只是没说。
+     */
+    val limitation: String = "",
     val sdkRange: VersionRange = VersionRange.ANY,
     val loader: String = "builtin",
     val dependsOn: List<PluginRequirement> = emptyList(),

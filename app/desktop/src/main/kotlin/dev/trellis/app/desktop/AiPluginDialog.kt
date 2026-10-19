@@ -162,6 +162,15 @@ private fun GeneratedPreviewView(preview: GeneratedPreview) {
             if (preview.usage.isNotBlank()) {
                 Text("怎么用：" + preview.usage, style = MaterialTheme.typography.bodySmall)
             }
+            // 模型自己承认退了一步。这句话必须显眼：不摆出来，
+            // 用户就会以为这就是他要的，然后觉得这个插件很没用。
+            if (preview.limitation.isNotBlank()) {
+                Text(
+                    "注意，它退了一步：" + preview.limitation,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
 
             if (preview.cards.isEmpty()) {
                 Text(

@@ -141,4 +141,41 @@ class PluginAgentTest {
         assertTrue(system.contains("cannotDo"), "要告诉它拒绝的写法")
     }
 
+
+    /**
+     * prompt 必须教会模型区分「有价值的降级」和「原样抄一遍」。
+     *
+     * 真实踩到的例子：用户要「按精力曲线安排复习」，模型生成了
+     * 「今天到期 0 项，还剩 2 项」—— 而这两个数字界面上本来就有。
+     * 它退了一步，但退出来的东西毫无增量，而且**没说**自己退了。
+     */
+    @Test
+    fun theSystemPromptExplainsWhenADowngradeIsWorthless() = runTest {
+        val llm = ScriptedLlm(goodJson())
+        agent(llm).run("随便")
+
+        val system = llm.seenMessages.first().first { it.role == LlmRole.System }.content
+
+        assertTrue(system.contains("原样抄一遍"), "要明确说「抄一遍不如不做」")
+        assertTrue(system.contains("换一个说法"), "要给出有价值的降级长什么样")
+        assertTrue(system.contains("limitation"), "要告诉它退步必须写下来")
+        assertTrue(system.contains("不吭声"), "要点明不吭声比拒绝更糟")
+    }
+
+    /** 带 limitation 的插件也要能正常装上 —— 它是合法输出，不是错误。 */
+    @Test
+    fun aDowngradeWithALimitationInstallsFine() = runTest {
+        val downgraded = """{"id":"ai.review","name":"复习进度","description":"显示复习数量","howToUse":"在首页看","limitation":"你要的是安排复习，我只做了显示数量，没有安排。","slots":[{"point":"slot.home.section","title":"今天的复习","body":"还剩 {{ summary.todo }} 项"}]}"""
+        val installer = ScriptedInstaller(null)
+
+        val outcome = agent(ScriptedLlm(downgraded), installer).run("按我的精力曲线安排复习")
+
+        assertEquals(AgentOutcome.Installed("ai.review", 1), outcome)
+        assertEquals(1, installer.installedFiles.size)
+        // limitation 必须真的写进 manifest，否则界面上看不见
+        val manifest = installer.installedFiles.single()["manifest.json"].orEmpty()
+        assertTrue(manifest.contains("limitation"), "退步说明要落进 manifest：" + manifest)
+        assertTrue(manifest.contains("没有安排"), "内容也要带上：" + manifest)
+    }
+
 }
