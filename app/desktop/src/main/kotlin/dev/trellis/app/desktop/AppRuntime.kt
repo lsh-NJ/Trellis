@@ -103,8 +103,19 @@ class AppRuntime private constructor() {
                 catalog = catalog,
                 installer = KernelPluginInstaller(pluginsDir, kernel),
             )
-            val outcome = agent.run(request) { event ->
-                agentLog = agentLog + describe(event)
+            val outcome = try {
+                agent.run(request) { event ->
+                    agentLog = agentLog + describe(event)
+                }
+            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                throw cancel
+            } catch (t: Throwable) {
+                // 网络断了、模块缺了、解析崩了：一律变成一条日志。
+                // 让用户看见「出错了：xxx」，而不是一个
+                // `java/lang/NoClassDefFoundError` 的原始对话框。
+                val reason = t.message ?: (t::class.simpleName ?: "未知错误")
+                agentLog = agentLog + ("出错了：" + reason)
+                AgentOutcome.GaveUp(0, listOf(reason))
             }
             refresh()
             return outcome
