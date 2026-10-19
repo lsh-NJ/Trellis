@@ -131,6 +131,7 @@ class AppRuntime private constructor() {
             "自查没过，把问题喂回去：\n" + event.problems.joinToString("\n") { "  · " + it }
         is AgentEvent.InstallFailed -> "安装失败，把原因喂回去：" + event.reason
         is AgentEvent.Installed -> "装好了：" + event.pluginId
+        is AgentEvent.Refused -> "它说这个做不到：" + event.reason
     }
 
     var tasks by mutableStateOf<List<Task>>(emptyList())

@@ -93,6 +93,8 @@ fun AiPluginDialog(runtime: AppRuntime, onClose: () -> Unit) {
                                     null -> "没有配置模型 key"
                                     is AgentOutcome.Installed ->
                                         "装好了：" + outcome.pluginId + "（第 " + outcome.attempts + " 次尝试）"
+                                    is AgentOutcome.Refused ->
+                                        "它没做，因为：" + outcome.reason
                                     is AgentOutcome.GaveUp ->
                                         "放弃了。最后一轮的毛病：\n" +
                                             outcome.problems.joinToString("\n") { "· " + it }

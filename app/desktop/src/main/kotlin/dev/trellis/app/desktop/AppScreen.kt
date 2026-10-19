@@ -106,18 +106,42 @@ fun AppScreen(runtime: AppRuntime) {
 
 @Composable
 private fun TasksTab(runtime: AppRuntime, modifier: Modifier) {
-    Column(modifier) {
-        Header(runtime)
-        Spacer(Modifier.height(16.dp))
+    val scope = rememberCoroutineScope()
 
-        // 插件贡献的卡片长在这里  界面上预留的「插座」
-        SlotArea(runtime.kernel.extensions, Slots.HomeSection, refreshKey = runtime.tick)
+    // 整页一个 LazyColumn：卡片、任务、输入框都在同一条流里。
+    // 原来拆成 Column { Header, SlotArea, TaskList(自己滚) }，
+    // 后果是卡片长在**不滚动**的那一层，一多就把下面的内容挤出屏幕，
+    // 而且卡片自己既滚不动也看不全。
+    LazyColumn(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item { Header(runtime) }
 
-        Spacer(Modifier.height(16.dp))
-        TaskList(runtime, Modifier.weight(1f))
+        // 插件贡献的卡片：整个 SlotArea 作为一条，跟页面一起滚
+        item {
+            SlotArea(runtime.kernel.extensions, Slots.HomeSection, refreshKey = runtime.tick)
+        }
 
-        Spacer(Modifier.height(12.dp))
-        AddTaskRow(runtime)
+        item { Text("待办", style = MaterialTheme.typography.titleMedium) }
+
+        val tasks = runtime.tasks
+        if (tasks.isEmpty()) {
+            item {
+                Text("还没有任务，在下面加一条试试。", style = MaterialTheme.typography.bodyMedium)
+            }
+        } else {
+            items(tasks, key = { it.id.value }) { task ->
+                TaskRow(
+                    task = task,
+                    onToggle = { scope.launch { runtime.toggle(it) } },
+                    onLog = { scope.launch { runtime.logTime(it, 25) } },
+                    onDelete = { scope.launch { runtime.delete(it) } },
+                )
+            }
+        }
+
+        item { AddTaskRow(runtime) }
     }
 }
 
@@ -145,35 +169,6 @@ private fun Stat(label: String, value: String) {
     Column {
         Text(label, style = MaterialTheme.typography.labelSmall)
         Text(value, style = MaterialTheme.typography.titleMedium)
-    }
-}
-
-@Composable
-private fun TaskList(runtime: AppRuntime, modifier: Modifier) {
-    val scope = rememberCoroutineScope()
-    Column(modifier) {
-        Text("待办", style = MaterialTheme.typography.titleMedium)
-        Spacer(Modifier.height(8.dp))
-
-        val tasks = runtime.tasks
-        if (tasks.isEmpty()) {
-            Text("还没有任务，在下面加一条试试。", style = MaterialTheme.typography.bodyMedium)
-            return@Column
-        }
-
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            items(tasks, key = { it.id.value }) { task ->
-                TaskRow(
-                    task = task,
-                    onToggle = { scope.launch { runtime.toggle(it) } },
-                    onLog = { scope.launch { runtime.logTime(it, 25) } },
-                    onDelete = { scope.launch { runtime.delete(it) } },
-                )
-            }
-        }
     }
 }
 

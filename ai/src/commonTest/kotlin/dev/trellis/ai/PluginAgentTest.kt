@@ -2,6 +2,7 @@ package dev.trellis.ai
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
 
@@ -103,4 +104,41 @@ class PluginAgentTest {
         assertEquals(3, (outcome as AgentOutcome.GaveUp).attempts)
         assertTrue(outcome.problems.any { it.contains("slots 是空的") })
     }
+
+    /**
+     * 模型老实说「做不到」时必须被当成**好结局**：
+     * 不重试、不落地、不糊弄用户。
+     *
+     * 这条守的是第二次真实实验暴露的问题：
+     * 用户要「按精力曲线安排复习」，模型生成了三张写着
+     * 「按精力高低排顺序」的只读卡片 —— 一个动作都没做，读起来却像做好了。
+     */
+    @Test
+    fun aRefusalIsAValidOutcomeAndInstallsNothing() = runTest {
+        val refusal = """{"cannotDo":"自动提醒需要定时执行动作，而我现在只能显示卡片，做不到。"}"""
+        val installer = ScriptedInstaller(null)
+        val llm = ScriptedLlm(refusal)
+
+        val outcome = agent(llm, installer).run("我没完成任务时自动发通知催我")
+
+        val refused = assertIs<AgentOutcome.Refused>(outcome)
+        assertTrue(refused.reason.contains("自动提醒"), "要把理由原样带出来：" + refused.reason)
+        assertEquals(1, refused.attempts, "拒绝是一次就成的，不该重试")
+        assertEquals(1, llm.calls, "拒绝之后不该再请求模型")
+        assertTrue(installer.installedFiles.isEmpty(), "拒绝就不该落地")
+    }
+
+    /** prompt 必须把「做不到什么」写死，否则模型只会硬凑一张卡。 */
+    @Test
+    fun theSystemPromptSaysWhatItCannotDo() = runTest {
+        val llm = ScriptedLlm(goodJson())
+        agent(llm).run("随便")
+
+        val system = llm.seenMessages.first().first { it.role == LlmRole.System }.content
+        assertTrue(system.contains("你做不到什么"), "要有专门的一节")
+        assertTrue(system.contains("修改数据"), "要说清楚不能改数据")
+        assertTrue(system.contains("不能承诺任何没有发生的动作"), "要有这条硬规则")
+        assertTrue(system.contains("cannotDo"), "要告诉它拒绝的写法")
+    }
+
 }

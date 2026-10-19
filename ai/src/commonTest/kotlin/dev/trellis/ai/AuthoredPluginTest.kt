@@ -6,6 +6,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class AuthoredPluginTest {
@@ -89,4 +90,17 @@ class AuthoredPluginTest {
         assertTrue(plugin.copy(slots = emptyList()).validate(TEST_CATALOG).any { it.contains("slots 是空的") })
         assertTrue(plugin.copy(description = "").validate(TEST_CATALOG).any { it.contains("description 是空的") })
     }
+
+    /** 拒绝是合法结局：不校验 id、不校验卡片，因为它本来就不是插件。 */
+    @Test
+    fun aRefusalSkipsPluginValidationEntirely() {
+        val refusal = AuthoredPlugin(id = "", cannotDo = "这件事我做不到")
+
+        assertTrue(refusal.isRefusal)
+        assertEquals(emptyList(), refusal.validate(TEST_CATALOG), "拒绝不需要通过插件校验")
+
+        // 空白字符串不算拒绝
+        assertFalse(AuthoredPlugin(id = "ai.x", slots = emptyList(), cannotDo = "   ").isRefusal)
+    }
+
 }
