@@ -56,6 +56,11 @@ compose.desktop {
             packageVersion = "1.0.0"
             description = "计划设定与追踪"
             vendor = "Trellis"
+
+            // jlink 默认只打包「它推断需要」的模块，java.net.http 不在里面。
+            // 不加这一行：编得过、测得过，但打出来的 exe 一点「生成」就
+            // NoClassDefFoundError: java/net/http/HttpClient。
+            modules("java.net.http")
         }
     }
 }

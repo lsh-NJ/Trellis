@@ -56,7 +56,11 @@ object LlmConfigLoader {
     private fun readFile(file: File): FromFile? {
         if (!file.isFile) return null
         return runCatching {
-            val root = Json.parseToJsonElement(file.readText()).jsonObject
+            // Windows 上用记事本 / Set-Content 存出来常常带 BOM。
+            // Kotlin 的 readText 不会帮你剥掉，所以这里自己剥：
+            // 不剥的话 Json 会以为第一个字符是垃圾，整个配置静默变成「没配」。
+            val text = file.readText().removePrefix("\uFEFF")
+            val root = Json.parseToJsonElement(text).jsonObject
             FromFile(
                 endpoint = root["endpoint"]?.jsonPrimitive?.content,
                 key = root["apiKey"]?.jsonPrimitive?.content,
