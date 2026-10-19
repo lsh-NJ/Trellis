@@ -19,6 +19,7 @@ rootProject.name = "trellis"
 
 include(":kernel")
 include(":demo")
+include(":ai")
 include(":plugin-dsl")
 include(":sdk-domain")
 include(":features:plan-core")

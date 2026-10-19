@@ -3,6 +3,13 @@ package dev.trellis.app.desktop
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import dev.trellis.ai.AgentEvent
+import dev.trellis.ai.AgentOutcome
+import dev.trellis.ai.CapabilityCatalog
+import dev.trellis.ai.HttpLlmClient
+import dev.trellis.ai.LlmClient
+import dev.trellis.ai.LlmConfigLoader
+import dev.trellis.ai.PluginAgent
 import dev.trellis.domain.Plan
 import dev.trellis.domain.PlanService
 import dev.trellis.domain.PlanSummary
@@ -50,6 +57,70 @@ class AppRuntime private constructor() {
 
     lateinit var pluginsDir: File
         private set
+
+    lateinit var home: File
+        private set
+
+    // ---- AI 生成插件的状态 ----
+
+    /** 正在生成。界面据此禁用按钮，避免用户连点出三次请求。 */
+    var agentBusy by mutableStateOf(false)
+        private set
+
+    /** 生成过程的流水账，给界面实时显示：第几次请求、卡在哪、最后成没成。 */
+    var agentLog by mutableStateOf<List<String>>(emptyList())
+        private set
+
+    /**
+     * 测试用：把模型换成假的。
+     *
+     * 生产的默认实现是 [HttpLlmClient]。留这个口子是为了能端到端测整条链路
+     * （假模型 -> 真校验 -> 真装进内核 -> 界面上真的多一张卡片），
+     * 而不用发一次网络请求、也不用一个真 key。
+     */
+    internal var llmOverride: LlmClient? = null
+
+    /** 有没有配模型 key。没配时界面给配置指引，而不是让它失败。 */
+    fun llmConfigured(): Boolean = LlmConfigLoader.load(home) != null
+
+    fun llmSetupHint(): String = LlmConfigLoader.setupHint(home)
+
+    /**
+     * 一句话 -> 能装上的插件。
+     *
+     * 返回 null 表示**根本没开始**（没配 key），界面该显示配置指引。
+     */
+    suspend fun generatePlugin(request: String): AgentOutcome? {
+        val config = LlmConfigLoader.load(home) ?: return null
+
+        agentBusy = true
+        agentLog = emptyList()
+        try {
+            // 每次现取：装了什么插件，模型能用的清单就是什么
+            val catalog = CapabilityCatalog.of(kernel.extensions)
+            val agent = PluginAgent(
+                llm = llmOverride ?: HttpLlmClient(config),
+                catalog = catalog,
+                installer = KernelPluginInstaller(pluginsDir, kernel),
+            )
+            val outcome = agent.run(request) { event ->
+                agentLog = agentLog + describe(event)
+            }
+            refresh()
+            return outcome
+        } finally {
+            agentBusy = false
+        }
+    }
+
+    private fun describe(event: AgentEvent): String = when (event) {
+        is AgentEvent.RequestingModel -> "第 " + event.attempt + "/" + event.maxAttempts + " 次请求模型"
+        is AgentEvent.ModelReplied -> "模型回了 " + event.raw.length + " 个字符"
+        is AgentEvent.SelfCheckFailed ->
+            "自查没过，把问题喂回去：\n" + event.problems.joinToString("\n") { "  · " + it }
+        is AgentEvent.InstallFailed -> "安装失败，把原因喂回去：" + event.reason
+        is AgentEvent.Installed -> "装好了：" + event.pluginId
+    }
 
     var tasks by mutableStateOf<List<Task>>(emptyList())
         private set
@@ -225,6 +296,7 @@ class AppRuntime private constructor() {
             runtime.planService = plan
             runtime.storeFile = storeFile
             runtime.pluginsDir = pluginsDir
+            runtime.home = home
             runtime.wireApprovalDialog()
 
             if (plan.plans().isEmpty()) plan.createPlan("我的第一个计划")

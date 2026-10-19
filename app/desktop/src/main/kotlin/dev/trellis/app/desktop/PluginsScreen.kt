@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -50,11 +51,19 @@ import kotlinx.coroutines.launch
 fun PluginsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     val scope = rememberCoroutineScope()
     var expanded by remember { mutableStateOf(emptySet<String>()) }
+    var aiDialog by remember { mutableStateOf(false) }
+
+    // Dialog 自己开一个窗口，放在哪儿都行，所以搁在最前面
+    if (aiDialog) {
+        AiPluginDialog(runtime) { aiDialog = false }
+    }
 
     Column(modifier) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("插件", style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.weight(1f))
+            Button(onClick = { aiDialog = true }) { Text("让 AI 写一个插件") }
+            Spacer(Modifier.width(8.dp))
             TextButton(onClick = { runtime.openPluginsFolder() }) { Text("打开插件目录") }
         }
         Text(
