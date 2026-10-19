@@ -30,6 +30,13 @@ data class AuthoredPlugin(
     val id: String = "",
     val name: String = "",
     val description: String = "",
+    /**
+     * 怎么用：在哪看、什么时候看。**这句话是给用户看的**，不是给机器。
+     *
+     * 装上一个插件之后，用户并不能自动知道它长什么样、去哪儿找。
+     * 没有这句话，用户只能反复开关插件玩「找不同」。
+     */
+    val howToUse: String = "",
     val slots: List<AuthoredSlot> = emptyList(),
     /**
      * 非空表示**模型主动拒绝**：这个需求超出了「只能显示卡片」的范围。
@@ -63,6 +70,7 @@ data class AuthoredPlugin(
             put("loader", "dsl")
             if (name.isNotBlank()) put("name", name)
             if (description.isNotBlank()) put("description", description)
+            if (howToUse.isNotBlank()) put("usage", howToUse)
         },
     )
 
@@ -108,6 +116,9 @@ data class AuthoredPlugin(
         }
         if (description.isBlank()) {
             problems += "description 是空的：写一句大白话说明这个插件干什么"
+        }
+        if (howToUse.isBlank()) {
+            problems += "howToUse 是空的：写一句「在哪儿看、什么时候看」"
         }
 
         val knownPoints = catalog.mountPointIds

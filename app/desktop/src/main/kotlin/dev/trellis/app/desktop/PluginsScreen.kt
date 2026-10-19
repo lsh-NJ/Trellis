@@ -190,6 +190,13 @@ private fun PluginCard(
                     "类型",
                     if (info.manifest.required) "必需插件（不可卸载）" else "普通插件（可卸载）",
                 )
+                // 说明和用法：没有这两行，用户只能靠反复开关插件找不同
+                if (info.manifest.description.isNotBlank()) {
+                    Field("说明", info.manifest.description)
+                }
+                if (info.manifest.usage.isNotBlank()) {
+                    Field("用法", info.manifest.usage)
+                }
 
                 // ---- 权限 ----
                 //

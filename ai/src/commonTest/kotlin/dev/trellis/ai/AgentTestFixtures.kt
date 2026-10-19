@@ -37,4 +37,4 @@ val TEST_CATALOG = CapabilityCatalog(
 )
 
 fun goodJson(id: String = "ai.today"): String =
-    """{"id":"$id","name":"今日待办","description":"一眼看到今天还剩多少事","slots":[{"point":"slot.home.section","title":"今天","body":"还有 {{ summary.dueToday }} 项到期"}]}"""
+    """{"id":"$id","name":"今日待办","description":"一眼看到今天还剩多少事","howToUse":"进应用就能看到，在统计数字下面","slots":[{"point":"slot.home.section","title":"今天","body":"还有 {{ summary.dueToday }} 项到期"}]}"""

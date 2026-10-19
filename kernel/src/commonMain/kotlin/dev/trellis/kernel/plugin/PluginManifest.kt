@@ -32,6 +32,17 @@ data class PluginManifest(
     val id: PluginId,
     val version: SemVer,
     val name: String,
+    /**
+     * 一句大白话说这个插件干什么。**不参与指纹**，改它不会让插件失效。
+     */
+    val description: String = "",
+    /**
+     * 怎么用：在哪看、什么时候用。
+     *
+     * 为什么这个字段重要：一个插件装上了，用户并不能自动知道
+     * 「它长什么样、去哪儿找」。没有这句话，用户只能反复开关插件玩找不同。
+     */
+    val usage: String = "",
     val sdkRange: VersionRange = VersionRange.ANY,
     val loader: String = "builtin",
     val dependsOn: List<PluginRequirement> = emptyList(),
