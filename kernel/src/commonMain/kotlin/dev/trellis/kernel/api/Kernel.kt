@@ -29,7 +29,9 @@ import dev.trellis.kernel.storage.storageNamespaceOf
 import dev.trellis.kernel.core.SemVer
 import dev.trellis.kernel.diag.ErrorCode
 import dev.trellis.kernel.diag.KernelError
+import dev.trellis.kernel.event.EventBus
 import dev.trellis.kernel.extension.Contribution
+import dev.trellis.kernel.rule.RuleRegistrar
 import dev.trellis.kernel.extension.ExtensionRegistrar
 import dev.trellis.kernel.extension.ExtensionRegistry
 import dev.trellis.kernel.extension.KernelPoints
@@ -185,6 +187,8 @@ private class SimplePluginContext(
     private val capabilityAccess: CapabilityAccess,
     private val approvalBroker: ApprovalBroker,
     private val kvStore: KvStore,
+    private val eventBus: EventBus = dev.trellis.kernel.event.NoEventBus,
+    private val ruleRegistrar: RuleRegistrar = dev.trellis.kernel.rule.NoRules,
     private val sink: (String) -> Unit,
 ) : PluginContext {
     override val extensions: ExtensionRegistrar get() = registrar
@@ -192,6 +196,8 @@ private class SimplePluginContext(
     override val capabilities: CapabilityAccess get() = capabilityAccess
     override val approvals: ApprovalBroker get() = approvalBroker
     override val kv: KvStore get() = kvStore
+    override val events: EventBus get() = eventBus
+    override val rules: RuleRegistrar get() = ruleRegistrar
     override fun log(message: String) {
         sink(message)
     }

@@ -65,6 +65,16 @@ object KernelPoints {
      * 同一个命名空间只能有一个提供者  否则 `{{ summary.todo }}`
      * 不知道该问谁。重复的会记 K007，取排序最前的那个（确定的，不是随机的）。
      */
+    /**
+     * 原子动作。插件只能选和组合，不能发明新的。
+     * 见 [dev.trellis.kernel.action.KernelAction]。
+     */
+    val Action: ExtensionPoint<dev.trellis.kernel.action.KernelAction> = ExtensionPoint(
+        ExtensionPointId("kernel.action"),
+        Cardinality.MANY,
+        "KernelAction",
+    )
+
     val Data: ExtensionPoint<DataProvider> = ExtensionPoint(
         ExtensionPointId("kernel.data"),
         Cardinality.MANY,
