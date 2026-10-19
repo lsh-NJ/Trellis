@@ -2,6 +2,7 @@ package dev.trellis.feature.plan
 
 import dev.trellis.domain.PlanService
 import dev.trellis.kernel.extension.DataContext
+import dev.trellis.kernel.extension.DataField
 import dev.trellis.kernel.extension.DataProvider
 import dev.trellis.kernel.time.KernelClock
 
@@ -29,6 +30,16 @@ internal class PlanSummaryDataProvider(
 
     /** 排在其他提供者前面：它是核心数据，冲突时该它赢。 */
     override val order: Int = 10
+
+    override val fields: List<DataField> = listOf(
+        DataField("total", "任务总数"),
+        DataField("done", "已完成数量"),
+        DataField("doing", "进行中数量"),
+        DataField("todo", "还没完成的数量"),
+        DataField("overdue", "已经逾期还没完成的数量"),
+        DataField("dueToday", "今天到期（截至今天结束）的数量"),
+        DataField("spentMinutes", "已经投入的总分钟数"),
+    )
 
     override suspend fun resolve(path: String, context: DataContext): String? {
         val summary = plan.summary(context.nowMs, context.dayEndMs)

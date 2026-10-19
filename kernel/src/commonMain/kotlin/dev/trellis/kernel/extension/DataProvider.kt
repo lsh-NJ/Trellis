@@ -14,6 +14,16 @@ package dev.trellis.kernel.extension
 interface DataProvider : OrderedContribution {
 
     /**
+     * 我提供哪些字段，以及它们是什么意思。
+     *
+     * 这是**给人和 Agent 看的清单**：界面上的数据源浏览器、以及生成插件时的 prompt
+     * 都从这里取。不声明的话，模板里能写什么就只能靠猜。
+     *
+     * 默认空 —— 老的数据源不改也能编译。
+     */
+    val fields: List<DataField> get() = emptyList()
+
+    /**
      * 取一个值。
      *
      * 返回 null 表示「这个路径不存在」；抛异常表示「取值时出错了」。
@@ -21,6 +31,9 @@ interface DataProvider : OrderedContribution {
      */
     suspend fun resolve(path: String, context: DataContext): String?
 }
+
+/** 数据源的一个字段：路径（不含命名空间）和一句人话解释。 */
+data class DataField(val path: String, val description: String)
 
 /**
  * 求值时的「现在」和「今天」。

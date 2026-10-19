@@ -478,6 +478,11 @@ class Kernel private constructor(
             )
         }
         // 重新发现出来的东西要补进目录  启用的插件也得能在界面上显示
+        // 「装上」就等于「我要它跑」：顺手把停用标记清掉。
+        // 不这么做的话，「停用 -> 覆盖安装 -> 重启」会让它凭空消失，
+        // 而用户刚刚明明装成功了。
+        forgetDisabled(id)
+
         for (d in discoverAll(config, mutableListOf())) catalog[d.manifest.id] = d.manifest
         return installLocked(found.manifest)
     }

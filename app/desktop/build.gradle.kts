@@ -9,6 +9,7 @@ plugins {
 }
 
 dependencies {
+    implementation(project(":ai"))
     implementation(project(":kernel"))
     implementation(project(":ui-kernel"))
     implementation(project(":sdk-domain"))
