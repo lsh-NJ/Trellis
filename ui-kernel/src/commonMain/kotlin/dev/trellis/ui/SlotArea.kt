@@ -1,12 +1,14 @@
 package dev.trellis.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -14,14 +16,19 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import dev.trellis.kernel.api.ActionOutcome
+import dev.trellis.kernel.core.PluginId
 import dev.trellis.kernel.extension.ExtensionPoint
 import dev.trellis.kernel.extension.ExtensionRegistry
+import dev.trellis.kernel.slot.SlotAction
 import dev.trellis.kernel.slot.SlotContribution
 import dev.trellis.kernel.slot.TemplateSlot
 import dev.trellis.kernel.slot.TextSlot
+import kotlinx.coroutines.launch
 
 /**
  * 渲染一个挂载点上的全部贡献。对应设计文档 5.2  界面上预留的「插座」。
@@ -67,6 +74,13 @@ fun SlotArea(
      * 以后领域层能发变更通知了，这里换成那个 Flow 就行。
      */
     refreshKey: Any? = Unit,
+    /**
+     * 卡片上的按钮被按下去时走这里。
+     *
+     * 界面只管转发，**不自己判断能不能执行**  授权、审批、执行、留痕
+     * 全在内核里。少了那条路，按钮就成了绕过审批门的一扇后门。
+     */
+    onAction: (suspend (PluginId?, SlotAction) -> ActionOutcome)? = null,
 ) {
     val contributions = registry.all(point)
     if (contributions.isEmpty()) return
@@ -74,7 +88,7 @@ fun SlotArea(
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         for (contribution in contributions) {
             key(contribution.id) {
-                SlotCard(registry, contribution, refreshKey)
+                SlotCard(registry, contribution, refreshKey, onAction)
             }
         }
     }
@@ -85,6 +99,7 @@ private fun SlotCard(
     registry: ExtensionRegistry,
     contribution: SlotContribution,
     refreshKey: Any?,
+    onAction: (suspend (PluginId?, SlotAction) -> ActionOutcome)?,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -94,7 +109,7 @@ private fun SlotCard(
             when (contribution) {
                 is ComposeSlot -> contribution.content()
                 is TextSlot -> TextSlotView(contribution.title, contribution.body)
-                is TemplateSlot -> TemplateSlotView(registry, contribution, refreshKey)
+                is TemplateSlot -> TemplateSlotView(registry, contribution, refreshKey, onAction)
                 else -> Text("此卡片类型当前未接入界面", style = MaterialTheme.typography.bodySmall)
             }
         }
@@ -112,6 +127,7 @@ private fun TemplateSlotView(
     registry: ExtensionRegistry,
     slot: TemplateSlot,
     refreshKey: Any?,
+    onAction: (suspend (PluginId?, SlotAction) -> ActionOutcome)?,
 ) {
     var title by remember(slot.id) { mutableStateOf(slot.title) }
     var body by remember(slot.id) { mutableStateOf(slot.body) }
@@ -124,6 +140,54 @@ private fun TemplateSlotView(
     }
 
     TextSlotView(title, body)
+
+    if (slot.actions.isNotEmpty()) {
+        SlotButtons(slot, onAction)
+    }
+}
+
+/**
+ * 卡片下面那排按钮。
+ *
+ * 点下去之后把内核回的那句话原地显示出来  「点了没反应」是最糟的反馈，
+ * 用户会以为界面卡了，然后开始连点。
+ */
+@Composable
+private fun SlotButtons(
+    slot: TemplateSlot,
+    onAction: (suspend (PluginId?, SlotAction) -> ActionOutcome)?,
+) {
+    val scope = rememberCoroutineScope()
+    var feedback by remember(slot.id) { mutableStateOf("") }
+    var running by remember(slot.id) { mutableStateOf(false) }
+
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        for (action in slot.actions) {
+            OutlinedButton(
+                enabled = onAction != null && !running,
+                onClick = {
+                    val handler = onAction ?: return@OutlinedButton
+                    running = true
+                    feedback = ""
+                    scope.launch {
+                        feedback = try {
+                            handler(slot.owner, action).message
+                        } catch (t: Throwable) {
+                            t.message ?: "执行失败"
+                        } finally {
+                            running = false
+                        }
+                    }
+                },
+            ) {
+                Text(action.label)
+            }
+        }
+    }
+
+    if (feedback.isNotEmpty()) {
+        Text(feedback, style = MaterialTheme.typography.bodySmall)
+    }
 }
 
 @Composable

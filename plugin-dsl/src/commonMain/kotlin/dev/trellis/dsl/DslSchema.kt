@@ -58,6 +58,14 @@ internal data class DslSlotJson(
     val order: Int = 100,
     val title: String = "",
     val body: String = "",
+    /**
+     * 卡片下面这几个按钮。空 = 只读卡片。
+     *
+     * 这是声明式插件唯一能「做事」的入口，也是它和代码插件之间那道墙
+     * 唯一被允许开的洞：插件**点名**一个宿主已经定义好的动作，
+     * 而不是自己写一段逻辑。点名是可以静态检查的，代码不行。
+     */
+    val actions: List<DslActionJson> = emptyList(),
 )
 /** 一条规则：某个事件发生时，依次做这几件事。 */
 @Serializable
@@ -79,4 +87,9 @@ internal data class DslRuleJson(
 internal data class DslActionJson(
     val action: String,
     val args: Map<String, String> = emptyMap(),
+    /**
+     * 按钮上的字。规则里的动作不需要它（没人点），所以默认空。
+     * 空的时候界面拿动作名顶上。
+     */
+    val label: String = "",
 )

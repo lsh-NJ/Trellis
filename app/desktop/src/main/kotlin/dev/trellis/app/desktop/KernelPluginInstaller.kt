@@ -3,6 +3,7 @@ package dev.trellis.app.desktop
 import dev.trellis.ai.PluginInstaller
 import dev.trellis.kernel.api.InstallResult
 import dev.trellis.kernel.api.Kernel
+import dev.trellis.kernel.core.CapabilityId
 import dev.trellis.kernel.core.PluginId
 import java.io.File
 import kotlinx.serialization.json.Json
@@ -22,6 +23,32 @@ class KernelPluginInstaller(
     private val pluginsDir: File,
     private val kernel: Kernel,
 ) : PluginInstaller {
+
+    /**
+     * 哪些权限算「用户已经在这次请求里答应了」。
+     *
+     * 只有读和写：它们改的是用户自己的任务数据，看得见、可撤销、而且
+     * 每次执行仍然要过审批门。删数据、联网、读剪贴板这些不在这里 ——
+     * 那些必须由用户去插件详情里亲手点。
+     */
+    private val autoGranted = setOf("read_data", "write_data")
+
+    override suspend fun ensureGrants(id: String, capabilities: Set<String>): String? {
+        if (capabilities.isEmpty()) return null
+
+        val ids = capabilities.map { CapabilityId(it) }.toSet()
+        val auto = ids.filter { it.value in autoGranted }.toSet()
+        val manual = ids - auto
+
+        if (auto.isNotEmpty()) kernel.grants.grant(PluginId(id), auto)
+
+        if (manual.isNotEmpty()) {
+            return "这个插件要用「" + manual.map { it.value }.sorted().joinToString("、") +
+                "」权限，这类权限不能替你点头。请先装一个不要这些权限的版本，" +
+                "或者装好之后到插件详情里自己授权。"
+        }
+        return null
+    }
 
     override suspend fun install(files: Map<String, String>): String? {
         val id = pluginIdOf(files) ?: return "manifest.json 里没有合法的 id"

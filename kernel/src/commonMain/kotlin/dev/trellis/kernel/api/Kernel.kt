@@ -31,8 +31,10 @@ import dev.trellis.kernel.diag.ErrorCode
 import dev.trellis.kernel.diag.KernelError
 import dev.trellis.kernel.event.DefaultEventBus
 import dev.trellis.kernel.event.EventBus
+import dev.trellis.kernel.action.ActionArgs
 import dev.trellis.kernel.action.KernelAction
 import dev.trellis.kernel.approval.ApprovalOutcome
+import dev.trellis.kernel.rule.ActionCall
 import dev.trellis.kernel.rule.ActionGuard
 import dev.trellis.kernel.extension.Contribution
 import dev.trellis.kernel.rule.RuleDecl
@@ -282,6 +284,64 @@ class Kernel private constructor(
     val approvals: ApprovalGate get() = approvalGate
 
     val grants: GrantStore get() = config.grantStore
+
+    /**
+     * 这个插件**声明**过这项能力吗。
+     *
+     * 声明是装的时候就写进 manifest、用户看得见、也拒得掉的东西。
+     * 少了这一步检查，任何插件只要知道动作名就能调用带权限的动作 ——
+     * 做的是 manifest 里从没提过的事，而契约上它没这个权利。
+     * 审批门问的是「这一次可以吗」，这里问的是「你本来就不该有这个」。
+     *
+     * 停用的、不认识的插件一律当没声明。
+     */
+    internal fun declares(owner: PluginId, capability: CapabilityId): Boolean =
+        entries.firstOrNull { it.manifest.id == owner }
+            ?.manifest?.capabilities?.contains(capability) == true
+
+    /**
+     * 用户在界面上按了插件卡片上的一个按钮。
+     *
+     * 和规则触发的动作走同一条流水线，只有一处不同：**发起者是人**，
+     * 不是外部智能体。所以风险等级不升档（那是 [ApprovalBroker.requestAsAgent]
+     * 的事），但该走审批门的照走  「是我自己点的」不是绕过授权的理由。
+     *
+     * 返回的一句话会显示在按钮旁边，所以务必说人话。
+     */
+    suspend fun performAction(owner: PluginId, call: ActionCall): ActionOutcome {
+        val action = mutableExtensions.raw(KernelPoints.Action.id)
+            .mapNotNull { it.value as? KernelAction }
+            .firstOrNull { it.id == call.action.trim() }
+            ?: return ActionOutcome(false, "没有这个动作：" + call.action)
+
+        val capability = action.capability
+        if (capability != null) {
+            if (!declares(owner, capability)) {
+                return ActionOutcome(
+                    false,
+                    "插件 " + owner.value + " 没有声明「" + capability.value + "」权限，不能执行「" +
+                        action.id + "」",
+                )
+            }
+            val outcome = PluginApprovalBroker(owner, approvalGate).request(
+                capability,
+                "button." + action.id,
+                action.label + "：" +
+                    call.args.entries.joinToString("，") { it.key + "=" + it.value },
+            )
+            if (outcome is ApprovalOutcome.Denied) {
+                return ActionOutcome(false, "被审批门拒绝：" + outcome.reason)
+            }
+        }
+
+        return try {
+            ActionOutcome(true, action.execute(ActionArgs(call.args)))
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (t: Throwable) {
+            ActionOutcome(false, t.message ?: "执行失败")
+        }
+    }
 
     fun plugins(): List<PluginInfo> = entries.map { it.toInfo() }
 
@@ -757,6 +817,9 @@ class Kernel private constructor(
             // 规则自己也会发事件。加个深度闸：连环触发到第 4 层就停，
             // 别让一条写错的规则把应用卡死。
             var ruleDepth = 0
+            // 规则可能在**后装的**插件里，而 boot 手里的局部 map 不会跟着长。
+            // 所以这里问的是内核自己（下面一构造出来就赋上）。
+            var kernelRef: Kernel? = null
             eventBus.builtin = { event ->
                 if (ruleDepth >= MAX_RULE_DEPTH) {
                     recordInto(
@@ -772,6 +835,8 @@ class Kernel private constructor(
                     val capability = action.capability
                     if (capability == null) {
                         null
+                    } else if (kernelRef?.declares(PluginId(owner), capability) != true) {
+                        "插件 " + owner + " 没有声明「" + capability.value + "」权限，规则不能替它做这件事"
                     } else {
                         val outcome = PluginApprovalBroker(PluginId(owner), approvalGate).requestAsAgent(
                             capability,
@@ -909,6 +974,7 @@ class Kernel private constructor(
                 config, ordered, registry, finalState, allErrors, conflicts, approvalGate, catalog,
                 eventBus, ruleEngine,
             )
+            kernelRef = kernel
 
             // 启动时顺手回收过期数据。
             // 以前这个方法只在测试里被调过  回收记录写进去了，却没有任何地方读它，
@@ -1300,3 +1366,14 @@ private suspend fun discoverAll(
     }
     return discovered
 }
+
+/**
+ * 一次动作调用的结果。
+ *
+ * [message] 会被界面原样显示给用户，所以它是人话，不是错误码。
+ * 想查错误码的去看诊断页 那里才是给机器看的。
+ */
+data class ActionOutcome(
+    val ok: Boolean,
+    val message: String,
+)

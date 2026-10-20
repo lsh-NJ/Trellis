@@ -24,13 +24,13 @@ class AuthoredPluginTest {
 
     @Test
     fun expandsIntoTheTwoRealFiles() {
-        val files = plugin.toFiles()
+        val files = plugin.toFiles(TEST_CATALOG)
         assertEquals(setOf("manifest.json", "main.dsl.json"), files.keys)
     }
 
     @Test
     fun manifestCarriesTheLoaderAndVersion() {
-        val manifest = Json.parseToJsonElement(plugin.manifestJson()) as JsonObject
+        val manifest = Json.parseToJsonElement(plugin.manifestJson(TEST_CATALOG)) as JsonObject
         assertEquals("ai.today", manifest["id"]!!.jsonPrimitive.content)
         assertEquals("dsl", manifest["loader"]!!.jsonPrimitive.content)
         assertEquals("1.0.0", manifest["version"]!!.jsonPrimitive.content)

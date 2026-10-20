@@ -74,7 +74,10 @@ class RuleFlowTest {
         runtime.llmOverride = OneShotLlm(rulePlugin)
 
         val outcome = runtime.generatePlugin("完成一项就自动帮我建一条复习")
-        assertIs<AgentOutcome.Installed>(outcome)
+        assertTrue(
+            outcome is AgentOutcome.Installed,
+            "应当装好，实际：" + outcome + "；agentLog：" + runtime.agentLog.joinToString(" | "),
+        )
 
         // 造一项任务，然后把它完成 —— 这一步会广播 task.completed
         val original = runtime.planService.addTask("第 1 章 计算机组成")

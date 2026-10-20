@@ -7,6 +7,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -73,12 +74,29 @@ data class AuthoredPlugin(
      *
      * 卡片 id 由这里生成（s1、s2……），不让模型操心 —— 它对用户毫无意义。
      */
-    fun toFiles(): Map<String, String> = mapOf(
-        "manifest.json" to manifestJson(),
+    fun toFiles(catalog: CapabilityCatalog): Map<String, String> = mapOf(
+        "manifest.json" to manifestJson(catalog),
         "main.dsl.json" to entryJson(),
     )
 
-    fun manifestJson(): String = PRETTY.encodeToString(
+    /**
+     * 这个插件用到的动作需要哪些权限。
+     *
+     * 必须写进 manifest：用户要能在插件详情里看见「它要写数据」，
+     * 内核也只放行**声明过**的能力  （少这一步，规则一跑就会被拒，
+     * 而且报错会指向「没声明权限」，看起来像插件的错、其实是生成器漏了。）
+     */
+    fun capabilities(catalog: CapabilityCatalog): Set<String> {
+        val used = buildSet {
+            rules.forEach { rule -> rule.actions.forEach { add(it.action.trim()) } }
+            slots.forEach { slot -> slot.actions.forEach { add(it.action.trim()) } }
+        }
+        return catalog.actions.mapNotNull { action ->
+            action.capability?.takeIf { action.id in used }
+        }.toSortedSet()
+    }
+
+    fun manifestJson(catalog: CapabilityCatalog): String = PRETTY.encodeToString(
         JsonObject.serializer(),
         buildJsonObject {
             put("id", id)
@@ -89,6 +107,10 @@ data class AuthoredPlugin(
             if (description.isNotBlank()) put("description", description)
             if (howToUse.isNotBlank()) put("usage", howToUse)
             if (limitation.isNotBlank()) put("limitation", limitation)
+            val caps = capabilities(catalog)
+            if (caps.isNotEmpty()) {
+                putJsonArray("capabilities") { caps.forEach { add(JsonPrimitive(it)) } }
+            }
         },
     )
 
@@ -130,6 +152,21 @@ data class AuthoredPlugin(
                         put("order", slot.order)
                         if (slot.title.isNotBlank()) put("title", slot.title)
                         if (slot.body.isNotBlank()) put("body", slot.body)
+                        if (slot.actions.isNotEmpty()) {
+                            putJsonArray("actions") {
+                                slot.actions.forEach { button ->
+                                    addJsonObject {
+                                        put("action", button.action)
+                                        put("label", button.label)
+                                        if (button.args.isNotEmpty()) {
+                                            putJsonObject("args") {
+                                                button.args.forEach { (k, v) -> put(k, v) }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -212,6 +249,27 @@ data class AuthoredPlugin(
             // 模板里引用的每个字段都必须在数据源清单里。
             // 这一条挡的是「模型很自信地编了一个不存在的字段」—— 那种错误
             // 装上去之后只会显示成 --，用户根本不知道为什么。
+            if (slot.actions.size > MAX_BUTTONS) {
+                problems += "第 " + n + " 张卡片有 " + slot.actions.size +
+                    " 个按钮，最多只能有 " + MAX_BUTTONS + " 个"
+            }
+            slot.actions.forEachIndexed { buttonIndex, button ->
+                val b = buttonIndex + 1
+                if (button.action.trim().isEmpty()) {
+                    problems += "第 " + n + " 张卡片的第 " + b + " 个按钮没写 action"
+                } else if (button.action.trim() !in catalog.actionIds) {
+                    problems += "第 " + n + " 张卡片第 " + b + " 个按钮要执行的动作「" +
+                        button.action.trim() + "」内核没有。只能用这些：" +
+                        catalog.actionIds.sorted().joinToString("、")
+                }
+                if (button.label.isBlank()) {
+                    problems += "第 " + n + " 张卡片的第 " + b + " 个按钮没写 label（按钮上显示的字）"
+                } else if (button.label.length > MAX_BUTTON_LABEL) {
+                    problems += "第 " + n + " 张卡片第 " + b + " 个按钮写了 " +
+                        button.label.length + " 个字，最多 " + MAX_BUTTON_LABEL + " 个"
+                }
+            }
+
             val placeholders = Template.parse(slot.title + " " + slot.body)
             for (p in placeholders) {
                 val full = p.namespace + "." + p.path
@@ -230,6 +288,8 @@ data class AuthoredPlugin(
         const val MAX_SLOTS = 3
         const val MAX_TITLE = 20
         const val MAX_BODY = 80
+        const val MAX_BUTTONS = 2
+        const val MAX_BUTTON_LABEL = 6
 
         /**
          * `ai.` 前缀是**故意的**：所有模型生成的东西一眼可辨。
@@ -251,6 +311,14 @@ data class AuthoredSlot(
     val title: String = "",
     val body: String = "",
     val order: Int = 100,
+    /**
+     * 卡片下面最多两个按钮。
+     *
+     * 按钮不是「插件自己写的一段逻辑」，而是**点名**宿主已经定义好的原子动作
+     * （catalog.actions 里的 id）。点名可以静态检查，代码不行 ——
+     * 所以这是声明式插件唯一被允许动的那一下。
+     */
+    val actions: List<AuthoredAction> = emptyList(),
 )
 
 /** 一条规则：某个事件发生时，依次做这几件事。 */
@@ -274,4 +342,9 @@ data class AuthoredRule(
 data class AuthoredAction(
     val action: String,
     val args: Map<String, String> = emptyMap(),
+    /**
+     * 按钮上显示的字。规则里的动作不需要（没人点），留空。
+     * 卡片按钮必须写，而且很短 —— 长句子会从卡片里溢出去。
+     */
+    val label: String = "",
 )
