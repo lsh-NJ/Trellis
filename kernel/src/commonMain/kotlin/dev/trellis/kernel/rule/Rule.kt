@@ -10,6 +10,17 @@ data class ActionCall(val action: String, val args: Map<String, String> = emptyM
 /** 一条规则：某个事件发生时，依次做这几件事。 */
 data class RuleDecl(val on: String, val actions: List<ActionCall>)
 
+/**
+ * 每次执行动作之前问它一句「能不能做」。
+ *
+ * 返回 null 表示放行，返回字符串表示拒绝（原因会带回给调用方）。
+ * 把它抽成函数而不是直接塞进引擎，是为了让引擎**不认识审批门** ——
+ * 引擎只管「匹配 -> 替换 -> 顺序执行」，能不能做是别人的事。
+ */
+fun interface ActionGuard {
+    suspend fun check(owner: String, action: KernelAction, args: ActionArgs): String?
+}
+
 /** 一条规则跑完的结果，写进审计。 */
 data class RuleExecution(
     val ruleIndex: Int,
@@ -51,12 +62,16 @@ class RuleEngine(private val actions: () -> List<KernelAction>) {
      * 一条规则里有两个动作时，用户不会希望第一个失败就全没了。
      * 每个动作的结果都会返回，让调用方写日志。
      */
-    suspend fun handle(event: KernelEvent): List<RuleExecution> {
-        val matched = rulesByOwner.values.flatten().filter { it.on == event.type }
+    suspend fun handle(
+        event: KernelEvent,
+        guard: ActionGuard = ActionGuard { _, _, _ -> null },
+    ): List<RuleExecution> {
+        val matched = rulesByOwner.entries
+            .flatMap { (owner, rules) -> rules.filter { it.on == event.type }.map { owner to it } }
         if (matched.isEmpty()) return emptyList()
 
         val results = mutableListOf<RuleExecution>()
-        matched.forEachIndexed { index, rule ->
+        matched.forEachIndexed { index, (owner, rule) ->
             for (call in rule.actions) {
                 val action = findAction(call.action)
                 if (action == null) {
@@ -64,8 +79,17 @@ class RuleEngine(private val actions: () -> List<KernelAction>) {
                     continue
                 }
                 val args = call.args.mapValues { (_, value) -> substitute(value, event) }
+
+                // 护栏：动作声明了能力，就先过审批门。不过门 = 不执行。
+                val actionArgs = ActionArgs(args)
+                val refusal = guard.check(owner, action, actionArgs)
+                if (refusal != null) {
+                    results += RuleExecution(index, call.action, false, refusal)
+                    continue
+                }
+
                 results += try {
-                    RuleExecution(index, call.action, true, action.execute(ActionArgs(args)))
+                    RuleExecution(index, call.action, true, action.execute(actionArgs))
                 } catch (cancel: kotlinx.coroutines.CancellationException) {
                     throw cancel
                 } catch (t: Throwable) {

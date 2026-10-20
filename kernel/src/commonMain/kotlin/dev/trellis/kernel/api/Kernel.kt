@@ -32,6 +32,8 @@ import dev.trellis.kernel.diag.KernelError
 import dev.trellis.kernel.event.DefaultEventBus
 import dev.trellis.kernel.event.EventBus
 import dev.trellis.kernel.action.KernelAction
+import dev.trellis.kernel.approval.ApprovalOutcome
+import dev.trellis.kernel.rule.ActionGuard
 import dev.trellis.kernel.extension.Contribution
 import dev.trellis.kernel.rule.RuleDecl
 import dev.trellis.kernel.rule.RuleEngine
@@ -666,11 +668,31 @@ class Kernel private constructor(
             val eventBus = DefaultEventBus()
             // 规则引擎挂在总线上：一条事件进来，匹配的规则就地跑完
             eventBus.builtin = { event ->
-                ruleEngine.handle(event).forEach { execution ->
+                // 规则是在后台触发的，没人盯着。所以按「外部智能体发起」走：
+                // 风险等级自动升一级，并且一律要过审批门。
+                val guard = ActionGuard { owner, action, args ->
+                    val capability = action.capability
+                    if (capability == null) {
+                        null
+                    } else {
+                        val outcome = PluginApprovalBroker(PluginId(owner), approvalGate).requestAsAgent(
+                            capability,
+                            "rule." + action.id,
+                            action.label + "：" +
+                                args.all().entries.joinToString("，") { it.key + "=" + it.value },
+                        )
+                        when (outcome) {
+                            is ApprovalOutcome.Approved -> null
+                            is ApprovalOutcome.Denied -> "被审批门拒绝：" + outcome.reason
+                        }
+                    }
+                }
+
+                ruleEngine.handle(event, guard).forEach { execution ->
                     if (!execution.ok) {
                         recordInto(
                             allErrors, ErrorCode.CONTRIBUTION_REJECTED, null,
-                            "规则动作 " + execution.action + " 失败：" + execution.message,
+                            "规则动作 " + execution.action + " 未执行：" + execution.message,
                             config.clock.nowMs(), null,
                         )
                     }
