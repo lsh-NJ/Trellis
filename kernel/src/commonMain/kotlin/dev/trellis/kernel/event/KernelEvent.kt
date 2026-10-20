@@ -32,11 +32,21 @@ interface EventBus {
 
 class DefaultEventBus : EventBus {
 
+    /**
+     * 内置订阅者。
+     *
+     * 规则引擎要在启动时挂上来，而那时没有协程作用域可以 launch 一个订阅。
+     * 所以留一个同步的兜底钩子：事件发完会走它，顺序确定，不需要生命周期管理。
+     */
+    var builtin: (suspend (KernelEvent) -> Unit)? = null
+
     private val listeners = mutableMapOf<PluginId, MutableList<suspend (KernelEvent) -> Unit>>()
     private val lock = Mutex()
 
     override suspend fun emit(event: KernelEvent) {
         val snapshot = lock.withLock { listeners.values.flatten().toList() }
+        builtin?.let { runCatching { it(event) } }
+
         for (listener in snapshot) {
             try {
                 listener(event)

@@ -51,10 +51,7 @@ class RuleEngine(private val actions: () -> List<KernelAction>) {
      * 一条规则里有两个动作时，用户不会希望第一个失败就全没了。
      * 每个动作的结果都会返回，让调用方写日志。
      */
-    suspend fun handle(
-        event: KernelEvent,
-        render: suspend (String) -> String,
-    ): List<RuleExecution> {
+    suspend fun handle(event: KernelEvent): List<RuleExecution> {
         val matched = rulesByOwner.values.flatten().filter { it.on == event.type }
         if (matched.isEmpty()) return emptyList()
 
@@ -66,7 +63,7 @@ class RuleEngine(private val actions: () -> List<KernelAction>) {
                     results += RuleExecution(index, call.action, false, "没有这个动作")
                     continue
                 }
-                val args = call.args.mapValues { (_, value) -> render(value) }
+                val args = call.args.mapValues { (_, value) -> substitute(value, event) }
                 results += try {
                     RuleExecution(index, call.action, true, action.execute(ActionArgs(args)))
                 } catch (cancel: kotlinx.coroutines.CancellationException) {
@@ -77,6 +74,22 @@ class RuleEngine(private val actions: () -> List<KernelAction>) {
             }
         }
         return results
+    }
+
+    /**
+     * 把参数里的 {{ event.xxx }} 换成事件载荷。
+     *
+     * 刻意只认 `event.` 前缀：规则参数只能引用**这次事件**的内容，
+     * 不能引用存储、不能引用别的字段。少一个数据来源，就少一类出错的可能。
+     */
+    private fun substitute(value: String, event: KernelEvent): String {
+        var result = value
+        for ((key, payload) in event.payload) {
+            result = result
+                .replace("{{ event." + key + " }}", payload)
+                .replace("{{event." + key + "}}", payload)
+        }
+        return result
     }
 
     private fun findAction(id: String): KernelAction? =

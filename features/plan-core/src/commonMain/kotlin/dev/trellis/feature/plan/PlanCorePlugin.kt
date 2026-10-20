@@ -35,14 +35,26 @@ class PlanCorePlugin : Plugin {
             KernelPoints.Service.id to listOf(ContributionDecl("PlanService")),
             // 给声明式插件用的数据源，命名空间是 summary
             KernelPoints.Data.id to listOf(ContributionDecl("summary")),
+            KernelPoints.Action.id to listOf(
+                ContributionDecl("addTask"),
+                ContributionDecl("logTime"),
+                ContributionDecl("completeTask"),
+            ),
         ),
     )
 
     override suspend fun init(ctx: PluginContext) {
-        val service = KvPlanService(ctx.kv, ctx.clock) { message -> ctx.log(message) }
+        val service = KvPlanService(ctx.kv, ctx.clock, { message -> ctx.log(message) }) { event ->
+            ctx.events.emit(event)
+        }
         ctx.extensions.publish(PlanService::class, service)
 
         // 同一个 service 换个面：把统计数字暴露给声明式插件
         ctx.extensions.register(KernelPoints.Data, PlanSummaryDataProvider(service, ctx.clock))
+
+        // 三件原子动作：自动生成的插件可以选它们，但发明不出新的
+        ctx.extensions.register(KernelPoints.Action, AddTaskAction(service))
+        ctx.extensions.register(KernelPoints.Action, LogTimeAction(service))
+        ctx.extensions.register(KernelPoints.Action, CompleteTaskAction(service))
     }
 }
