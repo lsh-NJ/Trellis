@@ -41,6 +41,33 @@ object PromptBuilder {
         }
         appendLine()
 
+        appendLine("# 你能自己造字段")
+        appendLine()
+        appendLine("如果现有的数据字段不够用，你可以在 fields 里**自己算**一个：")
+        appendLine("  \"fields\": { \"rate\": \"percent(summary.done, summary.total)\" }")
+        appendLine("然后在卡片里用 {{ self.rate }} 引用它。")
+        appendLine("支持 + - * / %、比较、&& || !、三元 ?:，以及 round/floor/ceil/abs/min/max/percent。")
+        appendLine("**没有循环、没有函数定义**，别试着写程序。")
+        appendLine()
+
+        appendLine("# 你能让插件做事")
+        appendLine()
+        if (catalog.actions.isEmpty()) {
+            appendLine("（当前没有任何可调用的动作，所以不要写 rules。）")
+        } else {
+            appendLine("用户要求「做完一件事就自动做另一件事」时，写 rules。")
+            appendLine("动作只能用下面这些，**不准自己发明**：")
+            appendLine()
+            for (action in catalog.actions) {
+                appendLine("- " + action.id + "：" + action.label)
+            }
+            appendLine()
+            appendLine("参数里的 {{ event.字段 }} 会被换成触发时的事件内容。")
+            appendLine("例：\"rules\": [{\"on\": \"task.completed\", \"do\": [{\"action\": \"addTask\", " +
+                "\"args\": {\"title\": \"复习：{{ event.title }}\"}}]}]")
+        }
+        appendLine()
+
         appendLine("# 你做不到什么（读三遍）")
         appendLine()
         appendLine("你只能往界面上放卡片、显示**已经存在的数字**。你不能：")

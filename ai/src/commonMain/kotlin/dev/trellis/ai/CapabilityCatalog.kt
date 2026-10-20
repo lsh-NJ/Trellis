@@ -8,6 +8,9 @@ import dev.trellis.kernel.slot.Slots
 /** 一个挂载点：id 和一句人话。 */
 data class CatalogMountPoint(val id: String, val label: String)
 
+/** 一个可以调用的原子动作。 */
+data class CatalogAction(val id: String, val label: String)
+
 /** 一个可引用的数据字段：完整路径（如 `summary.todo`）和一句人话。 */
 data class CatalogDataField(val path: String, val description: String)
 
@@ -23,7 +26,9 @@ data class CatalogDataField(val path: String, val description: String)
 data class CapabilityCatalog(
     val mountPoints: List<CatalogMountPoint>,
     val dataFields: List<CatalogDataField>,
+    val actions: List<CatalogAction> = emptyList(),
 ) {
+    val actionIds: Set<String> get() = actions.mapTo(LinkedHashSet()) { it.id }
     val mountPointIds: Set<String> get() = mountPoints.mapTo(LinkedHashSet()) { it.id }
     val fieldPaths: Set<String> get() = dataFields.mapTo(LinkedHashSet()) { it.path }
 
@@ -50,7 +55,10 @@ data class CapabilityCatalog(
                 provider.fields.map { CatalogDataField(provider.id + "." + it.path, it.description) }
             }
 
-            return CapabilityCatalog(mounts, fields)
+            val availableActions = registry.all(KernelPoints.Action)
+                .map { CatalogAction(it.id, it.label) }
+
+            return CapabilityCatalog(mounts, fields, availableActions)
         }
     }
 }

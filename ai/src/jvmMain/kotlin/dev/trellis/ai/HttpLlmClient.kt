@@ -33,6 +33,14 @@ class HttpLlmClient(
     private val config: LlmConfig,
     private val timeoutSeconds: Long = 90,
     private val temperature: Double = 0.2,
+    /**
+     * 输出上限。
+     *
+     * 不设的话，一个话痨模型可能把 JSON 写到一半就被截断 ——
+     * 而截断的 JSON 报错长得像「模型不会写 JSON」，查起来很费劲。
+     * 一个插件最多三张卡片，2048 绰绰有余。
+     */
+    private val maxTokens: Int = 2048,
     private val client: HttpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(20))
         .build(),
@@ -45,6 +53,11 @@ class HttpLlmClient(
             put("model", config.model)
             put("temperature", temperature)
             put("stream", false)
+            // 让接口保证输出是合法 JSON。
+            // 注意：开了它还必须 (a) prompt 里出现 json 这个词，
+            // (b) 给足 max_tokens，否则会被截断成半截 JSON。
+            put("response_format", buildJsonObject { put("type", "json_object") })
+            put("max_tokens", maxTokens)
             putJsonArray("messages") {
                 for (message in messages) {
                     addJsonObject {
@@ -89,8 +102,11 @@ class HttpLlmClient(
         }
         val message = choices[0].jsonObject["message"] as? JsonObject
             ?: throw LlmException("模型返回里没有 message：" + raw.take(300))
-        return message["content"]?.jsonPrimitive?.content
+        val content = message["content"]?.jsonPrimitive?.content
             ?: throw LlmException("模型返回里没有 content：" + raw.take(300))
+        // DeepSeek 的 JSON 模式偶尔会返回空内容（官方文档承认了这一点）。
+        // 返回空串而不是抛异常：让重试循环把它当成「没给出 JSON」再问一次。
+        return content
     }
 }
 

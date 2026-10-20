@@ -129,25 +129,36 @@ internal class KvPlanService(
         task
     }
 
-    override suspend fun setStatus(id: TaskId, status: TaskStatus): Task? = writeLock.withLock {
-        val current = task(id) ?: return@withLock null
-        val updated = current.copy(
-            status = status,
-            completedAt = if (status == TaskStatus.DONE) clock.nowMs() else null,
-        )
-        write(taskKey(id), Task.serializer(), updated)
+    override suspend fun setStatus(id: TaskId, status: TaskStatus): Task? {
+        var justCompleted: Task? = null
 
-        // 只在「第一次变成完成」时广播。重复设成完成不重复发，
-        // 否则一条规则会在用户连点几下时被触发好几次。
-        if (status == TaskStatus.DONE && current.status != TaskStatus.DONE) {
+        val updated = writeLock.withLock {
+            val current = task(id) ?: return@withLock null
+            val next = current.copy(
+                status = status,
+                completedAt = if (status == TaskStatus.DONE) clock.nowMs() else null,
+            )
+            write(taskKey(id), Task.serializer(), next)
+
+            // 只在「第一次变成完成」时记下来。重复设成完成不重复广播，
+            // 否则一条规则会在用户连点几下时被触发好几次。
+            if (status == TaskStatus.DONE && current.status != TaskStatus.DONE) {
+                justCompleted = next
+            }
+            next
+        }
+
+        // **出了锁再广播**。这一点很关键：规则的动作会回头调用本对象的写方法
+        // （比如 addTask），而 writeLock 不可重入 —— 在锁里广播就是自己把自己锁死。
+        justCompleted?.let { done ->
             emit(
                 KernelEvent(
                     "task.completed",
-                    mapOf("taskId" to updated.id.value, "title" to updated.title),
+                    mapOf("taskId" to done.id.value, "title" to done.title),
                 ),
             )
         }
-        updated
+        return updated
     }
 
     override suspend fun logTime(id: TaskId, minutes: Int): Task? = writeLock.withLock {

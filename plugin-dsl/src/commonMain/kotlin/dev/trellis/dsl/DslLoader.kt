@@ -2,6 +2,8 @@ package dev.trellis.dsl
 
 import dev.trellis.kernel.expr.Expression
 import dev.trellis.kernel.expr.ExpressionException
+import dev.trellis.kernel.rule.ActionCall
+import dev.trellis.kernel.rule.RuleDecl
 import dev.trellis.kernel.extension.DataField
 import dev.trellis.kernel.extension.DerivedFieldProvider
 import dev.trellis.kernel.extension.KernelPoints
@@ -91,7 +93,7 @@ class DslLoader(
                 "DslLoader 没有发现过插件 " + manifest.id.value +
                     "；load 必须发生在 discover 之后（内核的正常流程总是如此）",
             )
-        return DslPlugin(record.manifest, record.slots, record.fields)
+        return DslPlugin(record.manifest, record.slots, record.fields, record.rules)
     }
 
     // ---------------------------------------------------------------- 解析
@@ -253,7 +255,31 @@ class DslLoader(
             )
         }
 
-        return ParsedPlugin(finalManifest, slots, fields, directory)
+        // ---- 规则：只校验形状，动作存不存在由内核在跑的时候查 ----
+        val rules = entry.rules.mapNotNull { raw ->
+            val on = raw.on.trim()
+            if (on.isEmpty()) {
+                errors += reject(pluginId, entryPath + " 里有一条规则没写 on（在什么事件发生时触发）")
+                return@mapNotNull null
+            }
+            val calls = raw.actions.mapNotNull { a ->
+                val action = a.action.trim()
+                if (action.isEmpty()) {
+                    errors += reject(pluginId, entryPath + " 的规则「" + on + "」里有一个动作没写名字")
+                    null
+                } else {
+                    ActionCall(action, a.args)
+                }
+            }
+            if (calls.isEmpty()) {
+                errors += reject(pluginId, entryPath + " 的规则「" + on + "」没有任何动作")
+                null
+            } else {
+                RuleDecl(on, calls)
+            }
+        }
+
+        return ParsedPlugin(finalManifest, slots, fields, rules, directory)
     }
 
     private fun parseVersion(
@@ -289,6 +315,7 @@ class DslLoader(
         val manifest: PluginManifest,
         val slots: List<DslSlotJson>,
         val fields: Map<String, Expression>,
+        val rules: List<RuleDecl>,
         val directory: String,
     )
 
@@ -326,11 +353,17 @@ private class DslPlugin(
     override val manifest: PluginManifest,
     private val slots: List<DslSlotJson>,
     private val fields: Map<String, Expression>,
+    private val rules: List<RuleDecl>,
 ) : Plugin {
 
     override suspend fun init(ctx: PluginContext) {
         if (fields.isNotEmpty()) {
             ctx.extensions.register(KernelPoints.Data, DerivedFields(fields))
+        }
+        ctx.log("DSL 解析结果：字段 " + fields.size + " 个，规则 " + rules.size + " 条")
+        if (rules.isNotEmpty()) {
+            // owner 由 ctx 决定，插件装不了别人的规则
+            ctx.rules.declare(rules)
         }
         for (slot in slots) {
             val point = Slots.byId(ExtensionPointId(slot.point))
