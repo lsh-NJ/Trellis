@@ -147,7 +147,7 @@ class AppRuntime private constructor() {
             val catalog = CapabilityCatalog.of(kernel.extensions, RENDERED_MOUNT_POINTS)
             // 已经装着的也告诉模型。不告诉它，它会一遍遍重造同一个东西，
             // 用户看到的是一堆名字不同、功能一样的插件。
-            val existing = kernel.catalog().map {
+            val existing = kernel.liveCatalog().map {
                 ExistingPlugin(it.id.value, it.name, it.description)
             }
             val agent = PluginAgent(

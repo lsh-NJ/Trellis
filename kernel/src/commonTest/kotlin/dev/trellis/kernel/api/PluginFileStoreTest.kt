@@ -1,9 +1,12 @@
 package dev.trellis.kernel.api
 
+import dev.trellis.kernel.core.CapabilityId
 import dev.trellis.kernel.core.PluginId
 import dev.trellis.kernel.spi.PluginFileStore
 import dev.trellis.kernel.storage.InMemoryStorageBackend
 import dev.trellis.kernel.storage.StorageBackend
+import dev.trellis.kernel.security.InMemoryManifestLedger
+import dev.trellis.kernel.security.ManifestLedger
 import dev.trellis.kernel.storage.storageNamespaceOf
 import dev.trellis.kernel.time.FakeClock
 import kotlin.test.Test
@@ -42,12 +45,13 @@ class PluginFileStoreTest {
         files: PluginFileStore,
         clock: FakeClock = FakeClock(1_000L),
         storage: StorageBackend = InMemoryStorageBackend(),
+        ledger: ManifestLedger = InMemoryManifestLedger(),
     ): Kernel {
         val a = ContribPlugin(m2Manifest("dev.a"))
         val b = ContribPlugin(m2Manifest("dev.b"))
         return Kernel.boot(
             m2Config(CatalogLoader(listOf(a, b), listOf(PluginId("dev.a"), PluginId("dev.b"))), clock)
-                .copy(storage = storage, pluginFiles = files),
+                .copy(storage = storage, pluginFiles = files, manifestLedger = ledger),
         )
     }
 
@@ -145,6 +149,71 @@ class PluginFileStoreTest {
 
         assertTrue(files.purged.isEmpty(), "没进回收站就不该动文件")
         assertTrue(storage.keys(ns, "").isNotEmpty(), "数据和插件都该原地不动")
+        kernel.shutdown()
+    }
+
+    /** 彻底删除之后，目录里也要忘干净  否则「删了还能不能重做」就成了「不能」。 */
+    @Test
+    fun purgingForgetsThePluginEntirely() = runTest {
+        val files = RecordingFileStore()
+        val kernel = bootWith(files, FakeClock(1_000L), InMemoryStorageBackend())
+        val id = PluginId("dev.b")
+
+        kernel.remove(id)
+        kernel.purgeNow(id)
+
+        assertTrue(kernel.catalog().none { it.id == id }, "彻底删除了就不该还在已安装目录里")
+        assertTrue(kernel.liveCatalog().none { it.id == id })
+        kernel.shutdown()
+    }
+
+    /** 进了回收站就不算「还装着一个」 —— 用户已经说过不要它了，别拿它拦新插件。 */
+    @Test
+    fun aBinnedPluginIsNotCountedAsInstalled() = runTest {
+        val files = RecordingFileStore()
+        val kernel = bootWith(files, FakeClock(1_000L), InMemoryStorageBackend())
+        val id = PluginId("dev.b")
+
+        kernel.remove(id)
+
+        assertTrue(kernel.liveCatalog().none { it.id == id }, "回收站里的插件不该算已安装")
+        assertTrue(kernel.catalog().any { it.id == id }, "但目录里要留着  还原还要靠它")
+        kernel.shutdown()
+    }
+
+    /** 停用只是暂时不用，它还该被算进「已安装」。 */
+    @Test
+    fun aDisabledPluginStillCountsAsInstalled() = runTest {
+        val files = RecordingFileStore()
+        val kernel = bootWith(files, FakeClock(1_000L), InMemoryStorageBackend())
+        val id = PluginId("dev.b")
+
+        kernel.disable(id)
+
+        assertTrue(kernel.liveCatalog().any { it.id == id }, "停用的插件还在，下次可能就启用了")
+        kernel.shutdown()
+    }
+
+    /**
+     * 彻底删除要连指纹和授权一起收。
+     *
+     * 留着指纹：同一个 id 重做、能力清单变了，会被判成「插件被篡改」永久拒装。
+     * 留着授权：新插件**继承上一次的批准**，用户根本没看过它这次要什么 —— 提权暗道。
+     */
+    @Test
+    fun purgingAlsoDropsTheFingerprintAndTheGrants() = runTest {
+        val files = RecordingFileStore()
+        val ledger = InMemoryManifestLedger()
+        val kernel = bootWith(files, FakeClock(1_000L), InMemoryStorageBackend(), ledger)
+        val id = PluginId("dev.b")
+        kernel.grants.grant(id, setOf(CapabilityId("write_data")))
+        assertTrue(ledger.fingerprintOf(id) != null, "装上之后应该记过指纹")
+
+        kernel.remove(id)
+        kernel.purgeNow(id)
+
+        assertEquals(null, ledger.fingerprintOf(id), "指纹要忘掉，否则重做会被判成篡改")
+        assertTrue(kernel.grants.grantedTo(id).isEmpty(), "授权要收回，否则新插件白捡权限")
         kernel.shutdown()
     }
 

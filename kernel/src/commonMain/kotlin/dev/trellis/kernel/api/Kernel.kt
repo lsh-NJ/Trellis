@@ -298,6 +298,18 @@ class Kernel private constructor(
     fun catalog(): List<PluginManifest> = catalog.values.sortedBy { it.id.value }
 
     /**
+     * 还「算数」的插件：在目录里、也没躺在回收站里。
+     *
+     * 和 [catalog] 的区别就在回收站：删除（进回收站）是用户已经说了「我不要它了」。
+     * 这时候还把它当成「已存在」去拦新插件，就是用户删了删不掉的东西。
+     * 停用**不算**丢弃  停用的插件还在目录里，也还该被算进来。
+     */
+    suspend fun liveCatalog(): List<PluginManifest> {
+        val binned = pendingPurges().keys
+        return catalog().filter { it.id !in binned }
+    }
+
+    /**
      * 激活一个「在目录里但没在运行」的插件。
      *
      * 注意语义：它**不负责把插件搬到磁盘上**  发现与搬运是 Loader 与 M6 目录扫描的活。
@@ -623,6 +635,16 @@ class Kernel private constructor(
         for (id in targets) {
             detachLocked(id)
             forgetDisabled(id)
+            // 目录里的记录也要一起忘掉。留着的话，「彻底删除」之后
+            // 生成同名插件仍会被当成「已经存在」—— 用户会觉得删了删不掉。
+            catalog.remove(id)
+            // 指纹也忘掉：同一个 id 重新生成，能力清单可能变了，
+            // 留着旧指纹会把一次正常重做判成「插件被篡改」。
+            config.manifestLedger.forget(id)
+            // 授权必须收回。留着的话，重新生成的插件会**继承上一次的批准**，
+            // 用户根本没看过它这次要什么权限 —— 那是一条提权暗道。
+            // 授权是权限不是日志，所以「除了日志都删」照样要删它。
+            config.grantStore.revokeAll(id)
             config.storage.clearNamespace(storageNamespaceOf(id))
             config.storage.delete(KERNEL_NAMESPACE, purgeKeyOf(id))
             safely("清空回收站") { config.pluginFiles.purgeTrash(id) }
