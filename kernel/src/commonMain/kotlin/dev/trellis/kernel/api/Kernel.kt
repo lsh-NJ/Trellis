@@ -661,6 +661,18 @@ class Kernel private constructor(
                 registry.raw(KernelPoints.Action.id).mapNotNull { it.value as? KernelAction }
             }
             val eventBus = DefaultEventBus()
+            // 规则引擎挂在总线上：一条事件进来，匹配的规则就地跑完
+            eventBus.builtin = { event ->
+                ruleEngine.handle(event).forEach { execution ->
+                    if (!execution.ok) {
+                        recordInto(
+                            allErrors, ErrorCode.CONTRIBUTION_REJECTED, null,
+                            "规则动作 " + execution.action + " 失败：" + execution.message,
+                            config.clock.nowMs(), null,
+                        )
+                    }
+                }
+            }
 
             val ordered = mutableListOf<PluginEntry>()
             val tampered = mutableSetOf<PluginId>()

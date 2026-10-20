@@ -1,5 +1,6 @@
 package dev.trellis.dsl
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
@@ -46,6 +47,7 @@ internal data class DslEntryJson(
      * 模板里用 {{ self.字段名 }} 引用，每个插件各有一份。
      */
     val fields: Map<String, String> = emptyMap(),
+    val rules: List<DslRuleJson> = emptyList(),
     val slots: List<DslSlotJson> = emptyList(),
 )
 
@@ -56,4 +58,18 @@ internal data class DslSlotJson(
     val order: Int = 100,
     val title: String = "",
     val body: String = "",
+)
+/** 一条规则：某个事件发生时，依次做这几件事。 */
+@Serializable
+internal data class DslRuleJson(
+    val on: String,
+    /** JSON 里叫 do，但 do 是 Kotlin 关键字，只能换个名字映射过去。 */
+    @SerialName("do") val actions: List<DslActionJson> = emptyList(),
+)
+
+/** 一次动作调用。参数值支持 {{ event.xxx }}。 */
+@Serializable
+internal data class DslActionJson(
+    val action: String,
+    val args: Map<String, String> = emptyMap(),
 )

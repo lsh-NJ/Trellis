@@ -8,6 +8,7 @@ import dev.trellis.domain.Task
 import dev.trellis.domain.TaskId
 import dev.trellis.domain.TaskQuery
 import dev.trellis.domain.TaskStatus
+import dev.trellis.kernel.event.KernelEvent
 import dev.trellis.kernel.storage.KvStore
 import dev.trellis.kernel.time.KernelClock
 import kotlinx.coroutines.sync.Mutex
@@ -39,6 +40,7 @@ internal class KvPlanService(
     private val kv: KvStore,
     private val clock: KernelClock,
     private val log: (String) -> Unit = {},
+    private val emit: suspend (KernelEvent) -> Unit = {},
 ) : PlanService {
 
     private val json = Json {
@@ -134,6 +136,17 @@ internal class KvPlanService(
             completedAt = if (status == TaskStatus.DONE) clock.nowMs() else null,
         )
         write(taskKey(id), Task.serializer(), updated)
+
+        // 只在「第一次变成完成」时广播。重复设成完成不重复发，
+        // 否则一条规则会在用户连点几下时被触发好几次。
+        if (status == TaskStatus.DONE && current.status != TaskStatus.DONE) {
+            emit(
+                KernelEvent(
+                    "task.completed",
+                    mapOf("taskId" to updated.id.value, "title" to updated.title),
+                ),
+            )
+        }
         updated
     }
 
