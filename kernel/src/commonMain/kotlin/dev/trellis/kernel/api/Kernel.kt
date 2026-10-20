@@ -524,13 +524,30 @@ class Kernel private constructor(
      * 同时记进停用清单，所以**重启之后不会自己回来**。
      */
     suspend fun remove(id: PluginId): UninstallResult = mutationLock.withLock {
-        val result = detachLocked(id)
-        if (result is UninstallResult.Uninstalled) {
-            rememberDisabled(id)
-            handleDataOnUninstall(id, purgeNow = false)
-            safely("移入回收站") { config.pluginFiles.moveToTrash(id) }
+        val manifest = catalog[id]
+        val entry = entries.firstOrNull { it.manifest.id == id }
+        if (manifest == null && entry == null) return@withLock UninstallResult.NotFound
+        if (manifest?.required == true || entry?.manifest?.required == true) {
+            return@withLock UninstallResult.Rejected(
+                KernelError(ErrorCode.MANIFEST_INVALID, id, "必需插件不可卸载", config.clock.nowMs()),
+            )
         }
-        result
+
+        // 停用的插件不在 entries 里，但文件和数据都还在磁盘上——它当然也得能删。
+        // 少了这一支，「先停用再删除」就成了死路：按钮点了没反应，用户只能以为删除坏了。
+        val removed = if (entry != null) {
+            when (val detached = detachLocked(id)) {
+                is UninstallResult.Uninstalled -> detached.removedContributions
+                else -> return@withLock detached
+            }
+        } else {
+            0
+        }
+
+        rememberDisabled(id)
+        handleDataOnUninstall(id, purgeNow = false)
+        safely("移入回收站") { config.pluginFiles.moveToTrash(id) }
+        UninstallResult.Uninstalled(removed, false)
     }
 
     /**
