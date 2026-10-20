@@ -11,6 +11,16 @@ import kotlinx.serialization.json.Json
  */
 interface PluginInstaller {
     suspend fun install(files: Map<String, String>): String?
+
+    /**
+     * 装之前先把这个插件要用的权限说清楚。返回 null 表示可以继续。
+     *
+     * 为什么装之前要单独一步：内核在 install 时会问「这些能力批不批」，
+     * 没人应答就是拒绝  而 AI 生成是一键操作，不可能中途弹一个模态框问用户。
+     * 所以规则是：**普通权限（读、写）当作这次请求的一部分直接给**，
+     * 更危险的（删数据、联网…）一律拒绝，让用户自己去插件详情里授权。
+     */
+    suspend fun ensureGrants(id: String, capabilities: Set<String>): String? = null
 }
 
 /** 循环过程中发生的事，给界面显示进度用。 */
@@ -150,7 +160,10 @@ class PluginAgent(
         val problems = authored.validate(catalog) + duplicatesOf(authored)
         if (problems.isNotEmpty()) return Attempt.Bad(problems)
 
-        val installError = installer.install(authored.toFiles())
+        val grantError = installer.ensureGrants(authored.id, authored.capabilities(catalog))
+        if (grantError != null) return Attempt.Bad(listOf(INSTALL_PREFIX + grantError))
+
+        val installError = installer.install(authored.toFiles(catalog))
         if (installError != null) return Attempt.Bad(listOf(INSTALL_PREFIX + installError))
 
         return Attempt.Ok(authored.id)

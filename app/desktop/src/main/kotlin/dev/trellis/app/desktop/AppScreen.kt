@@ -103,6 +103,15 @@ fun AppScreen(runtime: AppRuntime) {
             StatusBar(runtime)
         }
 
+        // 全局浮层：插件可以往这里挂东西（倒计时、提示条），浮在所有页面之上
+        Box(Modifier.align(Alignment.BottomCenter).padding(12.dp)) {
+            SlotArea(
+                runtime.kernel.extensions,
+                Slots.AppOverlay,
+                refreshKey = runtime.tick,
+                onAction = { owner, action -> runtime.performSlotAction(owner, action) },
+            )
+        }
     }
 }
 
@@ -118,11 +127,26 @@ private fun TasksTab(runtime: AppRuntime, modifier: Modifier) {
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        // 页面顶部的横幅（插件可能会往这里放一句「今天还剩 3 条」）
+        item {
+            SlotArea(
+                runtime.kernel.extensions,
+                Slots.HomeHeader,
+                refreshKey = runtime.tick,
+                onAction = { owner, action -> runtime.performSlotAction(owner, action) },
+            )
+        }
+
         item { Header(runtime) }
 
         // 插件贡献的卡片：整个 SlotArea 作为一条，跟页面一起滚
         item {
-            SlotArea(runtime.kernel.extensions, Slots.HomeSection, refreshKey = runtime.tick)
+            SlotArea(
+                runtime.kernel.extensions,
+                Slots.HomeSection,
+                refreshKey = runtime.tick,
+                onAction = { owner, action -> runtime.performSlotAction(owner, action) },
+            )
         }
 
         item { Text("待办", style = MaterialTheme.typography.titleMedium) }
@@ -131,6 +155,15 @@ private fun TasksTab(runtime: AppRuntime, modifier: Modifier) {
         if (tasks.isEmpty()) {
             item {
                 Text("还没有任务，在下面加一条试试。", style = MaterialTheme.typography.bodyMedium)
+            }
+            // 空白页也是插件能说话的地方：新用户第一眼看着空空的列表最没劲
+            item {
+                SlotArea(
+                    runtime.kernel.extensions,
+                    Slots.EmptyState,
+                    refreshKey = runtime.tick,
+                    onAction = { owner, action -> runtime.performSlotAction(owner, action) },
+                )
             }
         } else {
             items(tasks, key = { it.id.value }) { task ->

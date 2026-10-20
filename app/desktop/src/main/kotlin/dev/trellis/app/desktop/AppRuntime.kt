@@ -19,7 +19,9 @@ import dev.trellis.domain.TaskStatus
 import dev.trellis.dsl.DslLoader
 import dev.trellis.dsl.JvmPluginFileSystem
 import dev.trellis.feature.plan.PlanCorePlugin
+import dev.trellis.kernel.api.ActionOutcome
 import dev.trellis.kernel.api.Kernel
+import dev.trellis.kernel.slot.SlotAction
 import dev.trellis.kernel.api.KernelConfig
 import dev.trellis.kernel.api.PluginInfo
 import dev.trellis.kernel.core.ExtensionPointId
@@ -52,7 +54,12 @@ import kotlinx.coroutines.CompletableDeferred
  *
  * 现在只渲染了首页区块一个。等详情页、报表页做出来了再加。
  */
-internal val RENDERED_MOUNT_POINTS: Set<ExtensionPointId> = setOf(Slots.HomeSection.id)
+internal val RENDERED_MOUNT_POINTS: Set<ExtensionPointId> = setOf(
+    Slots.HomeHeader.id,
+    Slots.HomeSection.id,
+    Slots.EmptyState.id,
+    Slots.AppOverlay.id,
+)
 
 /** 一张卡片的预览：模板已经求值过，直接能显示。 */
 data class PreviewCard(
@@ -319,6 +326,15 @@ class AppRuntime private constructor() {
         planService.deleteTask(task.id)
         refresh()
     }
+
+    /**
+     * 卡片上的按钮被按下去时走这里。
+     *
+     * 界面只负责转发。授权、审批、执行、留痕全在内核 performAction 里 ——
+     * 如果界面自己判断「这个插件能不能干」，那按钮就成了绕过审批门的后门。
+     */
+    suspend fun performSlotAction(owner: PluginId?, action: SlotAction): ActionOutcome =
+        kernel.performAction(owner ?: PluginId("unknown"), action.call)
 
     suspend fun logTime(task: Task, minutes: Int) {
         planService.logTime(task.id, minutes)

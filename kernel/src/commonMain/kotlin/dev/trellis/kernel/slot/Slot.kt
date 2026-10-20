@@ -5,6 +5,7 @@ import dev.trellis.kernel.core.PluginId
 import dev.trellis.kernel.extension.Cardinality
 import dev.trellis.kernel.extension.ExtensionPoint
 import dev.trellis.kernel.extension.OrderedContribution
+import dev.trellis.kernel.rule.ActionCall
 
 /**
  * UI 挂载点的贡献契约。
@@ -34,6 +35,14 @@ data class TemplateSlot(
     val title: String,
     val body: String,
     /**
+     * 卡片下面那几个按钮。空 = 只读卡片（老插件都是这样，不影响它们）。
+     *
+     * 声明式插件里没有代码，所以它没法「响应点击」  它能做的只有点名一个
+     * **宿主已经定义好的原子动作**。点下去的时候，这次调用走的是和规则
+     * 完全同一条流水线：查动作 -> 过审批门 -> 执行。插件依然一行代码都没跑。
+     */
+    val actions: List<SlotAction> = emptyList(),
+    /**
      * 这张卡是谁提供的。
      *
      * 求值 `{{ self.xxx }}` 时要用它去定位**这个插件自己的**字段 ——
@@ -41,6 +50,18 @@ data class TemplateSlot(
      */
     val owner: PluginId? = null,
 ) : SlotContribution
+
+/**
+ * 卡片上的一个按钮。
+ *
+ * [label] 是给人看的字，[call] 是给内核看的动作调用。
+ * 两者分开，是因为「加一个番茄钟」和「addTask(title=番茄钟 25 分钟)」
+ * 本来就不是一回事  前者是文案，后者是意图。
+ */
+data class SlotAction(
+    val label: String,
+    val call: ActionCall,
+)
 
 /** 纯文本贡献：控制台假渲染器用。用来验证装卸逻辑，不负责好看。 */
 data class TextSlot(

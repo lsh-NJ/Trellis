@@ -163,7 +163,12 @@ class AgentFlowTest {
         val system = runtime.agentLog.joinToString("\n")
         // agentLog 里没有 prompt，所以直接验目录：界面上没渲染的位置不该出现
         assertTrue(
-            RENDERED_MOUNT_POINTS == setOf(dev.trellis.kernel.slot.Slots.HomeSection.id),
+            RENDERED_MOUNT_POINTS == setOf(
+                dev.trellis.kernel.slot.Slots.HomeHeader.id,
+                dev.trellis.kernel.slot.Slots.HomeSection.id,
+                dev.trellis.kernel.slot.Slots.EmptyState.id,
+                dev.trellis.kernel.slot.Slots.AppOverlay.id,
+            ),
             "当前界面只渲染了首页区块，这个常量必须和 AppScreen 同步",
         )
 
@@ -173,7 +178,10 @@ class AgentFlowTest {
             catalog.mountPointIds.contains("slot.detail.aside"),
             "界面没渲染 detail.aside，就不该告诉模型它能用：" + catalog.mountPointIds,
         )
-        assertTrue(catalog.mountPointIds.size == 1, "现在只渲染了一个位置：" + catalog.mountPointIds)
+        assertTrue(
+            catalog.mountPointIds.size == RENDERED_MOUNT_POINTS.size,
+            "渲染了几个位置，目录里就该有几个：" + catalog.mountPointIds,
+        )
 
         runtime.shutdown()
     }

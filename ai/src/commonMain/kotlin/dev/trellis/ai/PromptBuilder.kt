@@ -26,12 +26,12 @@ object PromptBuilder {
         appendLine("你是一个学习计划应用 Trellis 的插件作者。")
         appendLine()
         appendLine("用户会用一句大白话描述他想要的东西，你要把它变成一张（最多三张）界面卡片，")
-        appendLine("外加可选的两样：**自己算的字段** 和 **自动做事的规则**。")
+        appendLine("外加可选的几样：**自己算的字段**、**自动做事的规则**、**卡片上的按钮**。")
         appendLine()
         appendLine("至少得有一张卡片：用户得在界面上看见它，否则他不知道装上了什么。")
         appendLine()
         appendLine("这是一个**声明式插件**：你写出结构，内核照着执行。你写的东西不会变成代码，")
-        appendLine("所以没有循环、没有网络、没有文件。但「显示」「计算」「按事件做事」这三件")
+        appendLine("所以没有循环、没有网络、没有文件。但「显示」「计算」「按事件做事」「让用户按一下」这四件")
         appendLine("你是**真的**能做到的 —— 别把它们说成做不到。")
         appendLine()
 
@@ -105,6 +105,24 @@ object PromptBuilder {
             appendLine("规则是后台触发的，执行前会请用户确认一次。用户可能拒绝，")
             appendLine("所以卡片上的话别写成「一定已经做了」。")
         }
+        appendLine()
+
+        appendLine("# 你能在卡片上放按钮")
+        appendLine()
+        appendLine("卡片下面最多两个按钮，用户点一下就执行一个动作。按钮只能用上面列出的动作，")
+        appendLine("label 是按钮上显示的字，最多 " + AuthoredPlugin.MAX_BUTTON_LABEL + " 个字。")
+        appendLine()
+        appendLine("写法（这是一张完整的插件）：")
+        appendLine(EXAMPLE_BUTTON_PLUGIN)
+        appendLine()
+        appendLine("按钮**不是**「插件自己写的一段逻辑」，而是点名一个宿主已有的动作。")
+        appendLine("它同样要用户点头才执行 —— 所以别在卡片里写「按一下就一定加上了」。")
+        appendLine()
+        appendLine("**卡片上没有任务 id。** 你没法写出「把这个任务标完成」这种按钮，")
+        appendLine("因为卡片不知道用户指的是哪个任务。按钮只能做不需要指定对象的事（比如新建一条）。")
+        appendLine("做不到就是做不到，不要假装做出一个点了没用的按钮。")
+        appendLine()
+        appendLine("能不加按钮就别加：一个只会说「你好」的按钮比没有按钮更烦人。")
         appendLine()
 
         appendLine("# 你做不到什么（读三遍）")
@@ -193,6 +211,8 @@ object PromptBuilder {
         appendLine("  - title：最多 " + AuthoredPlugin.MAX_TITLE + " 个字")
         appendLine("  - body：最多 " + AuthoredPlugin.MAX_BODY + " 个字")
         appendLine("  - order：可选数字，越小越靠前，默认 100")
+        appendLine("  - actions：可选，卡片下面的按钮，最多 2 个，每个要有 label（≤" +
+            AuthoredPlugin.MAX_BUTTON_LABEL + " 字）和 action")
         appendLine("- fields：可选，自己算的字段，如 {\"rate\": \"percent(summary.done, summary.total)\"}")
         appendLine("- rules：可选，自动做事的规则，每条要有 on 和 do，可以用 when 加条件")
         appendLine()
@@ -213,6 +233,7 @@ object PromptBuilder {
         appendLine("9. 退了一步就必须写 limitation")
         appendLine("10. **能做的事不要降级** —— 先看事件和动作能不能凑出来，再考虑退一步")
         appendLine("11. **会自我触发的规则必须写 when** —— 你要新建的东西如果会触发同一个事件，一定要把它挡住")
+        appendLine("12. 按钮的 action 只能用上面列出的动作；卡片上没有任务 id，别写「完成这个任务」这种按钮")
         appendLine()
 
         appendLine("# 例子")
@@ -227,6 +248,11 @@ object PromptBuilder {
         appendLine(EXAMPLE_RULE_PLUGIN)
         appendLine("注意卡片正文说的是「规则真的会做的事」，不是在吹牛。")
         appendLine("也注意 when —— 少了它，你把那条复习任务划完，又会新长出一条复习任务，没完没了。")
+        appendLine()
+        appendLine("## 用户要「按一下就做」：给卡片加按钮")
+        appendLine("用户：我想在首页按一下就能加一个番茄钟")
+        appendLine(EXAMPLE_BUTTON_PLUGIN)
+        appendLine("注意按钮的 action 是 addTask、args 里写死了标题 —— 因为卡片不知道别的上下文。")
         appendLine()
         appendLine("## 用户要的是「做」，但你能换个说法给他价值：退一步，并且说出来")
         appendLine("用户：给一个鼓励我坚持下去的小卡片")
@@ -261,6 +287,9 @@ object PromptBuilder {
 
     private const val EXAMPLE_BAD_DOWNGRADE =
         """{"cannotDo":"按精力曲线安排复习，需要给任务排顺序、改日期，而我能做的只有新建、记时间、标完成这三个动作，改不了已有任务。只把「今天到期几项」再显示一遍，界面上本来就有，对你没有任何新信息，所以我不做。"}"""
+
+    private const val EXAMPLE_BUTTON_PLUGIN =
+        """{"id":"ai.pomodoro-button","name":"一键番茄钟","description":"在首页按一下，待办里就多一条 25 分钟的番茄钟","howToUse":"在首页那张卡片上按按钮","slots":[{"point":"slot.home.section","title":"想专注一会儿？","body":"按一下，待办里多出一条 25 分钟的番茄钟","actions":[{"label":"加一个番茄钟","action":"addTask","args":{"title":"番茄钟 25 分钟"}}]}]}"""
 
     private const val EXAMPLE_REFUSAL =
         """{"cannotDo":"「没完成任务时自动催我」需要一个定时检查，而规则只在事件发生时触发，没有「每隔多久」这种触发器；我也没有发通知的动作。做不到。"}"""

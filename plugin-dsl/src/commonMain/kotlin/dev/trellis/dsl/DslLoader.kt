@@ -22,6 +22,7 @@ import dev.trellis.kernel.plugin.PluginContext
 import dev.trellis.kernel.plugin.PluginManifest
 import dev.trellis.kernel.plugin.PluginRequirement
 import dev.trellis.kernel.slot.Slots
+import dev.trellis.kernel.slot.SlotAction
 import dev.trellis.kernel.slot.TemplateSlot
 import dev.trellis.kernel.slot.TextSlot
 import dev.trellis.kernel.spi.DiscoveredPlugin
@@ -186,6 +187,19 @@ class DslLoader(
             if (slot.order < 0) {
                 errors += reject(pluginId, where + " 的 order 不能为负（实际 " + slot.order + "）")
                 slotProblems++
+            }
+
+            // 按钮：声明式插件唯一能「做事」的入口，所以更要卡死。
+            // 没写动作名的按钮点下去只会得到一句「没有这个动作」，那还不如不装。
+            slot.actions.forEachIndexed { buttonIndex, button ->
+                if (button.action.trim().isEmpty()) {
+                    errors += reject(
+                        pluginId,
+                        where + " 的第 " + (buttonIndex + 1) +
+                            " 个按钮没写 action（按下去要执行哪个动作）",
+                    )
+                    slotProblems++
+                }
             }
 
             if (slotProblems == 0) slots += slot.copy(id = slotId, point = pointId.value)
@@ -409,8 +423,22 @@ private class DslPlugin(
             // 有占位符就产 TemplateSlot（渲染时求值），没有就产 TextSlot（静态）。
             // 区分不是为了省事：静态卡片没有「重新求值」这回事，
             // 让它永远不刷新，比每秒白跑一遍求值器更诚实。
-            val card = if (containsPlaceholder(slot.title) || containsPlaceholder(slot.body)) {
-                TemplateSlot(slot.id, slot.order, slot.title, slot.body, owner = ctx.id)
+            // 有按钮的卡片必须是 TemplateSlot  TextSlot 装不下按钮。
+            val card = if (
+                slot.actions.isNotEmpty() ||
+                containsPlaceholder(slot.title) || containsPlaceholder(slot.body)
+            ) {
+                TemplateSlot(
+                    id = slot.id,
+                    order = slot.order,
+                    title = slot.title,
+                    body = slot.body,
+                    actions = slot.actions.map {
+                        val name = it.action.trim()
+                        SlotAction(it.label.trim().ifEmpty { name }, ActionCall(name, it.args))
+                    },
+                    owner = ctx.id,
+                )
             } else {
                 TextSlot(slot.id, slot.order, slot.title, slot.body)
             }
