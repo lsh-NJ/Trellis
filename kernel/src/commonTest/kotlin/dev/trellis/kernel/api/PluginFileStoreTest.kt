@@ -4,9 +4,11 @@ import dev.trellis.kernel.core.PluginId
 import dev.trellis.kernel.spi.PluginFileStore
 import dev.trellis.kernel.storage.InMemoryStorageBackend
 import dev.trellis.kernel.storage.StorageBackend
+import dev.trellis.kernel.storage.storageNamespaceOf
 import dev.trellis.kernel.time.FakeClock
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
 
@@ -109,4 +111,41 @@ class PluginFileStoreTest {
         assertTrue(second.pendingPurges().isEmpty())
         second.shutdown()
     }
+    /** 用户不想等 7 天。点了「彻底删除」，文件和数据当场就没，回收期限也一并抹掉。 */
+    @Test
+    fun purgingByHandDoesNotWaitForTheWeek() = runTest {
+        val files = RecordingFileStore()
+        val storage = InMemoryStorageBackend()
+        val kernel = bootWith(files, FakeClock(1_000L), storage)
+        val id = PluginId("dev.b")
+        val ns = storageNamespaceOf(id)
+
+        kernel.remove(id)
+        storage.write(ns, "left-behind", "1")
+        assertTrue(files.purged.isEmpty(), "刚删还在 7 天窗口里")
+
+        assertTrue(kernel.purgeNow(id), "回收站里的插件应该能立刻清掉")
+
+        assertEquals(listOf("dev.b"), files.purged, "点彻底删除要当场动文件，不能等 7 天")
+        assertTrue(kernel.pendingPurges().isEmpty(), "清完了就不该还挂着回收期限")
+        assertTrue(storage.keys(ns, "").isEmpty(), "数据要跟着文件一起没")
+        kernel.shutdown()
+    }
+
+    /** 没删过的插件不给清  那会绕过「进回收站还能还原」这道缓冲。 */
+    @Test
+    fun purgingSomethingThatIsNotInTheBinIsRefused() = runTest {
+        val files = RecordingFileStore()
+        val storage = InMemoryStorageBackend()
+        val kernel = bootWith(files, FakeClock(1_000L), storage)
+        val ns = storageNamespaceOf(PluginId("dev.a"))
+
+        storage.write(ns, "still-in-use", "1")
+        assertFalse(kernel.purgeNow(PluginId("dev.a")), "在跑的插件不能一键清数据")
+
+        assertTrue(files.purged.isEmpty(), "没进回收站就不该动文件")
+        assertTrue(storage.keys(ns, "").isNotEmpty(), "数据和插件都该原地不动")
+        kernel.shutdown()
+    }
+
 }
