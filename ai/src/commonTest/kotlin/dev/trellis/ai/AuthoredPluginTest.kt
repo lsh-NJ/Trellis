@@ -46,6 +46,35 @@ class AuthoredPluginTest {
         assertEquals(20, slots[1].let { (it as JsonObject)["order"]!!.jsonPrimitive.content.toInt() })
     }
 
+    /**
+     * 事件名写错 = 规则永远不触发。
+     *
+     * 这是最坏的一种错：装得上、校验过、界面上一切正常，然后**什么都不发生**。
+     * 用户以为是插件没用，其实是名字差了一个字母。所以必须在生成阶段拦。
+     */
+    @Test
+    fun anUnknownEventIsRejectedWithTheListOfRealOnes() {
+        val withBadEvent = plugin.copy(
+            rules = listOf(
+                AuthoredRule("task.done", listOf(AuthoredAction("addTask", mapOf("title" to "复习")))),
+            ),
+        )
+        val problems = withBadEvent.validate(TEST_CATALOG)
+        assertTrue(problems.any { it.contains("task.done") }, "要点名模型写的那个事件")
+        assertTrue(problems.any { it.contains("task.completed") }, "要给出唯一正确的选项")
+    }
+
+    /** 名字写对了就不能拦 —— 否则模型会被无谓地打回去重试。 */
+    @Test
+    fun aRuleOnARealEventPassesSelfCheck() {
+        val withRule = plugin.copy(
+            rules = listOf(
+                AuthoredRule("task.completed", listOf(AuthoredAction("addTask", mapOf("title" to "复习：{{ event.title }}")))),
+            ),
+        )
+        assertEquals(emptyList(), withRule.validate(TEST_CATALOG))
+    }
+
     @Test
     fun aGoodPluginPassesSelfCheck() {
         assertEquals(emptyList(), plugin.validate(TEST_CATALOG))

@@ -3,6 +3,7 @@ package dev.trellis.ai
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
 
@@ -129,14 +130,36 @@ class PluginAgentTest {
     }
 
     /** prompt 必须把「做不到什么」写死，否则模型只会硬凑一张卡。 */
+    /**
+     * 提示词里的「自我描述」必须和内核真实能力一致。
+     *
+     * 真实踩到的例子：动作和规则都做完了，这里的自我描述还写着
+     * 「你只能往界面上放卡片」。结果用户说「每完成一个任务就自动加一条复习」，
+     * 模型照着说明书，把一件它**已经能做到**的事，理直气壮地拒绝了 ——
+     * 而且理由说得特别诚恳，用户完全看不出它在胡说。
+     *
+     * 说明书腐坏不会有编译错误，只能靠测试盯着。
+     */
     @Test
-    fun theSystemPromptSaysWhatItCannotDo() = runTest {
+    fun theSystemPromptAdvertisesWhatTheKernelCanActuallyDo() = runTest {
         val llm = ScriptedLlm(goodJson())
         agent(llm).run("随便")
 
         val system = llm.seenMessages.first().first { it.role == LlmRole.System }.content
+
+        // 能做到的，必须明说，而且要带真实 id（带名字不带 id 等于没带）
+        assertTrue(system.contains("task.completed"), "要列出真实事件类型")
+        assertTrue(system.contains("{{ event.title }}"), "要告诉它能从事件里取字段")
+        assertTrue(system.contains("addTask"), "要列出真实动作")
+        assertTrue(system.contains("rules"), "要告诉它能写规则")
+
+        // 过期的自我贬低必须消失
+        assertFalse(system.contains("只能往界面上放卡片"), "不能再说自己只会放卡片")
+        assertFalse(system.contains("不能做计算"), "fields 已经能算了")
+
+        // 做不到的也必须说清楚，否则它会编
         assertTrue(system.contains("你做不到什么"), "要有专门的一节")
-        assertTrue(system.contains("修改数据"), "要说清楚不能改数据")
+        assertTrue(system.contains("不能定时"), "定时是真做不到，必须说")
         assertTrue(system.contains("不能承诺任何没有发生的动作"), "要有这条硬规则")
         assertTrue(system.contains("cannotDo"), "要告诉它拒绝的写法")
     }

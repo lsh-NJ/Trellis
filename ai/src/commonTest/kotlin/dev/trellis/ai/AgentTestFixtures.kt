@@ -34,6 +34,21 @@ val TEST_CATALOG = CapabilityCatalog(
         CatalogDataField("summary.todo", "还没完成的数量"),
         CatalogDataField("summary.dueToday", "今天到期的数量"),
     ),
+    actions = listOf(
+        CatalogAction("addTask", "新建一个任务"),
+        CatalogAction("logTime", "给任务追加投入时间"),
+        CatalogAction("completeTask", "把任务标记完成"),
+    ),
+    events = listOf(
+        CatalogEvent(
+            "task.completed",
+            "完成一个任务（只在第一次完成时发一次）",
+            listOf(
+                CatalogEventField("taskId", "刚完成的任务 id"),
+                CatalogEventField("title", "刚完成的任务标题"),
+            ),
+        ),
+    ),
 )
 
 fun goodJson(id: String = "ai.today"): String =

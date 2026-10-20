@@ -159,7 +159,14 @@ data class AuthoredPlugin(
         }
         rules.forEachIndexed { index, rule ->
             val n = index + 1
-            if (rule.on.isBlank()) problems += "第 " + n + " 条规则没写 on（在什么事件发生时触发）"
+            if (rule.on.isBlank()) {
+                problems += "第 " + n + " 条规则没写 on（在什么事件发生时触发）"
+            } else if (catalog.eventIds.isEmpty()) {
+                problems += "第 " + n + " 条规则挂了事件，「当前没有任何可触发的事件」，不要写 rules"
+            } else if (rule.on !in catalog.eventIds) {
+                problems += "第 " + n + " 条规则的 on「" + rule.on + "」不是内核知道的事件。只能用：" +
+                    catalog.eventIds.sorted().joinToString("、")
+            }
             if (rule.actions.isEmpty()) problems += "第 " + n + " 条规则没有任何动作"
             for (call in rule.actions) {
                 if (call.action !in catalog.actionIds) {
