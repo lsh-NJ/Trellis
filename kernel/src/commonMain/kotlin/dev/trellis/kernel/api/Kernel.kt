@@ -237,6 +237,9 @@ class Kernel private constructor(
     /** 事件总线。领域层发，规则收。 */
     val events: EventBus get() = eventBus
 
+    /** 诊断用：当前已经登记了多少条规则。 */
+    fun declaredRuleCount(): Int = ruleEngine.ruleCount()
+
     /**
      * 不变量 I3（设计文档 4.8）：所有注册表变更必须串行。
      *

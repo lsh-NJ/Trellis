@@ -1,6 +1,9 @@
 package dev.trellis.ai
 
 import dev.trellis.kernel.extension.Template
+import dev.trellis.kernel.expr.Expression
+import dev.trellis.kernel.expr.ExpressionException
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -8,6 +11,7 @@ import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.putJsonObject
 
 /**
  * **给模型书写用的**插件形态。
@@ -43,6 +47,13 @@ data class AuthoredPlugin(
      * 退一步不是错，**不吭声地退一步**才是错：用户会以为这就是他要的。
      */
     val limitation: String = "",
+    /**
+     * 自己算出来的字段。键是字段名，值是表达式。
+     * 模板里用 {{ self.字段名 }} 引用。
+     */
+    val fields: Map<String, String> = emptyMap(),
+    /** 规则：某个事件发生时依次做几件事。 */
+    val rules: List<AuthoredRule> = emptyList(),
     val slots: List<AuthoredSlot> = emptyList(),
     /**
      * 非空表示**模型主动拒绝**：这个需求超出了「只能显示卡片」的范围。
@@ -85,6 +96,30 @@ data class AuthoredPlugin(
         JsonObject.serializer(),
         buildJsonObject {
             put("schemaVersion", SCHEMA_VERSION)
+            if (fields.isNotEmpty()) {
+                putJsonObject("fields") { fields.forEach { (k, v) -> put(k, v) } }
+            }
+            if (rules.isNotEmpty()) {
+                putJsonArray("rules") {
+                    rules.forEach { rule ->
+                        addJsonObject {
+                            put("on", rule.on)
+                            putJsonArray("do") {
+                                rule.actions.forEach { call ->
+                                    addJsonObject {
+                                        put("action", call.action)
+                                        if (call.args.isNotEmpty()) {
+                                            putJsonObject("args") {
+                                                call.args.forEach { (k, v) -> put(k, v) }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             putJsonArray("slots") {
                 slots.forEachIndexed { index, slot ->
                     addJsonObject {
@@ -114,6 +149,24 @@ data class AuthoredPlugin(
         if (!ID_PATTERN.matches(id)) {
             problems += "id「" + id + "」不合规：必须由小写字母、数字、点、横线组成，" +
                 "至少两段，且以 ai. 开头，例如 ai.exam-countdown"
+        }
+        if (fields.isNotEmpty()) {
+            try {
+                fields.forEach { (_, source) -> Expression.parse(source) }
+            } catch (t: ExpressionException) {
+                problems += "fields 里的表达式有问题：" + t.message
+            }
+        }
+        rules.forEachIndexed { index, rule ->
+            val n = index + 1
+            if (rule.on.isBlank()) problems += "第 " + n + " 条规则没写 on（在什么事件发生时触发）"
+            if (rule.actions.isEmpty()) problems += "第 " + n + " 条规则没有任何动作"
+            for (call in rule.actions) {
+                if (call.action !in catalog.actionIds) {
+                    problems += "第 " + n + " 条规则用了动作「" + call.action + "」，没有这个动作。只能用：" +
+                        catalog.actionIds.sorted().joinToString("、")
+                }
+            }
         }
         if (slots.isEmpty()) {
             problems += "slots 是空的：至少要有一张卡片"
@@ -189,4 +242,25 @@ data class AuthoredSlot(
     val title: String = "",
     val body: String = "",
     val order: Int = 100,
+)
+
+/** 一条规则：某个事件发生时，依次做这几件事。 */
+@Serializable
+data class AuthoredRule(
+    val on: String,
+    /**
+     * JSON 里叫 do。规则动作只能用宿主提供的原子动作。
+     *
+     * 踩过一次：漏了 @SerialName("do")，模型写的是 do、这里期待 actions，
+     * 而 Json 配了 ignoreUnknownKeys=true —— 于是 do 被**静默丢掉**，
+     * 规则变成「没有任何动作」，报错指向的地方和真正的原因完全不相干。
+     */
+    @SerialName("do") val actions: List<AuthoredAction> = emptyList(),
+)
+
+/** 一次动作调用。参数值支持 {{ event.xxx }}。 */
+@Serializable
+data class AuthoredAction(
+    val action: String,
+    val args: Map<String, String> = emptyMap(),
 )
