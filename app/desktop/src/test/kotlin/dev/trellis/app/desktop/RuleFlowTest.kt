@@ -4,6 +4,7 @@ import dev.trellis.ai.AgentOutcome
 import dev.trellis.ai.LlmClient
 import dev.trellis.ai.LlmMessage
 import dev.trellis.domain.TaskQuery
+import dev.trellis.kernel.approval.DefaultApprovalGate
 import dev.trellis.domain.TaskStatus
 import java.io.File
 import kotlin.test.AfterTest
@@ -65,6 +66,8 @@ class RuleFlowTest {
         )
 
         val runtime = AppRuntime.create(home)
+        // 审批策略是 ask：给一个自动点头的处理器，把审批流程本身留给它自己的测试。
+        (runtime.kernel.approvals as? DefaultApprovalGate)?.setManualHandler { true }
         runtime.llmOverride = OneShotLlm(rulePlugin)
 
         val outcome = runtime.generatePlugin("完成一项就自动帮我建一条复习")
@@ -95,6 +98,7 @@ class RuleFlowTest {
         )
 
         val runtime = AppRuntime.create(home)
+        (runtime.kernel.approvals as? DefaultApprovalGate)?.setManualHandler { true }
         runtime.llmOverride = OneShotLlm(rulePlugin)
         runtime.generatePlugin("随便")
 
@@ -109,4 +113,42 @@ class RuleFlowTest {
         assertEquals(1, reviews, "连点三下只该建一条复习任务")
         runtime.shutdown()
     }
+
+    /**
+     * 护栏：审批门拒绝时，规则动作**必须不执行**。
+     *
+     * 这一条是整条「让插件做事」路线上的安全底线。
+     * 没有它，一条自动生成的规则就能在没人看着的时候改你的数据。
+     */
+    @Test
+    fun aDeniedApprovalBlocksTheRuleAction() = runTest {
+        val home = tempHome()
+        File(home, "llm.json").writeText(
+            """{"endpoint":"http://localhost/invalid","apiKey":"sk-test","model":"fake"}""",
+        )
+
+        val runtime = AppRuntime.create(home)
+        // 审批门一律摇头
+        (runtime.kernel.approvals as? DefaultApprovalGate)?.setManualHandler { false }
+
+        runtime.llmOverride = OneShotLlm(rulePlugin)
+        assertIs<AgentOutcome.Installed>(runtime.generatePlugin("完成一项就自动建复习"))
+
+        val original = runtime.planService.addTask("第 1 章")
+        runtime.planService.setStatus(original.id, TaskStatus.DONE)
+
+        val titles = runtime.planService.tasks(TaskQuery(includeDone = true)).map { it.title }
+
+        assertTrue(
+            titles.none { it.startsWith("复习：") },
+            "审批被拒之后不该建出复习任务，实际：" + titles,
+        )
+        assertTrue(
+            runtime.kernel.errors.any { it.detail.contains("审批门拒绝") },
+            "拒绝原因要留在诊断里：" + runtime.kernel.errors.map { it.detail },
+        )
+
+        runtime.shutdown()
+    }
+
 }
