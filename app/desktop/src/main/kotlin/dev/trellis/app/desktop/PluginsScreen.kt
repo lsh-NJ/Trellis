@@ -74,8 +74,8 @@ fun PluginsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
 
         val plugins = runtime.pluginInfos
         if (plugins.isEmpty()) {
+            // 不能在这里 return：插件全删光的时候，回收站恰恰是最该看见的东西。
             Text("没有插件在跑。")
-            return@Column
         }
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -99,7 +99,10 @@ fun PluginsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
             }
 
             // 停用的插件单独列在下面  它们不加载，但用户应该能看见并启用回来
-            val disabled = runtime.disabledPlugins
+            val bin = runtime.recycleBin
+            // 删掉的插件同时被记进了停用清单（否则重启会自己回来），
+            // 但它属于回收站，不该混在「已停用」里  混着看会以为删除没生效。
+            val disabled = runtime.disabledPlugins - bin.map { it.id }.toSet()
             if (disabled.isNotEmpty()) {
                 item {
                     Spacer(Modifier.height(10.dp))
@@ -118,6 +121,47 @@ fun PluginsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                     )
                 }
             }
+
+            if (bin.isNotEmpty()) {
+                item {
+                    Spacer(Modifier.height(10.dp))
+                    Text("回收站", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "删掉的插件在这里等 7 天，到期连插件文件带数据一起清掉。期间点「还原」就全回来。",
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+                items(bin, key = { "bin-" + it.id.value }) { entry ->
+                    RecycleRow(
+                        entry = entry,
+                        onRestore = { scope.launch { runtime.enablePlugin(entry.id.value) } },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecycleRow(entry: RecycleEntry, onRestore: () -> Unit) {
+    Card(
+        Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(10.dp).background(Color(0xFFBDBDBD), CircleShape))
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(entry.name, style = MaterialTheme.typography.titleSmall)
+                Text(
+                    entry.id.value + "　还有 " + entry.daysLeft(System.currentTimeMillis()) + " 天",
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+            TextButton(onClick = onRestore) { Text("还原") }
         }
     }
 }

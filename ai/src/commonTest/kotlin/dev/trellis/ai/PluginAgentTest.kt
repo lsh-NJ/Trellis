@@ -13,7 +13,14 @@ class PluginAgentTest {
         llm: LlmClient,
         installer: PluginInstaller = ScriptedInstaller(null),
         maxAttempts: Int = 3,
-    ) = PluginAgent(llm, TEST_CATALOG, installer, maxAttempts)
+        existing: List<ExistingPlugin> = emptyList(),
+    ) = PluginAgent(
+        llm = llm,
+        catalog = TEST_CATALOG,
+        existing = existing,
+        installer = installer,
+        maxAttempts = maxAttempts,
+    )
 
     @Test
     fun installsOnTheFirstTry() = runTest {
@@ -199,6 +206,58 @@ class PluginAgentTest {
         val manifest = installer.installedFiles.single()["manifest.json"].orEmpty()
         assertTrue(manifest.contains("limitation"), "退步说明要落进 manifest：" + manifest)
         assertTrue(manifest.contains("没有安排"), "内容也要带上：" + manifest)
+    }
+
+    /**
+     * 装过的东西必须进提示词。
+     *
+     * 不告诉模型它已经做过什么，用户每要一次相似的东西就多一个重名插件 ——
+     * 这不是模型笨，是说明书少了一页。
+     */
+    @Test
+    fun thePromptListsWhatIsAlreadyInstalled() = runTest {
+        val llm = ScriptedLlm(goodJson())
+        agent(
+            llm,
+            existing = listOf(ExistingPlugin("ai.today", "今日待办", "一眼看到今天还剩多少事")),
+        ).run("再来一个看今天还剩多少的卡片")
+
+        val system = llm.seenMessages.first().first { it.role == LlmRole.System }.content
+        assertTrue(system.contains("ai.today"), "已装的 id 要在提示词里")
+        assertTrue(system.contains("今日待办"), "已装的名字要在提示词里")
+        assertTrue(system.contains("不要重造"), "要明说功能重复的不要写")
+    }
+
+    /** 名字撞了要问回去，而不是装一个同名的进来。 */
+    @Test
+    fun aRepeatedNameIsSentBackInsteadOfInstalled() = runTest {
+        val llm = ScriptedLlm(goodJson())
+        val installer = ScriptedInstaller(null)
+        val outcome = agent(
+            llm,
+            installer,
+            existing = listOf(ExistingPlugin("ai.today", "今日待办", "一眼看到今天还剩多少事")),
+        ).run("再给我一个今日待办")
+
+        assertIs<AgentOutcome.GaveUp>(outcome)
+        assertTrue(installer.installedFiles.isEmpty(), "重复的插件一个文件都不该落地")
+        val fedBack = llm.seenMessages.last().last { it.role == LlmRole.User }.content
+        assertTrue(fedBack.contains("已经有一个叫"), "喂回去的话要点名是哪个名字撞了：" + fedBack)
+    }
+
+    /** 换个名字就该放行  别让「重名」变成「永远装不上」。 */
+    @Test
+    fun renamingLetsItThrough() = runTest {
+        val renamed = goodJson("ai.today2").replace("\"今日待办\"", "\"今日概览\"")
+        val installer = ScriptedInstaller(null)
+        val outcome = agent(
+            ScriptedLlm(goodJson(), renamed),
+            installer,
+            existing = listOf(ExistingPlugin("ai.today", "今日待办", "一眼看到今天还剩多少事")),
+        ).run("再给我一个今日待办")
+
+        assertEquals(AgentOutcome.Installed("ai.today2", 2), outcome)
+        assertEquals(1, installer.installedFiles.size)
     }
 
 }

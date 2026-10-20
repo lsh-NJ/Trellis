@@ -56,6 +56,8 @@ import dev.trellis.kernel.registry.DependencyResolver
 import dev.trellis.kernel.spi.DiscoveredPlugin
 import dev.trellis.kernel.spi.Platform
 import dev.trellis.kernel.spi.PluginDiscovery
+import dev.trellis.kernel.spi.PluginFileStore
+import dev.trellis.kernel.spi.NoopPluginFileStore
 import dev.trellis.kernel.spi.PluginLoader
 import dev.trellis.kernel.time.KernelClock
 import dev.trellis.kernel.time.SystemClock
@@ -133,6 +135,14 @@ val clock: KernelClock = SystemClock,
 
     /** 存储后端。默认内存实现；真实持久化落地时换一个实现即可。 */
     val storage: StorageBackend = InMemoryStorageBackend(),
+
+    /**
+     * 插件文件怎么处置（移入回收站 / 搬回来 / 真删）。
+     *
+     * 内核自己不碰文件系统，这个端口交给平台层实现。不提供时什么都不做
+     * 但那样「删除」就只是从运行列表里摘掉，插件目录原样留着。
+     */
+    val pluginFiles: PluginFileStore = NoopPluginFileStore,
 
     /** 见设计文档 6.3 配额表的存储部分。 */
     val storageQuota: StorageQuota = StorageQuota(),
@@ -436,14 +446,17 @@ class Kernel private constructor(
      *  - 停用 = 我暂时不用（数据原地不动，随时 `enable()` 回来）
      *  - 删除 = 我不要了（7 天后数据清掉，这期间还能 `enable()` 反悔）
      *
-     * 插件文件本身现在还没动  移入回收站需要文件操作，是另一块。
-     * 但因为它同时被记进了停用清单，**重启之后不会自己回来**。
+     * 插件文件移进回收站（`<plugins>/.trash/<id>/`），7 天后连数据一起清。
+     * 这期间 [enable] 一次就全回来  只还数据不还文件，那不叫还原。
+     *
+     * 同时记进停用清单，所以**重启之后不会自己回来**。
      */
     suspend fun remove(id: PluginId): UninstallResult = mutationLock.withLock {
         val result = detachLocked(id)
         if (result is UninstallResult.Uninstalled) {
             rememberDisabled(id)
             handleDataOnUninstall(id, purgeNow = false)
+            safely("移入回收站") { config.pluginFiles.moveToTrash(id) }
         }
         result
     }
@@ -457,6 +470,8 @@ class Kernel private constructor(
     suspend fun enable(id: PluginId): InstallResult = mutationLock.withLock {
         forgetDisabled(id)
         config.storage.delete(KERNEL_NAMESPACE, purgeKeyOf(id))
+        // 先搬回来再装：装是按 id 重新扫描目录，文件还在回收站里就扫不到。
+        safely("从回收站还原") { config.pluginFiles.restoreFromTrash(id) }
         installLockedById(id)
     }
 
@@ -584,6 +599,7 @@ class Kernel private constructor(
         for (id in expired) {
             config.storage.clearNamespace(storageNamespaceOf(id))
             config.storage.delete(KERNEL_NAMESPACE, purgeKeyOf(id))
+            safely("清空回收站") { config.pluginFiles.purgeTrash(id) }
         }
         expired
     }
@@ -596,6 +612,29 @@ class Kernel private constructor(
      */
     suspend fun dataNamespaces(): List<String> =
         config.storage.namespaces().filterNot { it == KERNEL_NAMESPACE }
+
+    /**
+     * 文件操作失败不该让整个「删除」失败。
+     *
+     * 内存里的注册表已经摘干净了，磁盘上最多多留一个目录  那是可恢复的。
+     * 但也不许静默：诊断面板要能看见，否则「删了还在」只能靠用户自己发现。
+     */
+    private suspend fun safely(what: String, block: suspend () -> Unit) {
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            errorSink.add(
+                KernelError(
+                    ErrorCode.FILE_OPERATION_FAILED,
+                    null,
+                    what + "失败：" + (t.message ?: t.toString()),
+                    config.clock.nowMs(),
+                ),
+            )
+        }
+    }
 
     private suspend fun handleDataOnUninstall(id: PluginId, purgeNow: Boolean): Boolean =
         if (purgeNow) {

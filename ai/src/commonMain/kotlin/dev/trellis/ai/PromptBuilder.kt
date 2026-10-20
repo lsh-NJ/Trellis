@@ -19,7 +19,10 @@ package dev.trellis.ai
  */
 object PromptBuilder {
 
-    fun system(catalog: CapabilityCatalog): String = buildString {
+    fun system(
+        catalog: CapabilityCatalog,
+        existing: List<ExistingPlugin> = emptyList(),
+    ): String = buildString {
         appendLine("你是一个学习计划应用 Trellis 的插件作者。")
         appendLine()
         appendLine("用户会用一句大白话描述他想要的东西，你要把它变成一张（最多三张）界面卡片，")
@@ -146,6 +149,27 @@ object PromptBuilder {
         appendLine("用户会以为这就是他要的，然后觉得你很没用，却根本不知道你已经退了一步。")
         appendLine()
         appendLine("宁可说「做不到」，也不要给一个不吭声的替代品。")
+        appendLine()
+
+        appendLine("# 已经装着什么（不要重造）")
+        appendLine()
+        if (existing.isEmpty()) {
+            appendLine("目前一个插件都没有。")
+        } else {
+            appendLine("下面这些已经装好了。用户提要求时可能忘了自己装过：")
+            appendLine()
+            for (p in existing) {
+                appendLine("- " + p.id + "　" + p.name + "：" + p.description)
+            }
+            appendLine()
+            appendLine("**功能重复的不要写。** 用户已经有「今天还剩多少事」了，再做一个")
+            appendLine("显示同样数字的卡片，只是换了位置和措辞，那是垃圾。")
+            appendLine()
+            appendLine("确实重复时改用 cannotDo 拒绝，把话问回去：说明已经有的是哪个、它做到了什么、")
+            appendLine("你想要的是不是它没做到的那部分。让用户自己决定要不要先删掉旧的。")
+            appendLine("只有**确实重复**才这样。只是有点像、但能多给出一样它给不了的东西，")
+            appendLine("就当新插件做，并且在 description 里说清区别。")
+        }
         appendLine()
 
         appendLine("# 输出什么")
