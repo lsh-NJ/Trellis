@@ -981,6 +981,7 @@ private suspend fun runLifecycle(
             classify(loaded.exceptionOrNull(), ErrorCode.INIT_TIMEOUT, ErrorCode.PLUGIN_LOAD_FAILED),
             "加载失败：" + loaded.exceptionOrNull()?.message,
         )
+        abandon(registry, ruleEngine, id)
         return false
     }
     entry.instance = instance
@@ -994,6 +995,7 @@ private suspend fun runLifecycle(
             classify(initFailure.exceptionOrNull(), ErrorCode.INIT_TIMEOUT, ErrorCode.PLUGIN_INIT_FAILED),
             "init() 失败：" + initFailure.exceptionOrNull()?.message,
         )
+        abandon(registry, ruleEngine, id)
         return false
     }
     entry.transitionTo(PluginState.INITIALIZED)
@@ -1005,6 +1007,7 @@ private suspend fun runLifecycle(
             classify(startFailure.exceptionOrNull(), ErrorCode.INIT_TIMEOUT, ErrorCode.PLUGIN_START_FAILED),
             "start() 失败：" + startFailure.exceptionOrNull()?.message,
         )
+        abandon(registry, ruleEngine, id)
         return false
     }
     entry.transitionTo(PluginState.ACTIVE)
@@ -1206,6 +1209,18 @@ private fun purgeKeyOf(id: PluginId): String = PURGE_KEY_PREFIX + id.value
 
 private fun describeAll(capabilities: Collection<CapabilityId>): String =
     capabilities.sortedBy { it.value }.joinToString { Capabilities.describe(it) + "(" + it.value + ")" }
+
+/**
+ * 插件在装载途中死掉时，把它**已经**登记过的东西全部收回。
+ *
+ * 不收的话界面上会留下一张没有主人的卡片：它还在渲染，
+ * 但插件已经不在列表里，「停用」也就清不掉它 —— 清理是按插件 id 走的，
+ * 而它压根没进得去。注册到一半再自杀，是最刁钻的一种坏法。
+ */
+private fun abandon(registry: MutableExtensionRegistry, rules: RuleEngine, id: PluginId) {
+    registry.removeOwner(id)
+    rules.removeOwner(id.value)
+}
 
 private fun failPlugin(
     entry: PluginEntry,
