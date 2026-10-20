@@ -3,12 +3,26 @@ package dev.trellis.kernel.rule
 import dev.trellis.kernel.action.ActionArgs
 import dev.trellis.kernel.action.KernelAction
 import dev.trellis.kernel.event.KernelEvent
+import dev.trellis.kernel.expr.ExprValue
+import dev.trellis.kernel.expr.Expression
+import dev.trellis.kernel.expr.ExpressionException
+import dev.trellis.kernel.expr.isTrue
 
 /** 一次动作调用：用哪个动作、填什么参数。参数值支持 {{ event.xxx }}。 */
 data class ActionCall(val action: String, val args: Map<String, String> = emptyMap())
 
-/** 一条规则：某个事件发生时，依次做这几件事。 */
-data class RuleDecl(val on: String, val actions: List<ActionCall>)
+/**
+ * 一条规则：某个事件发生时，**如果 [condition] 成立**，依次做这几件事。
+ *
+ * 为什么要条件：规则自己也会发事件，很容易套娃。
+ * 比如「完成一个任务 -> 加一条复习任务」，完成那条复习任务又会生成
+ * 「复习：复习：…」，子子孙孙没有穷尽。条件就是用来挡这个的。
+ */
+data class RuleDecl(
+    val on: String,
+    val actions: List<ActionCall>,
+    val condition: String? = null,
+)
 
 /**
  * 每次执行动作之前问它一句「能不能做」。
@@ -72,6 +86,8 @@ class RuleEngine(private val actions: () -> List<KernelAction>) {
 
         val results = mutableListOf<RuleExecution>()
         matched.forEachIndexed { index, (owner, rule) ->
+            // 条件不成立就跳过。这是**正常**情况，不是失败，所以不记诊断。
+            if (!conditionHolds(rule.condition, event)) return@forEachIndexed
             for (call in rule.actions) {
                 val action = findAction(call.action)
                 if (action == null) {
@@ -118,6 +134,27 @@ class RuleEngine(private val actions: () -> List<KernelAction>) {
 
     private fun findAction(id: String): KernelAction? =
         actions().firstOrNull { it.id == id }
+
+    /**
+     * 规则的条件成不成立。
+     *
+     * 只认 `event.xxx`，和参数占位符一样的限制：少一个数据来源，就少一类出错。
+     * 算不出来（表达式写错、字段没有）一律按**不成立**处理 ——
+     * 宁可少做一件事，也不要莫名其妙地改用户数据。
+     */
+    private fun conditionHolds(condition: String?, event: KernelEvent): Boolean {
+        if (condition.isNullOrBlank()) return true
+        val expression = try {
+            Expression.parse(condition)
+        } catch (t: ExpressionException) {
+            return false
+        }
+        val values = expression.references.associateWith { reference ->
+            val key = reference.removePrefix(CONDITION_PREFIX)
+            event.payload[key]?.let { ExprValue.Text(it) } ?: ExprValue.Absent
+        }
+        return expression.evaluate(values).isTrue()
+    }
 }
 
 /**
@@ -134,3 +171,6 @@ interface RuleRegistrar {
 object NoRules : RuleRegistrar {
     override fun declare(rules: List<RuleDecl>) = Unit
 }
+
+/** 条件的引用前缀。和参数占位符同一个，条件也只能看这次事件。 */
+private const val CONDITION_PREFIX = "event."

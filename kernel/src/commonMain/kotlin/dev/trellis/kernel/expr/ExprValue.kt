@@ -24,6 +24,19 @@ sealed interface ExprValue {
     data object Absent : ExprValue
 }
 
+/**
+ * 真值判断。
+ *
+ * 只有明确的假才算假：`false`、`0`、空串、`"false"`、`"0"`，以及算不出来的 [ExprValue.Absent]。
+ * 拿不准的时候偏向「假」—— 规则的条件算不准，就不该执行。
+ */
+fun ExprValue.isTrue(): Boolean = when (this) {
+    is ExprValue.Flag -> value
+    is ExprValue.Num -> value != 0.0
+    is ExprValue.Text -> value.isNotEmpty() && value != "false" && value != "0"
+    ExprValue.Absent -> false
+}
+
 /** 把值变成能显示的文字。整数不带小数点，小数最多两位并去掉末尾的 0。 */
 fun ExprValue.render(): String = when (this) {
     is ExprValue.Num -> renderNumber(value)

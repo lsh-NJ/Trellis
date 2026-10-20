@@ -88,6 +88,17 @@ object PromptBuilder {
             appendLine("    \"args\": {\"title\": \"复习：{{ event.title }}\"}}]}]")
             appendLine()
             appendLine("args 里的 {{ event.字段 }} 会换成触发那一刻的真实内容。")
+            appendLine()
+            appendLine("**规则可以带一个 when 条件**，不成立就不执行。条件里只能引用 event.字段，")
+            appendLine("能用 == != < > && || !，以及 startsWith / endsWith / contains（字符串判断）。")
+            appendLine()
+            appendLine("有一种情况**必须**写 when：你要做的这件事，本身又会触发同一个事件。")
+            appendLine("真实踩过的坑 —— 用户说「每完成一个任务就加一条复习任务」，规则写成")
+            appendLine("  on: task.completed -> addTask「复习：{{ event.title }}」")
+            appendLine("用户完成「复习：写完实验报告」，又长出「复习：复习：写完实验报告」，")
+            appendLine("再完成又长出「复习：复习：复习：…」，永远停不下来。")
+            appendLine("正确写法是把**你自己造出来的那种**挡在外面：")
+            appendLine("  \"when\": \"!startsWith(event.title, '复习：')\"")
             appendLine("规则是后台触发的，执行前会请用户确认一次。用户可能拒绝，")
             appendLine("所以卡片上的话别写成「一定已经做了」。")
         }
@@ -159,7 +170,7 @@ object PromptBuilder {
         appendLine("  - body：最多 " + AuthoredPlugin.MAX_BODY + " 个字")
         appendLine("  - order：可选数字，越小越靠前，默认 100")
         appendLine("- fields：可选，自己算的字段，如 {\"rate\": \"percent(summary.done, summary.total)\"}")
-        appendLine("- rules：可选，自动做事的规则，每条要有 on 和 do")
+        appendLine("- rules：可选，自动做事的规则，每条要有 on 和 do，可以用 when 加条件")
         appendLine()
         appendLine("做不到的时候长这样（**只有这一个字段**）：")
         appendLine(EXAMPLE_REFUSAL)
@@ -177,6 +188,7 @@ object PromptBuilder {
         appendLine("8. howToUse 必须填，而且要具体到「在哪儿看」")
         appendLine("9. 退了一步就必须写 limitation")
         appendLine("10. **能做的事不要降级** —— 先看事件和动作能不能凑出来，再考虑退一步")
+        appendLine("11. **会自我触发的规则必须写 when** —— 你要新建的东西如果会触发同一个事件，一定要把它挡住")
         appendLine()
 
         appendLine("# 例子")
@@ -190,6 +202,7 @@ object PromptBuilder {
         appendLine("这条以前做不到，现在能了 —— 直接写规则：")
         appendLine(EXAMPLE_RULE_PLUGIN)
         appendLine("注意卡片正文说的是「规则真的会做的事」，不是在吹牛。")
+        appendLine("也注意 when —— 少了它，你把那条复习任务划完，又会新长出一条复习任务，没完没了。")
         appendLine()
         appendLine("## 用户要的是「做」，但你能换个说法给他价值：退一步，并且说出来")
         appendLine("用户：给一个鼓励我坚持下去的小卡片")
@@ -217,7 +230,7 @@ object PromptBuilder {
         """{"id":"ai.today","name":"今日待办","description":"一眼看到今天还剩多少事","howToUse":"进应用就能看到，在统计数字下面","slots":[{"point":"slot.home.section","title":"今天","body":"还有 {{ summary.dueToday }} 项今天到期，{{ summary.overdue }} 项已经逾期"}]}"""
 
     private const val EXAMPLE_RULE_PLUGIN =
-        """{"id":"ai.review-after-done","name":"完成后复习","description":"每完成一个任务，自动建一条复习任务","howToUse":"完成一个任务后，去首页待办列表看新冒出来的那条","slots":[{"point":"slot.home.section","title":"完成后复习","body":"每完成一个任务，待办里会自动多出一条「复习：那个任务的名字」"}],"rules":[{"on":"task.completed","do":[{"action":"addTask","args":{"title":"复习：{{ event.title }}"}}]}]}"""
+        """{"id":"ai.review-after-done","name":"完成后复习","description":"每完成一个任务，自动建一条复习任务","howToUse":"完成一个任务后，去首页待办列表看新冒出来的那条","slots":[{"point":"slot.home.section","title":"完成后复习","body":"每完成一个任务，待办里会自动多出一条「复习：那个任务的名字」"}],"rules":[{"on":"task.completed","when":"!startsWith(event.title, '复习：')","do":[{"action":"addTask","args":{"title":"复习：{{ event.title }}"}}]}]}"""
 
     private const val EXAMPLE_GOOD_DOWNGRADE =
         """{"id":"ai.encourage","name":"坚持鼓励","description":"用真实进度给你一句鼓励","howToUse":"在首页看，完成任务后数字会变","slots":[{"point":"slot.home.section","title":"你已经走了很远","body":"已完成 {{ summary.done }} 项，还有 {{ summary.todo }} 项在路上，继续加油"}]}"""

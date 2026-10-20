@@ -104,6 +104,8 @@ data class AuthoredPlugin(
                     rules.forEach { rule ->
                         addJsonObject {
                             put("on", rule.on)
+                            rule.condition?.trim()?.takeIf { it.isNotEmpty() }
+                                ?.let { put("when", it) }
                             putJsonArray("do") {
                                 rule.actions.forEach { call ->
                                     addJsonObject {
@@ -263,6 +265,8 @@ data class AuthoredRule(
      * 规则变成「没有任何动作」，报错指向的地方和真正的原因完全不相干。
      */
     @SerialName("do") val actions: List<AuthoredAction> = emptyList(),
+    /** JSON 里叫 when。条件不成立就不执行，只能引用 event.xxx。 */
+    @SerialName("when") val condition: String? = null,
 )
 
 /** 一次动作调用。参数值支持 {{ event.xxx }}。 */

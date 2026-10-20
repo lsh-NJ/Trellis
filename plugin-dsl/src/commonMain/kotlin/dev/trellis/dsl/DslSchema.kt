@@ -65,6 +65,13 @@ internal data class DslRuleJson(
     val on: String,
     /** JSON 里叫 do，但 do 是 Kotlin 关键字，只能换个名字映射过去。 */
     @SerialName("do") val actions: List<DslActionJson> = emptyList(),
+    /**
+     * JSON 里叫 when。条件不成立就不执行，只能引用 event.xxx。
+     *
+     * 用来挡「规则自己触发自己」：完成一个任务就加复习任务，
+     * 那条复习任务完成时又会加一条，子子孙孙没有穷尽。
+     */
+    @SerialName("when") val condition: String? = null,
 )
 
 /** 一次动作调用。参数值支持 {{ event.xxx }}。 */
