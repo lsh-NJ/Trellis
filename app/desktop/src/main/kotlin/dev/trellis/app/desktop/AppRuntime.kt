@@ -353,12 +353,34 @@ class AppRuntime private constructor() {
     }
 
     private fun wireApprovalDialog() {
-        val gate = kernel.approvals as? DefaultApprovalGate ?: return
+        val gate = kernel.approvals as? DefaultApprovalGate
+        if (gate == null) {
+            // 这一条要是发生，所有需要人工批准的操作都会被内核按安全默认值拒绝，
+            // 界面上却什么都不会出现。所以必须留痕，不然只能靠猜。
+            appLog("审批界面没接上：kernel.approvals 不是 DefaultApprovalGate")
+            return
+        }
         gate.setManualHandler { request ->
+            appLog(
+                "请求确认：" + request.action + " / 插件 " + request.pluginId.value +
+                    " / " + request.actor + " / " + request.capability.value,
+            )
             val answer = CompletableDeferred<Boolean>()
             approvalAnswer = answer
             pendingApproval = request
-            answer.await()
+            val approved = answer.await()
+            appLog((if (approved) "已允许：" else "已拒绝：") + request.action)
+            approved
+        }
+    }
+
+    /** 审批这件事必须能在磁盘上复盘：界面上「什么都没发生」是最难查的故障。 */
+    private fun appLog(line: String) {
+        runCatching {
+            File(home, "app.log").appendText(
+                "[" + java.time.Instant.now() + "] " + line + "\n",
+                Charsets.UTF_8,
+            )
         }
     }
 

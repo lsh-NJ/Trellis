@@ -11,7 +11,10 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 
 private class OneShotLlm(private val reply: String) : LlmClient {
@@ -147,6 +150,50 @@ class RuleFlowTest {
             runtime.kernel.errors.any { it.detail.contains("审批门拒绝") },
             "拒绝原因要留在诊断里：" + runtime.kernel.errors.map { it.detail },
         )
+
+        runtime.shutdown()
+    }
+
+    /**
+     * 规则动手之前，**界面必须收到一个待批准的请求**。
+     *
+     * 这条测的是那句承诺：「规则是后台触发的，执行前会请用户确认一次」。
+     * 如果它不成立，用户什么都没看见、数据却变了 —— 那比「做不到」坏得多。
+     *
+     * 刻意**不**替换处理器：上面几条把审批门换成自动点头是为了测规则本身，
+     * 那是有意的屏蔽。这一条要的就是真实的那条路径。
+     */
+    @Test
+    fun theRuleAsksBeforeItTouchesAnything() = runTest {
+        val home = tempHome()
+        File(home, "llm.json").writeText(
+            """{"endpoint":"http://localhost/invalid","apiKey":"sk-test","model":"fake"}""",
+        )
+
+        val runtime = AppRuntime.create(home)
+        runtime.llmOverride = OneShotLlm(rulePlugin)
+        assertIs<AgentOutcome.Installed>(runtime.generatePlugin("完成一项就自动建复习"))
+
+        val original = runtime.planService.addTask("第 1 章")
+
+        // 完成会卡在审批上，所以丢到后台
+        val job = launch { runtime.planService.setStatus(original.id, TaskStatus.DONE) }
+        advanceUntilIdle()
+
+        val pending = runtime.pendingApproval
+        assertNotNull(pending, "规则要改数据，界面必须收到待批准请求，否则用户什么都看不见")
+        assertEquals("智能体", if (pending.actor == dev.trellis.kernel.audit.Actor.AGENT) "智能体" else "你")
+        assertEquals("rule.addTask", pending.action)
+
+        val before = runtime.planService.tasks(TaskQuery(includeDone = true)).map { it.title }
+        assertTrue(before.none { it.startsWith("复习：") }, "批准之前不该动手：" + before)
+
+        runtime.answerApproval(true)
+        advanceUntilIdle()
+        job.join()
+
+        val after = runtime.planService.tasks(TaskQuery(includeDone = true)).map { it.title }
+        assertTrue(after.any { it == "复习：第 1 章" }, "批准之后才执行：" + after)
 
         runtime.shutdown()
     }
