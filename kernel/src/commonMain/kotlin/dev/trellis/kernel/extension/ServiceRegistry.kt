@@ -2,6 +2,7 @@ package dev.trellis.kernel.extension
 
 import dev.trellis.kernel.core.ExtensionPointId
 import dev.trellis.kernel.core.PluginId
+import dev.trellis.kernel.event.EventDeclaration
 import kotlin.reflect.KClass
 
 /**
@@ -73,6 +74,18 @@ object KernelPoints {
         ExtensionPointId("kernel.action"),
         Cardinality.MANY,
         "KernelAction",
+    )
+
+    /**
+     * 事件声明。领域插件用它告诉内核「我会发出哪些事件」。
+     *
+     * 规则里的 `on` 会和这里登记的类型逐一比对：没登记的事件名，
+     * 在**生成阶段**就被拒掉，而不是等用户装上之后发现没反应。
+     */
+    val Event: ExtensionPoint<EventDeclaration> = ExtensionPoint(
+        ExtensionPointId("kernel.event"),
+        Cardinality.MANY,
+        "EventDeclaration",
     )
 
     val Data: ExtensionPoint<DataProvider> = ExtensionPoint(

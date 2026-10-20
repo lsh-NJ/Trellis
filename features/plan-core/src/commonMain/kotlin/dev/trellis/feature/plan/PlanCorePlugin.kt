@@ -35,6 +35,7 @@ class PlanCorePlugin : Plugin {
             KernelPoints.Service.id to listOf(ContributionDecl("PlanService")),
             // 给声明式插件用的数据源，命名空间是 summary
             KernelPoints.Data.id to listOf(ContributionDecl("summary")),
+            KernelPoints.Event.id to listOf(ContributionDecl(TaskCompletedEvent.TYPE)),
             KernelPoints.Action.id to listOf(
                 ContributionDecl("addTask"),
                 ContributionDecl("logTime"),
@@ -56,5 +57,8 @@ class PlanCorePlugin : Plugin {
         ctx.extensions.register(KernelPoints.Action, AddTaskAction(service))
         ctx.extensions.register(KernelPoints.Action, LogTimeAction(service))
         ctx.extensions.register(KernelPoints.Action, CompleteTaskAction(service))
+
+        // 让规则知道有哪些事件可挂。不登记的话，模型只能猜事件名。
+        ctx.extensions.register(KernelPoints.Event, TaskCompletedEvent)
     }
 }

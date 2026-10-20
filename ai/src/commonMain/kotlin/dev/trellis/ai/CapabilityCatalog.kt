@@ -8,6 +8,12 @@ import dev.trellis.kernel.slot.Slots
 /** 一个挂载点：id 和一句人话。 */
 data class CatalogMountPoint(val id: String, val label: String)
 
+/** 一个事件载荷字段。 */
+data class CatalogEventField(val name: String, val description: String)
+
+/** 一个可以触发规则的事件。 */
+data class CatalogEvent(val id: String, val label: String, val payload: List<CatalogEventField>)
+
 /** 一个可以调用的原子动作。 */
 data class CatalogAction(val id: String, val label: String)
 
@@ -27,7 +33,9 @@ data class CapabilityCatalog(
     val mountPoints: List<CatalogMountPoint>,
     val dataFields: List<CatalogDataField>,
     val actions: List<CatalogAction> = emptyList(),
+    val events: List<CatalogEvent> = emptyList(),
 ) {
+    val eventIds: Set<String> get() = events.mapTo(LinkedHashSet()) { it.id }
     val actionIds: Set<String> get() = actions.mapTo(LinkedHashSet()) { it.id }
     val mountPointIds: Set<String> get() = mountPoints.mapTo(LinkedHashSet()) { it.id }
     val fieldPaths: Set<String> get() = dataFields.mapTo(LinkedHashSet()) { it.path }
@@ -58,7 +66,15 @@ data class CapabilityCatalog(
             val availableActions = registry.all(KernelPoints.Action)
                 .map { CatalogAction(it.id, it.label) }
 
-            return CapabilityCatalog(mounts, fields, availableActions)
+            val availableEvents = registry.all(KernelPoints.Event).map { declaration ->
+                CatalogEvent(
+                    declaration.type,
+                    declaration.label,
+                    declaration.payload.map { CatalogEventField(it.name, it.description) },
+                )
+            }
+
+            return CapabilityCatalog(mounts, fields, availableActions, availableEvents)
         }
     }
 }
