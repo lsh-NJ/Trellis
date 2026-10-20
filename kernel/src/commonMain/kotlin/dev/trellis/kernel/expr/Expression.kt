@@ -194,8 +194,21 @@ internal class Evaluator(private val values: Map<String, ExprValue>) {
                 val b = numbers.getOrNull(1) ?: return ExprValue.Absent
                 if (b == 0.0) ExprValue.Absent else number(ExprValue.Num(a * 100.0 / b))
             }
+            // 字符串判断。规则的条件要靠它们挡住「自己触发自己」的连环。
+            "startsWith" -> textTest(args) { a, b -> a.startsWith(b) }
+            "endsWith" -> textTest(args) { a, b -> a.endsWith(b) }
+            "contains" -> textTest(args) { a, b -> a.contains(b) }
             else -> ExprValue.Absent
         }
+    }
+
+    private inline fun textTest(
+        args: List<ExprValue>,
+        test: (String, String) -> Boolean,
+    ): ExprValue {
+        val a = (args.getOrNull(0) as? ExprValue.Text)?.value ?: return ExprValue.Absent
+        val b = (args.getOrNull(1) as? ExprValue.Text)?.value ?: return ExprValue.Absent
+        return ExprValue.Flag(test(a, b))
     }
 
     private inline fun single(numbers: List<Double?>, compute: (Double) -> Double): ExprValue {
@@ -255,12 +268,7 @@ private fun numberOrAbsent(value: ExprValue): Double? = when (value) {
     ExprValue.Absent -> null
 }
 
-private fun truthy(value: ExprValue): Boolean = when (value) {
-    is ExprValue.Flag -> value.value
-    is ExprValue.Num -> value.value != 0.0
-    is ExprValue.Text -> value.value.isNotEmpty() && value.value != "false" && value.value != "0"
-    ExprValue.Absent -> false
-}
+private fun truthy(value: ExprValue): Boolean = value.isTrue()
 
 private fun equalTo(left: ExprValue, right: ExprValue): Boolean {
     val a = numberOrAbsent(left)

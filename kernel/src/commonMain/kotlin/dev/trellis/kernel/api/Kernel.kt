@@ -667,7 +667,18 @@ class Kernel private constructor(
             }
             val eventBus = DefaultEventBus()
             // 规则引擎挂在总线上：一条事件进来，匹配的规则就地跑完
+            // 规则自己也会发事件。加个深度闸：连环触发到第 4 层就停，
+            // 别让一条写错的规则把应用卡死。
+            var ruleDepth = 0
             eventBus.builtin = { event ->
+                if (ruleDepth >= MAX_RULE_DEPTH) {
+                    recordInto(
+                        allErrors, ErrorCode.CONTRIBUTION_REJECTED, null,
+                        "规则连环触发了 " + MAX_RULE_DEPTH + " 层，已停止：" + event.type,
+                        config.clock.nowMs(), null,
+                    )
+                } else {
+                ruleDepth++
                 // 规则是在后台触发的，没人盯着。所以按「外部智能体发起」走：
                 // 风险等级自动升一级，并且一律要过审批门。
                 val guard = ActionGuard { owner, action, args ->
@@ -688,6 +699,7 @@ class Kernel private constructor(
                     }
                 }
 
+                try {
                 ruleEngine.handle(event, guard).forEach { execution ->
                     if (!execution.ok) {
                         recordInto(
@@ -696,6 +708,10 @@ class Kernel private constructor(
                             config.clock.nowMs(), null,
                         )
                     }
+                }
+                } finally {
+                    ruleDepth--
+                }
                 }
             }
 
@@ -1094,6 +1110,9 @@ private suspend fun saveDisabledSet(storage: StorageBackend, disabled: Set<Plugi
 }
 
 /** 卸载后数据保留多久。设计文档 7 规则 5 写的是 7 天。 */
+/** 规则连环触发的上限。到这一层就停，写进诊断。 */
+private const val MAX_RULE_DEPTH = 4
+
 private const val DATA_RETENTION_MS = 7L * 24L * 60L * 60L * 1000L
 
 private fun purgeKeyOf(id: PluginId): String = PURGE_KEY_PREFIX + id.value

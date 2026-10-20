@@ -271,15 +271,50 @@ class DslLoader(
                     ActionCall(action, a.args)
                 }
             }
+            val condition = raw.condition?.trim()?.takeIf { it.isNotEmpty() }
+            if (condition != null && !checkCondition(condition, on, pluginId, entryPath, errors)) {
+                return@mapNotNull null
+            }
             if (calls.isEmpty()) {
                 errors += reject(pluginId, entryPath + " 的规则「" + on + "」没有任何动作")
                 null
             } else {
-                RuleDecl(on, calls)
+                RuleDecl(on, calls, condition)
             }
         }
 
         return ParsedPlugin(finalManifest, slots, fields, rules, directory)
+    }
+
+    /**
+     * 校验规则的条件。
+     *
+     * 只认 event.xxx —— 和参数占位符同一个限制，少一个数据来源少一类出错。
+     * 错在这里比错在运行期好：运行期算不出来只能按「不成立」处理，
+     * 用户看到的是「规则怎么不生效」，而且没有任何提示。
+     */
+    private fun checkCondition(
+        condition: String,
+        on: String,
+        pluginId: PluginId,
+        entryPath: String,
+        errors: MutableList<KernelError>,
+    ): Boolean {
+        val references = try {
+            Expression.parse(condition).references
+        } catch (t: ExpressionException) {
+            errors += reject(pluginId, entryPath + " 的规则「" + on + "」的 when 有问题：" + t.message)
+            return false
+        }
+        val bad = references.filterNot { it.startsWith(CONDITION_EVENT_PREFIX) }
+        if (bad.isNotEmpty()) {
+            errors += reject(
+                pluginId,
+                entryPath + " 的规则「" + on + "」的 when 只能引用 event.xxx，写的是：" + bad.joinToString("、"),
+            )
+            return false
+        }
+        return true
     }
 
     private fun parseVersion(
@@ -386,3 +421,6 @@ private class DslPlugin(
         }
     }
 }
+
+/** 规则条件里唯一允许的引用前缀。 */
+private const val CONDITION_EVENT_PREFIX = "event."
