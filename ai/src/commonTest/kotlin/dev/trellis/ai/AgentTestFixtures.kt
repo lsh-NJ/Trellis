@@ -35,9 +35,21 @@ val TEST_CATALOG = CapabilityCatalog(
         CatalogDataField("summary.dueToday", "今天到期的数量"),
     ),
     actions = listOf(
-        CatalogAction("addTask", "新建一个任务", "write_data"),
-        CatalogAction("logTime", "给任务追加投入时间", "write_data"),
-        CatalogAction("completeTask", "把任务标记完成", "write_data"),
+        CatalogAction(
+            "addTask", "新建一个任务", "write_data",
+            listOf(CatalogActionParam("title", "任务标题", true)),
+        ),
+        CatalogAction(
+            "logTime", "给任务追加投入时间", "write_data",
+            listOf(
+                CatalogActionParam("taskId", "给哪个任务记", true),
+                CatalogActionParam("minutes", "记多少分钟", true),
+            ),
+        ),
+        CatalogAction(
+            "completeTask", "把任务标记完成", "write_data",
+            listOf(CatalogActionParam("taskId", "把哪个任务标完成", true)),
+        ),
     ),
     events = listOf(
         CatalogEvent(
