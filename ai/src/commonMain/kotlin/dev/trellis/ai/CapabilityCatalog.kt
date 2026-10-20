@@ -21,10 +21,13 @@ data class CatalogEvent(val id: String, val label: String, val payload: List<Cat
  * [capability] 是这个动作需要的权限。它必须被写进生成出来的 manifest，
  * 理由不是形式主义：用户要看得到、拒得掉。内核也只认声明过的那一种。
  */
+data class CatalogActionParam(val name: String, val description: String, val required: Boolean)
+
 data class CatalogAction(
     val id: String,
     val label: String,
     val capability: String? = null,
+    val params: List<CatalogActionParam> = emptyList(),
 )
 
 /** 一个可引用的数据字段：完整路径（如 `summary.todo`）和一句人话。 */
@@ -74,7 +77,14 @@ data class CapabilityCatalog(
             }
 
             val availableActions = registry.all(KernelPoints.Action)
-                .map { CatalogAction(it.id, it.label, it.capability?.value) }
+                .map { action ->
+                    CatalogAction(
+                        action.id,
+                        action.label,
+                        action.capability?.value,
+                        action.params.map { CatalogActionParam(it.name, it.description, it.required) },
+                    )
+                }
 
             val availableEvents = registry.all(KernelPoints.Event).map { declaration ->
                 CatalogEvent(
