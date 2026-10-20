@@ -217,4 +217,62 @@ class PluginFileStoreTest {
         kernel.shutdown()
     }
 
+    /**
+     * 停用的插件也必须删得掉。
+     *
+     * 停用之后插件不在运行列表里，而 `detachLocked` 只认运行列表 —— 于是「删除」静默地
+     * 什么都没做：文件没进回收站、数据没记期限、列表里那一行纹丝不动。
+     * 用户看到的就是「已停用里的插件无法删除」。
+     */
+    @Test
+    fun aDisabledPluginCanStillBeRemoved() = runTest {
+        val files = RecordingFileStore()
+        val kernel = bootWith(files)
+        val id = PluginId("dev.b")
+
+        kernel.disable(id)
+        val result = kernel.remove(id)
+
+        assertTrue(result is UninstallResult.Uninstalled, "停用的插件删不掉，返回的是 " + result)
+        assertEquals(listOf("dev.b"), files.moved, "文件没进回收站，等于没删")
+        assertTrue(id in kernel.pendingPurges(), "没记回收期限，重启就再也没人清它的数据")
+        assertFalse(kernel.liveCatalog().any { it.id == id }, "删了却还留在已装清单里")
+        kernel.shutdown()
+    }
+
+    /**
+     * 上次运行里停用的插件，这次启动之后照样得删得掉。
+     *
+     * 停用标记是落盘的，重启后它压根不会被装进来。如果「已装清单」也只记装进来的，
+     * 那这个插件对内核来说就是「不存在」——用户看到的仍然是「删不掉」。
+     */
+    @Test
+    fun aPluginDisabledInAnEarlierRunCanStillBeRemoved() = runTest {
+        val files = RecordingFileStore()
+        val storage = InMemoryStorageBackend()
+
+        val first = bootWith(files, FakeClock(1_000L), storage)
+        first.disable(PluginId("dev.b"))
+        first.shutdown()
+
+        val second = bootWith(files, FakeClock(2_000L), storage)
+        val result = second.remove(PluginId("dev.b"))
+
+        assertTrue(result is UninstallResult.Uninstalled, "重启之后停用的插件删不掉，返回的是 " + result)
+        assertEquals(listOf("dev.b"), files.moved)
+        assertTrue(PluginId("dev.b") in second.pendingPurges())
+        second.shutdown()
+    }
+
+    /** 删一个根本不存在的东西要说清楚是「没有」，不能假装删成功了。 */
+    @Test
+    fun removingSomethingThatNeverExistedIsNotFound() = runTest {
+        val files = RecordingFileStore()
+        val kernel = bootWith(files)
+
+        assertEquals(UninstallResult.NotFound, kernel.remove(PluginId("dev.ghost")))
+        assertTrue(files.moved.isEmpty(), "不存在的插件不该让平台层去动文件")
+        kernel.shutdown()
+    }
+
 }
