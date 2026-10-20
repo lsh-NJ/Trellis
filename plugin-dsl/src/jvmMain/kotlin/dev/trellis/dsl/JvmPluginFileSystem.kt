@@ -13,7 +13,9 @@ class JvmPluginFileSystem : PluginFileSystem {
         val dir = File(root)
         if (!dir.isDirectory) return emptyList()
         return dir.listFiles()
-            ?.filter { it.isDirectory }
+            // 跳过点目录：`<plugins>/.trash/<id>` 是回收站，不是插件。
+            // 不跳的话每次启动都会把回收站里的东西当插件扫一遍，然后报一堆错。
+            ?.filter { it.isDirectory && !it.name.startsWith(".") }
             ?.map { it.name }
             ?.sorted()
             .orEmpty()

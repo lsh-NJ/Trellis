@@ -10,6 +10,7 @@ import dev.trellis.ai.HttpLlmClient
 import dev.trellis.ai.LlmClient
 import dev.trellis.ai.LlmConfigLoader
 import dev.trellis.ai.PluginAgent
+import dev.trellis.ai.ExistingPlugin
 import dev.trellis.domain.Plan
 import dev.trellis.domain.PlanService
 import dev.trellis.domain.PlanSummary
@@ -144,9 +145,15 @@ class AppRuntime private constructor() {
         try {
             // 每次现取：装了什么插件，模型能用的清单就是什么
             val catalog = CapabilityCatalog.of(kernel.extensions, RENDERED_MOUNT_POINTS)
+            // 已经装着的也告诉模型。不告诉它，它会一遍遍重造同一个东西，
+            // 用户看到的是一堆名字不同、功能一样的插件。
+            val existing = kernel.catalog().map {
+                ExistingPlugin(it.id.value, it.name, it.description)
+            }
             val agent = PluginAgent(
                 llm = llmOverride ?: HttpLlmClient(config),
                 catalog = catalog,
+                existing = existing,
                 installer = KernelPluginInstaller(pluginsDir, kernel),
             )
             val outcome = try {
@@ -247,6 +254,15 @@ class AppRuntime private constructor() {
     var disabledPlugins by mutableStateOf<Set<PluginId>>(emptySet())
         private set
 
+    /**
+     * 回收站：已经删除、还在 7 天后悔期里的插件。
+     *
+     * 它和被停用的插件**必须分开显示**：停用是「暂时不用」，删除是「我不要了」。
+     * 混在一张表里，用户会以为删除没生效（因为插件还在列表里）。
+     */
+    var recycleBin by mutableStateOf<List<RecycleEntry>>(emptyList())
+        private set
+
     /** 见过的 manifest 缓存  插件被停用后就不在 plugins() 里了，但界面上还想显示它的名字。 */
     private val manifestCache = mutableMapOf<PluginId, PluginManifest>()
 
@@ -282,6 +298,9 @@ class AppRuntime private constructor() {
         // 从**已安装目录**（不是运行列表）填缓存  停用的插件也要能显示名字
         for (manifest in kernel.catalog()) manifestCache[manifest.id] = manifest
         disabledPlugins = kernel.disabledPlugins()
+        recycleBin = kernel.pendingPurges()
+            .map { (id, deadline) -> RecycleEntry(id, nameOf(id), deadline) }
+            .sortedBy { it.deadlineMs }
         tick++
     }
 
@@ -404,6 +423,8 @@ class AppRuntime private constructor() {
                         DslLoader(JvmPluginFileSystem()),
                     ),
                     storage = FileStorageBackend(storeFile),
+                    // 「删除」要真的动文件：移进 <plugins>/.trash，7 天后连数据一起清。
+                    pluginFiles = JvmPluginFileStore(pluginsDir),
                     // 刻意**不**在这里挂授权对话框：
                     // 内核启动时会调用它，而那时界面还没起来  弹不出框也答不了，
                     // 唯一的结果就是死锁（这个坑真踩到了）。
@@ -440,4 +461,12 @@ private fun endOfTodayMs(nowMs: Long): Long {
         .atStartOfDay(zone)
         .toInstant()
         .toEpochMilli()
+}
+
+/** 回收站里的一项：删掉的插件，以及它什么时候会被真正清掉。 */
+data class RecycleEntry(val id: PluginId, val name: String, val deadlineMs: Long) {
+
+    /** 还剩几天。向上取整  剩 3 小时也该说「还有 1 天」，说 0 天像过期了。 */
+    fun daysLeft(nowMs: Long): Int =
+        ((deadlineMs - nowMs + 86_399_999L) / 86_400_000L).toInt().coerceAtLeast(0)
 }

@@ -30,6 +30,7 @@ enum class ErrorCode(val code: String, val title: String, val recoverable: Boole
     REQUIRED_PLUGIN_NOT_READY("K018", "必需插件未就绪", false),
     CONTRIBUTION_REJECTED("K019", "扩展点注册被拒绝", false),
     CAPABILITY_UNDECLARED("K020", "manifest 声明了内核不认识的能力", false),
+    FILE_OPERATION_FAILED("K021", "插件文件操作失败", true),
 }
 
 /** 一条可诊断的错误。永远不要吞掉它们  诊断面板靠这个活。 */

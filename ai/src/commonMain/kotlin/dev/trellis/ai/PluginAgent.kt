@@ -68,6 +68,8 @@ private sealed interface Attempt {
 class PluginAgent(
     private val llm: LlmClient,
     private val catalog: CapabilityCatalog,
+    /** 已经装着的插件。不传给模型，它就不知道哪些点子已经被占了。 */
+    private val existing: List<ExistingPlugin> = emptyList(),
     private val installer: PluginInstaller,
     private val maxAttempts: Int = DEFAULT_MAX_ATTEMPTS,
     private val json: Json = DEFAULT_JSON,
@@ -78,7 +80,7 @@ class PluginAgent(
         onEvent: suspend (AgentEvent) -> Unit = {},
     ): AgentOutcome {
         val messages = mutableListOf(
-            LlmMessage(LlmRole.System, PromptBuilder.system(catalog)),
+            LlmMessage(LlmRole.System, PromptBuilder.system(catalog, existing)),
             LlmMessage(LlmRole.User, PromptBuilder.user(request)),
         )
 
@@ -145,7 +147,7 @@ class PluginAgent(
 
         if (authored.isRefusal) return Attempt.Refused(authored.cannotDo.orEmpty())
 
-        val problems = authored.validate(catalog)
+        val problems = authored.validate(catalog) + duplicatesOf(authored)
         if (problems.isNotEmpty()) return Attempt.Bad(problems)
 
         val installError = installer.install(authored.toFiles())
@@ -153,6 +155,20 @@ class PluginAgent(
 
         return Attempt.Ok(authored.id)
     }
+
+    /**
+     * 名字撞了就问回去。
+     *
+     * 查的是**名字**，不是功能 —— 功能是否重复只有人和模型看得出来，内核没有那个判断力。
+     * 名字重复是个便宜的代理信号：模型想重做一个东西时，几乎总会沿用同一个名字。
+     * 反过来不成立（换个名字做同一件事），那种情况只能靠提示词里那份清单挡。
+     */
+    private fun duplicatesOf(authored: AuthoredPlugin): List<String> =
+        existing.filter { it.name == authored.name }.map {
+            "已经有一个叫「" + it.name + "」的插件（" + it.id + "），做的是「" + it.description + "」。" +
+                "如果新的和它重复，请改用 {\"cannotDo\": \"...\"} 说明；" +
+                "如果确实不一样，换一个能区分开的名字。"
+        }
 
     private fun feedback(problems: List<String>): String = buildString {
         appendLine("上一次的输出有问题，不能直接使用：")
