@@ -342,6 +342,17 @@ class AppRuntime private constructor() {
         refresh()
     }
 
+    /**
+     * 彻底删除：立刻清掉回收站里的一个插件，不等 7 天。
+     *
+     * 不可撤销。所以按钮在界面上要点两下，而且只在回收站里出现
+     * 已经在「已停用」里的插件不该长这个按钮，那会把一个能一键回来的状态变成不可逆。
+     */
+    suspend fun purgePlugin(raw: String) {
+        kernel.purgeNow(PluginId(raw))
+        refresh()
+    }
+
     /** 停用的插件不在 plugins() 里，名字只能靠缓存。 */
     fun nameOf(id: PluginId): String = manifestCache[id]?.name?.ifBlank { id.value } ?: id.value
 

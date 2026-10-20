@@ -595,13 +595,39 @@ class Kernel private constructor(
      */
     suspend fun purgeExpiredData(): List<PluginId> = mutationLock.withLock {
         val now = config.clock.nowMs()
-        val expired = pendingPurges().filterValues { it <= now }.keys.toList()
-        for (id in expired) {
+        purgeLocked(pendingPurges().filterValues { it <= now }.keys.toList())
+    }
+
+    /**
+     * 立刻清掉回收站里的一个插件，不等 7 天。
+     *
+     * 「彻底删除」和「到期自动清」走的是**同一段代码**，区别只在谁扣的扳机。
+     * 分开写两套，两套迟早长歪，然后用户会发现「等 7 天清得干净、手动点清不干净」。
+     *
+     * 只认**已经在回收站里**的插件。没删过就直接清数据，等于绕过「进回收站还能
+     * 还原」这道缓冲 —— 那不叫彻底删除，那叫事故。
+     */
+    suspend fun purgeNow(id: PluginId): Boolean = mutationLock.withLock {
+        purgeLocked(listOf(id)).isNotEmpty()
+    }
+
+    /**
+     * 真正的清理。调用方必须已经持有 [mutationLock]。
+     *
+     * 顺序有讲究：先把插件从运行列表里摘干净，再删文件、删数据。
+     * 反过来的话，文件没了插件还在内存里跑着，下一次写数据就是一个崩溃。
+     */
+    private suspend fun purgeLocked(ids: List<PluginId>): List<PluginId> {
+        val inBin = pendingPurges()
+        val targets = ids.filter { it in inBin }
+        for (id in targets) {
+            detachLocked(id)
+            forgetDisabled(id)
             config.storage.clearNamespace(storageNamespaceOf(id))
             config.storage.delete(KERNEL_NAMESPACE, purgeKeyOf(id))
             safely("清空回收站") { config.pluginFiles.purgeTrash(id) }
         }
-        expired
+        return targets
     }
 
     /**

@@ -72,6 +72,11 @@ fun PluginsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
         )
         Spacer(Modifier.height(12.dp))
 
+        // 「彻底删除」不可撤销，所以要点两下：第一下只是把按钮换成确认，第二下才真删。
+        // 记住的是 id 不是整条记录  记录会被刷新换掉，id 不会。
+        // 声明必须放在 LazyColumn 外面：LazyListScope 不是 @Composable 上下文，remember 在那里不合法。
+        var purgeArmed by remember { mutableStateOf<String?>(null) }
+
         val plugins = runtime.pluginInfos
         if (plugins.isEmpty()) {
             // 不能在这里 return：插件全删光的时候，回收站恰恰是最该看见的东西。
@@ -127,14 +132,24 @@ fun PluginsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                     Spacer(Modifier.height(10.dp))
                     Text("回收站", style = MaterialTheme.typography.titleSmall)
                     Text(
-                        "删掉的插件在这里等 7 天，到期连插件文件带数据一起清掉。期间点「还原」就全回来。",
+                        "删掉的插件在这里等 7 天，到期连插件文件带数据一起清掉。" +
+                            "点「还原」就全回来；不想等这 7 天就点「彻底删除」，" +
+                            "那一下不可撤销，只有日志留着。",
                         style = MaterialTheme.typography.labelSmall,
                     )
                 }
                 items(bin, key = { "bin-" + it.id.value }) { entry ->
+                    val raw = entry.id.value
                     RecycleRow(
                         entry = entry,
-                        onRestore = { scope.launch { runtime.enablePlugin(entry.id.value) } },
+                        armed = purgeArmed == raw,
+                        onArm = { purgeArmed = raw },
+                        onCancel = { purgeArmed = null },
+                        onRestore = { scope.launch { runtime.enablePlugin(raw) } },
+                        onPurge = {
+                            purgeArmed = null
+                            scope.launch { runtime.purgePlugin(raw) }
+                        },
                     )
                 }
             }
@@ -143,7 +158,14 @@ fun PluginsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun RecycleRow(entry: RecycleEntry, onRestore: () -> Unit) {
+private fun RecycleRow(
+    entry: RecycleEntry,
+    armed: Boolean,
+    onArm: () -> Unit,
+    onCancel: () -> Unit,
+    onRestore: () -> Unit,
+    onPurge: () -> Unit,
+) {
     Card(
         Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -157,11 +179,26 @@ private fun RecycleRow(entry: RecycleEntry, onRestore: () -> Unit) {
             Column(Modifier.weight(1f)) {
                 Text(entry.name, style = MaterialTheme.typography.titleSmall)
                 Text(
-                    entry.id.value + "　还有 " + entry.daysLeft(System.currentTimeMillis()) + " 天",
+                    if (armed) {
+                        "确认之后，插件文件和它的全部数据立刻清掉，只有日志留着。"
+                    } else {
+                        entry.id.value + "　还有 " + entry.daysLeft(System.currentTimeMillis()) + " 天"
+                    },
                     style = MaterialTheme.typography.labelSmall,
                 )
             }
-            TextButton(onClick = onRestore) { Text("还原") }
+            if (armed) {
+                TextButton(onClick = onCancel) { Text("算了") }
+                TextButton(onClick = onPurge) {
+                    Text(
+                        "确认彻底删除",
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            } else {
+                TextButton(onClick = onRestore) { Text("还原") }
+                TextButton(onClick = onArm) { Text("彻底删除") }
+            }
         }
     }
 }
