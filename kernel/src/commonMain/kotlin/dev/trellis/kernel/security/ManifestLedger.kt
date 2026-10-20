@@ -16,6 +16,14 @@ interface ManifestLedger {
     fun fingerprintOf(pluginId: PluginId): String?
 
     fun remember(pluginId: PluginId, fingerprint: String)
+
+    /**
+     * 忘掉这个插件的指纹。「彻底删除」时调用。
+     *
+     * 不忘的话，用户删掉插件、再用同一个 id 生成一个能力清单不同的新插件，
+     * 会被当成「插件被篡改」永久拒装 —— 而实际上什么都没篡改，就是重做了一个。
+     */
+    fun forget(pluginId: PluginId)
 }
 
 class InMemoryManifestLedger : ManifestLedger {
@@ -26,6 +34,10 @@ class InMemoryManifestLedger : ManifestLedger {
 
     override fun remember(pluginId: PluginId, fingerprint: String) {
         fingerprints[pluginId] = fingerprint
+    }
+
+    override fun forget(pluginId: PluginId) {
+        fingerprints.remove(pluginId)
     }
 }
 
