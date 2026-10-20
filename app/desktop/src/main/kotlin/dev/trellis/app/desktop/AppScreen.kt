@@ -72,6 +72,10 @@ fun AppScreen(runtime: AppRuntime) {
 
             Spacer(Modifier.height(12.dp))
 
+            // 审批条长在最上面：它是「规则要动手了」的唯一信号。
+            // 藏进弹窗或者标签页里，用户就会以为什么都没发生。
+            AskDialogs(runtime)
+
             val errorCount = runtime.kernelErrors.size
             TabRow(selectedTabIndex = tab) {
                 Tab(selected = tab == TAB_TASKS, onClick = { tab = TAB_TASKS }, text = { Text("任务") })
@@ -99,8 +103,6 @@ fun AppScreen(runtime: AppRuntime) {
             StatusBar(runtime)
         }
 
-        // 询问框浮在最上层，切到哪个标签都要弹
-        AskDialogs(runtime)
     }
 }
 
