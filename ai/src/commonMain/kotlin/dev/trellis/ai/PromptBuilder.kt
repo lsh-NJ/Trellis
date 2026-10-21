@@ -147,6 +147,11 @@ object PromptBuilder {
         appendLine()
 
         appendLine("<how_to_decide>")
+        appendLine("动手之前先答一个问题：用户要不要往里写东西？")
+        appendLine("- 要：记下来、存一句、加一笔、攒得分、统计我做过的事、列出历史、删掉其中一条 ——")
+        appendLine("  只要沾上其中一样，就必须写脚本。卡片没有输入框，也没有抽屉，它存不下任何东西。")
+        appendLine("- 不要：只是把已经有的数据拿出来显示、换个说法 —— 那就用卡片。")
+        appendLine()
         appendLine("先看现有事件和动作能不能真凑出他要的效果。能凑出来就做，不要退成一张卡片。")
         appendLine("用户说「每完成一个任务就加一条复习任务」，能做，就写规则，别退成一张统计卡片。")
         appendLine()
