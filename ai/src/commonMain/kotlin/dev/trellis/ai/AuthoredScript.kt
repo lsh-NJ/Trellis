@@ -54,14 +54,23 @@ data class AuthoredScript(
      * 生成两个文件。[cards] 是**脚本真的注册出来的**卡片，由调用方跑一遍拿到，
      * 不是模型声明的 —— 这是草稿和 manifest 之间唯一的真相来源。
      */
-    fun toFiles(cards: List<ScriptCardDecl>): Map<String, String> {
-        val contributes = cards.filter { it.pointId.isNotBlank() }
+    fun toFiles(
+        cards: List<ScriptCardDecl>,
+        actions: List<ScriptActionDecl> = emptyList(),
+    ): Map<String, String> {
+        val slots = cards.filter { it.pointId.isNotBlank() }
             .groupBy { it.pointId }
             .entries
             .joinToString(", ") { (point, list) ->
                 "\"" + point + "\": [" +
                     list.joinToString(", ") { "{\"id\": " + quote(it.id) + "}" } + "]"
             }
+        val contributes = if (actions.isEmpty()) {
+            slots
+        } else {
+            slots + (", \"kernel.action\": [" +
+                actions.joinToString(", ") { "{\"id\": " + quote(it.id) + "}" } + "]")
+        }
 
         val manifest = buildString {
             appendLine("{")
@@ -94,3 +103,6 @@ private val FORBIDDEN = listOf("Java.type", "importPackage", "importClass", "Pac
 
 /** 脚本跑一遍之后，它到底注册了哪张卡片挂在哪里。 */
 data class ScriptCardDecl(val id: String, val pointId: String)
+
+/** 脚本声明的一个动作。[id] 已经带上 script.<插件id>. 前缀，和内核里注册的完全一致。 */
+data class ScriptActionDecl(val id: String, val label: String)

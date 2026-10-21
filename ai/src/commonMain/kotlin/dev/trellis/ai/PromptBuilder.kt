@@ -182,6 +182,8 @@ object PromptBuilder {
         appendLine("  你只能说要存什么，真正落盘的是宿主。")
         appendLine("- data 里有：now、dayStart、dayEnd、summary{total,done,doing,todo,overdue,dueToday,spentMinutes}、")
         appendLine("  tasks[{id,title,status,spentMinutes}]、store{...}（本插件自己存过的键值）。")
+        appendLine("- 想让别处（比如规则）也能调用你：register 里加 actions: [{ id: \"名字\", label: \"给人看的名\", params: [\"参数名\"] }]，")
+        appendLine("  同名的处理函数就是它的实现。它之后会以 script.<你的 id>.<名字> 出现在动作清单里。")
         appendLine("- 跑超过 1.5 秒会被掐断，所以不要写死循环。")
         appendLine()
         appendLine("能填表就别写代码：脚本是为了「按数据决定画什么」，不是为了多做点事。")
