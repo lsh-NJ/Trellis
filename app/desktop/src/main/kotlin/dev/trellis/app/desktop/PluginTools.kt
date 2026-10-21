@@ -8,6 +8,7 @@ import dev.trellis.ai.flow.Issue
 import dev.trellis.ai.tool.AgentTool
 import dev.trellis.ai.tool.ToolResult
 import dev.trellis.kernel.api.Kernel
+import dev.trellis.kernel.api.UninstallResult
 import dev.trellis.kernel.core.PluginId
 import dev.trellis.kernel.core.SemVer
 import dev.trellis.script.ScriptSandbox
@@ -61,7 +62,8 @@ class PluginTools(
         "1. 先看清楚：list_plugins 看已经装着什么，list_events 和 list_actions 看有哪些事件和动作能用。",
         "2. 要改一个已装的插件：read_plugin 把它的文件读回来，在原文上改，再 deploy 同一个 id。不要用新 id 另写一个近似的东西。",
         "3. 要写新的：先 try_plugin 试跑，报错就改，跑通了再 deploy。",
-        "4. 做不到就老实说：输出 done，在 message 里写明卡在哪。不要装一个做不到的东西。",
+        "4. 用户说某个插件不要了：remove_plugin 删掉它（进回收站，七天内能还原）；只是暂时不想用就用 disable_plugin。内置插件删不掉，别白试。",
+        "5. 做不到就老实说：输出 done，在 message 里写明卡在哪。不要装一个做不到的东西。",
         "</how_to_work>",
     ).joinToString("\n")
 
@@ -70,6 +72,8 @@ class PluginTools(
         ListEvents(),
         ListActions(),
         ReadPlugin(),
+        DisablePlugin(),
+        RemovePlugin(),
         TryPlugin(),
         Deploy(),
     )
@@ -221,6 +225,39 @@ class PluginTools(
                 "--- " + file.name + " ---\n" + file.readText(Charsets.UTF_8)
             }
             return ToolResult(text)
+        }
+    }
+
+    private inner class DisablePlugin : AgentTool {
+        override val name = "disable_plugin"
+        override val description = "停用一个插件：不再加载，文件和它的数据都留着，随时能再启用。"
+        override val parameters = "id：插件 id，先用 list_plugins 看"
+        override suspend fun call(arguments: JsonObject): ToolResult {
+            val id = arguments["id"]?.jsonPrimitive?.content?.trim().orEmpty()
+            if (id.isBlank()) return ToolResult("没给 id，先用 list_plugins 看现在有哪些", isError = true)
+            return when (val result = kernel.disable(PluginId(id))) {
+                is UninstallResult.Uninstalled -> ToolResult("停用了：" + id + "。数据留着，随时能启用。")
+                is UninstallResult.Rejected -> ToolResult("停不掉：" + result.error.detail, isError = true)
+                else -> ToolResult("这个插件现在停不了：" + id, isError = true)
+            }
+        }
+    }
+
+    private inner class RemovePlugin : AgentTool {
+        override val name = "remove_plugin"
+        override val description = "删掉一个插件：文件进回收站，七天内能还原，到期连它的数据一起清。"
+        override val parameters = "id：插件 id，先用 list_plugins 看"
+        override suspend fun call(arguments: JsonObject): ToolResult {
+            val id = arguments["id"]?.jsonPrimitive?.content?.trim().orEmpty()
+            if (id.isBlank()) return ToolResult("没给 id，先用 list_plugins 看现在有哪些", isError = true)
+            if (id == deployedId) {
+                return ToolResult("这是你这次刚装上的，别马上删。要换掉它就直接用同一个 id 重新 deploy。", isError = true)
+            }
+            return when (val result = kernel.remove(PluginId(id))) {
+                is UninstallResult.Uninstalled -> ToolResult("删掉了：" + id + "，进了回收站，七天内还能还原。")
+                is UninstallResult.Rejected -> ToolResult("删不掉：" + result.error.detail, isError = true)
+                else -> ToolResult("这个插件现在删不了：" + id, isError = true)
+            }
         }
     }
 

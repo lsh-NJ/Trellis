@@ -122,4 +122,32 @@ class ScriptAgentFlowTest {
 
         assertTrue(textOf(slot.build(open)).contains("今天喝了 1 杯"), "第二屏：" + textOf(slot.build(open)))
     }
+
+    @Test
+    fun theAgentCanPutAPluginAway() = runTest {
+        val home = tempHome()
+        val dst = File(home, "plugins/dev.mistakes")
+        dst.mkdirs()
+        for (name in listOf("manifest.json", "main.js")) {
+            File("src/test/resources/plugins/dev.mistakes", name).copyTo(File(dst, name), overwrite = true)
+        }
+        File(home, "llm.json").writeText(
+            """{"endpoint":"http://localhost/invalid","apiKey":"sk-test","model":"fake"}""",
+        )
+        val runtime = AppRuntime.create(home)
+        runtime.llmOverride = ScriptLlm(
+            """{"tool":"disable_plugin","arguments":{"id":"dev.mistakes"}}""",
+        )
+        runtime.researchFirst = true
+
+        runtime.generatePlugin("把错题本先收起来，我不想看见它")
+        assertTrue(
+            runtime.kernel.disabledPlugins().contains(PluginId("dev.mistakes")),
+            "应该停用，日志：\n" + runtime.agentLog.joinToString("\n"),
+        )
+        assertTrue(
+            runtime.kernel.catalog().any { it.id.value == "dev.mistakes" },
+            "停用只是不用它，还应该在已安装清单里，否则没地方点启用",
+        )
+    }
 }
