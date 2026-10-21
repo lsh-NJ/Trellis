@@ -66,6 +66,14 @@ internal data class DslSlotJson(
      * 而不是自己写一段逻辑。点名是可以静态检查的，代码不行。
      */
     val actions: List<DslActionJson> = emptyList(),
+    /** 标题/正文的语气与字号，只能从固定清单里挑。 */
+    val titleTone: String = "default",
+    val titleSize: String = "normal",
+    val bodyTone: String = "default",
+    /** 具名零件：数值、进度、状态标签。 */
+    val stat: DslStatJson? = null,
+    val progress: DslProgressJson? = null,
+    val badges: List<DslBadgeJson> = emptyList(),
 )
 /** 一条规则：某个事件发生时，依次做这几件事。 */
 @Serializable
@@ -87,9 +95,35 @@ internal data class DslRuleJson(
 internal data class DslActionJson(
     val action: String,
     val args: Map<String, String> = emptyMap(),
+    val tone: String = "default",
+    val disabled: String = "",
     /**
      * 按钮上的字。规则里的动作不需要它（没人点），所以默认空。
      * 空的时候界面拿动作名顶上。
      */
     val label: String = "",
+)
+
+/** 一个数值零件。value 支持模板。 */
+@Serializable
+internal data class DslStatJson(
+    val value: String = "",
+    val unit: String = "",
+    val label: String = "",
+    val tone: String = "default",
+)
+
+/** 一条进度。value/max 都支持模板。 */
+@Serializable
+internal data class DslProgressJson(
+    val value: String = "0",
+    val max: String = "100",
+    val label: String = "",
+)
+
+/** 一个状态标签。 */
+@Serializable
+internal data class DslBadgeJson(
+    val text: String = "",
+    val tone: String = "default",
 )

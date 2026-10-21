@@ -1,6 +1,18 @@
 package dev.trellis.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import dev.trellis.kernel.slot.SlotBadge
+import dev.trellis.kernel.slot.SlotProgress
+import dev.trellis.kernel.slot.SlotStat
+import dev.trellis.kernel.slot.SlotTextSize
+import dev.trellis.kernel.slot.SlotTone
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -131,21 +143,151 @@ private fun TemplateSlotView(
     refreshKey: Any?,
     onAction: (suspend (PluginId?, SlotAction) -> ActionOutcome)?,
 ) {
-    var title by remember(slot.id) { mutableStateOf(slot.title) }
-    var body by remember(slot.id) { mutableStateOf(slot.body) }
+    var card by remember(slot.id) {
+        mutableStateOf(
+            RenderedCard(
+                title = slot.title,
+                body = slot.body,
+                stat = slot.stat,
+                progress = slot.progress,
+                progressValue = 0f,
+                progressMax = 1f,
+                badges = slot.badges,
+            ),
+        )
+    }
 
     LaunchedEffect(slot.id, refreshKey) {
         // 每次都重新算一遍「今天」：用户可能跨过午夜，也可能改了系统时区
         val context = currentDataContext()
-        title = registry.renderTemplate(slot.title, context)
-        body = registry.renderTemplate(slot.body, context)
+        suspend fun render(text: String): String = registry.renderTemplate(text, context)
+        val stat = slot.stat?.let { SlotStat(render(it.value), render(it.unit), render(it.label), it.tone) }
+        val progress = slot.progress?.let { SlotProgress(render(it.value), render(it.max), render(it.label)) }
+        val rawMax = progress?.max?.trim()?.toFloatOrNull() ?: 1f
+        card = RenderedCard(
+            title = render(slot.title),
+            body = render(slot.body),
+            stat = stat,
+            progress = progress,
+            progressValue = progress?.value?.trim()?.toFloatOrNull() ?: 0f,
+            progressMax = if (rawMax <= 0f) 1f else rawMax,
+            badges = slot.badges.map { SlotBadge(render(it.text), it.tone) },
+        )
     }
 
-    TextSlotView(title, body)
+    SlotCardBody(slot, card)
 
     if (slot.actions.isNotEmpty()) {
         SlotButtons(slot, onAction)
     }
+}
+
+/** 渲染一次之后的卡片内容：模板已经全部变成了字符串。 */
+private data class RenderedCard(
+    val title: String,
+    val body: String,
+    val stat: SlotStat?,
+    val progress: SlotProgress?,
+    val progressValue: Float,
+    val progressMax: Float,
+    val badges: List<SlotBadge>,
+)
+
+@Composable
+private fun SlotCardBody(slot: TemplateSlot, card: RenderedCard) {
+    if (card.title.isNotEmpty()) {
+        Text(
+            card.title,
+            style = when (slot.titleSize) {
+                SlotTextSize.SMALL -> MaterialTheme.typography.titleSmall
+                SlotTextSize.LARGE -> MaterialTheme.typography.titleLarge
+                SlotTextSize.NORMAL -> MaterialTheme.typography.titleMedium
+            },
+            color = toneColor(slot.titleTone),
+        )
+    }
+
+    card.stat?.let { stat ->
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                stat.value,
+                style = MaterialTheme.typography.headlineSmall,
+                color = toneColor(stat.tone),
+            )
+            if (stat.unit.isNotEmpty()) {
+                Text(
+                    " " + stat.unit,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (stat.label.isNotEmpty()) {
+                Text(
+                    "  " + stat.label,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+
+    card.progress?.let { progress ->
+        LinearProgressIndicator(
+            progress = { (card.progressValue / card.progressMax).coerceIn(0f, 1f) },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (progress.label.isNotEmpty()) {
+            Text(
+                progress.label,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+
+    if (card.body.isNotEmpty()) {
+        Text(
+            card.body,
+            style = MaterialTheme.typography.bodyMedium,
+            color = toneColor(slot.bodyTone),
+        )
+    }
+
+    if (card.badges.isNotEmpty()) {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            for (badge in card.badges) {
+                BadgeView(badge)
+            }
+        }
+    }
+}
+
+/** 一个小标签。底色是语气色的淡化版，所以换主题时不会撞色。 */
+@Composable
+private fun BadgeView(badge: SlotBadge) {
+    val color = toneColor(badge.tone)
+    Box(
+        Modifier
+            .background(color.copy(alpha = 0.12f), RoundedCornerShape(6.dp))
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+    ) {
+        Text(badge.text, style = MaterialTheme.typography.labelSmall, color = color)
+    }
+}
+
+/**
+ * 语气 -> 颜色。
+ *
+ * 从主题里取，所以深色模式自动跟着变。
+ * 成功色 M3 没有对应语义槽，只能自己定一个：这是宿主该操心的事，不是插件的。
+ */
+@Composable
+private fun toneColor(tone: SlotTone): Color = when (tone) {
+    SlotTone.MUTED -> MaterialTheme.colorScheme.onSurfaceVariant
+    SlotTone.ACCENT -> MaterialTheme.colorScheme.primary
+    SlotTone.DANGER -> MaterialTheme.colorScheme.error
+    SlotTone.SUCCESS -> Color(0xFF2E7D32)
+    SlotTone.DEFAULT -> MaterialTheme.colorScheme.onSurface
 }
 
 /**
@@ -166,7 +308,23 @@ private fun SlotButtons(
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         for (action in slot.actions) {
             OutlinedButton(
-                enabled = onAction != null && !running,
+                enabled = onAction != null && !running && action.disabledReason.isEmpty(),
+                colors = when (action.tone) {
+                    SlotTone.DANGER -> ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    )
+                    SlotTone.ACCENT -> ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    )
+                    SlotTone.MUTED -> ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    SlotTone.SUCCESS -> ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color(0xFF2E7D32),
+                    )
+                    SlotTone.DEFAULT -> ButtonDefaults.outlinedButtonColors()
+                },
                 onClick = {
                     val handler = onAction ?: return@OutlinedButton
                     running = true
@@ -184,6 +342,17 @@ private fun SlotButtons(
             ) {
                 Text(action.label)
             }
+        }
+    }
+
+    // 按不了就说为什么。只把按钮变灰，用户只会以为程序坏了。
+    for (action in slot.actions) {
+        if (action.disabledReason.isNotEmpty()) {
+            Text(
+                action.label + "：" + action.disabledReason,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 

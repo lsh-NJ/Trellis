@@ -152,11 +152,41 @@ data class AuthoredPlugin(
                         put("order", slot.order)
                         if (slot.title.isNotBlank()) put("title", slot.title)
                         if (slot.body.isNotBlank()) put("body", slot.body)
+                        if (slot.titleTone.isNotBlank()) put("titleTone", slot.titleTone)
+                        if (slot.titleSize.isNotBlank()) put("titleSize", slot.titleSize)
+                        if (slot.bodyTone.isNotBlank()) put("bodyTone", slot.bodyTone)
+                        slot.stat?.takeIf { it.value.isNotBlank() }?.let { stat ->
+                            putJsonObject("stat") {
+                                put("value", stat.value)
+                                if (stat.unit.isNotBlank()) put("unit", stat.unit)
+                                if (stat.label.isNotBlank()) put("label", stat.label)
+                                if (stat.tone.isNotBlank()) put("tone", stat.tone)
+                            }
+                        }
+                        slot.progress?.let { progress ->
+                            putJsonObject("progress") {
+                                put("value", progress.value)
+                                put("max", progress.max)
+                                if (progress.desc.isNotBlank()) put("label", progress.desc)
+                            }
+                        }
+                        if (slot.badges.isNotEmpty()) {
+                            putJsonArray("badges") {
+                                slot.badges.forEach { badge ->
+                                    addJsonObject {
+                                        put("text", badge.text)
+                                        if (badge.tone.isNotBlank()) put("tone", badge.tone)
+                                    }
+                                }
+                            }
+                        }
                         if (slot.actions.isNotEmpty()) {
                             putJsonArray("actions") {
                                 slot.actions.forEach { button ->
                                     addJsonObject {
                                         put("action", button.action)
+                                        if (button.tone.isNotBlank()) put("tone", button.tone)
+                                        if (button.disabled.isNotBlank()) put("disabled", button.disabled)
                                         put("label", button.label)
                                         if (button.args.isNotEmpty()) {
                                             putJsonObject("args") {
@@ -194,6 +224,33 @@ data class AuthoredPlugin(
                 fields.forEach { (_, source) -> Expression.parse(source) }
             } catch (t: ExpressionException) {
                 problems += "fields 里的表达式有问题：" + t.message
+            }
+        }
+        slots.forEachIndexed { index, slot ->
+            val n = index + 1
+            val tones = listOf(
+                "titleTone" to slot.titleTone,
+                "bodyTone" to slot.bodyTone,
+                "stat.tone" to (slot.stat?.tone ?: ""),
+            ) + slot.badges.mapIndexed { bi, b -> "badges[" + bi + "].tone" to b.tone } +
+                slot.actions.mapIndexed { ai, a -> "actions[" + ai + "].tone" to a.tone }
+            tones.forEach { (where, value) ->
+                if (value.isNotBlank() && value.trim().lowercase() !in TONES) {
+                    problems += "第 " + n + " 张卡片的 " + where + " 是「" + value +
+                        "」，只能从这几个里挑：" + TONES.joinToString("、")
+                }
+            }
+            if (slot.titleSize.isNotBlank() && slot.titleSize.trim().lowercase() !in SIZES) {
+                problems += "第 " + n + " 张卡片的 titleSize 是「" + slot.titleSize +
+                    "」，只能从这几个里挑：" + SIZES.joinToString("、")
+            }
+            val stat = slot.stat
+            if (stat != null && stat.value.isBlank()) {
+                problems += "第 " + n + " 张卡片的 stat 没写 value（要显示的数字）"
+            }
+            val progress = slot.progress
+            if (progress != null && progress.max.isBlank()) {
+                problems += "第 " + n + " 张卡片的 progress 没写 max（满格是多少）"
             }
         }
         rules.forEachIndexed { index, rule ->
@@ -291,6 +348,10 @@ data class AuthoredPlugin(
         const val MAX_BUTTONS = 2
         const val MAX_BUTTON_LABEL = 6
 
+        /** 语气与字号只能从这些词里挑，写错了自检当场报。 */
+        val TONES = setOf("default", "muted", "accent", "danger", "success")
+        val SIZES = setOf("small", "normal", "large")
+
         /**
          * `ai.` 前缀是**故意的**：所有模型生成的东西一眼可辨。
          * 用户想清掉 AI 造的东西时，按前缀筛就行。
@@ -319,6 +380,38 @@ data class AuthoredSlot(
      * 所以这是声明式插件唯一被允许动的那一下。
      */
     val actions: List<AuthoredAction> = emptyList(),
+    /** 标题/正文的语气与字号，只能从固定清单里挑。 */
+    val titleTone: String = "",
+    val titleSize: String = "",
+    val bodyTone: String = "",
+    /** 具名零件：一个数值、一条进度、几个标签。 */
+    val stat: AuthoredStat? = null,
+    val progress: AuthoredProgress? = null,
+    val badges: List<AuthoredBadge> = emptyList(),
+)
+
+/** 一个数值零件。value 可以写 {{ summary.dueToday }} 这种模板。 */
+@Serializable
+data class AuthoredStat(
+    val value: String = "",
+    val unit: String = "",
+    val label: String = "",
+    val tone: String = "",
+)
+
+/** 一条进度。value / max 都可以写模板。 */
+@Serializable
+data class AuthoredProgress(
+    val value: String = "0",
+    val max: String = "100",
+    val desc: String = "",
+)
+
+/** 一个状态标签。 */
+@Serializable
+data class AuthoredBadge(
+    val text: String = "",
+    val tone: String = "",
 )
 
 /** 一条规则：某个事件发生时，依次做这几件事。 */
@@ -347,4 +440,8 @@ data class AuthoredAction(
      * 卡片按钮必须写，而且很短 —— 长句子会从卡片里溢出去。
      */
     val label: String = "",
+    /** 按钮口吻：accent 是主操作，danger 会额外要求确认。 */
+    val tone: String = "",
+    /** 为什么按不了。空 = 能按。 */
+    val disabled: String = "",
 )

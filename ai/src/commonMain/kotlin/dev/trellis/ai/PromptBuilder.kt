@@ -133,7 +133,17 @@ object PromptBuilder {
             appendLine("卡片上拿不到任务 id，所以写不出「把这条任务标完成」—— 那需要知道是哪一条。")
             appendLine("能做的是不需要指定对象的事，比如新建一条。能不加按钮就别加：一个点了没反应的按钮比没有按钮更烦人。")
         }
-        appendLine("</what_you_can_use>")
+        appendLine("零件 —— 想让卡片长得像首页那排统计，别用一句话硬凑，用这些具名零件：")
+    appendLine("""  "stat": {"value": "{{ summary.dueToday }}", "unit": "项", "label": "今天到期"}""")
+    appendLine("""  "progress": {"value": "{{ summary.done }}", "max": "{{ summary.total }}", "label": "进度"}""")
+    appendLine("""  "badges": [{"text": "逾期", "tone": "danger"}]""")
+    appendLine("语气 titleTone / bodyTone / tone 只能从 default muted accent danger success 里挑；")
+    appendLine("字号 titleSize 只能从 small normal large 里挑。写别的词自检会当场退回。")
+    appendLine("按钮想突出就写 \"tone\": \"accent\"；暂时不能按时就写 \"disabled\": \"要先建一个任务\"——")
+    appendLine("只把按钮变灰不写原因，用户会以为程序坏了。")
+    appendLine()
+
+    appendLine("</what_you_can_use>")
         appendLine()
 
         appendLine("<how_to_decide>")

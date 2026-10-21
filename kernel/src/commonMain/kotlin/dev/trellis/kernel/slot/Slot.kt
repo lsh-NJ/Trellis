@@ -17,6 +17,43 @@ import dev.trellis.kernel.rule.ActionCall
 interface SlotContribution : OrderedContribution
 
 /**
+ * 卡片零件的语气。
+ *
+ * 是**语义**不是像素：插件说「这是坏消息」，由宿主决定坏消息长什么样。
+ * 深色模式、换主题、读屏软件都因此不用插件操心。
+ */
+enum class SlotTone { DEFAULT, MUTED, ACCENT, DANGER, SUCCESS }
+
+/** 字号档位。只有三档 —— 再多就等于让插件自己排版。 */
+enum class SlotTextSize { SMALL, NORMAL, LARGE }
+
+/** 一个数值：大数字 + 单位 + 说明。首页那排统计就是这个零件。 */
+data class SlotStat(
+    val value: String,
+    val unit: String = "",
+    val label: String = "",
+    val tone: SlotTone = SlotTone.DEFAULT,
+)
+
+/**
+ * 一条进度。
+ *
+ * [value] / [max] 是**模板片段**（可以是 `{{ summary.done }}`），
+ * 渲染时求值再转成数字。求不出来就画一条空进度，不抛异常。
+ */
+data class SlotProgress(
+    val value: String = "0",
+    val max: String = "100",
+    val label: String = "",
+)
+
+/** 一个状态标签：逾期 / 今天 / 完成。 */
+data class SlotBadge(
+    val text: String,
+    val tone: SlotTone = SlotTone.DEFAULT,
+)
+
+/**
  * 内容由**模板**生成的卡片，例如：
  *
  * ```
@@ -49,6 +86,21 @@ data class TemplateSlot(
      * 没有它，十个插件的 `self` 就只能抢一个位置。
      */
     val owner: PluginId? = null,
+    /** 标题的口吻与字号。默认就是普通标题。 */
+    val titleTone: SlotTone = SlotTone.DEFAULT,
+    val titleSize: SlotTextSize = SlotTextSize.NORMAL,
+    /** 正文口吻。次要说明用 MUTED，坏消息用 DANGER。 */
+    val bodyTone: SlotTone = SlotTone.DEFAULT,
+    /**
+     * 具名零件。
+     *
+     * 为什么要有它们：一张卡片想说「今天到期 3 项」，以前只能写成
+     * 「还有 3 项到期」这句话  而首页自己的统计栏是有样式的数字。
+     * 同一屏里两种语言，那才是真正的不统一。
+     */
+    val stat: SlotStat? = null,
+    val progress: SlotProgress? = null,
+    val badges: List<SlotBadge> = emptyList(),
 ) : SlotContribution
 
 /**
@@ -61,6 +113,14 @@ data class TemplateSlot(
 data class SlotAction(
     val label: String,
     val call: ActionCall,
+    /** 按钮口吻：primary 是主操作，danger 会额外要求二次确认（宿主统一加）。 */
+    val tone: SlotTone = SlotTone.DEFAULT,
+    /**
+     * 为什么这个按钮不能按。空 = 能按。
+     *
+     * 不写原因只把按钮变灰，用户只会以为程序坏了。
+     */
+    val disabledReason: String = "",
 )
 
 /** 纯文本贡献：控制台假渲染器用。用来验证装卸逻辑，不负责好看。 */
