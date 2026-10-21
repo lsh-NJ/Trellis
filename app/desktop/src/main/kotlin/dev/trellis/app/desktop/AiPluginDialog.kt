@@ -79,7 +79,7 @@ fun AiPluginDialog(
                 }
 
                 Text(
-                    "说一句你想要什么，它会生成一张卡片并直接装上。不满意可以在列表里删掉。",
+                    "说一句你想要什么，它会生成卡片或小应用并直接装上。不满意可以在列表里删掉。",
                     style = MaterialTheme.typography.bodySmall,
                 )
 
