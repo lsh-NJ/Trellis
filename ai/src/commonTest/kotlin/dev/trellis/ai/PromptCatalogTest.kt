@@ -22,6 +22,12 @@ class PromptCatalogTest {
         check(rule < prompt.indexOf("<when_to_write_code>")) { "路线判断应该排在写代码的教学前面" }
         assertTrue(prompt.contains("卡片没有输入框，也没有抽屉"), "要把原因说清楚，不然模型只记住结论")
         assertTrue(prompt.contains("统计我做过的事"), "要把「写东西」翻译成模型认得出的说法")
+        // 「没有这个字段」不是拒绝的理由，是该补一个能记的地方。
+        // 少了这一句，模型会用它自己的推理推出「做不到」，然后礼貌地交白卷。
+        assertTrue(
+            prompt.contains("那不算做不到，那是轮到你来补"),
+            "缺数据时要引导它去补，而不是引它去拒绝",
+        )
     }
     @Test
     fun everyActionShowsWhatItNeeds() {
