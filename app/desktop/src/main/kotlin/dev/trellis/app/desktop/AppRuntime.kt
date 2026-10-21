@@ -9,6 +9,7 @@ import dev.trellis.ai.CapabilityCatalog
 import dev.trellis.ai.HttpLlmClient
 import dev.trellis.ai.LlmClient
 import dev.trellis.ai.LlmConfigLoader
+import dev.trellis.ai.flow.AgentFlow
 import dev.trellis.ai.PluginAgent
 import dev.trellis.ai.ExistingPlugin
 import dev.trellis.domain.Plan
@@ -158,16 +159,16 @@ class AppRuntime private constructor() {
             val existing = kernel.liveCatalog().map {
                 ExistingPlugin(it.id.value, it.name, it.description)
             }
-            val agent = PluginAgent(
+            val flow = AgentFlow(
                 llm = llmOverride ?: HttpLlmClient(config),
                 catalog = catalog,
-                existing = existing,
                 installer = KernelPluginInstaller(pluginsDir, kernel),
+                existing = existing,
+                selfTest = PluginSelfTest(),
+                onEvent = { event -> agentLog = agentLog + describe(event) },
             )
             val outcome = try {
-                agent.run(request) { event ->
-                    agentLog = agentLog + describe(event)
-                }
+                flow.run(request)
             } catch (cancel: kotlinx.coroutines.CancellationException) {
                 throw cancel
             } catch (t: Throwable) {

@@ -74,6 +74,9 @@ class ScriptSandbox(
 
     fun declaredCards(): List<CardDecl> = synchronized(lock) { cards.toList() }
 
+    /** 注册了哪些点击处理函数。自检时要一个个点过去。 */
+    fun declaredHandlers(): List<String> = synchronized(lock) { handlers.keys.toList() }
+
     /** 跑一遍脚本，收下它注册的卡片和处理函数。 */
     fun boot() {
         call { cx ->
