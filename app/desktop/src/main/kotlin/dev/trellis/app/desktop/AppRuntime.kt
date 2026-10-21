@@ -190,8 +190,12 @@ class AppRuntime private constructor() {
             val tools = PluginTools(kernel, installer, selfTest, pluginsDir, catalog)
             agentLog = agentLog + "第 1 步：让它先查清楚环境，再动手写"
             val research = try {
-                ToolAgent(llm, tools.all, maxSteps = 10)
-                    .run(system + "\n\n" + tools.guidance, request) { line -> agentLog = agentLog + line }
+                ToolAgent(
+                    llm = llm,
+                    tools = tools.all,
+                    maxSteps = 10,
+                    beforeFinishing = { tools.reviewBeforeFinishing() },
+                ).run(system + "\n\n" + tools.guidance, request) { line -> agentLog = agentLog + line }
             } catch (cancel: kotlinx.coroutines.CancellationException) {
                 throw cancel
             } catch (t: Throwable) {
@@ -204,6 +208,11 @@ class AppRuntime private constructor() {
                 lastGenerated = buildPreview(PluginId(deployed))
                 refresh()
                 return AgentOutcome.Installed(deployed, 1)
+            }
+            if (research != null && research.refused) {
+                // 它主动说不做，就照它说的回话 —— 别再退回逐轮改写逼它硬造一个。
+                agentLog = agentLog + ("它没做。理由是：" + research.message)
+                return AgentOutcome.Refused(research.message, 1)
             }
             if (research != null && research.ok) {
                 // 它自己说做完了却没装 —— 那就是一次「老实说做不到」，原话给用户。
