@@ -17,6 +17,7 @@ import dev.trellis.domain.PlanSummary
 import dev.trellis.domain.Task
 import dev.trellis.domain.TaskStatus
 import dev.trellis.dsl.DslLoader
+import dev.trellis.script.ScriptLoader
 import dev.trellis.dsl.JvmPluginFileSystem
 import dev.trellis.feature.plan.PlanCorePlugin
 import dev.trellis.kernel.api.ActionOutcome
@@ -448,6 +449,7 @@ class AppRuntime private constructor() {
                     loaders = listOf(
                         BuiltinLoader(listOf(PlanCorePlugin(), QuickAddPlugin(), DangerZonePlugin())),
                         DslLoader(JvmPluginFileSystem()),
+                        ScriptLoader(JvmPluginFileSystem()),
                     ),
                     storage = FileStorageBackend(storeFile),
                     // 「删除」要真的动文件：移进 <plugins>/.trash，7 天后连数据一起清。

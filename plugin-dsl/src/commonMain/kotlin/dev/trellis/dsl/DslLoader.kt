@@ -116,6 +116,11 @@ class DslLoader(
             return null
         }
 
+        // 别的加载器的地盘，静默让路。
+        // 脚本插件的目录里也有 manifest.json，但不该在这里报它的错 ——
+        // 一个插件被别人的加载器当成坏文件，比不加载更糟。
+        if (raw.loader.trim() != SCHEME) return null
+
         // ---- 身份与版本：这几项缺了就没法继续，直接失败 ----
         val rawId = raw.id.trim()
         if (rawId.isEmpty()) {
