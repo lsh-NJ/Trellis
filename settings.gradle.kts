@@ -1,4 +1,4 @@
-pluginManagement {
+﻿pluginManagement {
     repositories {
         mavenCentral()
         // Google 的官方源在国内不通；Compose Multiplatform 依赖 androidx.lifecycle 等构件，
@@ -21,6 +21,7 @@ include(":kernel")
 include(":demo")
 include(":ai")
 include(":plugin-dsl")
+include(":plugin-script")
 include(":sdk-domain")
 include(":features:plan-core")
 include(":ui-kernel")

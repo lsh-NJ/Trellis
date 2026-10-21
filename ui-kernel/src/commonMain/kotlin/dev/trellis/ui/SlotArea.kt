@@ -27,6 +27,7 @@ import dev.trellis.kernel.extension.ExtensionRegistry
 import dev.trellis.kernel.slot.SlotAction
 import dev.trellis.kernel.slot.SlotContribution
 import dev.trellis.kernel.slot.TemplateSlot
+import dev.trellis.kernel.slot.DynamicSlot
 import dev.trellis.kernel.slot.TextSlot
 import kotlinx.coroutines.launch
 
@@ -110,6 +111,7 @@ private fun SlotCard(
                 is ComposeSlot -> contribution.content()
                 is TextSlot -> TextSlotView(contribution.title, contribution.body)
                 is TemplateSlot -> TemplateSlotView(registry, contribution, refreshKey, onAction)
+                is DynamicSlot -> DynamicSlotView(contribution, refreshKey, onAction)
                 else -> Text("此卡片类型当前未接入界面", style = MaterialTheme.typography.bodySmall)
             }
         }

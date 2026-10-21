@@ -395,6 +395,7 @@ private fun stateLabel(state: PluginState): String = when (state) {
 private fun loaderLabel(loader: String): String = when (loader) {
     "builtin" -> "内置（编译进应用）"
     "dsl" -> "声明式（磁盘上的 JSON）"
+    "script" -> "脚本（会跑的代码，关在沙箱里）"
     "catalog" -> "目录"
     else -> loader
 }

@@ -1,0 +1,18 @@
+{
+  "id": "dev.mistakes",
+  "version": "1.0.0",
+  "name": "错题本",
+  "description": "把做错的题记下来，随时看看攒了多少。",
+  "usage": "在首页，输入框里写一道错题，按记下；右边的删掉可以去掉。",
+  "limitation": "",
+  "loader": "script",
+  "entry": "main.js",
+  "capabilities": [],
+  "contributes": {
+    "slot.home.section": [
+      {
+        "id": "notebook"
+      }
+    ]
+  }
+}

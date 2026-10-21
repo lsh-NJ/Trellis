@@ -15,6 +15,7 @@ dependencies {
     implementation(project(":sdk-domain"))
     implementation(project(":features:plan-core"))
     implementation(project(":plugin-dsl"))
+    implementation(project(":plugin-script"))
     implementation(compose.desktop.currentOs)
     implementation(compose.material3)
     implementation(libs.kotlinx.coroutines.core)
