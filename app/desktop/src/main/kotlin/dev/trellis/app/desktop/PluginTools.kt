@@ -1,6 +1,8 @@
 package dev.trellis.app.desktop
 
 import dev.trellis.ai.AuthoredPlugin
+import dev.trellis.ai.AuthoredScript
+import dev.trellis.ai.ScriptCardDecl
 import dev.trellis.ai.CapabilityCatalog
 import dev.trellis.ai.flow.Issue
 import dev.trellis.ai.tool.AgentTool
@@ -8,9 +10,13 @@ import dev.trellis.ai.tool.ToolResult
 import dev.trellis.kernel.api.Kernel
 import dev.trellis.kernel.core.PluginId
 import dev.trellis.kernel.core.SemVer
+import dev.trellis.script.ScriptSandbox
 import dev.trellis.kernel.event.EventDeclaration
 import dev.trellis.kernel.extension.KernelPoints
 import java.io.File
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -68,9 +74,25 @@ class PluginTools(
         Deploy(),
     )
 
-    /** 把模型给的 JSON 当成插件草稿读进来。读不出来就是一条能照着改的话。 */
+    /**
+     * 把模型给的 JSON 当成插件草稿读进来。读不出来就是一条能照着改的话。
+     *
+     * 两种草稿：带 script 字段的是「会跑的小应用」，其余是声明式卡片。
+     * 用字段而不是 kind 来区分，是因为少一个字段就少一次它写错的机会。
+     */
     private fun draftOf(arguments: JsonObject): Any {
         val raw = (arguments["plugin"] as? JsonObject) ?: arguments
+        if (raw["script"] != null) {
+            val script = try {
+                json.decodeFromString<AuthoredScript>(raw.toString())
+            } catch (t: Throwable) {
+                return "这份脚本插件 JSON 读不进来：" + (t.message ?: "格式不对") +
+                    "。字段只有 id / name / description / usage / limitation / capabilities / script。"
+            }
+            val problems = script.validate()
+            if (problems.isNotEmpty()) return problems
+            return script
+        }
         val authored = try {
             json.decodeFromString<AuthoredPlugin>(raw.toString())
         } catch (t: Throwable) {
@@ -80,6 +102,52 @@ class PluginTools(
         val problems = authored.validate(catalog)
         if (problems.isNotEmpty()) return problems
         return authored
+    }
+
+    /** 一份草稿变成了真要落盘的文件。 */
+    private class Prepared(
+        val files: Map<String, String>,
+        val capabilities: Set<String>,
+    )
+
+    private fun idOf(draft: Any): String = when (draft) {
+        is AuthoredPlugin -> draft.id
+        is AuthoredScript -> draft.id
+        else -> ""
+    }
+
+    /**
+     * 把草稿变成文件。
+     *
+     * 脚本草稿必须**先真跑一遍**：manifest 里的 contributes 要让宿主数出
+     * 脚本实际注册了哪些卡片，而不是听模型自己说。模型说「我挂了三张」而
+     * 实际只注册了一张，这种谎言只有跑一遍才看得见。
+     */
+    private suspend fun prepare(draft: Any): Any {
+        if (draft is AuthoredPlugin) {
+            return Prepared(draft.toFiles(catalog), draft.capabilities(catalog))
+        }
+        val script = draft as AuthoredScript
+        val sandbox = ScriptSandbox(pluginId = script.id, source = script.script)
+        val cards = try {
+            withContext(Dispatchers.Default) { sandbox.boot() }
+            sandbox.declaredCards().map { ScriptCardDecl(it.id, it.pointId) }
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (t: Throwable) {
+            return listOf("脚本跑不起来：" + (t.message ?: "未知错误"))
+        } finally {
+            runCatching { sandbox.close() }
+        }
+        if (cards.isEmpty()) return listOf("脚本里一张卡片都没注册，装上不会有任何东西")
+        val unknown = cards.filter { it.pointId !in catalog.mountPointIds }
+        if (unknown.isNotEmpty()) {
+            return listOf(
+                "卡片挂到了不存在的位置：" + unknown.joinToString("、") { it.pointId } +
+                    "。能用的是：" + catalog.mountPointIds.sorted().joinToString("、"),
+            )
+        }
+        return Prepared(script.toFiles(cards), script.capabilities.toSet())
     }
 
     private inner class ListPlugins : AgentTool {
@@ -164,11 +232,12 @@ class PluginTools(
             val draft = draftOf(arguments)
             if (draft is String) return ToolResult(draft, isError = true)
             if (draft is List<*>) return ToolResult(draft.joinToString("\n"), isError = true)
-            val authored = draft as AuthoredPlugin
-            val issues: List<Issue> = selfTest.test(authored.toFiles(catalog))
+            val prepared = prepare(draft)
+            if (prepared is List<*>) return ToolResult(prepared.joinToString("\n"), isError = true)
+            val files = (prepared as Prepared).files
+            val issues: List<Issue> = selfTest.test(files)
             if (issues.isEmpty()) {
-                return ToolResult("跑通了，没有报错。卡片：" + authored.slots.size + " 张，" +
-                    "规则：" + authored.rules.size + " 条。")
+                return ToolResult("跑通了，没有报错。生成的文件：" + files.keys.joinToString("、"))
             }
             return ToolResult(issues.joinToString("\n") { it.render() }, isError = true)
         }
@@ -205,22 +274,23 @@ class PluginTools(
             val draft = draftOf(arguments)
             if (draft is String) return ToolResult(draft, isError = true)
             if (draft is List<*>) return ToolResult(draft.joinToString("\n"), isError = true)
-            val authored = draft as AuthoredPlugin
-
-            val files = bumpIfUpdating(authored.id, authored.toFiles(catalog))
+            val prepared = prepare(draft)
+            if (prepared is List<*>) return ToolResult(prepared.joinToString("\n"), isError = true)
+            val ready = prepared as Prepared
+            val files = bumpIfUpdating(idOf(draft), ready.files)
             val issues = selfTest.test(files)
             if (issues.isNotEmpty()) {
                 return ToolResult("自查没过，没有装：\n" + issues.joinToString("\n") { it.render() }, isError = true)
             }
 
-            val grant = installer.ensureGrants(authored.id, authored.capabilities(catalog))
+            val grant = installer.ensureGrants(idOf(draft), ready.capabilities)
             if (grant != null) return ToolResult(grant, isError = true)
 
             val failure = installer.install(files)
             if (failure != null) return ToolResult("装失败：" + failure, isError = true)
 
-            deployedId = authored.id
-            return ToolResult("装好了：" + authored.id, done = true)
+            deployedId = idOf(draft)
+            return ToolResult("装好了：" + idOf(draft), done = true)
         }
     }
 }
