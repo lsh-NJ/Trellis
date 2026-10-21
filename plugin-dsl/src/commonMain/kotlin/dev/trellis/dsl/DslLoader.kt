@@ -215,6 +215,21 @@ private data class LoaderProbe(val loader: String = "")
                 slotProblems++
             }
 
+            // 占位符写成 {{ pages }} 这种，渲染时换不出来，会原样印在卡片上。
+            // 与其让用户看见两对花括号，不如装的时候就告诉他该写什么。
+            listOf("标题" to slot.title, "正文" to slot.body).forEach { (what, text) ->
+                val bad = badPlaceholders(text)
+                if (bad.isNotEmpty()) {
+                    errors += reject(
+                        pluginId,
+                        where + " 的" + what + "里有换不出来的占位符：" +
+                            bad.joinToString { "{{ " + it + " }}" } +
+                            "；引用要写成 命名空间.字段，例如 {{ summary.done }}、{{ self.画好的字段名 }}",
+                    )
+                    slotProblems++
+                }
+            }
+
             // 按钮：声明式插件唯一能「做事」的入口，所以更要卡死。
             // 没写动作名的按钮点下去只会得到一句「没有这个动作」，那还不如不装。
             slot.actions.forEachIndexed { buttonIndex, button ->
@@ -408,6 +423,24 @@ private data class LoaderProbe(val loader: String = "")
         }
     }
 }
+
+/** 占位符必须是「命名空间.字段」，否则渲染时换不出来。 */
+private fun badPlaceholders(text: String): List<String> {
+    val out = mutableListOf<String>()
+    var from = 0
+    while (true) {
+        val open = text.indexOf("{{", from)
+        if (open < 0) break
+        val close = text.indexOf("}}", open + 2)
+        if (close < 0) break
+        val body = text.substring(open + 2, close).trim()
+        if (!PLACEHOLDER_PATH.matches(body)) out += body
+        from = close + 2
+    }
+    return out
+}
+
+private val PLACEHOLDER_PATH = Regex("^[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z_][A-Za-z0-9_.]*$")
 
 private fun containsPlaceholder(text: String): Boolean =
     text.contains("{{") && text.contains("}}")

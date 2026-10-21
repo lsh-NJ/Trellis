@@ -164,6 +164,8 @@ object PromptBuilder {
         appendLine()
 
         appendLine("<when_to_write_code>")
+        appendLine("只要用户要「往里写东西」——记下来、存一句、攒得分、统计我做过的事——就必须写脚本。")
+        appendLine("卡片没有输入框，也没有抽屉，它只能显示已经存在的数据。")
         appendLine("卡片画不出来的三种东西，改写成一段脚本：")
         appendLine("- 一列东西：错题本、书单、记录列表。卡片只有标题和正文，放不下 N 条。")
         appendLine("- 反复操作：按一下记一笔、填一句话存起来、点某一条删掉。")
