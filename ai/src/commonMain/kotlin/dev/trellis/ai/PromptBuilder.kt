@@ -149,7 +149,7 @@ object PromptBuilder {
         appendLine("<how_to_decide>")
         appendLine("动手之前先答一个问题：用户要不要往里写东西？")
         appendLine("- 要：记下来、存一句、加一笔、攒得分、统计我做过的事、列出历史、删掉其中一条 ——")
-        appendLine("  只要沾上其中一样，就必须写脚本。卡片没有输入框，也没有抽屉，它存不下任何东西。")
+        appendLine("  只要沾上其中一样，就必须写脚本 —— 只写 JSON、不写代码的卡片没有输入框，也没有抽屉，它存不下任何东西。")
         appendLine("- 不要：只是把已经有的数据拿出来显示、换个说法 —— 那就用卡片。")
         appendLine()
         appendLine("要是走到一半发现「显示不出来」的原因是这东西现在压根没人记 —— 没有这个字段、")
@@ -175,7 +175,7 @@ object PromptBuilder {
 
         appendLine("<when_to_write_code>")
         appendLine("只要用户要「往里写东西」——记下来、存一句、攒得分、统计我做过的事——就必须写脚本。")
-        appendLine("卡片没有输入框，也没有抽屉，它只能显示已经存在的数据。")
+        appendLine("只写 JSON、不写代码的卡片没有输入框，也没有抽屉，它只能显示已经存在的数据。")
         appendLine("卡片画不出来的三种东西，改写成一段脚本：")
         appendLine("- 一列东西：错题本、书单、记录列表。卡片只有标题和正文，放不下 N 条。")
         appendLine("- 反复操作：按一下记一笔、填一句话存起来、点某一条删掉。")
@@ -187,13 +187,15 @@ object PromptBuilder {
         appendLine("  trellis.register({ cards: [{ id: \"名字\", point: \"挂载点 id\", order: 100, render: render }], on: { 名字: 处理函数 } });")
         appendLine("- render(data) 返回界面树，节点只有这几种：")
         appendLine("  column / row（children 数组，gap 数字）、text（text 字符串，style 可选 title|body|caption）、")
-        appendLine("  button（label 字符串，on 处理函数名）、input（hint 字符串，submit 处理函数名）、")
+        appendLine("  button（label 字符串，on 处理函数名）、input（hint 提示语，submitLabel 按钮文字，on 处理函数名）、")
         appendLine("  notice（text 字符串，没数据时用）、divider")
-        appendLine("- 处理函数 function(payload) 返回 { say, save, remove }：")
+        appendLine("- 处理函数 function(data, payload) 返回 { say, save, remove }：")
         appendLine("  say 是给人看的一句话；save 是要写进本插件抽屉的键值对；remove 是要删掉的键数组。")
         appendLine("  你只能说要存什么，真正落盘的是宿主。")
         appendLine("- data 里有：now、dayStart、dayEnd、summary{total,done,doing,todo,overdue,dueToday,spentMinutes}、")
         appendLine("  tasks[{id,title,status,spentMinutes}]、store{...}（本插件自己存过的键值）。")
+        appendLine("- 没有现成的「本周」「最近七天」这种口径 —— 那是你自己算的：now 是毫秒时间戳，")
+        appendLine("  Math.floor(now / 86400000) 就是天序号。按天存，把最近七天的加起来，很简单。")
         appendLine("- 想让别处（比如规则）也能调用你：register 里加 actions: [{ id: \"名字\", label: \"给人看的名\", params: [\"参数名\"] }]，")
         appendLine("  同名的处理函数就是它的实现。它之后会以 script.<你的 id>.<名字> 出现在动作清单里。")
         appendLine("- 跑超过 1.5 秒会被掐断，所以不要写死循环。")
@@ -277,6 +279,12 @@ object PromptBuilder {
         appendLine("</example>")
         appendLine("这个必须拒绝：排序改期做不到，退成「显示今天到期几项」又只是把界面上的数字抄一遍，")
         appendLine("用户看不出任何新东西。抄一遍的数字不算交付。")
+        appendLine("<example>")
+        appendLine("<input>" + "我想记下每天做了几个俯卧撑，看这周一共做了多少" + "</input>")
+        appendLine("<output>" + EXAMPLE_SCRIPT + "</output>")
+        appendLine("</example>")
+        appendLine("一个输入框、一个抽屉、一次七天求和，这就是「小应用」。")
+        appendLine("注意 input 用的是 submitLabel 和 on，处理函数收两个参数。")
         appendLine("</examples>")
     }
 
@@ -284,6 +292,16 @@ object PromptBuilder {
 
     // 例子单独拿出来：它们是**模型模仿的模板**，改的时候要格外小心。
     // 每个例子负责教一件事，别把两个教训塞进一个例子里。
+    /**
+     * 脚本例子：输入框 + 自己的抽屉 + 一次七天求和。
+     *
+     * 用 Kotlin 原始字符串写，JSON 里该有的反斜杠一个不少。
+     * 它由 app/desktop 的 PromptExampleTest 钉在真沙箱上跑一遍 —— 跑不起来的例子比没有更坏。
+     */
+    val EXAMPLE_SCRIPT = """
+{"id":"ai.pushups","name":"俯卧撑记账","description":"每天记一笔，看这周一共多少","howToUse":"在首页填个数按记一笔，数字会跟着变","capabilities":["read_data","write_data"],"script":"function dayIndex(ms) { return Math.floor(ms / 86400000); } function sumDays(data, from, to) { var t = 0; for (var k in data.store) { var i = Number(k.substring(2)); if (i >= from && i <= to) { t += Number(data.store[k]) || 0; } } return t; } function render(data) { var d = dayIndex(data.now); return { type: \"column\", gap: 6, children: [ { type: \"text\", text: \"这周 \" + sumDays(data, d - 6, d) + \" 个\", style: \"title\" }, { type: \"text\", text: \"今天 \" + (Number(data.store[\"p:\" + d]) || 0) + \" 个\", style: \"caption\" }, { type: \"input\", hint: \"今天做了几个\", submitLabel: \"记一笔\", on: \"add\" } ] }; } function add(data, payload) { var n = Number(payload.value); if (!payload.value || isNaN(n) || n <= 0) { return { say: \"填个正数才记得住\" }; } var d = dayIndex(data.now); var key = \"p:\" + d; var save = {}; save[key] = String((Number(data.store[key]) || 0) + n); return { say: \"记下了，这周一共 \" + sumDays(data, d - 6, d) + \" 个\", save: save }; } trellis.register({ cards: [{ id: \"pushups\", point: \"slot.home.section\", order: 20, render: render }], on: { add: add } });"}
+""".trim()
+
     private const val EXAMPLE_SIMPLE =
         """{"id":"ai.today","name":"今日待办","description":"一眼看到今天还剩多少事","howToUse":"进应用就能看到，在统计数字下面","slots":[{"point":"slot.home.section","title":"今天","body":"还有 {{ summary.dueToday }} 项今天到期，{{ summary.overdue }} 项已经逾期"}]}"""
 
