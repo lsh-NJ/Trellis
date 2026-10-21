@@ -15,6 +15,8 @@ sealed interface AgentStep {
     data class UseTool(val name: String, val arguments: JsonObject) : AgentStep
     data class Reply(val text: String) : AgentStep
     data class Malformed(val reason: String) : AgentStep
+    /** 它明确说不做，并给出理由。和「做完了」是两件事，界面上说的话也不同。 */
+    data class Refuse(val reason: String) : AgentStep
 }
 
 /** 一整轮跑完的结果。 */
@@ -23,6 +25,8 @@ data class ToolRun(
     val message: String,
     /** 每一步都在这：谁调了谁、返回了什么。给界面看，也给人查。 */
     val transcript: List<String>,
+    /** 它是主动说不做（cannotDo），不是没做成。这两种在界面上说的话不一样。 */
+    val refused: Boolean = false,
 )
 
 /**
@@ -47,6 +51,13 @@ class ToolAgent(
     private val llm: LlmClient,
     private val tools: List<AgentTool>,
     private val maxSteps: Int = 8,
+    /**
+     * 它说「做完了」之前的最后一道检查。返回一句话就是要它接着干，返回 null 就是放行。
+     *
+     * 存在的理由：模型会理直气壮地说「已经装好了，不用再动」，而其实这一轮它一个文件都没写。
+     * 这种话不能只靠提示词防 —— 得在它交活的时候真的去核对。
+     */
+    private val beforeFinishing: () -> String? = { null },
 ) {
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -65,7 +76,10 @@ class ToolAgent(
         appendLine("""{"tool": "工具名", "arguments": {...}}""")
         appendLine("全部做完了（或者你判断做不了），就输出：")
         appendLine("""{"done": true, "message": "一句给用户看的话"}""")
-        appendLine("除了这两种 JSON，不要输出任何别的东西。")
+        appendLine("如果你判断这件事做不了、或者不该做，就输出：")
+        appendLine("""{"cannotDo": "一句说清为什么的话"}""")
+        appendLine("只有真的做了事（装上了、停用了、删掉了）才能说 done；只是「我觉得它应该已经有了」不算。")
+        appendLine("除了这三种 JSON，不要输出任何别的东西。")
         appendLine("</tools>")
     }
 
@@ -97,8 +111,19 @@ class ToolAgent(
 
             when (val parsed = parse(reply)) {
                 is AgentStep.Reply -> {
-                    note("第 " + step + " 步：它说完了")
-                    return ToolRun(true, parsed.text, transcript)
+                    val complaint = beforeFinishing()
+                    if (complaint != null) {
+                        note("第 " + step + " 步：它说完了，但 " + complaint)
+                        messages += LlmMessage(LlmRole.User, complaint)
+                    } else {
+                        note("第 " + step + " 步：它说完了")
+                        return ToolRun(true, parsed.text, transcript)
+                    }
+                }
+
+                is AgentStep.Refuse -> {
+                    note("第 " + step + " 步：它说不做 —— " + parsed.reason)
+                    return ToolRun(false, parsed.reason, transcript, refused = true)
                 }
 
                 is AgentStep.Malformed -> {
@@ -152,6 +177,9 @@ class ToolAgent(
             return AgentStep.Malformed("JSON 语法不对")
         }
 
+        val cannotDo = obj["cannotDo"]?.jsonPrimitive?.contentOrNullSafe()
+        if (cannotDo != null && cannotDo.isNotBlank()) return AgentStep.Refuse(cannotDo)
+
         val done = obj["done"]?.jsonPrimitive?.booleanOrNull == true
         if (done) {
             val message = obj["message"]?.jsonPrimitive?.contentOrNullSafe() ?: "做完了"
@@ -159,7 +187,7 @@ class ToolAgent(
         }
 
         val name = obj["tool"]?.jsonPrimitive?.contentOrNullSafe()
-            ?: return AgentStep.Malformed("既没有 tool 也没有 done")
+            ?: return AgentStep.Malformed("既没有 tool，也没有 done，也没有 cannotDo")
         val args = obj["arguments"] as? JsonObject ?: JsonObject(emptyMap())
         return AgentStep.UseTool(name, args)
     }

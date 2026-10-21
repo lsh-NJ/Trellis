@@ -52,6 +52,23 @@ class PluginTools(
     var deployedId: String? = null
         private set
 
+    /** 这一轮到底动过手没有：装了、停用了、删掉了都算。只有「看了看」不算。 */
+    private var acted: Boolean = false
+
+    /**
+     * 它说「做完了」之前的核对。
+     *
+     * 模型会理直气壮地说「这个插件已经装好了，不用再动」，而这一轮它一个文件都没写 ——
+     * 它只是 list_plugins 看了一眼，然后把自己刚才的话当成了事实。
+     * 这种话靠提示词防不住，得在交活的时候真的去核对。
+     */
+    fun reviewBeforeFinishing(): String? {
+        if (acted) return null
+        return "你这一轮只看了看，没有装、也没有改，所以不能说「已经装好了」。" +
+            "要么现在就用 try_plugin 试跑、再用 deploy 装上去；" +
+            "要么用 cannotDo 说清楚为什么不做。"
+    }
+
     private val json = Json { ignoreUnknownKeys = true }
 
     /**
@@ -64,7 +81,8 @@ class PluginTools(
         "2. 要改一个已装的插件：read_plugin 把它的文件读回来，在原文上改，再 deploy 同一个 id。不要用新 id 另写一个近似的东西。",
         "3. 要写新的：先 try_plugin 试跑，报错就改，跑通了再 deploy。",
         "4. 用户说某个插件不要了：remove_plugin 删掉它（进回收站，七天内能还原）；只是暂时不想用就用 disable_plugin。内置插件删不掉，别白试。",
-        "5. 做不到就老实说：输出 done，在 message 里写明卡在哪。不要装一个做不到的东西。",
+        "5. 做不到就老实说：输出 cannotDo，写清卡在哪。不要装一个做不到的东西。",
+        "6. 没说 done 之前不要编事实：你只知道自己调工具看到的东西，「应该已经装好了」不是依据。",
         "</how_to_work>",
     ).joinToString("\n")
 
@@ -242,7 +260,10 @@ class PluginTools(
             val id = arguments["id"]?.jsonPrimitive?.content?.trim().orEmpty()
             if (id.isBlank()) return ToolResult("没给 id，先用 list_plugins 看现在有哪些", isError = true)
             return when (val result = kernel.disable(PluginId(id))) {
-                is UninstallResult.Uninstalled -> ToolResult("停用了：" + id + "。数据留着，随时能启用。")
+                is UninstallResult.Uninstalled -> {
+                    acted = true
+                    ToolResult("停用了：" + id + "。数据留着，随时能启用。")
+                }
                 is UninstallResult.Rejected -> ToolResult("停不掉：" + result.error.detail, isError = true)
                 else -> ToolResult("这个插件现在停不了：" + id, isError = true)
             }
@@ -333,6 +354,7 @@ class PluginTools(
             if (failure != null) return ToolResult("装失败：" + failure, isError = true)
 
             deployedId = idOf(draft)
+            acted = true
             return ToolResult("装好了：" + idOf(draft), done = true)
         }
     }
