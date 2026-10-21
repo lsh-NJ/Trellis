@@ -43,9 +43,13 @@ import kotlinx.coroutines.launch
  * 否则失败了就是个黑盒。
  */
 @Composable
-fun AiPluginDialog(runtime: AppRuntime, onClose: () -> Unit) {
+fun AiPluginDialog(
+    runtime: AppRuntime,
+    initialRequest: String = "",
+    onClose: () -> Unit,
+) {
     val scope = rememberCoroutineScope()
-    var request by remember { mutableStateOf("") }
+    var request by remember { mutableStateOf(initialRequest) }
     var verdict by remember { mutableStateOf<String?>(null) }
 
     Dialog(onDismissRequest = { if (!runtime.agentBusy) onClose() }) {
@@ -55,7 +59,10 @@ fun AiPluginDialog(runtime: AppRuntime, onClose: () -> Unit) {
             modifier = Modifier.width(620.dp),
         ) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("让 AI 写一个插件", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    if (initialRequest.isBlank()) "让 AI 写一个插件" else "让 AI 改一个插件",
+                    style = MaterialTheme.typography.titleMedium,
+                )
 
                 if (!runtime.llmConfigured()) {
                     // 没配 key 不是错误，是「还没开始用这个功能」。

@@ -11,6 +11,8 @@ import dev.trellis.ai.LlmClient
 import dev.trellis.ai.LlmConfigLoader
 import dev.trellis.ai.flow.AgentFlow
 import dev.trellis.ai.PluginAgent
+import dev.trellis.ai.tool.ToolAgent
+import dev.trellis.ai.PromptBuilder
 import dev.trellis.ai.ExistingPlugin
 import dev.trellis.domain.Plan
 import dev.trellis.domain.PlanService
@@ -135,6 +137,20 @@ class AppRuntime private constructor() {
      * 而不用发一次网络请求、也不用一个真 key。
      */
     internal var llmOverride: LlmClient? = null
+        set(value) {
+            field = value
+            // 假模型只会背台词，不会调工具。换上假模型就默认把「先查环境」关掉，
+            // 否则它会把背好的第一条台词当成格式错误，白白吃掉一次机会。
+            if (value != null) researchFirst = false
+        }
+
+    /**
+     * 生成插件时，先让它用工具把环境查清楚。
+     *
+     * 关掉就是直接盲写（老路）。留着这个开关是因为两条路都真的能用，
+     * 而且盲写那条在假模型下更好测。
+     */
+    internal var researchFirst: Boolean = true
 
     /** 有没有配模型 key。没配时界面给配置指引，而不是让它失败。 */
     fun llmConfigured(): Boolean = LlmConfigLoader.load(home) != null
@@ -159,12 +175,67 @@ class AppRuntime private constructor() {
             val existing = kernel.liveCatalog().map {
                 ExistingPlugin(it.id.value, it.name, it.description)
             }
+            val llm = llmOverride ?: HttpLlmClient(config)
+            val installer = KernelPluginInstaller(pluginsDir, kernel)
+            val selfTest = PluginSelfTest()
+            val system = PromptBuilder.system(catalog, existing)
+
+            if (!researchFirst) {
+                return authorByTrial(config, request, catalog, existing, installer, selfTest, llm)
+            }
+
+            // 第一步：让它自己动手查一遍。
+            // 以前是「问一句、盲写一段」，它看不见已装插件、看不见有哪些事件和动作，
+            // 只能猜。现在它可以用工具把环境问清楚，写完还能先试跑。
+            val tools = PluginTools(kernel, installer, selfTest, pluginsDir, catalog)
+            agentLog = agentLog + "第 1 步：让它先查清楚环境，再动手写"
+            val research = try {
+                ToolAgent(llm, tools.all, maxSteps = 10)
+                    .run(system + "\n\n" + tools.guidance, request) { line -> agentLog = agentLog + line }
+            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                throw cancel
+            } catch (t: Throwable) {
+                agentLog = agentLog + ("查环境这一步出错：" + (t.message ?: "未知错误"))
+                null
+            }
+
+            val deployed = tools.deployedId
+            if (deployed != null) {
+                lastGenerated = buildPreview(PluginId(deployed))
+                refresh()
+                return AgentOutcome.Installed(deployed, 1)
+            }
+            if (research != null && research.ok) {
+                // 它自己说做完了却没装 —— 那就是一次「老实说做不到」，原话给用户。
+                agentLog = agentLog + ("它没有装。理由是：" + research.message)
+                return AgentOutcome.Refused(research.message, 1)
+            }
+
+            // 第二步：查环境没成，退回逐轮改写的老路。两条路都在，比赌一条强。
+            agentLog = agentLog + "改用逐轮改写：写完自查，不过就重来"
+            return authorByTrial(config, request, catalog, existing, installer, selfTest, llm)
+        } finally {
+            agentBusy = false
+        }
+    }
+
+    /** 逐轮改写：写完自查，不过就把问题原样喂回去重来。 */
+    private suspend fun authorByTrial(
+        config: dev.trellis.ai.LlmConfig,
+        request: String,
+        catalog: CapabilityCatalog,
+        existing: List<ExistingPlugin>,
+        installer: KernelPluginInstaller,
+        selfTest: PluginSelfTest,
+        llm: LlmClient,
+    ): AgentOutcome {
+        try {
             val flow = AgentFlow(
-                llm = llmOverride ?: HttpLlmClient(config),
+                llm = llm,
                 catalog = catalog,
-                installer = KernelPluginInstaller(pluginsDir, kernel),
+                installer = installer,
                 existing = existing,
-                selfTest = PluginSelfTest(),
+                selfTest = selfTest,
                 onEvent = { event -> agentLog = agentLog + describe(event) },
             )
             val outcome = try {

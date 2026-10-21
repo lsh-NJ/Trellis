@@ -23,6 +23,11 @@ import dev.trellis.kernel.plugin.PluginManifest
 import dev.trellis.kernel.plugin.PluginRequirement
 import dev.trellis.kernel.slot.Slots
 import dev.trellis.kernel.slot.SlotAction
+import dev.trellis.kernel.slot.SlotBadge
+import dev.trellis.kernel.slot.SlotProgress
+import dev.trellis.kernel.slot.SlotStat
+import dev.trellis.kernel.slot.SlotTextSize
+import dev.trellis.kernel.slot.SlotTone
 import dev.trellis.kernel.slot.TemplateSlot
 import dev.trellis.kernel.slot.TextSlot
 import dev.trellis.kernel.spi.DiscoveredPlugin
@@ -430,7 +435,8 @@ private class DslPlugin(
             // 让它永远不刷新，比每秒白跑一遍求值器更诚实。
             // 有按钮的卡片必须是 TemplateSlot  TextSlot 装不下按钮。
             val card = if (
-                slot.actions.isNotEmpty() ||
+                slot.actions.isNotEmpty() || slot.stat != null ||
+                slot.progress != null || slot.badges.isNotEmpty() ||
                 containsPlaceholder(slot.title) || containsPlaceholder(slot.body)
             ) {
                 TemplateSlot(
@@ -440,9 +446,26 @@ private class DslPlugin(
                     body = slot.body,
                     actions = slot.actions.map {
                         val name = it.action.trim()
-                        SlotAction(it.label.trim().ifEmpty { name }, ActionCall(name, it.args))
+                        val tone = toneOf(it.tone)
+                        if (tone == SlotTone.DEFAULT && !it.tone.isBlank() && it.tone.trim() != "default") {
+                            ctx.log("按钮 " + name + " 的语气 " + it.tone + " 不认识，按 default 画")
+                        }
+                        SlotAction(
+                            label = it.label.trim().ifEmpty { name },
+                            call = ActionCall(name, it.args),
+                            tone = tone,
+                            disabledReason = it.disabled.trim(),
+                        )
                     },
                     owner = ctx.id,
+                    titleTone = toneOf(slot.titleTone),
+                    titleSize = sizeOf(slot.titleSize),
+                    bodyTone = toneOf(slot.bodyTone),
+                    stat = slot.stat?.let {
+                        SlotStat(it.value, it.unit, it.label, toneOf(it.tone))
+                    },
+                    progress = slot.progress?.let { SlotProgress(it.value, it.max, it.label) },
+                    badges = slot.badges.map { SlotBadge(it.text, toneOf(it.tone)) },
                 )
             } else {
                 TextSlot(slot.id, slot.order, slot.title, slot.body)
@@ -457,3 +480,24 @@ private class DslPlugin(
 
 /** 规则条件里唯一允许的引用前缀。 */
 private const val CONDITION_EVENT_PREFIX = "event."
+
+/**
+ * 语气名字 -> 枚举。
+ *
+ * 不认识的一律按默认画，同时由调用方记一条日志。
+ * 为什么不直接报错：一个拼错的颜色不该让整个插件装不上；
+ * 但也不能悄悄降级  所以日志必须写出来。
+ */
+private fun toneOf(raw: String): SlotTone = when (raw.trim().lowercase()) {
+    "muted" -> SlotTone.MUTED
+    "accent" -> SlotTone.ACCENT
+    "danger" -> SlotTone.DANGER
+    "success" -> SlotTone.SUCCESS
+    else -> SlotTone.DEFAULT
+}
+
+private fun sizeOf(raw: String): SlotTextSize = when (raw.trim().lowercase()) {
+    "small" -> SlotTextSize.SMALL
+    "large" -> SlotTextSize.LARGE
+    else -> SlotTextSize.NORMAL
+}

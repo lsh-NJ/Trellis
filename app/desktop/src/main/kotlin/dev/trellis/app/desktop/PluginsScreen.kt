@@ -52,10 +52,16 @@ fun PluginsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     val scope = rememberCoroutineScope()
     var expanded by remember { mutableStateOf(emptySet<String>()) }
     var aiDialog by remember { mutableStateOf(false) }
+    // 正在改哪个插件。非空表示这次打开对话框是「改」，不是「新写」。
+    var editing by remember { mutableStateOf<String?>(null) }
 
     // Dialog 自己开一个窗口，放在哪儿都行，所以搁在最前面
     if (aiDialog) {
-        AiPluginDialog(runtime) { aiDialog = false }
+        AiPluginDialog(
+            runtime = runtime,
+            initialRequest = editing?.let { "改造插件 " + it + "：" } ?: "",
+            onClose = { aiDialog = false; editing = null },
+        )
     }
 
     Column(modifier) {
@@ -98,6 +104,7 @@ fun PluginsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                     onGrant = {
                         scope.launch { runtime.grantAndReload(info.manifest.id, declared) }
                     },
+                    onEdit = { editing = id; aiDialog = true },
                     onDisable = { scope.launch { runtime.disablePlugin(id) } },
                     onRemove = { scope.launch { runtime.removePlugin(id) } },
                 )
@@ -241,6 +248,7 @@ private fun PluginCard(
     declared: Set<CapabilityId>,
     granted: Set<CapabilityId>,
     onGrant: () -> Unit,
+    onEdit: () -> Unit,
     onDisable: () -> Unit,
     onRemove: () -> Unit,
 ) {
@@ -340,6 +348,7 @@ private fun PluginCard(
                 if (!info.manifest.required && info.state != PluginState.DISPOSED) {
                     Spacer(Modifier.height(6.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = onEdit) { Text("让 AI 改") }
                         TextButton(onClick = onDisable) { Text("停用") }
                         if (info.manifest.builtin) {
                             // 内置插件的代码编译在应用里，删不掉  只能停用
