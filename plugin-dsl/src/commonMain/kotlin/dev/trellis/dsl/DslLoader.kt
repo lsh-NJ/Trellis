@@ -38,6 +38,7 @@ import dev.trellis.kernel.spi.PluginLoader
 import dev.trellis.kernel.time.KernelClock
 import dev.trellis.kernel.time.SystemClock
 import kotlinx.serialization.SerializationException
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
 /**
@@ -69,6 +70,12 @@ class DslLoader(
      * 严格模式也不是可调项  它是正确性决定，不是偏好。
      */
     private val json: Json = DEFAULT_JSON
+
+/** 只为了先看一眼这个目录是谁的，别的字段一概不管。 */
+private val lenient: Json = Json { ignoreUnknownKeys = true }
+
+@Serializable
+private data class LoaderProbe(val loader: String = "")
 
     override val scheme: String = SCHEME
 
@@ -113,6 +120,15 @@ class DslLoader(
             errors += reject(null, "读不出 " + manifestPath)
             return null
         }
+
+        // 得在严格解析**之前**看是谁的地盘：脚本插件的 manifest 里有我们不认识的字段，
+        // 拿严格的字段表去读它，会在诊断页上凭空多出一条「格式错误」。
+        val owner = try {
+            lenient.decodeFromString(LoaderProbe.serializer(), manifestText).loader
+        } catch (t: SerializationException) {
+            ""
+        }
+        if (owner.isNotBlank() && owner.trim() != SCHEME) return null
 
         val raw = try {
             json.decodeFromString(DslManifestJson.serializer(), manifestText)

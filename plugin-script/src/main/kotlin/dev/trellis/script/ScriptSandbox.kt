@@ -16,6 +16,9 @@ class ScriptFailure(message: String) : RuntimeException(message)
 /** 插件在注册时交回来的一张卡片。 */
 data class CardDecl(val id: String, val pointId: String, val order: Int)
 
+/** 脚本自己声明的一个动作：外面能按名字调它，参数名只用于告诉人怎么填。 */
+data class ActionDecl(val id: String, val label: String, val params: List<String>)
+
 /** 插件处理函数交回来的东西。它能说一句话，能存几个键，能删几个键 —— 仅此而已。 */
 data class HandlerResult(
     val say: String = "",
@@ -48,6 +51,7 @@ class ScriptSandbox(
     private val lock = Any()
     private var scope: ScriptableObject? = null
     private val cards = mutableListOf<CardDecl>()
+    private val actions = mutableListOf<ActionDecl>()
     private val renders = mutableMapOf<String, Function>()
     private val handlers = mutableMapOf<String, Function>()
 
@@ -73,6 +77,8 @@ class ScriptSandbox(
     }
 
     fun declaredCards(): List<CardDecl> = synchronized(lock) { cards.toList() }
+
+    fun declaredActions(): List<ActionDecl> = synchronized(lock) { actions.toList() }
 
     /** 注册了哪些点击处理函数。自检时要一个个点过去。 */
     fun declaredHandlers(): List<String> = synchronized(lock) { handlers.keys.toList() }
@@ -120,6 +126,7 @@ class ScriptSandbox(
 
     fun close() = synchronized(lock) {
         cards.clear()
+        actions.clear()
         renders.clear()
         handlers.clear()
         scope = null
@@ -161,6 +168,39 @@ class ScriptSandbox(
                 if (render !is Function) throw ScriptFailure("卡片「" + id + "」没写 render 函数")
                 cards += CardDecl(id, point, order)
                 renders[id] = render
+            }
+        }
+        val acts = ScriptableObject.getProperty(def, "actions")
+        if (acts is NativeArray) {
+            for (i in 0 until acts.length.toInt()) {
+                val item = acts.get(i, acts)
+                if (item !is Scriptable) continue
+                val id = ScriptableObject.getProperty(item, "id") as? String
+                    ?: throw ScriptFailure("有一个动作没写 id")
+                if (!ACTION_ID.matches(id)) {
+                    throw ScriptFailure("动作 id「" + id + "」不合规：只能用小写字母、数字、点、横线")
+                }
+                if (actions.size >= MAX_ACTIONS) {
+                    throw ScriptFailure("一次最多声明 " + MAX_ACTIONS + " 个动作，已经够了")
+                }
+                val label = (ScriptableObject.getProperty(item, "label") as? CharSequence)?.toString()
+                    ?.takeIf { it.isNotBlank() } ?: id
+                val names = mutableListOf<String>()
+                val ps = ScriptableObject.getProperty(item, "params")
+                if (ps is NativeArray) {
+                    for (j in 0 until ps.length.toInt()) {
+                        val one = ps.get(j, ps)
+                        val name = when (one) {
+                            is CharSequence -> one.toString()
+                            is Scriptable -> ScriptableObject.getProperty(one, "name") as? String
+                            else -> null
+                        }
+                        if (!name.isNullOrBlank()) names += name
+                    }
+                }
+                actions += ActionDecl(id, label, names)
+                val fn = ScriptableObject.getProperty(item, "on")
+                if (fn is Function) handlers[id] = fn
             }
         }
         val on = ScriptableObject.getProperty(def, "on")
@@ -225,4 +265,10 @@ class ScriptSandbox(
 
     /** 给测试用：拿到脚本里定义的全局对象。 */
     internal fun hasHandler(name: String): Boolean = synchronized(lock) { handlers.containsKey(name) }
+
 }
+
+private val ACTION_ID = Regex("^[A-Za-z][A-Za-z0-9._-]*$")
+
+/** 一个脚本最多声明几个动作。动作会出现在外层的动作清单里，多了没人看得过来。 */
+private const val MAX_ACTIONS = 5

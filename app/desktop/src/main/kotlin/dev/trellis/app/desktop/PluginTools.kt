@@ -2,6 +2,7 @@ package dev.trellis.app.desktop
 
 import dev.trellis.ai.AuthoredPlugin
 import dev.trellis.ai.AuthoredScript
+import dev.trellis.ai.ScriptActionDecl
 import dev.trellis.ai.ScriptCardDecl
 import dev.trellis.ai.CapabilityCatalog
 import dev.trellis.ai.flow.Issue
@@ -133,9 +134,14 @@ class PluginTools(
         }
         val script = draft as AuthoredScript
         val sandbox = ScriptSandbox(pluginId = script.id, source = script.script)
-        val cards = try {
+        var cards: List<ScriptCardDecl> = emptyList()
+        var actions: List<ScriptActionDecl> = emptyList()
+        try {
             withContext(Dispatchers.Default) { sandbox.boot() }
-            sandbox.declaredCards().map { ScriptCardDecl(it.id, it.pointId) }
+            cards = sandbox.declaredCards().map { ScriptCardDecl(it.id, it.pointId) }
+            actions = sandbox.declaredActions().map {
+                ScriptActionDecl("script." + script.id + "." + it.id, it.label)
+            }
         } catch (cancel: CancellationException) {
             throw cancel
         } catch (t: Throwable) {
@@ -151,7 +157,7 @@ class PluginTools(
                     "。能用的是：" + catalog.mountPointIds.sorted().joinToString("、"),
             )
         }
-        return Prepared(script.toFiles(cards), script.capabilities.toSet())
+        return Prepared(script.toFiles(cards, actions), script.capabilities.toSet())
     }
 
     private inner class ListPlugins : AgentTool {

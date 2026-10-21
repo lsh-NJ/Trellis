@@ -1,9 +1,14 @@
 package dev.trellis.script
 
 import dev.trellis.domain.PlanService
+import dev.trellis.kernel.action.ActionArgs
+import dev.trellis.kernel.action.ActionParam
+import dev.trellis.kernel.action.KernelAction
 import dev.trellis.kernel.api.ActionOutcome
+import dev.trellis.kernel.core.CapabilityId
 import dev.trellis.kernel.core.ExtensionPointId
 import dev.trellis.kernel.extension.DataContext
+import dev.trellis.kernel.extension.KernelPoints
 import dev.trellis.kernel.plugin.Plugin
 import dev.trellis.kernel.plugin.PluginContext
 import dev.trellis.kernel.plugin.PluginManifest
@@ -51,6 +56,10 @@ class ScriptPlugin(
             }
             ctx.extensions.register(point, ScriptSlot(card))
         }
+
+        for (decl in sandbox.declaredActions()) {
+            ctx.extensions.register(KernelPoints.Action, ScriptAction(decl))
+        }
     }
 
     override suspend fun dispose() {
@@ -83,6 +92,36 @@ class ScriptPlugin(
                     ActionOutcome(false, explain(t))
                 }
             }
+    }
+
+    /**
+     * 脚本声明的动作。
+     *
+     * 它让插件从「只能显示」变成「能被别的东西调用」：规则可以点名它，
+     * 以后模型也能拿它当工具。能力字段是 null —— 它只能动自己抽屉里的东西，
+     * 碰不到任务、碰不到别人。
+     */
+    private inner class ScriptAction(private val decl: ActionDecl) : KernelAction {
+
+        /** 带插件前缀，避免两个插件都叫 addOne 时撞在一起。 */
+        override val id: String get() = "script." + manifest.id.value + "." + decl.id
+
+        override val order: Int get() = 100
+
+        override val label: String get() = decl.label
+
+        override val params: List<ActionParam>
+            get() = decl.params.map { ActionParam(it, it, true) }
+
+        override val capability: CapabilityId? get() = null
+
+        override suspend fun execute(args: ActionArgs): String = withContext(Dispatchers.Default) {
+            val now = System.currentTimeMillis()
+            val result = sandbox.runHandler(decl.id, read(DataContext(now, now, now)), args.all())
+            for ((key, value) in result.save) this@ScriptPlugin.context.kv.put(key, value)
+            for (key in result.remove) this@ScriptPlugin.context.kv.delete(key)
+            result.say.ifBlank { "做了：" + decl.label }
+        }
     }
 
     /**
