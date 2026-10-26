@@ -15,6 +15,8 @@ import dev.trellis.kernel.plugin.PluginManifest
 import dev.trellis.kernel.slot.DynamicSlot
 import dev.trellis.kernel.slot.Slots
 import dev.trellis.kernel.slot.UiNode
+import dev.trellis.kernel.slot.UiNoticeTone
+import dev.trellis.kernel.theme.ThemeContribution
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -60,6 +62,22 @@ class ScriptPlugin(
         for (decl in sandbox.declaredActions()) {
             ctx.extensions.register(KernelPoints.Action, ScriptAction(decl))
         }
+
+        for (decl in sandbox.declaredThemes()) {
+            ctx.extensions.register(
+                KernelPoints.Theme,
+                ThemeContribution(
+                    id = decl.id,
+                    name = decl.name,
+                    description = decl.description,
+                    light = decl.light,
+                    dark = decl.dark,
+                    shape = decl.shape,
+                    type = decl.type,
+                    extra = decl.extra,
+                ),
+            )
+        }
     }
 
     override suspend fun dispose() {
@@ -76,7 +94,7 @@ class ScriptPlugin(
             try {
                 NodeBuilder.build(sandbox.render(card.id, read(context)))
             } catch (t: Throwable) {
-                UiNode.Notice("这张卡片画不出来：" + explain(t))
+                UiNode.Notice("这张卡片画不出来：" + explain(t), UiNoticeTone.Problem)
             }
         }
 
@@ -147,6 +165,9 @@ class ScriptPlugin(
                 "overdue" to summary.overdue,
                 "dueToday" to summary.dueToday,
                 "spentMinutes" to summary.spentMinutes,
+                "streakDays" to summary.streakDays,
+                "completionRate" to summary.completionRate,
+                "oldestOpenTask" to summary.oldestOpenTask,
             )
             data["tasks"] = service.tasks().map { task ->
                 mapOf(
@@ -154,6 +175,11 @@ class ScriptPlugin(
                     "title" to task.title,
                     "status" to task.status.name,
                     "spentMinutes" to task.spentMinutes,
+                    // 时间戳给脚本自己算「最近七天完成了几条」这类走势；
+                    // 没有就是 null，脚本端按缺省处理。
+                    "createdAt" to task.createdAt,
+                    "completedAt" to task.completedAt,
+                    "dueAt" to task.dueAt,
                 )
             }
         }

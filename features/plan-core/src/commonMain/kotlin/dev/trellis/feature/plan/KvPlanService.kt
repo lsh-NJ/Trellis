@@ -154,7 +154,11 @@ internal class KvPlanService(
             emit(
                 KernelEvent(
                     "task.completed",
-                    mapOf("taskId" to done.id.value, "title" to done.title),
+                    mapOf(
+                        "taskId" to done.id.value,
+                        "title" to done.title,
+                        "spentMinutes" to done.spentMinutes.toString(),
+                    ),
                 ),
             )
         }
@@ -185,16 +189,44 @@ internal class KvPlanService(
 
     override suspend fun summary(nowMs: Long, dayEndMs: Long): PlanSummary {
         val all = readAll(TASK_KEY_PREFIX, Task.serializer())
+        val done = all.count { it.status == TaskStatus.DONE }
+        val doneAt = all.mapNotNull { task ->
+            if (task.status == TaskStatus.DONE) task.completedAt else null
+        }
         return PlanSummary(
             total = all.size,
-            done = all.count { it.status == TaskStatus.DONE },
+            done = done,
             doing = all.count { it.status == TaskStatus.DOING },
             overdue = all.count { !it.isDone && it.dueAt?.let { due -> due < nowMs } == true },
             dueToday = all.count {
                 !it.isDone && it.dueAt?.let { due -> due >= nowMs && due < dayEndMs } == true
             },
             spentMinutes = all.sumOf { it.spentMinutes },
+            streakDays = streakDays(doneAt, dayEndMs),
+            completionRate = if (all.isEmpty()) 0 else done * 100 / all.size,
+            oldestOpenTask = all.filter { !it.isDone }
+                .minByOrNull { it.createdAt }
+                ?.title
+                ?: "",
         )
+    }
+
+    /**
+     * 连续多少天有完成记录：从「今天结束」往回数，哪天一条都没完成就停。
+     *
+     * 边界和 [summary] 一样由调用方给，这一层不猜时区。
+     */
+    private fun streakDays(completedAt: List<Long>, dayEndMs: Long): Int {
+        var streak = 0
+        var end = dayEndMs
+        while (streak < MAX_STREAK_DAYS) {
+            val start = end - DAY_MS
+            val hit = completedAt.any { it >= start && it < end }
+            if (!hit) break
+            streak++
+            end = start
+        }
+        return streak
     }
 
     // ---------------------------------------------------------------- 内部
@@ -237,5 +269,8 @@ internal class KvPlanService(
 
         const val PLAN_KEY_PREFIX = "plan:"
         const val TASK_KEY_PREFIX = "task:"
+
+        const val DAY_MS = 24L * 60L * 60L * 1000L
+        const val MAX_STREAK_DAYS = 365
     }
 }

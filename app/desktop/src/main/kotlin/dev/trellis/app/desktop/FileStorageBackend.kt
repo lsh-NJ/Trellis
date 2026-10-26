@@ -28,7 +28,7 @@ class FileStorageBackend(private val file: File) : StorageBackend {
     private fun load(): MutableMap<String, MutableMap<String, String>> {
         if (!file.exists()) return mutableMapOf()
         return try {
-            json.decodeFromString(serializer, file.readText(Charsets.UTF_8))
+            json.decodeFromString(serializer, file.readText(Charsets.UTF_8).removePrefix("\uFEFF"))
                 .mapValues { it.value.toMutableMap() }
                 .toMutableMap()
         } catch (t: Exception) {

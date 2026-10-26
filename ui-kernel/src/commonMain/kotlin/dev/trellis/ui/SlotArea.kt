@@ -1,12 +1,17 @@
 package dev.trellis.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import dev.trellis.kernel.slot.SlotBadge
 import dev.trellis.kernel.slot.SlotProgress
@@ -34,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.trellis.kernel.api.ActionOutcome
 import dev.trellis.kernel.core.PluginId
+import dev.trellis.kernel.extension.Contribution
 import dev.trellis.kernel.extension.ExtensionPoint
 import dev.trellis.kernel.extension.ExtensionRegistry
 import dev.trellis.kernel.slot.SlotAction
@@ -42,6 +48,17 @@ import dev.trellis.kernel.slot.TemplateSlot
 import dev.trellis.kernel.slot.DynamicSlot
 import dev.trellis.kernel.slot.TextSlot
 import kotlinx.coroutines.launch
+
+/**
+ * 布局里的一格：哪个插件的卡片，占几栏（1..12）。
+ *
+ * 为什么按插件而不是按贡献：用户和 agent 说的是「哪张卡片」，不是贡献 id；
+ * 一个插件在一个点上通常就一张卡片。
+ *
+ * span 只在同一行有多格时才有意义：一行里 8 + 4 就是 8 栏、4 栏；
+ * 只写 id 不写 span 时按等宽处理。
+ */
+data class SlotCell(val pluginId: PluginId, val span: Int = 1)
 
 /**
  * 渲染一个挂载点上的全部贡献。对应设计文档 5.2  界面上预留的「插座」。
@@ -94,17 +111,88 @@ fun SlotArea(
      * 全在内核里。少了那条路，按钮就成了绕过审批门的一扇后门。
      */
     onAction: (suspend (PluginId?, SlotAction) -> ActionOutcome)? = null,
+    /**
+     * 怎么摆。外层是行，内层是同一行里的插件 id。
+     *
+     * 空 = 老样子，一张一张往下叠。布局只是**偏好**：没被点名的卡片
+     * 不会消失，它们各自一行排在后面。界面上「看不见」不该成为排版的结果。
+     */
+    layout: List<List<SlotCell>> = emptyList(),
 ) {
-    val contributions = registry.all(point)
+    val contributions = registry.contributionsAt(point)
     if (contributions.isEmpty()) return
 
+    val rows = groupIntoRows(contributions, layout)
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        for (contribution in contributions) {
-            key(contribution.id) {
-                SlotCard(registry, contribution, refreshKey, onAction)
+        for (row in rows) {
+            if (row.size == 1 && row[0].span <= 1 && row[0].contributions.size == 1) {
+                val contribution = row[0].contributions[0]
+                key(contribution.owner.value + "/" + contribution.id) {
+                    SlotCard(registry, contribution.value as SlotContribution, refreshKey, onAction, contribution.owner)
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    for (cell in row) {
+                        // 宽度按 span 分：8 栏 + 4 栏 = 2:1，不要求加起来正好 12。
+                        Box(Modifier.weight(cell.span.coerceIn(1, 12).toFloat())) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                for (contribution in cell.contributions) {
+                                    key(contribution.owner.value + "/" + contribution.id) {
+                                        SlotCard(
+                                            registry,
+                                            contribution.value as SlotContribution,
+                                            refreshKey,
+                                            onAction,
+                                            contribution.owner,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
+}
+
+/** 一行里的一格：占几栏 + 这一格里的卡片（通常一张）。 */
+private data class RowCell(val span: Int, val contributions: List<Contribution>)
+
+/**
+ * 把贡献排成行。
+ *
+ * 布局里点名的行先占位；没被点名的卡片各自一行排在后面。
+ * 为什么不让布局决定「显示/隐藏」：藏卡片用户看不出来，坏了也查不到。
+ */
+private fun groupIntoRows(
+    contributions: List<Contribution>,
+    layout: List<List<SlotCell>>,
+): List<List<RowCell>> {
+    if (layout.isEmpty()) return contributions.map { listOf(RowCell(1, listOf(it))) }
+
+    val used = mutableSetOf<String>()
+    val rows = mutableListOf<List<RowCell>>()
+    for (row in layout) {
+        val cells = mutableListOf<RowCell>()
+        for (cell in row) {
+            val matched = contributions.filter { contribution ->
+                val key = contribution.owner.value + "/" + contribution.id
+                contribution.owner == cell.pluginId && key !in used
+            }
+            matched.forEach { used += it.owner.value + "/" + it.id }
+            if (matched.isNotEmpty()) cells += RowCell(cell.span.coerceIn(1, 12), matched)
+        }
+        if (cells.isNotEmpty()) rows += cells
+    }
+    for (contribution in contributions) {
+        val key = contribution.owner.value + "/" + contribution.id
+        if (key !in used) rows += listOf(RowCell(1, listOf(contribution)))
+    }
+    return rows
 }
 
 @Composable
@@ -113,18 +201,62 @@ private fun SlotCard(
     contribution: SlotContribution,
     refreshKey: Any?,
     onAction: (suspend (PluginId?, SlotAction) -> ActionOutcome)?,
+    owner: PluginId?,
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    // 单个插件可以有自己的卡片样式；没设过就回到全局样式。
+    val style = LocalPluginCardStyle.current(owner) ?: LocalCardStyle.current
+    val shape = RoundedCornerShape(style.radius)
+    val shadowColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)
+    Box(
+        modifier = Modifier.fillMaxWidth().then(
+            // 硬阴影要在布局里留出右下角那 4dp，否则会画到邻居上面去。
+            if (style.hardShadow) Modifier.padding(end = 4.dp, bottom = 4.dp) else Modifier,
+        ),
     ) {
-        Column(Modifier.padding(12.dp)) {
-            when (contribution) {
-                is ComposeSlot -> contribution.content()
-                is TextSlot -> TextSlotView(contribution.title, contribution.body)
-                is TemplateSlot -> TemplateSlotView(registry, contribution, refreshKey, onAction)
-                is DynamicSlot -> DynamicSlotView(contribution, refreshKey, onAction)
-                else -> Text("此卡片类型当前未接入界面", style = MaterialTheme.typography.bodySmall)
+        if (style.hardShadow) {
+            Box(
+                Modifier.matchParentSize().drawBehind {
+                    drawRoundRect(
+                        color = shadowColor,
+                        topLeft = Offset(4.dp.toPx(), 4.dp.toPx()),
+                        size = Size(size.width, size.height),
+                        cornerRadius = CornerRadius(style.radius.toPx()),
+                    )
+                },
+            )
+        }
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                // 每张插件卡片由宿主画边框和圆角：卡片之间的边界是宿主的事，
+                // 插件只能决定里面写什么。用户要「每张卡有个圆角边界」时，
+                // 这一步就已经给他了，不需要为此新造插件。
+                // 具体样式可以经由界面偏好调（AppTheme 提供 LocalCardStyle）——
+                // 调的是宿主，不是插件契约。
+                .then(
+                    if (style.border) {
+                        Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
+                    } else {
+                        Modifier
+                    },
+                ),
+            shape = shape,
+            colors = CardDefaults.cardColors(
+                containerColor = if (style.filled) {
+                    MaterialTheme.colorScheme.surfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.surface
+                },
+            ),
+        ) {
+            Column(Modifier.padding(12.dp)) {
+                when (contribution) {
+                    is ComposeSlot -> contribution.content()
+                    is TextSlot -> TextSlotView(contribution.title, contribution.body)
+                    is TemplateSlot -> TemplateSlotView(registry, contribution, refreshKey, onAction)
+                    is DynamicSlot -> DynamicSlotView(contribution, refreshKey, onAction, owner)
+                    else -> Text("此卡片类型当前未接入界面", style = MaterialTheme.typography.bodySmall)
+                }
             }
         }
     }

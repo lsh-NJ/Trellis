@@ -1,4 +1,4 @@
-﻿package dev.trellis.app.desktop
+package dev.trellis.app.desktop
 
 import dev.trellis.kernel.core.PluginId
 import dev.trellis.kernel.extension.DataContext
@@ -87,6 +87,25 @@ class ScriptPluginFlowTest {
     }
 
     @Test
+    fun aScriptCardAlsoShowsUpInTheGeneratedPreview() = runTest {
+        val home = tempHome()
+        installSample(home)
+        val runtime = AppRuntime.create(home)
+
+        val preview = runtime.buildPreview(PluginId("dev.mistakes"))
+        assertTrue(preview != null, "刚装上的插件必须能生成预览")
+        val cards = preview.cards
+        assertEquals(1, cards.size, "脚本卡片不该在预览里消失：" + cards)
+        assertEquals("slot.home.section", cards.single().mountPointId)
+        assertTrue(
+            cards.single().title.contains("错题本"),
+            "预览标题该是卡片第一段文字：" + cards.single(),
+        )
+
+        runtime.shutdown()
+    }
+
+    @Test
     fun deletingOneTakesItOutOfTheStore() = runTest {
         val home = tempHome()
         installSample(home)
@@ -124,10 +143,29 @@ class ScriptPluginFlowTest {
     private fun flatten(node: UiNode): String = when (node) {
         is UiNode.Column -> node.children.joinToString("|") { flatten(it) }
         is UiNode.Row -> node.children.joinToString("|") { flatten(it) }
+        is UiNode.Section -> (listOf(node.title) + node.children.map { flatten(it) }).joinToString("|")
+        is UiNode.Grid -> node.children.joinToString("|") { flatten(it) }
+        is UiNode.Cell -> flatten(node.child)
         is UiNode.Text -> node.text
+        is UiNode.Stat -> node.label + " " + node.value
+        is UiNode.Badge -> node.text
+        is UiNode.Bars -> node.label + node.items.joinToString(",") { it.label + "=" + it.value }
+        is UiNode.Sparkline -> node.label
+        is UiNode.Columns -> node.values.joinToString(",")
+        is UiNode.Area -> node.values.joinToString(",")
+        is UiNode.DotMatrix -> node.value
+        is UiNode.Ring -> node.label
+        is UiNode.Progress -> node.label
         is UiNode.Notice -> node.text
+        is UiNode.Icon -> node.glyph
+        is UiNode.Image -> node.alt.ifBlank { node.ref }
+        is UiNode.Table -> (listOf(node.caption) + node.headers + node.rows.map { it.joinToString(" ") })
+            .filter { it.isNotBlank() }.joinToString("|")
         is UiNode.Button -> node.label
         is UiNode.Input -> node.hint
+        is UiNode.Stepper -> node.label + " " + node.value
+        is UiNode.HeatStrip -> node.values.joinToString(",")
+        is UiNode.Spacer -> ""
         UiNode.Divider -> ""
     }
 }

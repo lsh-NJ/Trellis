@@ -39,6 +39,9 @@ internal class PlanSummaryDataProvider(
         DataField("overdue", "已经逾期还没完成的数量"),
         DataField("dueToday", "今天到期（截至今天结束）的数量"),
         DataField("spentMinutes", "已经投入的总分钟数"),
+        DataField("streakDays", "连续多少天有完成记录（断一天就归零）"),
+        DataField("completionRate", "完成率，0 到 100 的整数（百分比）"),
+        DataField("oldestOpenTask", "最早创建、还没完成的那条任务的标题"),
     )
 
     override suspend fun resolve(path: String, context: DataContext): String? {
@@ -51,6 +54,9 @@ internal class PlanSummaryDataProvider(
             "overdue" -> summary.overdue.toString()
             "dueToday" -> summary.dueToday.toString()
             "spentMinutes" -> summary.spentMinutes.toString()
+            "streakDays" -> summary.streakDays.toString()
+            "completionRate" -> summary.completionRate.toString()
+            "oldestOpenTask" -> summary.oldestOpenTask
             else -> null
         }
     }

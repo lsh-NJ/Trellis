@@ -40,6 +40,9 @@ class PlanCorePlugin : Plugin {
                 ContributionDecl("addTask"),
                 ContributionDecl("logTime"),
                 ContributionDecl("completeTask"),
+                ContributionDecl("renameTask"),
+                ContributionDecl("rescheduleTask"),
+                ContributionDecl("deleteTask"),
             ),
         ),
     )
@@ -53,10 +56,13 @@ class PlanCorePlugin : Plugin {
         // 同一个 service 换个面：把统计数字暴露给声明式插件
         ctx.extensions.register(KernelPoints.Data, PlanSummaryDataProvider(service, ctx.clock))
 
-        // 三件原子动作：自动生成的插件可以选它们，但发明不出新的
-        ctx.extensions.register(KernelPoints.Action, AddTaskAction(service))
+        // 原子动作：自动生成的插件可以选它们，但发明不出新的
+        ctx.extensions.register(KernelPoints.Action, AddTaskAction(service, ctx.clock))
         ctx.extensions.register(KernelPoints.Action, LogTimeAction(service))
         ctx.extensions.register(KernelPoints.Action, CompleteTaskAction(service))
+        ctx.extensions.register(KernelPoints.Action, RenameTaskAction(service, ctx.clock))
+        ctx.extensions.register(KernelPoints.Action, RescheduleTaskAction(service, ctx.clock))
+        ctx.extensions.register(KernelPoints.Action, DeleteTaskAction(service, ctx.clock))
 
         // 让规则知道有哪些事件可挂。不登记的话，模型只能猜事件名。
         ctx.extensions.register(KernelPoints.Event, TaskCompletedEvent)

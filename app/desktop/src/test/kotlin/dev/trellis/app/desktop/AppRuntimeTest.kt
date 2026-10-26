@@ -9,6 +9,8 @@ import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
 
@@ -53,6 +55,46 @@ class AppRuntimeTest {
         runtime.shutdown()
     }
 
+    /** 截止时间：新建时能选「今天 / 明天 / 日历上的某天」，列表里也要把它说成人话。 */
+    @Test
+    fun aTaskCanBeBornWithADueDate() = runTest {
+        val runtime = AppRuntime.create(tempHome())
+
+        val today = java.time.LocalDate.now()
+        val tomorrow = today.plusDays(1)
+        val nextWeek = today.plusDays(7)
+
+        runtime.addTask("今天交周报", dueAt = endOfDayMs(today))
+        runtime.addTask("明天背单词", dueAt = endOfDayMs(tomorrow))
+        runtime.addTask("下周交实验报告", dueAt = endOfDayMs(nextWeek))
+        runtime.addTask("没有截止时间")
+
+        val todayTask = runtime.tasks.single { it.title == "今天交周报" }
+        val tomorrowTask = runtime.tasks.single { it.title == "明天背单词" }
+        val nextWeekTask = runtime.tasks.single { it.title == "下周交实验报告" }
+        val none = runtime.tasks.single { it.title == "没有截止时间" }
+
+        assertTrue(todayTask.dueAt != null, "选了日期就必须真的写进 dueAt")
+        assertEquals("今天到期", dueLabel(todayTask.dueAt, done = false))
+        assertEquals("明天到期", dueLabel(tomorrowTask.dueAt, done = false))
+        assertEquals(dateLabel(nextWeek) + " 到期", dueLabel(nextWeekTask.dueAt, done = false))
+        assertEquals(null, dueLabel(none.dueAt, done = false))
+        assertEquals(1, runtime.summary.dueToday, "今天到期的那条要进今日盘点")
+
+        runtime.shutdown()
+    }
+
+    /** 逾期的说法要轻：没有「已」、没有感叹号，只报天数。 */
+    @Test
+    fun anOverdueTaskSaysItQuietly() = runTest {
+        val yesterday = java.time.LocalDate.now().minusDays(2)
+        val label = dueLabel(endOfDayMs(yesterday), done = false)
+        assertEquals("逾期 2 天", label)
+
+        val doneLabel = dueLabel(endOfDayMs(yesterday), done = true)
+        assertEquals("原本 " + dateLabel(yesterday) + " 到期", doneLabel)
+    }
+
     @Test
     fun deletingATaskRemovesIt() = runTest {
         val runtime = AppRuntime.create(tempHome())
@@ -61,6 +103,27 @@ class AppRuntimeTest {
 
         runtime.delete(runtime.tasks.single())
         assertEquals(0, runtime.tasks.size)
+        runtime.shutdown()
+    }
+
+    @Test
+    fun aDeleteCanBeUndoneAndPutsEverythingBack() = runTest {
+        val runtime = AppRuntime.create(tempHome())
+        runtime.addTask("写周报")
+        val task = runtime.tasks.single()
+        runtime.logTime(task, 30)
+        runtime.toggle(runtime.tasks.single())
+
+        runtime.delete(runtime.tasks.single())
+        assertEquals(0, runtime.tasks.size)
+        assertNotNull(runtime.pendingDelete, "删除后应该留一个可撤销的东西")
+
+        runtime.undoDelete()
+        assertNull(runtime.pendingDelete, "撤销后撤销条应该消失")
+        val restored = runtime.tasks.single()
+        assertEquals("写周报", restored.title)
+        assertTrue(restored.isDone, "完成状态也要还原")
+        assertEquals(30, restored.spentMinutes, "投入的分钟也要还原")
         runtime.shutdown()
     }
 
@@ -88,14 +151,22 @@ class AppRuntimeTest {
     fun theFirstPartyPluginsContributeComposableCards() = runTest {
         val runtime = AppRuntime.create(tempHome())
 
-        // 两个第一方插件都用 ComposeSlot 往同一个挂载点上放卡片
-        val slots = runtime.kernel.extensions.all(Slots.HomeSection)
+        // 第一方插件用 ComposeSlot 往挂载点上放卡片：
+        // 危险操作示范 + 任务界面（今日盘点/待办清单，交给 agent 也能调位置和样式）。
+        val sections = runtime.kernel.extensions.all(Slots.HomeSection)
         assertEquals(
-            setOf("quick-add", "danger-zone"),
-            slots.map { it.id }.toSet(),
-            slots.map { it.id }.toString(),
+            setOf("danger-zone", "plan-board"),
+            sections.map { it.id }.toSet(),
+            sections.map { it.id }.toString(),
         )
-        assertTrue(slots.all { it is dev.trellis.ui.ComposeSlot })
+        assertTrue(sections.all { it is dev.trellis.ui.ComposeSlot })
+
+        val headers = runtime.kernel.extensions.all(Slots.HomeHeader)
+        assertEquals(
+            setOf("plan-header"),
+            headers.map { it.id }.toSet(),
+            headers.map { it.id }.toString(),
+        )
 
         runtime.shutdown()
     }
@@ -109,10 +180,10 @@ class AppRuntimeTest {
         assertEquals(1, services.size, "core.plan 应当正好发布一个服务")
         assertTrue(services.single().contract.displayName().contains("PlanService"))
 
-        val cards = runtime.contributionsOf(dev.trellis.kernel.core.PluginId("dev.quickadd"))
+        val cards = runtime.contributionsOf(dev.trellis.kernel.core.PluginId("dev.danger"))
         assertEquals(1, cards.size)
         assertEquals("slot.home.section", cards.single().pointId.value)
-        assertEquals("quick-add", cards.single().id)
+        assertEquals("danger-zone", cards.single().id)
 
         // 一个插件完全没有贡献也是合法的  这里顺便确认它不会崩
         assertTrue(runtime.contributionsOf(dev.trellis.kernel.core.PluginId("不存在")).isEmpty())
@@ -165,7 +236,8 @@ class AppRuntimeTest {
 
         val runtime = AppRuntime.create(home)
 
-        val cards = runtime.kernel.extensions.all(Slots.HomeHeader)
+        // 头部还挂着内置的任务界面卡（plan-header），这里只看这个 DSL 插件自己的贡献。
+        val cards = runtime.kernel.extensions.all(Slots.HomeHeader).filter { it.id == "demo" }
         assertEquals(1, cards.size, cards.map { it.id }.toString())
         assertTrue(cards.single() is TextSlot)
         assertEquals("来自 JSON", (cards.single() as TextSlot).title)
@@ -183,26 +255,26 @@ class AppRuntimeTest {
     @Test
     fun disablingAPluginSticksAcrossRestartAndCanBeReversed() = runTest {
         val home = tempHome()
-        val quickAdd = dev.trellis.kernel.core.PluginId("dev.quickadd")
+        val danger = dev.trellis.kernel.core.PluginId("dev.danger")
 
         val first = AppRuntime.create(home)
-        assertTrue(first.pluginInfos.any { it.manifest.id == quickAdd })
-        first.disablePlugin("dev.quickadd")
-        assertTrue(quickAdd in first.disabledPlugins)
-        assertTrue(first.pluginInfos.none { it.manifest.id == quickAdd }, "停用之后当场就不该在跑")
+        assertTrue(first.pluginInfos.any { it.manifest.id == danger })
+        first.disablePlugin("dev.danger")
+        assertTrue(danger in first.disabledPlugins)
+        assertTrue(first.pluginInfos.none { it.manifest.id == danger }, "停用之后当场就不该在跑")
         first.shutdown()
 
         val second = AppRuntime.create(home)
         assertTrue(
-            second.pluginInfos.none { it.manifest.id == quickAdd },
+            second.pluginInfos.none { it.manifest.id == danger },
             "停用必须活过重启  否则界面上那个按钮就是假的",
         )
-        assertEquals("快捷操作", second.nameOf(quickAdd), "名字要记得，界面上还要列出来")
-        assertTrue(quickAdd in second.disabledPlugins)
+        assertEquals("危险操作", second.nameOf(danger), "名字要记得，界面上还要列出来")
+        assertTrue(danger in second.disabledPlugins)
 
-        second.enablePlugin("dev.quickadd")
-        assertTrue(second.pluginInfos.any { it.manifest.id == quickAdd }, "启用之后应当回来")
-        assertTrue(quickAdd !in second.disabledPlugins)
+        second.enablePlugin("dev.danger")
+        assertTrue(second.pluginInfos.any { it.manifest.id == danger }, "启用之后应当回来")
+        assertTrue(danger !in second.disabledPlugins)
         second.shutdown()
     }
 

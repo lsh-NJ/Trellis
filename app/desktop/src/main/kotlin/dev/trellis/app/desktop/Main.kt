@@ -9,6 +9,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -17,12 +18,19 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import dev.trellis.ui.LocalPluginImage
+import dev.trellis.ui.LocalPluginCardStyle
 import kotlinx.coroutines.launch
 
 /**
@@ -74,19 +82,34 @@ private fun installCrashLog() {
 
 fun main() {
     installCrashLog()
-    println("[CT] main() 进入")
     val holder = RuntimeHolder()
 
     application {
-        println("[CT] application {} 进入")
         val scope = rememberCoroutineScope()
 
         Window(
             onCloseRequest = {
-                scope.launch {
-                    holder.runtime?.shutdown()
-                }
+                // 关闭必须永远能关掉，哪怕关它的代码自己坏了。
+                //
+                // 踩过的坑：`gradlew run` 的 classpath 是 build/classes 目录。应用开着
+                // 的时候又跑了一次编译，编译会重写这个目录；旧进程里的 lambda 类可能
+                // 直到点关闭的那一刻才第一次加载，于是抛 NoClassDefFoundError ——
+                // 如果它发生在 exitApplication() 之前，窗口就再也关不掉了
+                // （进程活着、窗口还在、日志里一行 ClassNotFoundException）。
+                // 所以这里兜住一切异常，exitApplication() 无论如何都要执行。
+                runCatching { scope.launch { holder.runtime?.shutdown() } }
+                    .onFailure { println("[CT] 关闭时没能启动 shutdown：" + it) }
                 exitApplication()
+            },
+            // 备用的退路：万一窗口的关闭按钮被什么挡住，Ctrl+Q 永远能退。
+            onPreviewKeyEvent = { event ->
+                if (event.type == KeyEventType.KeyDown && event.isCtrlPressed && event.key == Key.Q) {
+                    runCatching { scope.launch { holder.runtime?.shutdown() } }
+                    exitApplication()
+                    true
+                } else {
+                    false
+                }
             },
             title = "Trellis",
             // 默认最大化。
@@ -98,24 +121,7 @@ fun main() {
                 size = initialWindowSize(),
             ),
         ) {
-            LaunchedEffect(Unit) {
-                println("[CT] 刚组合完: visible=" + window.isVisible + " showing=" + window.isShowing)
-                kotlinx.coroutines.delay(6_000)
-                println(
-                    "[CT] 6 秒后: visible=" + window.isVisible +
-                        " showing=" + window.isShowing +
-                        " size=" + window.size +
-                        " 位置=" + window.locationOnScreen +
-                        " graphicsConf=" + window.graphicsConfiguration,
-                )
-                kotlinx.coroutines.delay(6_000)
-                println("[CT] 12 秒后: visible=" + window.isVisible + " showing=" + window.isShowing)
-            }
-            MaterialTheme {
-                Surface(Modifier.fillMaxSize()) {
-                    App(holder)
-                }
-            }
+            App(holder)
         }
     }
 }
@@ -130,7 +136,6 @@ private fun App(holder: RuntimeHolder) {
             val created = AppRuntime.create()
             holder.runtime = created
             runtime = created
-            println("[CT] AppRuntime 创建完成")
         } catch (t: Throwable) {
             runCatching {
                 java.io.File(System.getProperty("user.home"), ".trellis/app.log")
@@ -143,9 +148,47 @@ private fun App(holder: RuntimeHolder) {
 
     val current = runtime
     when {
-        failure != null -> FailureView(failure!!)
-        current == null -> LoadingView()
-        else -> AppScreen(current)
+        // 启动失败/加载中还没有偏好可读，用一套中性的浅色主题兜住（不能没有主题，
+        // 否则 MaterialTheme 的默认值是空的，文字颜色会落到黑色）。
+        failure != null -> MaterialTheme {
+            Surface(Modifier.fillMaxSize()) {
+                FailureView(failure!!)
+            }
+        }
+
+        current == null -> MaterialTheme {
+            Surface(Modifier.fillMaxSize()) {
+                LoadingView()
+            }
+        }
+
+        else -> {
+            // 外观只有一个开关（auto/light/dark）：auto 才问系统，别的都明确指定。
+            // 整页的底色和正文颜色由 AppTheme 里的根 Surface 统一刷，
+            // 不能在窗口这一层先刷一遍浅色，否则就会「卡片跟随、页面不跟随」。
+            val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
+            val dark = when (current.uiPrefs.appearance) {
+                "light" -> false
+                "dark" -> true
+                else -> systemDark
+            }
+            val scheme = current.themeScheme(dark)
+            AppTheme(
+                current.uiPrefs,
+                scheme,
+                dark,
+                chrome = current.chromeStyle(),
+                extra = current.extraColors(dark),
+            ) {
+                CompositionLocalProvider(
+                    LocalPluginImage provides { owner, ref -> current.pluginImage(owner, ref) },
+                    // 逐插件的卡片样式：返回 null 的插件落回全局 LocalCardStyle。
+                    LocalPluginCardStyle provides { owner -> current.pluginCardStyle(owner) },
+                ) {
+                    AppScreen(current)
+                }
+            }
+        }
     }
 }
 

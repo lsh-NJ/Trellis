@@ -29,6 +29,28 @@ class PromptCatalogTest {
             "缺数据时要引导它去补，而不是引它去拒绝",
         )
     }
+    /**
+     * 「做满」必须排在「退」前面，退步还得是一条能照着走的阶梯。
+     *
+     * 真实踩到的例子：提示词里「做不到」写了三遍，「退一步」写得比「能做」还细，
+     * 模型于是先想「这会不会重复」，把一次能做的交互退成一串早就见过的数字。
+     * 这里要教的是：能做的先做满，真做不到才沿阶梯往下走一级，而不是停在拒绝上。
+     */
+    @Test
+    fun doingItFullyIsTaughtBeforeRetreating() {
+        val prompt = PromptBuilder.system(TEST_CATALOG)
+
+        val full = prompt.indexOf("做满，再谈退")
+        check(full >= 0) { "提示词里没有「做满再谈退」的顺序" }
+        val ladder = prompt.indexOf("退步不是失败")
+        check(ladder > full) { "先教做满，再教退步" }
+        assertTrue(prompt.contains("改交互"), "退步阶梯要落到具体动作，不能只是一句态度")
+        assertTrue(prompt.contains("改触发"), "触发方式也是能退的一级")
+
+        val boundary = prompt.indexOf("边界，不是禁令")
+        check(boundary > ladder) { "边界清单要排在退步阶梯后面，且点明它是边界不是禁令" }
+    }
+
     @Test
     fun everyActionShowsWhatItNeeds() {
         val prompt = PromptBuilder.system(TEST_CATALOG)

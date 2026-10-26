@@ -5,6 +5,7 @@ import dev.trellis.domain.PlanSummary
 import dev.trellis.domain.TaskQuery
 import dev.trellis.domain.TaskStatus
 import dev.trellis.kernel.api.BootMode
+import dev.trellis.kernel.action.ActionArgs
 import dev.trellis.kernel.extension.DataContext
 import dev.trellis.kernel.api.Kernel
 import dev.trellis.kernel.api.KernelConfig
@@ -146,9 +147,110 @@ class PlanCoreTest {
         h.plan.logTime(c.id, 30)
 
         assertEquals(
-            PlanSummary(total = 4, done = 1, doing = 0, overdue = 1, dueToday = 1, spentMinutes = 30),
+            PlanSummary(
+                total = 4,
+                done = 1,
+                doing = 0,
+                overdue = 1,
+                dueToday = 1,
+                spentMinutes = 30,
+                streakDays = 1,
+                completionRate = 25,
+                oldestOpenTask = "逾期的",
+            ),
             h.plan.summary(now, dayEnd),
         )
+        h.kernel.shutdown()
+    }
+
+    /**
+     * 截止时间不只是数据模型里的一列：新建时就要能说「几天后到期」。
+     *
+     * 界面上点的是「今天 / 明天」，模型说的是「dueDays: 2」，
+     * 两者都落到同一个 `dueAt`；不算这一条，待办的日期特性就只是摆设。
+     */
+    @Test
+    fun aTaskCanBeBornWithADueDate() = runTest {
+        val h = boot()
+        val add = AddTaskAction(h.plan, h.clock)
+
+        assertEquals(
+            "新建了任务「交周报」，今天到期",
+            add.execute(ActionArgs(mapOf("title" to "交周报", "dueDays" to "0"))),
+        )
+        val today = h.plan.tasks(TaskQuery(includeDone = false)).single { it.title == "交周报" }
+        assertEquals(h.clock.nowMs(), today.dueAt, "0 天就是此刻起算，宿主不再另编日期")
+
+        add.execute(ActionArgs(mapOf("title" to "准备考试", "dueDays" to "2")))
+        val later = h.plan.tasks(TaskQuery(includeDone = false)).single { it.title == "准备考试" }
+        assertEquals(h.clock.nowMs() + 2 * DAY, later.dueAt)
+
+        add.execute(ActionArgs(mapOf("title" to "随手记")))
+        val none = h.plan.tasks(TaskQuery(includeDone = false)).single { it.title == "随手记" }
+        assertNull(none.dueAt, "不传 dueDays 就不该凭空设截止时间")
+        h.kernel.shutdown()
+    }
+
+    /**
+     * 新增的三个动作必须真的改变已有任务。
+     *
+     * 没有它们的时候，模型想「改期 / 改标题 / 删掉」只能回一句「我做不到」——
+     * 这不是安全，是能力面太窄。
+     */
+    @Test
+    fun editingActionsChangeExistingTasks() = runTest {
+        val h = boot()
+        val task = h.plan.addTask("刷题", dueAt = h.clock.nowMs() + DAY)
+
+        val rename = RenameTaskAction(h.plan, h.clock)
+        assertEquals(
+            "把「刷题」改成了「刷算法题」",
+            rename.execute(ActionArgs(mapOf("taskId" to task.id.value, "title" to "刷算法题"))),
+        )
+        assertEquals("刷算法题", h.plan.task(task.id)!!.title)
+
+        val reschedule = RescheduleTaskAction(h.plan, h.clock)
+        reschedule.execute(ActionArgs(mapOf("taskId" to task.id.value, "days" to "3")))
+        assertEquals(h.clock.nowMs() + 3 * DAY, h.plan.task(task.id)!!.dueAt)
+
+        val delete = DeleteTaskAction(h.plan, h.clock)
+        assertEquals(
+            "删除了「刷算法题」",
+            delete.execute(ActionArgs(mapOf("taskId" to task.id.value))),
+        )
+        assertNull(h.plan.task(task.id))
+        h.kernel.shutdown()
+    }
+
+    /**
+     * 没有查询能力时，选择器是模型唯一的「指代」手段。
+     *
+     * 模型生成的按钮参数是写死的：它拿不到某条任务的 id。所以
+     * 「删掉最老的一条」「把最早逾期的排到三天后」这类需求，只能靠
+     * `oldest` / `oldestOverdue` 这两个选择器落地 —— 否则它只能拒绝。
+     */
+    @Test
+    fun selectorsLetTheModelActOnTasksItCannotLookUp() = runTest {
+        val h = boot()
+        val now = h.clock.nowMs()
+        val oldest = h.plan.addTask("最老的")
+        h.clock.advanceBy(1_000)
+        val overdue = h.plan.addTask("逾期的", dueAt = now - 2 * HOUR)
+        h.clock.advanceBy(1_000)
+        h.plan.addTask("也逾期的", dueAt = now - HOUR)
+
+        // 最早逾期的那条：不是最老的，也不是列表第一行
+        val reschedule = RescheduleTaskAction(h.plan, h.clock)
+        reschedule.execute(ActionArgs(mapOf("taskId" to "oldestOverdue", "days" to "3")))
+        assertEquals(h.clock.nowMs() + 3 * DAY, h.plan.task(overdue.id)!!.dueAt)
+
+        // 最老的一条未完成任务（按创建时间，不是按截止时间）
+        val delete = DeleteTaskAction(h.plan, h.clock)
+        assertEquals(
+            "删除了「最老的」",
+            delete.execute(ActionArgs(mapOf("taskId" to "oldest"))),
+        )
+        assertNull(h.plan.task(oldest.id))
         h.kernel.shutdown()
     }
 

@@ -136,7 +136,7 @@ class PluginAgentTest {
         assertTrue(installer.installedFiles.isEmpty(), "拒绝就不该落地")
     }
 
-    /** prompt 必须把「做不到什么」写死，否则模型只会硬凑一张卡。 */
+    /** 边界必须说清，但边界后面得跟一条能走的阶梯：只写「做不到」会把能做的一起压掉。 */
     /**
      * 提示词里的「自我描述」必须和内核真实能力一致。
      *
