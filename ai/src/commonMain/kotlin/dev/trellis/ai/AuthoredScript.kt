@@ -57,6 +57,7 @@ data class AuthoredScript(
     fun toFiles(
         cards: List<ScriptCardDecl>,
         actions: List<ScriptActionDecl> = emptyList(),
+        themes: List<ScriptThemeDecl> = emptyList(),
     ): Map<String, String> {
         val slots = cards.filter { it.pointId.isNotBlank() }
             .groupBy { it.pointId }
@@ -65,12 +66,17 @@ data class AuthoredScript(
                 "\"" + point + "\": [" +
                     list.joinToString(", ") { "{\"id\": " + quote(it.id) + "}" } + "]"
             }
-        val contributes = if (actions.isEmpty()) {
-            slots
-        } else {
-            slots + (", \"kernel.action\": [" +
-                actions.joinToString(", ") { "{\"id\": " + quote(it.id) + "}" } + "]")
+        val parts = mutableListOf<String>()
+        if (slots.isNotEmpty()) parts += slots
+        if (actions.isNotEmpty()) {
+            parts += "\"kernel.action\": [" +
+                actions.joinToString(", ") { "{\"id\": " + quote(it.id) + "}" } + "]"
         }
+        if (themes.isNotEmpty()) {
+            parts += "\"kernel.theme\": [" +
+                themes.joinToString(", ") { "{\"id\": " + quote(it.id) + "}" } + "]"
+        }
+        val contributes = parts.joinToString(", ")
 
         val manifest = buildString {
             appendLine("{")
@@ -106,3 +112,12 @@ data class ScriptCardDecl(val id: String, val pointId: String)
 
 /** 脚本声明的一个动作。[id] 已经带上 script.<插件id>. 前缀，和内核里注册的完全一致。 */
 data class ScriptActionDecl(val id: String, val label: String)
+
+/** 脚本声明的一个主题包。颜色值由宿主验（hex + 对比度），这里只负责搬运。 */
+data class ScriptThemeDecl(
+    val id: String,
+    val name: String,
+    val description: String,
+    val light: Map<String, String>,
+    val dark: Map<String, String>,
+)

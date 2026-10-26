@@ -25,14 +25,32 @@ class ScriptedInstaller(private vararg val failures: String?) : PluginInstaller 
     }
 }
 
+/**
+ * 和真实运行时同形的能力清单（2026-10-22：6 个挂载点 / 10 个字段 / 6 个动作）。
+ *
+ * 这份 fixture 是提示词的「尺子」：它和 `plan-core` 真实注册的贡献点保持一致，
+ * 否则 snapshot 测出来的长度和真实发出去的长度对不上。
+ */
 val TEST_CATALOG = CapabilityCatalog(
     mountPoints = listOf(
         CatalogMountPoint("slot.home.header", "首页头部"),
         CatalogMountPoint("slot.home.section", "首页区块"),
+        CatalogMountPoint("slot.empty.state", "空状态"),
+        CatalogMountPoint("slot.app.overlay", "全局浮层"),
+        CatalogMountPoint("slot.report.chart", "报表图表"),
+        CatalogMountPoint("slot.settings.section", "设置页分组"),
     ),
     dataFields = listOf(
+        CatalogDataField("summary.total", "全部任务数"),
+        CatalogDataField("summary.done", "已完成的数量"),
+        CatalogDataField("summary.doing", "正在做的数量"),
         CatalogDataField("summary.todo", "还没完成的数量"),
+        CatalogDataField("summary.overdue", "已经逾期的数量"),
         CatalogDataField("summary.dueToday", "今天到期的数量"),
+        CatalogDataField("summary.spentMinutes", "一共投入了多少分钟"),
+        CatalogDataField("summary.streakDays", "连续完成的天数（断一天就归零）"),
+        CatalogDataField("summary.completionRate", "完成率，百分比数字（0~100）"),
+        CatalogDataField("summary.oldestOpenTask", "最老的一条未完成任务标题"),
     ),
     actions = listOf(
         CatalogAction(
@@ -50,6 +68,24 @@ val TEST_CATALOG = CapabilityCatalog(
             "completeTask", "把任务标记完成", "write_data",
             listOf(CatalogActionParam("taskId", "把哪个任务标完成", true)),
         ),
+        CatalogAction(
+            "renameTask", "改任务标题", "write_data",
+            listOf(
+                CatalogActionParam("taskId", "任务 id；也可以写 oldest 或 oldestOverdue", true),
+                CatalogActionParam("title", "新的标题", true),
+            ),
+        ),
+        CatalogAction(
+            "rescheduleTask", "改任务到期时间", "write_data",
+            listOf(
+                CatalogActionParam("taskId", "任务 id；也可以写 oldest 或 oldestOverdue", true),
+                CatalogActionParam("days", "几天后到期（整数，数字也写成字符串）", true),
+            ),
+        ),
+        CatalogAction(
+            "deleteTask", "删除任务", "delete_data",
+            listOf(CatalogActionParam("taskId", "任务 id；也可以写 oldest 或 oldestOverdue", true)),
+        ),
     ),
     events = listOf(
         CatalogEvent(
@@ -58,6 +94,7 @@ val TEST_CATALOG = CapabilityCatalog(
             listOf(
                 CatalogEventField("taskId", "刚完成的任务 id"),
                 CatalogEventField("title", "刚完成的任务标题"),
+                CatalogEventField("spentMinutes", "这条任务一共投入了多少分钟"),
             ),
         ),
     ),

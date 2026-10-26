@@ -77,4 +77,10 @@ data class PlanSummary(
     val overdue: Int = 0,
     val dueToday: Int = 0,
     val spentMinutes: Int = 0,
+    /** 连续多少天有完成记录（含今天）；断一天就归零。 */
+    val streakDays: Int = 0,
+    /** 完成率，0 到 100 的整数（百分比）。 */
+    val completionRate: Int = 0,
+    /** 最早创建、还没完成的那条任务的标题；一条都没有时为空串。 */
+    val oldestOpenTask: String = "",
 )

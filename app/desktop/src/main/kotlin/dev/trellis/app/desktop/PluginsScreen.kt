@@ -38,6 +38,8 @@ import dev.trellis.kernel.extension.Contribution
 import dev.trellis.kernel.extension.ServiceBinding
 import dev.trellis.kernel.extension.displayName
 import dev.trellis.kernel.plugin.PluginState
+import dev.trellis.kernel.slot.Slots
+import dev.trellis.ui.SlotArea
 import kotlinx.coroutines.launch
 
 /**
@@ -159,6 +161,19 @@ fun PluginsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                         },
                     )
                 }
+            }
+
+            // 设置页分组：插件可以在这里挂一张设置/开关卡片。
+            // 没有插件贡献时 SlotArea 自己什么都不画，不占位。
+            item {
+                Spacer(Modifier.height(10.dp))
+                SlotArea(
+                    runtime.kernel.extensions,
+                    Slots.SettingsSection,
+                    refreshKey = runtime.tick,
+                    onAction = { owner, action -> runtime.performSlotAction(owner, action) },
+                    layout = runtime.layoutFor(Slots.SettingsSection.id),
+                )
             }
         }
     }

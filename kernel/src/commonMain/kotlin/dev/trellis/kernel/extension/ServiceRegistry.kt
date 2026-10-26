@@ -93,6 +93,19 @@ object KernelPoints {
         Cardinality.MANY,
         "DataProvider",
     )
+
+    /**
+     * 主题包（L2）。插件可以贡献一整套配色 token，宿主校验后应用。
+     *
+     * 为什么不让 agent 直接改枚举：新枚举值宿主不认识，只能靠改宿主渲染代码
+     * 才能生效 —— 那就不是插件了。主题走的是「数据 + 宿主校验」这条老路：
+     * 形状由契约定，内容由插件填，坏内容宿主拒收。
+     */
+    val Theme: ExtensionPoint<dev.trellis.kernel.theme.ThemeContribution> = ExtensionPoint(
+        ExtensionPointId("kernel.theme"),
+        Cardinality.MANY,
+        "ThemeContribution",
+    )
 }
 
 /** 内核内部实现。[MutableExtensionRegistry] 上的一层只读视图。 */

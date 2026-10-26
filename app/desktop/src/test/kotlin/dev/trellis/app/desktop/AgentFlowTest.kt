@@ -168,8 +168,10 @@ class AgentFlowTest {
                 dev.trellis.kernel.slot.Slots.HomeSection.id,
                 dev.trellis.kernel.slot.Slots.EmptyState.id,
                 dev.trellis.kernel.slot.Slots.AppOverlay.id,
+                dev.trellis.kernel.slot.Slots.ReportChart.id,
+                dev.trellis.kernel.slot.Slots.SettingsSection.id,
             ),
-            "当前界面只渲染了首页区块，这个常量必须和 AppScreen 同步",
+            "当前界面渲染了 6 个位置，这个常量必须和 AppScreen / PluginsScreen 同步",
         )
 
         val catalog = dev.trellis.ai.CapabilityCatalog.of(runtime.kernel.extensions, RENDERED_MOUNT_POINTS)

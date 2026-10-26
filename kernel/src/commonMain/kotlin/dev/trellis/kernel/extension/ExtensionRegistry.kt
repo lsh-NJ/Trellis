@@ -110,6 +110,15 @@ class ExtensionRegistry internal constructor(
         return mutable.effective(point.id).map { it.value } as List<T>
     }
 
+    /**
+     * 某个挂载点上现在的贡献，**带 owner**。
+     *
+     * [all] 只给值，而 [dev.trellis.kernel.slot.TextSlot] 这类值根本不带插件身份；
+     * 界面要按「哪个插件的卡片」排版，就得从这里拿。
+     */
+    fun <T : Any> contributionsAt(point: ExtensionPoint<T>): List<Contribution> =
+        mutable.effective(point.id).sortedWith(Contribution.COMPARATOR)
+
     fun <T : Any> first(point: ExtensionPoint<T>): T? = all(point).firstOrNull()
 
     fun <T : Any> isEmpty(point: ExtensionPoint<T>): Boolean = mutable.effective(point.id).isEmpty()

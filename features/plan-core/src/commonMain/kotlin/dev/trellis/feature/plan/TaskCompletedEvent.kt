@@ -19,5 +19,6 @@ object TaskCompletedEvent : EventDeclaration {
     override val payload = listOf(
         EventDeclaration.PayloadField("taskId", "刚完成的任务 id"),
         EventDeclaration.PayloadField("title", "刚完成的任务标题"),
+        EventDeclaration.PayloadField("spentMinutes", "这条任务一共投入了多少分钟"),
     )
 }

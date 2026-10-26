@@ -4,6 +4,7 @@ import dev.trellis.ai.AuthoredPlugin
 import dev.trellis.ai.AuthoredScript
 import dev.trellis.ai.ScriptActionDecl
 import dev.trellis.ai.ScriptCardDecl
+import dev.trellis.ai.ScriptThemeDecl
 import dev.trellis.ai.CapabilityCatalog
 import dev.trellis.ai.flow.Issue
 import dev.trellis.ai.tool.AgentTool
@@ -77,12 +78,16 @@ class PluginTools(
      */
     val guidance: String = listOf(
         "<how_to_work>",
+        "0. 先做满，再谈退：这件事如果脚本能写（有输入、有计算、有存取），就别只摆一张卡；规则能自动做，就别让用户自己点。够得着的先够。",
         "1. 先看清楚：list_plugins 看已经装着什么，list_events 和 list_actions 看有哪些事件和动作能用。",
         "2. 要改一个已装的插件：read_plugin 把它的文件读回来，在原文上改，再 deploy 同一个 id。不要用新 id 另写一个近似的东西。",
         "3. 要写新的：先 try_plugin 试跑，报错就改，跑通了再 deploy。",
         "4. 用户说某个插件不要了：remove_plugin 删掉它（进回收站，七天内能还原）；只是暂时不想用就用 disable_plugin。内置插件删不掉，别白试。",
-        "5. 做不到就老实说：输出 cannotDo，写清卡在哪。不要装一个做不到的东西。",
+        "5. 做不到时先退一步，再谈拒绝：换交互、换数据源、换呈现、换触发，退到哪一级就写进 limitation。四条路都试过还是不行，才 cannotDo。不吭声地退一步，比直接拒绝更糟。",
         "6. 没说 done 之前不要编事实：你只知道自己调工具看到的东西，「应该已经装好了」不是依据。",
+        "7. 做「高密度数据看板」风格（纸感米白 + 荧光青柠 + 墨黑、硬边小圆角）：主题切 dev.bento.shift/bento（装了才有），" +
+            "卡片样式设 bento，导航放左侧；卡片内部用 stat 配 text(size:'huge', weight:'bold') 做大数字、" +
+            "text(size:'small', font:'mono') 做小标、bars / sparkline / ring 做走势、table 做明细、grid(columns:2..4) 分栏。",
         "</how_to_work>",
     ).joinToString("\n")
 
@@ -154,11 +159,15 @@ class PluginTools(
         val sandbox = ScriptSandbox(pluginId = script.id, source = script.script)
         var cards: List<ScriptCardDecl> = emptyList()
         var actions: List<ScriptActionDecl> = emptyList()
+        var themes: List<ScriptThemeDecl> = emptyList()
         try {
             withContext(Dispatchers.Default) { sandbox.boot() }
             cards = sandbox.declaredCards().map { ScriptCardDecl(it.id, it.pointId) }
             actions = sandbox.declaredActions().map {
                 ScriptActionDecl("script." + script.id + "." + it.id, it.label)
+            }
+            themes = sandbox.declaredThemes().map {
+                ScriptThemeDecl(it.id, it.name, it.description, it.light, it.dark)
             }
         } catch (cancel: CancellationException) {
             throw cancel
@@ -167,7 +176,15 @@ class PluginTools(
         } finally {
             runCatching { sandbox.close() }
         }
-        if (cards.isEmpty()) return listOf("脚本里一张卡片都没注册，装上不会有任何东西")
+        if (cards.isEmpty() && themes.isEmpty()) {
+            return listOf("脚本里既没有卡片也没有主题，装上不会有任何东西")
+        }
+        for (theme in themes) {
+            val problems = themeProblems(theme.light, theme.dark)
+            if (problems.isNotEmpty()) {
+                return listOf("主题「" + theme.name + "」不能用：" + problems.joinToString("；"))
+            }
+        }
         val unknown = cards.filter { it.pointId !in catalog.mountPointIds }
         if (unknown.isNotEmpty()) {
             return listOf(
@@ -175,7 +192,7 @@ class PluginTools(
                     "。能用的是：" + catalog.mountPointIds.sorted().joinToString("、"),
             )
         }
-        return Prepared(script.toFiles(cards, actions), script.capabilities.toSet())
+        return Prepared(script.toFiles(cards, actions, themes), script.capabilities.toSet())
     }
 
     private inner class ListPlugins : AgentTool {

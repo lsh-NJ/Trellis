@@ -76,14 +76,70 @@ class ToolAgentTest {
     }
 
     @Test
-    fun theStepBudgetIsHard() = runTest {
+    fun itKeepsGoingPastTheOldTenStepLimit() = runTest {
+        // 12 步才做完：以前固定 8/10 步上限会在这里腰斩，用户看到的是「没做完」。
+        val replies = (1..12).map { i ->
+            """{"tool": "list_events", "arguments": {"n": $i}}"""
+        } + """{"done": true, "message": "查完了"}"""
+        val llm = ScriptedLlm(*replies.toTypedArray())
+        val tool = Recorder()
+
+        val run = ToolAgent(llm, listOf(tool)).run("你是插件作者", "把十二件事都查一遍")
+
+        assertTrue(run.ok, run.message)
+        assertEquals("查完了", run.message)
+        assertEquals(12, tool.calls)
+    }
+
+    @Test
+    fun theSameCallRepeatedIsTreatedAsStuckInsteadOfBurningTokens() = runTest {
         val llm = ScriptedLlm("""{"tool": "list_events", "arguments": {}}""")
         val tool = Recorder()
 
-        val run = ToolAgent(llm, listOf(tool), maxSteps = 3).run("你是插件作者", "一直查")
+        val run = ToolAgent(llm, listOf(tool)).run("你是插件作者", "一直查同一件事")
+
+        assertTrue(!run.ok, run.message)
+        assertTrue(run.message.contains("同一个工具"), run.message)
+        // 第三次调同一件事之前就判定卡住，所以工具只真的被执行了两次。
+        assertEquals(2, tool.calls)
+    }
+
+    @Test
+    fun anExplicitBudgetStillStopsWhenTheCallerAsksForOne() = runTest {
+        // 调用方明确说「这一轮最多 3 步」时才生效；参数不同，避免被重复检测提前收掉。
+        val replies = (1..8).map { i ->
+            """{"tool": "list_events", "arguments": {"n": $i}}"""
+        }
+        val llm = ScriptedLlm(*replies.toTypedArray())
+        val tool = Recorder()
+
+        val run = ToolAgent(llm, listOf(tool), maxSteps = 3).run("你是插件作者", "只准看三步")
 
         assertTrue(!run.ok)
         assertTrue(run.message.contains("3 步"), run.message)
         assertEquals(3, tool.calls)
+    }
+
+    @Test
+    fun aScreenshotRidesAlongWithTheToolResult() = runTest {
+        val camera = object : AgentTool {
+            override val name = "take_screenshot"
+            override val description = "截图"
+            override val parameters = "无"
+            override suspend fun call(arguments: JsonObject) =
+                ToolResult("截图已保存", image = "data:image/png;base64,AAAA")
+        }
+        val llm = ScriptedLlm(
+            """{"tool": "take_screenshot", "arguments": {}}""",
+            """{"done": true, "message": "看到了"}""",
+        )
+
+        val run = ToolAgent(llm, listOf(camera)).run("你是插件作者", "看一眼")
+
+        assertTrue(run.ok, run.message)
+        // 截图必须跟着工具结果一起进模型上下文，否则它还是瞎子。
+        val withImage = llm.seenMessages[1].filter { it.images.isNotEmpty() }
+        assertEquals(1, withImage.size, llm.seenMessages[1].toString())
+        assertEquals("data:image/png;base64,AAAA", withImage[0].images[0])
     }
 }

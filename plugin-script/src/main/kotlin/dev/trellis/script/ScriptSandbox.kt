@@ -19,6 +19,21 @@ data class CardDecl(val id: String, val pointId: String, val order: Int)
 /** 脚本自己声明的一个动作：外面能按名字调它，参数名只用于告诉人怎么填。 */
 data class ActionDecl(val id: String, val label: String, val params: List<String>)
 
+/**
+ * 脚本声明的主题包。颜色只收 `#RRGGBB`，token 词表和对比度由宿主校验 ——
+ * 沙箱只负责把脚本写的东西**如实**交出来，不替它判断好不好看。
+ */
+data class ThemeDecl(
+    val id: String,
+    val name: String,
+    val description: String,
+    val light: Map<String, String>,
+    val dark: Map<String, String>,
+    val shape: Map<String, String> = emptyMap(),
+    val type: Map<String, String> = emptyMap(),
+    val extra: Map<String, String> = emptyMap(),
+)
+
 /** 插件处理函数交回来的东西。它能说一句话，能存几个键，能删几个键 —— 仅此而已。 */
 data class HandlerResult(
     val say: String = "",
@@ -52,6 +67,7 @@ class ScriptSandbox(
     private var scope: ScriptableObject? = null
     private val cards = mutableListOf<CardDecl>()
     private val actions = mutableListOf<ActionDecl>()
+    private val themes = mutableListOf<ThemeDecl>()
     private val renders = mutableMapOf<String, Function>()
     private val handlers = mutableMapOf<String, Function>()
 
@@ -79,6 +95,9 @@ class ScriptSandbox(
     fun declaredCards(): List<CardDecl> = synchronized(lock) { cards.toList() }
 
     fun declaredActions(): List<ActionDecl> = synchronized(lock) { actions.toList() }
+
+    /** 脚本声明了哪些主题包。宿主校验通过才会被装进内核。 */
+    fun declaredThemes(): List<ThemeDecl> = synchronized(lock) { themes.toList() }
 
     /** 注册了哪些点击处理函数。自检时要一个个点过去。 */
     fun declaredHandlers(): List<String> = synchronized(lock) { handlers.keys.toList() }
@@ -127,6 +146,7 @@ class ScriptSandbox(
     fun close() = synchronized(lock) {
         cards.clear()
         actions.clear()
+        themes.clear()
         renders.clear()
         handlers.clear()
         scope = null
@@ -211,6 +231,51 @@ class ScriptSandbox(
                 if (f is Function) handlers[name] = f
             }
         }
+        val theme = ScriptableObject.getProperty(def, "theme")
+        if (theme is Scriptable) onTheme(theme)
+    }
+
+    private fun onTheme(def: Scriptable) {
+        if (themes.size >= MAX_THEMES) {
+            throw ScriptFailure("一次最多声明 " + MAX_THEMES + " 个主题包，已经够了")
+        }
+        val id = (ScriptableObject.getProperty(def, "id") as? CharSequence)?.toString()?.trim().orEmpty()
+        if (!THEME_ID.matches(id)) {
+            throw ScriptFailure("主题 id「" + id + "」不合规：只能用小写字母、数字、点、横线")
+        }
+        val name = (ScriptableObject.getProperty(def, "name") as? CharSequence)?.toString()?.trim()
+            ?.takeIf { it.isNotBlank() } ?: id
+        val description = (ScriptableObject.getProperty(def, "description") as? CharSequence)?.toString().orEmpty()
+        val light = colorMap(def, "light")
+        if (light.isEmpty()) {
+            throw ScriptFailure(
+                "主题「" + id + "」没写 light：至少要给 primary / onPrimary / " +
+                    "background / onBackground / surface / onSurface",
+            )
+        }
+        themes += ThemeDecl(
+            id = id,
+            name = name,
+            description = description,
+            light = light,
+            dark = colorMap(def, "dark"),
+            shape = colorMap(def, "shape"),
+            type = colorMap(def, "type"),
+            extra = colorMap(def, "extra"),
+        )
+    }
+
+    /** 把 JS 对象里的键值读成颜色表。值的合法性交给宿主校验，沙箱不替它下结论。 */
+    private fun colorMap(def: Scriptable, field: String): Map<String, String> {
+        val raw = ScriptableObject.getProperty(def, field)
+        if (raw !is Scriptable) return emptyMap()
+        val out = LinkedHashMap<String, String>()
+        for (key in raw.ids) {
+            val value = ScriptableObject.getProperty(raw, key.toString())
+            if (value == null || value is Undefined) continue
+            out[key.toString()] = if (value is CharSequence) value.toString() else Context.toString(value)
+        }
+        return out
     }
 
     private fun readResult(out: Any?): HandlerResult {
@@ -270,5 +335,11 @@ class ScriptSandbox(
 
 private val ACTION_ID = Regex("^[A-Za-z][A-Za-z0-9._-]*$")
 
+/** 主题 id：小写、数字、点、横线，和插件内部的空间名一致。 */
+private val THEME_ID = Regex("^[a-z][a-z0-9.-]*$")
+
 /** 一个脚本最多声明几个动作。动作会出现在外层的动作清单里，多了没人看得过来。 */
 private const val MAX_ACTIONS = 5
+
+/** 一个脚本最多声明几个主题包。主题是给整页换装的，一两个就够。 */
+private const val MAX_THEMES = 4

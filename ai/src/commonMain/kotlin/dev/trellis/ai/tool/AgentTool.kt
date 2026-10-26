@@ -23,9 +23,13 @@ interface AgentTool {
  *
  * [done] 为真表示「不用再想了，收工」。只有 deploy 会这么回：
  * 插件装上去了这件事本身就是答案，再让模型补一段话只会画蛇添足。
+ *
+ * [image] 是附带的截图（data URL）。工具循环会把它当成图片交给模型 ——
+ * 模型看不见屏幕这件事，就是靠这一条补上的。
  */
 data class ToolResult(
     val content: String,
     val isError: Boolean = false,
     val done: Boolean = false,
+    val image: String? = null,
 )
