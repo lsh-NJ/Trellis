@@ -1,51 +1,55 @@
 # Trellis
 
-多端（Android + 桌面）、插件化的学习计划设定与追踪应用。
+插件化的学习计划设定与追踪应用。内核零业务概念，功能全是插件；三种插件轨道并存（内置 Kotlin / JSON 声明式 / ES5 脚本）；AI 作为「插件管理员」常驻对话页。
 
-- 需求：见 `DESIGN.MD`
-- 架构：见 `docs/kernel-design.md`（内核设计文档 v0.9）
+- **工程入口（模块 → 源码路径 → 改什么去哪）**：[AGENTS.md](AGENTS.md)
+- **文档索引（每篇文档讲什么、按什么顺序读）**：[docs/README.md](docs/README.md)
+- **原始需求**：[DESIGN.MD](DESIGN.MD)
+- **内核设计**：[docs/kernel-design.md](docs/kernel-design.md)
+- **跨平台 + 热插拔调研结论**：[docs/plugin-hotplug-path.md](docs/plugin-hotplug-path.md)
 
-## 当前进度
+## 现在能做什么
 
-| 里程碑 | 内容 | 状态 |
+| 能力 | 状态 | 代码位置 |
 |---|---|---|
-| M0 | 模块骨架 + PluginManifest + 空 boot | 完成 |
-| M1 | Registry + Resolver + 状态机 | 完成 |
-| M2 | 扩展点 + Slot + 热装热卸 | 完成 |
-| M3 | 轨道 A：声明式插件（纯 JSON 插件） | 完成 |
-| M4 | Service 扩展点（跨插件通信）+ I3 串行化 | 完成 |
-| M5 | **Capability + 审批门 + manifest 指纹** | **完成** |
-| M6 | **存储 + 命名空间隔离（I4）** | **完成** |
-| M7 | **领域层 + core.plan（第一个真实消费者）** | **完成** |
-| M8 | 快照 + 回滚 | 未开始 |
-| M8 | **接入 Compose Multiplatform（第一次有窗口）** | **完成** |
-| M9 | `:sdk-api` 独立成模块（I7） | 未开始 |
-| M10 | 领域变更通知（替掉轮询） | 未开始 |
-| M11 | 声明式插件的数据绑定 | 未开始 |
-| M12 | 诊断面板 | 未开始 |
+| 模块化内核：插件生命周期、扩展点、能力审批、命名空间存储 | 完成 | `:kernel` |
+| 三轨插件：内置 Kotlin / JSON DSL / ES5 脚本（Rhino 沙箱） | 完成 | `:kernel` `:plugin-dsl` `:plugin-script` |
+| 任务领域与 `PlanService`（统计、事件、6 个动作） | 完成 | `:sdk-domain` `:features:plan-core` |
+| UI 渲染层：9 个挂载点、12 栏布局、`UiNode` 词汇表（图表/表格/点阵等） | 完成 | `:ui-kernel` |
+| AI 插件管理员：分层提示词、意图路由、多步工具、截图/点击 | 完成 | `:ai` `:app:desktop` |
+| 会话系统：落盘恢复、Markdown、过程折叠、撤销 | 完成 | `:app:desktop` |
+| 主题包（插件贡献配色、宿主校验对比度）+ 参数化配色 | 完成 | `:app:desktop` `:kernel` |
+| 原子更新管线 + 快照回滚 / 数据绑定刷新 / 插件市场 / 移动端 | 未做 | 见 `docs/roadmap.md` |
 
 ## 模块
 
-```
-:kernel             纯 Kotlin 内核，零平台依赖（KMP commonMain），不认识任何业务概念
-:sdk-domain         领域契约：Plan / Task / PlanService / 排程策略扩展点
-:features:plan-core PlanService 的实现（required 内置插件），数据存在 ctx.kv 里
-:plugin-dsl         轨道 A：把目录里的 JSON 变成真正跑起来的插件
-:ui-kernel          Compose 渲染层：把插件贡献画到界面上
-:app:desktop        桌面应用（真实可用的那个）
-:demo               控制台演示，跑 `./gradlew :demo:run`
-```
+| 模块 | 职责 |
+|---|---|
+| `:kernel` | 纯 Kotlin 内核，零平台依赖，不认识任何业务概念 |
+| `:sdk-domain` | 领域契约：Plan / Task / PlanSummary / PlanService / 排程扩展点 |
+| `:features:plan-core` | `PlanService` 的实现（required 内置插件），数据存在 `ctx.kv` |
+| `:plugin-dsl` | 轨道 A：把目录里的 JSON 变成真正跑起来的插件 |
+| `:plugin-script` | 轨道 B：ES5 脚本插件（Rhino 沙箱），可带状态、按钮、输入框 |
+| `:ui-kernel` | Compose 渲染层：把插件贡献画到界面上 |
+| `:ai` | AI 层：提示词、管理器、工具循环、模型客户端 |
+| `:app:desktop` | 桌面应用（真实可用的那个）：装配、界面、AI 工具、会话、主题 |
+| `:demo` | 控制台演示，跑 `.\gradlew.bat :demo:run` |
 
-依赖方向：`:features:plan-core -> :sdk-domain -> :kernel`，而**内核绝不依赖领域**。
-
-后续：`:sdk-api` / `:ui-kernel` / `:platform-*` / `:app:*`
+依赖方向：`:features:plan-core -> :sdk-domain -> :kernel`，而**内核绝不依赖领域**（`verifyKernelPurity` 守着）。
+每个模块的源码根与关键入口文件见 [AGENTS.md](AGENTS.md) §2。
 
 ## 构建与测试
 
 需要 JDK 17。Gradle 用 wrapper（已指向国内镜像）。`./run.sh` 会自动定位 JDK。
 
+本机（Windows）JDK 在 `%USERPROFILE%\.jdks\jdk17`：
+
+```powershell
+$env:JAVA_HOME = "$env:USERPROFILE\.jdks\jdk17"; $env:Path = "$env:JAVA_HOME\bin;$env:Path"
+```
+
 ```bash
-./run.sh check                      # 148 个测试 + 架构断言
+./run.sh check                      # 全模块测试 + 架构断言 verifyKernelPurity
 ./run.sh :demo:run                  # 控制台演示
 ./run.sh verifyKernelPurity         # 只跑「内核不认识领域」断言
 ```
@@ -139,12 +143,27 @@ val summary = plan.summary(now, dayEnd)
 ./run-app.sh
 ```
 
-数据落在 `~/.trellis/store.json`，插件目录是 `~/.trellis/plugins/` 
-往里丢两份 JSON（`manifest.json` + `main.dsl.json`），重启应用就能看到新卡片。
+Windows 本机（JDK 在 `%USERPROFILE%\.jdks\jdk17`）：
+
+```powershell
+$env:JAVA_HOME = "$env:USERPROFILE\.jdks\jdk17"; $env:Path = "$env:JAVA_HOME\bin;$env:Path"
+.\gradlew.bat :app:desktop:run
+```
+
+数据落在 `~/.trellis/store.json`，插件目录是 `~/.trellis/plugins/` ——
+往里面丢插件（`manifest.json` + `main.dsl.json`，或脚本插件的 `manifest.json` + `main.js`），重启应用就能看到新卡片。
 
 > WSL 下需要 WSLg（`C:\Users\<你>\.wslconfig` 里 `guiApplications=true`）+
 > `SKIKO_RENDER_API=SOFTWARE_FAST`（`run-app.sh` 会自动设）。
 > 没有图形环境时，`./run.sh :app:desktop:test` 里的 `UiRenderTest` 会把界面离屏渲染成 PNG。
+
+> **应用开着的时候别重新编译。** `./gradlew :app:desktop:run` 的 classpath 是
+> `build/classes/` 目录，编译会原地重写它；已经跑起来的进程要到第一次用到某个类
+> （典型是点关闭时的 lambda）才会去加载，这时可能抛
+> `NoClassDefFoundError: MainKt$main$1$1$1$1`，于是窗口关不掉、进程也退不出，
+> `~/.trellis/app.log` 里会留着 `ClassNotFoundException`。要改代码就先关窗口再编译。
+> `Main.kt` 已经把这个坑兜住了（关闭回调不会因为异常阻止退出，另外 `Ctrl+Q` 永远能退），
+> 但「边跑边编译」还是会让你看到旧行为、白debug一轮。
 
 ## 铁律
 
