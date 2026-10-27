@@ -275,7 +275,10 @@ private fun SqliteLearningPlanService.dayItems(planId: String, day: String): Lis
 internal fun SqliteLearningPlanService.buildMapView(planId: String): MapView {
     val title = planTitle(planId)
     val weeks = connection.prepareStatement(
-        "SELECT DISTINCT c.week FROM commitment c JOIN plan_version pv ON pv.id = c.plan_version_id " +
+        // 只认当前生效版本：重排会把周次写成新的一版，旧版本的 2025-W01 不该继续出现在总览里。
+        "SELECT DISTINCT c.week FROM commitment c " +
+            "JOIN plan_version pv ON pv.id = c.plan_version_id " +
+            "JOIN plan p ON p.id = pv.plan_id AND p.current_version_id = pv.id " +
             "WHERE pv.plan_id = ? ORDER BY c.week",
     ).use { ps ->
         ps.setString(1, planId)

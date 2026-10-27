@@ -88,3 +88,21 @@
      搬过来、结束旧计划；旧计划保留在库里，历史不丢。
    - 覆盖测试：`PlanRepairTest`（重排后首周=本周、单元不丢）与
      `LearningPlanServiceTest.aCompletedOccurrenceCanBeMarkedUndoneOnPurpose`（完成→改回）。
+
+## 8. 2026-10-27 夜：挪到本周不再新建计划 + 计划从今天起排
+
+1. **「挪到本周」改成原地修**（用户报：点一下多出一个新计划）
+   - 旧做法：建一份「（重排）」新计划，再结束旧计划 → 左侧出现两条计划，完成记录留在旧计划里。
+   - 新做法：`AppRuntime.repairPastPlan()` 在**原计划**里 `saveDraft → acceptDraft` 出一版周次平移后的版本：
+     同一个 `planId`、同一个标题、同一批单元；旧版本作为历史留在库里，不删也不改。
+   - 顺带修 `PlanQueries.buildMapView`：总览的周列表原来跨所有版本取 `DISTINCT c.week`，
+     重排后 `2025-W01` 会和本周同时出现（并让「过去」横幅消不掉）；现在只认 `plan.current_version_id`。
+   - 左侧列表只列未结束的计划，副标题改成「进行中 / 草稿」，不再原样显示 `active`。
+2. **计划第一周必须是本周**（用户报：agent 排计划不以当天为准）
+   - `PlanTools.create_learning_plan`：第一周必须等于今天所在的 ISO 周，否则报错并给出本周；
+     `weeks` 还要求按时间递增、不重复。
+   - 排期本身早就是「从今天铺」：`materializeWeek` 里 `day = if (today in 本周) today else 周一`。
+     之前从下周开始，是模型把 `weeks[0]` 直接写成了下周，工具没拦。
+   - 测试：`PlanToolsTest.aPlanThatStartsNextWeekIsRejected`（新增）、`PlanRepairTest` 断言计划数不变、标题不变。
+3. **数据清理**：旧逻辑在真实 home 里留下的重复计划已整理为「一条 active、两条 ended」；
+   原库备份在 `~/.trellis/plans/plan.db.bak-20261027-2240`。
