@@ -18,6 +18,15 @@ import kotlinx.serialization.json.putJsonArray
  */
 class PlanToolsTest {
 
+    /** 今天所在的 ISO 周；weeksFromNow=1 就是下一周。 */
+    private fun weekOffset(weeksFromNow: Long = 0): String {
+        val date = java.time.LocalDate.now().plusWeeks(weeksFromNow)
+        return "%04d-W%02d".format(
+            date.get(java.time.temporal.IsoFields.WEEK_BASED_YEAR),
+            date.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR),
+        )
+    }
+
     @Test
     fun createLearningPlanWritesWeeksIntoThePlanDatabase() = runTest {
         val service = LearningPlanStore.inMemory()
@@ -35,7 +44,7 @@ class PlanToolsTest {
                 putJsonArray("weeks") {
                     add(
                         buildJsonObject {
-                            put("week", "2026-W44")
+                            put("week", weekOffset())
                             putJsonArray("units") {
                                 add("P2 操作系统的概念")
                                 add("P3 操作系统的特征")
@@ -44,7 +53,7 @@ class PlanToolsTest {
                     )
                     add(
                         buildJsonObject {
-                            put("week", "2026-W45")
+                            put("week", weekOffset(1))
                             putJsonArray("units") { add("P4 发展与分类") }
                         },
                     )
@@ -58,8 +67,8 @@ class PlanToolsTest {
         val planId = service.activePlanId()
         assertTrue(planId != null, "计划库里应该有一个活跃计划")
         val map = service.map(planId!!)
-        assertEquals(listOf("2026-W44", "2026-W45"), map.weeks.map { it.week })
-        val first = service.week(planId, "2026-W44")
+        assertEquals(listOf(weekOffset(), weekOffset(1)), map.weeks.map { it.week })
+        val first = service.week(planId, weekOffset())
         assertEquals(2, first.commitment.units.size)
         assertEquals("P2 操作系统的概念", first.commitment.units.first().title)
     }
@@ -76,7 +85,7 @@ class PlanToolsTest {
                 putJsonArray("weeks") {
                     add(
                         buildJsonObject {
-                            put("week", "2026-W44")
+                            put("week", weekOffset())
                             putJsonArray("units") { add("P2 概念（错）") }
                         },
                     )
@@ -105,5 +114,31 @@ class PlanToolsTest {
         )
 
         assertTrue(result.isError, result.content)
+    }
+
+    /** 用户明确要过：计划第一周就是本周，别从下周开始排。 */
+    @Test
+    fun aPlanThatStartsNextWeekIsRejected() = runTest {
+        val service = LearningPlanStore.inMemory()
+        val tool = PlanTools({ service }, {}).all.single { it.name == "create_learning_plan" }
+
+        val result = tool.call(
+            buildJsonObject {
+                put("title", "从下周开始")
+                putJsonArray("units") { add("P2 概念") }
+                putJsonArray("weeks") {
+                    add(
+                        buildJsonObject {
+                            put("week", weekOffset(1))
+                            putJsonArray("units") { add("P2 概念") }
+                        },
+                    )
+                }
+            },
+        )
+
+        assertTrue(result.isError, "第一周不是本周就要拒绝：" + result.content)
+        assertTrue(result.content.contains("本周"), "错误里要说清第一周必须是本周：" + result.content)
+        assertEquals(null, service.activePlanId(), "报错时不能留下半个计划")
     }
 }
