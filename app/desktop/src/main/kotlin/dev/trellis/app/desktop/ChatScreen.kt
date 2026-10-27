@@ -1,5 +1,6 @@
 package dev.trellis.app.desktop
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -40,6 +42,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,6 +50,8 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
@@ -59,9 +64,11 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.trellis.ai.tool.DeepSeekMarkup
 import dev.trellis.ui.LocalExtraColors
 import java.time.Instant
 import java.time.ZoneId
@@ -84,6 +91,26 @@ import kotlinx.coroutines.delay
 @Composable
 fun ChatScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     val focus = remember { FocusRequester() }
+    // 右栏默认开：等待时用户的眼睛在对话线程上，清单得和线程同屏、且不随滚动跑掉。
+    // 关掉不是让清单消失，而是换成输入框上方那条常驻摘要（见 PlanDock）。
+    var planOpen by rememberSaveable(runtime.currentChatId) { mutableStateOf(true) }
+    var diffOpen by remember(runtime.currentChatId) { mutableStateOf(false) }
+    var planNote by remember(runtime.currentChatId) { mutableStateOf<String?>(null) }
+
+    val planLine = runtime.latestPlanLine()
+    val roundKey = remember(runtime.chat.size, planLine?.id) { planRoundKeyOf(runtime.chat, planLine) }
+    val planDiff = remember(runtime.chatSessions.size, runtime.chatBusy, roundKey, runtime.cardLayout, runtime.uiPrefs) {
+        roundKey?.let { runtime.diffForRound(it) }.orEmpty()
+    }
+
+    // 新一轮清单出现时把右栏打开一次；用户手动关掉后不再抢回去。
+    LaunchedEffect(planLine?.id) {
+        val fresh = planLine?.plan?.any {
+            it.state == PlanStepState.Running || it.state == PlanStepState.Pending
+        } == true
+        if (fresh) planOpen = true
+    }
+
     Row(
         modifier = modifier.onPreviewKeyEvent { event ->
             when {
@@ -101,7 +128,49 @@ fun ChatScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
         },
     ) {
         ChatSessionList(runtime, Modifier.width(240.dp).fillMaxHeight())
-        ChatConversation(runtime, focus, Modifier.weight(1f).fillMaxHeight().padding(start = 18.dp))
+        ChatConversation(
+            runtime = runtime,
+            focus = focus,
+            planLine = if (planOpen) null else planLine,
+            onOpenPlan = { planOpen = true },
+            note = planNote,
+            modifier = Modifier.weight(1f).fillMaxHeight().padding(start = 18.dp),
+        )
+        if (planOpen && planLine != null && planLine.plan.isNotEmpty()) {
+            PlanSidebar(
+                line = planLine,
+                running = runtime.chatBusy,
+                diffCount = planDiff.size,
+                onClose = { planOpen = false },
+                onUndo = {
+                    if (roundKey != null) planNote = runtime.undoRound(roundKey)
+                },
+                onDiff = { diffOpen = true },
+                onStop = { runtime.stopChat() },
+                modifier = Modifier.padding(start = 14.dp, end = 4.dp),
+            )
+        }
+    }
+
+    if (diffOpen) {
+        AlertDialog(
+            onDismissRequest = { diffOpen = false },
+            title = { Text("这一轮改了什么") },
+            text = {
+                if (planDiff.isEmpty()) {
+                    Text("没有改动。")
+                } else {
+                    Text(
+                        planDiff.joinToString("\n"),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { diffOpen = false }) { Text("关闭") }
+            },
+        )
     }
 }
 
@@ -254,16 +323,31 @@ private fun SessionRow(
 // ---------------------------------------------------------------- 对话线程
 
 @Composable
-private fun ChatConversation(runtime: AppRuntime, focus: FocusRequester, modifier: Modifier) {
+private fun ChatConversation(
+    runtime: AppRuntime,
+    focus: FocusRequester,
+    planLine: ChatLine?,
+    onOpenPlan: () -> Unit,
+    note: String?,
+    modifier: Modifier,
+) {
     val listState = rememberLazyListState()
     var input by remember(runtime.currentChatId) { mutableStateOf("") }
     var lastPrompt by remember(runtime.currentChatId) { mutableStateOf("") }
-    var note by remember(runtime.currentChatId) { mutableStateOf<String?>(null) }
+    var localNote by remember(runtime.currentChatId) { mutableStateOf<String?>(null) }
 
     val blocks = remember(runtime.chat.size, runtime.chat.lastOrNull()?.text?.length) { blocksOf(runtime.chat) }
 
     LaunchedEffect(runtime.chat.size, runtime.chat.lastOrNull()?.text?.length) {
         if (runtime.chat.isNotEmpty()) listState.animateScrollToItem(runtime.chat.size)
+    }
+
+    // 从插件页带过来的草稿：落地就把那句话填进输入框并聚焦，用户补完后半句即可。
+    LaunchedEffect(runtime.pendingChatPrompt) {
+        val draft = runtime.pendingChatPrompt ?: return@LaunchedEffect
+        input = draft
+        runtime.takePendingChatPrompt()
+        runCatching { focus.requestFocus() }
     }
 
     Column(modifier) {
@@ -290,6 +374,7 @@ private fun ChatConversation(runtime: AppRuntime, focus: FocusRequester, modifie
                                 runtime = runtime,
                                 round = block,
                                 isLast = block === blocks.lastOrNull(),
+                                onOpenPlan = onOpenPlan,
                             )
                         }
                     }
@@ -298,7 +383,28 @@ private fun ChatConversation(runtime: AppRuntime, focus: FocusRequester, modifie
             }
         }
 
-        note?.let { message ->
+        // 右栏关掉时清单换成贴输入框的常驻条：常驻，不是消失。
+        if (planLine != null && planLine.plan.isNotEmpty()) {
+            PlanDock(
+                line = planLine,
+                running = runtime.chatBusy,
+                onOpen = onOpenPlan,
+                onStop = { runtime.stopChat() },
+            )
+        }
+
+        // 模型主动开了个选择（ask_choices）：选项竖着摆在输入框上方，等用户点。
+        // 这里不再有「运行时猜下一步」的建议条 —— 要不要继续做什么，由模型决定要不要问。
+        if (runtime.chatChoices.isNotEmpty()) {
+            ChoiceBar(
+                choices = runtime.chatChoices,
+                onPick = { runtime.applyChoice(it) },
+                onDismiss = { runtime.dismissChoices() },
+            )
+        }
+
+        val shownNote = localNote ?: note
+        shownNote?.let { message ->
             Text(
                 message,
                 style = MaterialTheme.typography.labelSmall,
@@ -328,11 +434,11 @@ private fun ChatConversation(runtime: AppRuntime, focus: FocusRequester, modifie
                 val text = input.trim()
                 if (text.isEmpty()) return@InputBar
                 if (runtime.chatBusy) {
-                    note = "还在跑，等这一轮结束再发"
+                    localNote = "还在跑，等这一轮结束再发"
                 } else {
                     input = ""
                     lastPrompt = text
-                    note = null
+                    localNote = null
                     runtime.ask(text)
                 }
             },
@@ -350,6 +456,67 @@ private val EMPTY_EXAMPLES = listOf(
     "把首页三张卡片横着排",
     "现在装了哪些插件？",
 )
+
+/**
+ * 输入框上方的「选一个」列表 —— 竖着排，一行一个选项。
+ *
+ * 只有模型主动要问（`ask_choices`）时才会出现；运行时不再按「刚刚查过资源」之类
+ * 的痕迹替它猜下一步。竖排的理由：横排在窄窗口里会把一串短语挤成两行，
+ * 竖排每行都能写完整一句「选它会怎样」，也更好点。
+ */
+@Composable
+internal fun ChoiceBar(
+    choices: List<ChatChoice>,
+    onPick: (ChatChoice) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(
+            "选一个",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        for (choice in choices) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(4.dp))
+                    .clickable { onPick(choice) }
+                    .padding(horizontal = 2.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "→",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.width(18.dp),
+                )
+                Text(
+                    choice.label,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            TextButton(onClick = onDismiss) {
+                Text("不用", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
+}
 
 @Composable
 private fun EmptyConversation(onPick: (String) -> Unit, modifier: Modifier) {
@@ -424,8 +591,73 @@ private fun OrphanSteps(lines: List<ChatLine>) {
     }
 }
 
+/**
+ * 线程里的清单入口：一行、可点，点开右栏。
+ *
+ * 不在这里重复渲染整张清单——活清单在右栏，用户滚到哪儿都看得见；
+ * 线程里每轮都摊开一张，翻历史时会占掉大半屏，还得跟右栏重复。
+ */
 @Composable
-private fun RoundView(runtime: AppRuntime, round: ChatBlock.Round, isLast: Boolean) {
+private fun PlanThreadLink(line: ChatLine, running: Boolean, onOpen: () -> Unit) {
+    val plan = line.plan
+    val settled = plan.count {
+        it.state == PlanStepState.Done || it.state == PlanStepState.Failed || it.state == PlanStepState.Skipped
+    }
+    val allSettled = settled == plan.size
+    val failed = plan.any { it.state == PlanStepState.Failed }
+    val active = plan.firstOrNull { it.state == PlanStepState.Running }?.text
+    val scheme = MaterialTheme.colorScheme
+    val extra = LocalExtraColors.current
+    val tone = when {
+        failed -> scheme.error
+        allSettled -> extra.accentText
+        running -> RunningAmber
+        else -> scheme.onSurfaceVariant
+    }
+
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .clickable(onClick = onOpen)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            if (allSettled) "执行计划 · 已完成" else "执行计划 · 进行中",
+            style = MaterialTheme.typography.labelSmall,
+            fontFamily = FontFamily.Monospace,
+            letterSpacing = 0.6.sp,
+            color = scheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            "$settled/${plan.size}",
+            style = MaterialTheme.typography.labelSmall,
+            fontFamily = FontFamily.Monospace,
+            color = tone,
+        )
+        if (!allSettled && active != null) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                active,
+                style = MaterialTheme.typography.labelSmall,
+                color = scheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(Modifier.width(6.dp))
+        Text("›", style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun RoundView(
+    runtime: AppRuntime,
+    round: ChatBlock.Round,
+    isLast: Boolean,
+    onOpenPlan: () -> Unit = {},
+) {
     val key = round.user.id
     val steps = round.steps
     val running = isLast && runtime.chatBusy
@@ -461,6 +693,19 @@ private fun RoundView(runtime: AppRuntime, round: ChatBlock.Round, isLast: Boole
         UserBubble(round.user)
         Spacer(Modifier.height(10.dp))
 
+        // 线程里只留一行入口：活的清单在右栏，这里不重复渲染（结束后折叠成摘要）。
+        round.plan?.let { planLine ->
+            if (planLine.plan.isNotEmpty()) {
+                PlanThreadLink(planLine, running = running, onOpen = onOpenPlan)
+                Spacer(Modifier.height(10.dp))
+            }
+        }
+
+        // 清单没结清但这一轮已经不在跑：只能是被打断/崩溃恢复，说「完成」是撒谎。
+        val planUnfinished = round.plan?.plan?.any {
+            it.state == PlanStepState.Running || it.state == PlanStepState.Pending
+        } == true
+
         // 回合头：谁在说 + 状态 + 耗时
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.width(6.dp).height(6.dp).clip(CircleShape).background(dotColor))
@@ -470,6 +715,7 @@ private fun RoundView(runtime: AppRuntime, round: ChatBlock.Round, isLast: Boole
             Text(
                 when {
                     running -> "运行中"
+                    planUnfinished -> "中断"
                     failed -> "没做成"
                     else -> "完成"
                 },
@@ -524,8 +770,11 @@ private fun RoundView(runtime: AppRuntime, round: ChatBlock.Round, isLast: Boole
         } else {
             // agent 的答复天然是 Markdown（小标题/清单/代码块）：按块渲染，
             // 不再把 ** 和 - 原样丢给用户看。
+            //
+            // 历史里可能还留着旧版本存下的协议壳（修复前模型吐的 DSML 方言被原样
+            // 当正文存进了盘），这里再剥一遍：存下来的文本改不了，但可以不给人看。
             MarkdownText(
-                conclusion,
+                DeepSeekMarkup.strip(conclusion),
                 modifier = Modifier.widthIn(max = 527.dp),
                 bodyStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.5.sp, lineHeight = 27.6.sp),
             )
@@ -733,24 +982,6 @@ private fun FailureBlock(round: ChatBlock.Round, diff: List<String>) {
 
 // ---------------------------------------------------------------- 输入条
 
-private val SUGGESTIONS_TASKS = listOf(
-    "把这周的完成情况做成一张卡",
-    "把首页三张卡片横着排",
-    "给「推进项目」加一个明天到期",
-)
-
-private val SUGGESTIONS_CHAT = listOf(
-    "现在装了哪些插件？",
-    "这张卡为什么没出来？",
-    "把配色换成更深的导航",
-)
-
-private val SUGGESTIONS_PLUGINS = listOf(
-    "把这个插件停用几天",
-    "读一下读书插件的源码",
-    "把心情卡换成填充样式",
-)
-
 @Composable
 private fun InputBar(
     runtime: AppRuntime,
@@ -760,48 +991,7 @@ private fun InputBar(
     onSend: () -> Unit,
     onRecall: () -> Unit,
 ) {
-    val page = when (runtime.currentTab) {
-        TAB_CHAT -> "对话"
-        TAB_PLUGINS -> "插件"
-        TAB_DIAG -> "诊断"
-        else -> "任务"
-    }
-    val suggestions = when (runtime.currentTab) {
-        TAB_CHAT -> SUGGESTIONS_CHAT
-        TAB_PLUGINS -> SUGGESTIONS_PLUGINS
-        else -> SUGGESTIONS_TASKS
-    }
-
     Column(Modifier.fillMaxWidth()) {
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            val accent = LocalExtraColors.current
-            Text(
-                "当前页 · " + page,
-                style = MaterialTheme.typography.labelSmall,
-                fontFamily = FontFamily.Monospace,
-                color = accent.accentText,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(3.dp))
-                    .background(accent.successContainer)
-                    .padding(horizontal = 7.dp, vertical = 3.dp),
-            )
-            for (suggestion in suggestions) {
-                Text(
-                    suggestion,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .weight(1f, fill = false)
-                        .clip(RoundedCornerShape(3.dp))
-                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(3.dp))
-                        .clickable { onInput(suggestion) }
-                        .padding(horizontal = 8.dp, vertical = 3.dp),
-                )
-            }
-        }
-        Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.Bottom) {
             ChromeTextField(
                 value = input,
@@ -856,6 +1046,7 @@ private sealed interface ChatBlock {
     data class User(val line: ChatLine) : ChatBlock
     data class Round(
         val user: ChatLine,
+        val plan: ChatLine?,
         val steps: List<ChatLine>,
         val reply: ChatLine?,
         val status: ChatLine?,
@@ -863,18 +1054,27 @@ private sealed interface ChatBlock {
     data class Orphan(val lines: List<ChatLine>) : ChatBlock
 }
 
+/** 清单属于哪一轮：从清单行往上找最近的一条用户消息，它才是这一轮的起点。 */
+private fun planRoundKeyOf(lines: List<ChatLine>, planLine: ChatLine?): Long? {
+    if (planLine == null) return null
+    val index = lines.indexOfFirst { it.id == planLine.id }
+    val head = if (index >= 0) lines.subList(0, index) else lines
+    return head.lastOrNull { it.role == ChatRole.User }?.id
+}
 private fun blocksOf(lines: List<ChatLine>): List<ChatBlock> {
     val out = mutableListOf<ChatBlock>()
     val orphan = mutableListOf<ChatLine>()
     var user: ChatLine? = null
+    var plan: ChatLine? = null
     var steps = mutableListOf<ChatLine>()
     var reply: ChatLine? = null
     var status: ChatLine? = null
 
     fun flush() {
         val opened = user ?: return
-        out += ChatBlock.Round(opened, steps, reply, status)
+        out += ChatBlock.Round(opened, plan, steps, reply, status)
         user = null
+        plan = null
         steps = mutableListOf()
         reply = null
         status = null
@@ -886,6 +1086,7 @@ private fun blocksOf(lines: List<ChatLine>): List<ChatBlock> {
                 flush()
                 user = line
             }
+            ChatRole.Plan -> if (user == null) orphan += line else plan = line
             ChatRole.Step -> if (user == null) orphan += line else steps += line
             ChatRole.Assistant -> if (user == null) orphan += line else reply = line
             ChatRole.Status -> if (user == null) orphan += line else status = line

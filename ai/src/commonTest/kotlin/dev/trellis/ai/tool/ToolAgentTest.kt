@@ -142,4 +142,26 @@ class ToolAgentTest {
         assertEquals(1, withImage.size, llm.seenMessages[1].toString())
         assertEquals("data:image/png;base64,AAAA", withImage[0].images[0])
     }
+    @Test
+    fun itUnderstandsTheModelsOwnMarkupDialect() = runTest {
+        // 真实事故：模型不吐约定的 JSON，而是吐 DSML 标记语言，工具一次都没跑，
+        // 界面上是一屏乱码，用户以为「查到了就没下文」。
+        val llm = ScriptedLlm(
+            """
+            我先查一下有没有相关的事件。
+            <||DSML||calls><||DSML||invoke name="list_events">
+            {}
+            </||DSML||parameter></||DSML||invoke></||DSML||calls>
+            """.trimIndent(),
+            """{"done": true, "message": "有一个 task.completed"}""",
+        )
+        val tool = Recorder()
+
+        val run = ToolAgent(llm, listOf(tool)).run("你是插件作者", "有什么事件")
+
+        assertTrue(run.ok, run.message)
+        assertEquals(1, tool.calls)
+        assertEquals("有一个 task.completed", run.message)
+    }
+
 }

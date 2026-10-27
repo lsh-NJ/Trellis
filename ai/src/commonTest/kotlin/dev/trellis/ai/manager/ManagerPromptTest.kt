@@ -87,4 +87,18 @@ class ManagerPromptTest {
         assertTrue(module.contains("横排"))
         assertTrue(module.contains("网格"), "没有网格这件事必须写清楚，否则它会去承诺")
     }
+
+    @Test
+    fun theResourceModulePointsAtTheBilibiliToolsAndStatesTheBoundary() {
+        val module = ManagerPrompt.taskModule(AgentIntent.FindResource)!!
+        // 资源不在模型脑子里：必须让它去查，而不是凭记忆报课程名。
+        assertTrue(module.contains("search_bilibili"))
+        assertTrue(module.contains("list_bilibili_parts"))
+        // 分集要变成用户能勾的待办；清单只装这一轮的动作。
+        assertTrue(module.contains("add_tasks"))
+        assertTrue(module.contains("set_plan"))
+        // 只读元数据这条边界要说清，否则它会承诺「帮你下载/判断讲得好不好」。
+        assertTrue(module.contains("不能播放"))
+        assertTrue(module.contains("下载"))
+    }
 }

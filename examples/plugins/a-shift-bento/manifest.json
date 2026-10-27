@@ -1,7 +1,7 @@
 {
   "id": "dev.bento.shift",
   "version": "1.0.0",
-  "name": "值班台 · BENTO SHIFT",
+  "name": "BENTO SHIFT",
   "description": "纸感米白 + 荧光青柠 + 墨黑的编辑风主题。硬边小圆角、等宽小字、大号数字，适合高密度数据看板。",
   "usage": "装上后让 agent 应用主题：把界面主题切到 dev.bento.shift/bento，把卡片样式改成 bento，导航放左侧。",
   "limitation": "只提供配色 token；字体族、硬阴影、栏宽、排布由宿主决定，插件不能自带 CSS。",

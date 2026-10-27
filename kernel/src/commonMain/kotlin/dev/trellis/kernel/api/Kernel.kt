@@ -4,7 +4,10 @@ import dev.trellis.kernel.approval.ApprovalBroker
 import dev.trellis.kernel.approval.ApprovalGate
 import dev.trellis.kernel.approval.DefaultApprovalGate
 import dev.trellis.kernel.approval.PluginApprovalBroker
+import dev.trellis.kernel.audit.Actor
+import dev.trellis.kernel.audit.AuditEntry
 import dev.trellis.kernel.audit.AuditLedger
+import dev.trellis.kernel.audit.AuditOutcome
 import dev.trellis.kernel.audit.InMemoryAuditLedger
 import dev.trellis.kernel.capability.Capabilities
 import dev.trellis.kernel.capability.CapabilityAccess
@@ -280,6 +283,33 @@ class Kernel private constructor(
     /** 审计日志（只读窗口）。「到底发生了什么」的一手证据，由内核写，插件改不了。 */
     val audit: AuditLedger get() = config.auditLedger
 
+    /**
+     * 记一条生命周期审计。
+     *
+     * 为什么要连「装/停用/删除」也记：用户在某天早上发现插件没了，问「谁删的」，
+     * 过去只能靠目录 mtime 去猜。审批门那套只覆盖带能力的动作，
+     * 而删除插件恰恰不需要任何能力 —— 只有内核自己知道它发生过。
+     */
+    private fun auditLifecycle(
+        actor: Actor,
+        action: String,
+        id: PluginId?,
+        detail: String,
+        outcome: AuditOutcome = AuditOutcome.COMPLETED,
+    ) {
+        config.auditLedger.append(
+            AuditEntry(
+                atMs = config.clock.nowMs(),
+                actor = actor,
+                action = action,
+                pluginId = id,
+                capability = null,
+                detail = detail,
+                outcome = outcome,
+            ),
+        )
+    }
+
     /** 审批门。UI 层可以对它调用 setManualHandler。 */
     val approvals: ApprovalGate get() = approvalGate
 
@@ -376,10 +406,19 @@ class Kernel private constructor(
      * 它负责的是把已经能被 loader 装载的插件接进运行中的内核：
      * 校验依赖与 sdkRange -> 装载 -> init -> start -> 登记贡献 -> 冲突裁决。
      */
-    suspend fun install(manifest: PluginManifest): InstallResult =
-        mutationLock.withLock { installLocked(manifest) }
+    suspend fun install(manifest: PluginManifest, actor: Actor = Actor.USER): InstallResult =
+        mutationLock.withLock { installLocked(manifest, actor) }
 
-    private suspend fun installLocked(manifest: PluginManifest): InstallResult {
+    /**
+     * @param announce 是否往审计里写一行「装上了 / 没装上」。
+     *   `enable()` 内部借用这段逻辑装回来时传 false —— 它自己会记一条「重新启用」，
+     *   否则用户点一次启用会在日志里看到两条，像点了两次。
+     */
+    private suspend fun installLocked(
+        manifest: PluginManifest,
+        actor: Actor = Actor.USER,
+        announce: Boolean = true,
+    ): InstallResult {
         val clock = config.clock
         val id = manifest.id
 
@@ -390,6 +429,13 @@ class Kernel private constructor(
         }
 
         entries.firstOrNull { it.manifest.id == id }?.let { existing ->
+            if (announce) {
+                auditLifecycle(
+                    actor, "install", id,
+                    "没装上：已经在运行（${existing.state}）",
+                    AuditOutcome.FAILED,
+                )
+            }
             return InstallResult.Rejected(
                 listOf(
                     KernelError(
@@ -436,11 +482,23 @@ class Kernel private constructor(
             )
         }
 
-        if (gateErrors.isNotEmpty()) return InstallResult.Rejected(gateErrors)
+        if (gateErrors.isNotEmpty()) {
+            if (announce) {
+                auditLifecycle(
+                    actor, "install", id,
+                    "没装上：" + gateErrors.first().detail,
+                    AuditOutcome.FAILED,
+                )
+            }
+            return InstallResult.Rejected(gateErrors)
+        }
 
         val entry = PluginEntry(manifest)
 
         if (!verifyFingerprint(config, manifest, errorSink, entry, clock.nowMs())) {
+            if (announce) {
+                auditLifecycle(actor, "install", id, "没装上：清单指纹校验没过", AuditOutcome.FAILED)
+            }
             return InstallResult.Rejected(entry.errors.toList())
         }
         val grantedCapabilities =
@@ -452,7 +510,13 @@ class Kernel private constructor(
         )
         entries.add(entry)
 
-        if (!activated) return InstallResult.Rejected(entry.errors.toList())
+        if (!activated) {
+            if (announce) {
+                val reason = entry.errors.firstOrNull()?.detail ?: "装载失败"
+                auditLifecycle(actor, "install", id, "没装上：" + reason, AuditOutcome.FAILED)
+            }
+            return InstallResult.Rejected(entry.errors.toList())
+        }
 
         validateRegistrations(mutableExtensions, reportedConflicts, errorSink, entries, clock.nowMs())
 
@@ -460,6 +524,12 @@ class Kernel private constructor(
         config.storage.delete(KERNEL_NAMESPACE, purgeKeyOf(id))
 
         recomputeState()
+        if (announce) {
+            auditLifecycle(
+                actor, "install", id,
+                "装上了：版本 " + manifest.version + " · 状态 " + entry.state,
+            )
+        }
         return InstallResult.Installed(entry.state)
     }
 
@@ -469,9 +539,10 @@ class Kernel private constructor(
      * 这是「插件商店」的实际流程  内容已经落在磁盘上（可能是刚被写进去的），
      * 内核负责把它接进正在运行的实例。
      */
-    suspend fun install(id: PluginId): InstallResult {
+    suspend fun install(id: PluginId, actor: Actor = Actor.USER): InstallResult {
         val clock = config.clock
         if (currentState == KernelState.SHUTDOWN) {
+            auditLifecycle(actor, "install", id, "没装上：内核已关闭", AuditOutcome.FAILED)
             return InstallResult.Rejected(
                 listOf(KernelError(ErrorCode.MANIFEST_INVALID, id, "内核已关闭", clock.nowMs())),
             )
@@ -480,6 +551,7 @@ class Kernel private constructor(
         val found = discoverAll(config, scanErrors).firstOrNull { it.manifest.id == id }
         if (found == null) {
             // 扫描期的具体原因（解析失败、挂载点拼错）比「没找到」有用得多，排前面。
+            auditLifecycle(actor, "install", id, "没装上：插件目录里没有找到", AuditOutcome.FAILED)
             return InstallResult.Rejected(
                 scanErrors + KernelError(
                     ErrorCode.MANIFEST_INVALID, id,
@@ -487,7 +559,7 @@ class Kernel private constructor(
                 ),
             )
         }
-        return mutationLock.withLock { installLocked(found.manifest) }
+        return mutationLock.withLock { installLocked(found.manifest, actor) }
     }
 
     /**
@@ -505,9 +577,20 @@ class Kernel private constructor(
      *
      * 停用会**落盘**。不落盘的话重启就复现，用户会觉得这个按钮是假的。
      */
-    suspend fun disable(id: PluginId): UninstallResult = mutationLock.withLock {
+    suspend fun disable(id: PluginId, actor: Actor = Actor.USER): UninstallResult = mutationLock.withLock {
         val result = detachLocked(id)
-        if (result is UninstallResult.Uninstalled) rememberDisabled(id)
+        when (result) {
+            is UninstallResult.Uninstalled -> {
+                rememberDisabled(id)
+                auditLifecycle(actor, "disable", id, "停用了，文件和授权都还留着")
+            }
+            is UninstallResult.NotFound -> auditLifecycle(
+                actor, "disable", id, "没停成：没找到这个插件", AuditOutcome.FAILED,
+            )
+            is UninstallResult.Rejected -> auditLifecycle(
+                actor, "disable", id, "没停成：" + result.error.detail, AuditOutcome.FAILED,
+            )
+        }
         result
     }
 
@@ -523,11 +606,15 @@ class Kernel private constructor(
      *
      * 同时记进停用清单，所以**重启之后不会自己回来**。
      */
-    suspend fun remove(id: PluginId): UninstallResult = mutationLock.withLock {
+    suspend fun remove(id: PluginId, actor: Actor = Actor.USER): UninstallResult = mutationLock.withLock {
         val manifest = catalog[id]
         val entry = entries.firstOrNull { it.manifest.id == id }
-        if (manifest == null && entry == null) return@withLock UninstallResult.NotFound
+        if (manifest == null && entry == null) {
+            auditLifecycle(actor, "remove", id, "没删成：没找到这个插件", AuditOutcome.FAILED)
+            return@withLock UninstallResult.NotFound
+        }
         if (manifest?.required == true || entry?.manifest?.required == true) {
+            auditLifecycle(actor, "remove", id, "没删成：必需插件不可卸载", AuditOutcome.FAILED)
             return@withLock UninstallResult.Rejected(
                 KernelError(ErrorCode.MANIFEST_INVALID, id, "必需插件不可卸载", config.clock.nowMs()),
             )
@@ -547,6 +634,10 @@ class Kernel private constructor(
         rememberDisabled(id)
         handleDataOnUninstall(id, purgeNow = false)
         safely("移入回收站") { config.pluginFiles.moveToTrash(id) }
+        auditLifecycle(
+            actor, "remove", id,
+            "删除了：文件进了回收站，数据 7 天后清（这期间还能启用回来）",
+        )
         UninstallResult.Uninstalled(removed, false)
     }
 
@@ -556,12 +647,18 @@ class Kernel private constructor(
      * 顺手取消数据回收计划  这就是「7 天后悔期」的兑现方式：
      * 只要还在窗口内，`enable()` 一次，插件和数据一起回来。
      */
-    suspend fun enable(id: PluginId): InstallResult = mutationLock.withLock {
+    suspend fun enable(id: PluginId, actor: Actor = Actor.USER): InstallResult = mutationLock.withLock {
         forgetDisabled(id)
         config.storage.delete(KERNEL_NAMESPACE, purgeKeyOf(id))
         // 先搬回来再装：装是按 id 重新扫描目录，文件还在回收站里就扫不到。
         safely("从回收站还原") { config.pluginFiles.restoreFromTrash(id) }
-        installLockedById(id)
+        val result = installLockedById(id, actor)
+        auditLifecycle(
+            actor, "enable", id,
+            if (result is InstallResult.Installed) "重新启用了" else "没启用成功：" + detailOf(result),
+            if (result is InstallResult.Installed) AuditOutcome.COMPLETED else AuditOutcome.FAILED,
+        )
+        result
     }
 
     /**
@@ -589,7 +686,7 @@ class Kernel private constructor(
         }
 
     /** 已经持锁时按 id 装载（enable 用）。 */
-    private suspend fun installLockedById(id: PluginId): InstallResult {
+    private suspend fun installLockedById(id: PluginId, actor: Actor = Actor.USER): InstallResult {
         val scanErrors = mutableListOf<KernelError>()
         val found = discoverAll(config, scanErrors).firstOrNull { it.manifest.id == id }
         if (found == null) {
@@ -607,7 +704,13 @@ class Kernel private constructor(
         forgetDisabled(id)
 
         for (d in discoverAll(config, mutableListOf())) catalog[d.manifest.id] = d.manifest
-        return installLocked(found.manifest)
+        return installLocked(found.manifest, actor, announce = false)
+    }
+
+    /** 失败原因取第一条，给审计文案用。 */
+    private fun detailOf(result: InstallResult): String = when (result) {
+        is InstallResult.Rejected -> result.errors.firstOrNull()?.detail ?: "装载失败"
+        is InstallResult.Installed -> "装上了"
     }
 
     private suspend fun rememberDisabled(id: PluginId) {
@@ -684,7 +787,14 @@ class Kernel private constructor(
      */
     suspend fun purgeExpiredData(): List<PluginId> = mutationLock.withLock {
         val now = config.clock.nowMs()
-        purgeLocked(pendingPurges().filterValues { it <= now }.keys.toList())
+        val purged = purgeLocked(pendingPurges().filterValues { it <= now }.keys.toList())
+        for (id in purged) {
+            auditLifecycle(
+                Actor.SYSTEM, "purge_expired", id,
+                "7 天回收期到了，自动清掉文件和数据",
+            )
+        }
+        purged
     }
 
     /**
@@ -696,8 +806,15 @@ class Kernel private constructor(
      * 只认**已经在回收站里**的插件。没删过就直接清数据，等于绕过「进回收站还能
      * 还原」这道缓冲 —— 那不叫彻底删除，那叫事故。
      */
-    suspend fun purgeNow(id: PluginId): Boolean = mutationLock.withLock {
-        purgeLocked(listOf(id)).isNotEmpty()
+    suspend fun purgeNow(id: PluginId, actor: Actor = Actor.USER): Boolean = mutationLock.withLock {
+        val purged = purgeLocked(listOf(id)).isNotEmpty()
+        auditLifecycle(
+            actor, "purge", id,
+            if (purged) "彻底删除了：回收站文件和插件数据都清掉了，不能恢复"
+            else "没清成：它不在回收站里，或者已经清过了",
+            if (purged) AuditOutcome.COMPLETED else AuditOutcome.FAILED,
+        )
+        purged
     }
 
     /**

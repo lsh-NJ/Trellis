@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
@@ -63,6 +64,26 @@ internal class ChatStore(home: File) {
                 role = role,
                 text = line["text"]?.jsonPrimitive?.content ?: "",
                 atMs = line["atMs"]?.jsonPrimitive?.long ?: 0L,
+                plan = line["plan"]?.jsonArray?.mapNotNull { element ->
+                    val step = element.jsonObject
+                    val state = PlanStepState.entries
+                        .firstOrNull { it.name == step["state"]?.jsonPrimitive?.content }
+                        ?: PlanStepState.Pending
+                    PlanStep(
+                        text = step["text"]?.jsonPrimitive?.content ?: "",
+                        state = state,
+                        tool = step["tool"]?.jsonPrimitive?.content ?: "",
+                        note = step["note"]?.jsonPrimitive?.content ?: "",
+                        impact = step["impact"]?.jsonPrimitive?.content ?: "",
+                        undoable = step["undoable"]?.jsonPrimitive?.booleanOrNull == true,
+                        ms = step["ms"]?.jsonPrimitive?.long ?: 0L,
+                        startedMs = step["startedMs"]?.jsonPrimitive?.long ?: 0L,
+                        dependsOn = step["dependsOn"]?.jsonArray
+                            ?.mapNotNull { it.jsonPrimitive.content.toIntOrNull() } ?: emptyList(),
+                    )
+                } ?: emptyList(),
+                planStartedMs = line["planStartedMs"]?.jsonPrimitive?.long ?: 0L,
+                planFinishedMs = line["planFinishedMs"]?.jsonPrimitive?.long ?: 0L,
             )
         } ?: emptyList()
         ChatSession(
@@ -87,6 +108,31 @@ internal class ChatStore(home: File) {
                         put("role", line.role.name)
                         put("text", line.text)
                         put("atMs", line.atMs)
+                        if (line.planStartedMs > 0L) put("planStartedMs", line.planStartedMs)
+                        if (line.planFinishedMs > 0L) put("planFinishedMs", line.planFinishedMs)
+                        if (line.plan.isNotEmpty()) {
+                            putJsonArray("plan") {
+                                line.plan.forEach { step ->
+                                    add(
+                                        buildJsonObject {
+                                            put("text", step.text)
+                                            put("state", step.state.name)
+                                            if (step.tool.isNotEmpty()) put("tool", step.tool)
+                                            if (step.note.isNotEmpty()) put("note", step.note)
+                                            if (step.impact.isNotEmpty()) put("impact", step.impact)
+                                            if (step.undoable) put("undoable", true)
+                                            if (step.startedMs > 0L) put("startedMs", step.startedMs)
+                                            if (step.ms > 0L) put("ms", step.ms)
+                                            if (step.dependsOn.isNotEmpty()) {
+                                                putJsonArray("dependsOn") {
+                                                    step.dependsOn.forEach { add(it.toString()) }
+                                                }
+                                            }
+                                        },
+                                    )
+                                }
+                            }
+                        }
                     },
                 )
             }

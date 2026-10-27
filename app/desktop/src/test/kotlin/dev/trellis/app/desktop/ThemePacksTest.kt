@@ -116,7 +116,7 @@ class ThemePacksTest {
     fun theShellShapeAndTypeAreParsedAndBounded() {
         val theme = ThemeContribution(
             id = "bento",
-            name = "值班台",
+            name = "Bento",
             light = warmPaper,
             shape = mapOf("cardRadius" to "3", "controlRadius" to "3"),
             type = mapOf("labelFamily" to "mono", "titleFamily" to "serif", "scale" to "1.05"),
@@ -134,7 +134,7 @@ class ThemePacksTest {
     fun shellTokensOutsideTheVocabularyAreNamedAndRejected() {
         val theme = ThemeContribution(
             id = "bento",
-            name = "值班台",
+            name = "Bento",
             light = warmPaper,
             shape = mapOf("shadowDepth" to "4"),
             type = mapOf("labelFamily" to "comic", "scale" to "9"),
@@ -149,7 +149,7 @@ class ThemePacksTest {
     fun theDisplayFamilyIsTheOneTheSampleNeeds() {
         val theme = ThemeContribution(
             id = "bento",
-            name = "值班台",
+            name = "Bento",
             light = warmPaper,
             type = mapOf("displayFamily" to "condensed", "labelFamily" to "mono"),
         )
@@ -181,7 +181,7 @@ class ThemePacksTest {
     fun dataAndStateColorsAreValidatedAsAGroup() {
         val theme = ThemeContribution(
             id = "bento",
-            name = "值班台",
+            name = "Bento",
             light = warmPaper,
             extra = mapOf(
                 "data" to "#2C4A63", "dataMuted" to "#4F6880", "dataTrack" to "#E2DED2",

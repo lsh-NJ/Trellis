@@ -4,7 +4,6 @@
 
 - **工程入口（模块 → 源码路径 → 改什么去哪）**：[AGENTS.md](AGENTS.md)
 - **文档索引（每篇文档讲什么、按什么顺序读）**：[docs/README.md](docs/README.md)
-- **原始需求**：[DESIGN.MD](DESIGN.MD)
 - **内核设计**：[docs/kernel-design.md](docs/kernel-design.md)
 - **跨平台 + 热插拔调研结论**：[docs/plugin-hotplug-path.md](docs/plugin-hotplug-path.md)
 
@@ -15,6 +14,7 @@
 | 模块化内核：插件生命周期、扩展点、能力审批、命名空间存储 | 完成 | `:kernel` |
 | 三轨插件：内置 Kotlin / JSON DSL / ES5 脚本（Rhino 沙箱） | 完成 | `:kernel` `:plugin-dsl` `:plugin-script` |
 | 任务领域与 `PlanService`（统计、事件、6 个动作） | 完成 | `:sdk-domain` `:features:plan-core` |
+| 学习计划后端（事件溯源 + SQLite）：版本/承诺/occurrence、结算结转、复盘 | 后端完成，计划页已接 | `:features:learning-process` |
 | UI 渲染层：9 个挂载点、12 栏布局、`UiNode` 词汇表（图表/表格/点阵等） | 完成 | `:ui-kernel` |
 | AI 插件管理员：分层提示词、意图路由、多步工具、截图/点击 | 完成 | `:ai` `:app:desktop` |
 | 会话系统：落盘恢复、Markdown、过程折叠、撤销 | 完成 | `:app:desktop` |
@@ -28,6 +28,7 @@
 | `:kernel` | 纯 Kotlin 内核，零平台依赖，不认识任何业务概念 |
 | `:sdk-domain` | 领域契约：Plan / Task / PlanSummary / PlanService / 排程扩展点 |
 | `:features:plan-core` | `PlanService` 的实现（required 内置插件），数据存在 `ctx.kv` |
+| `:features:learning-process` | 学习计划后端：事件溯源 + SQLite，事务型命令与视图（契约在 `:sdk-domain` 的 `dev.trellis.domain.plan`） |
 | `:plugin-dsl` | 轨道 A：把目录里的 JSON 变成真正跑起来的插件 |
 | `:plugin-script` | 轨道 B：ES5 脚本插件（Rhino 沙箱），可带状态、按钮、输入框 |
 | `:ui-kernel` | Compose 渲染层：把插件贡献画到界面上 |
@@ -139,11 +140,36 @@ val summary = plan.summary(now, dayEnd)
 
 ## 跑桌面应用
 
-```bash
-./run-app.sh
+入口脚本都在**仓库根目录**（和 `gradlew`、`README.md` 同级）。选哪个取决于你在哪个 shell 里：
+
+| 你在哪 | 命令 | 说明 |
+|---|---|---|
+| Windows PowerShell | `.\run-app.cmd` | 推荐。编译并启动；也可以直接双击 `run-app.cmd` |
+| Windows PowerShell（纯 ps1） | `.\run-app.ps1` | 同上，PowerShell 原生写法；`.\run-app.ps1 --check` 只编译 |
+| Windows cmd | `run-app.cmd` | 同上 |
+| Git Bash / WSL bash | `./run-app.sh` | bash 写法；`./run-app.sh --check` 只编译 |
+| 任意 shell | `.\gradlew.bat :app:desktop:run` | 已经配好 `JAVA_HOME` 时最直接 |
+
+**`.sh` 不要交给 Windows 直接执行。** 在 PowerShell 里敲 `run-app.sh`（或双击它），
+
+Windows 会按文件关联用编辑器打开它（你机器上是 VSCode）——这不是脚本坏了，
+是 `.sh` 没有「可执行」的关联。要执行它，得先有个 bash：
+
+```powershell
+bash run-app.sh        # Git Bash
+wsl ./run-app.sh       # WSL（需要 WSLg）
 ```
 
-Windows 本机（JDK 在 `%USERPROFILE%\.jdks\jdk17`）：
+同理，bash 里不要敲 `run-app.cmd`：那是 Windows 的批次档。`run.sh` 是给 CI/本地检查用的
+Gradle 包装（`./run.sh check`），不启动窗口。
+
+三个启动脚本干的事一样：找到 JDK（`JAVA_HOME` → `%USERPROFILE%\.jdks\jdk17`／
+`~/.dev/tools/jdk-*` → PATH 里的 `java`），切到仓库根，再调
+`:app:desktop:run`。`run-app.sh` 额外处理 WSLg：没有硬件 OpenGL，会把
+`SKIKO_RENDER_API` 设成 `SOFTWARE_FAST`，并把 `DISPLAY`/`WAYLAND_DISPLAY`/`XDG_RUNTIME_DIR`
+补齐。
+
+Windows 本机（JDK 在 `%USERPROFILE%\.jdks\jdk17`），不想要脚本也可以：
 
 ```powershell
 $env:JAVA_HOME = "$env:USERPROFILE\.jdks\jdk17"; $env:Path = "$env:JAVA_HOME\bin;$env:Path"
