@@ -43,7 +43,9 @@ class PlanTools(
         "2. 参数是结构与承诺：units 写单元（章节 + 标题 + 分钟），weeks 写每周承诺哪些单元；",
         "   每周 1–7 个单元，单元总时长 10–45 分钟一个，别把 80 集一次塞进来。",
         "3. 只排用户看得完的那一段（比如前 12 集 / 前两周），剩下的说「想继续往后排跟我说」。",
-        "4. 写之前先说清你要怎么拆（一句），写完说清「计划页第 X 周有多少单元」，不要去改用户别的数据。",
+        "4. 第一周必须是**本周**（今天所在的那一周，例如今天是 2026-10-27 就写 2026-W44）：",
+        "   计划从今天开始排，今天之后的日子才铺任务；不要从下周开始（周一再开始也违反这条）。",
+        "5. 写之前先说清你要怎么拆（一句），写完说清「计划页第 X 周有多少单元」，不要去改用户别的数据。",
         "</how_to_create_learning_plan>",
     ).joinToString("\n")
 
@@ -53,6 +55,7 @@ class PlanTools(
         override val name: String = "create_learning_plan"
         override val description: String =
             "在「计划」页建一份学习计划：units 是单元清单，weeks 是每周承诺哪几个单元。" +
+                "第一周必须写本周（今天所在周），计划从今天开始排。" +
                 "会写用户数据，只在用户要「排成计划」时调用。"
         override val parameters: String =
             "title：计划标题（如「操作系统速通」）；" +
@@ -106,6 +109,13 @@ class PlanTools(
                     )
                 }
                 val thisWeek = currentIsoWeek()
+                if (position == 0 && week != thisWeek) {
+                    return@call ToolResult(
+                        "第 1 周要写本周 $thisWeek（计划从今天开始排）；现在写的是 $week。" +
+                            "请把后面的周依次顺延，比如 $thisWeek、下一周……",
+                        isError = true,
+                    )
+                }
                 if (week < thisWeek) {
                     return@call ToolResult(
                         "第 ${position + 1} 周写的是 $week，已经过去了；排计划要从本周 $thisWeek 开始",
@@ -132,6 +142,10 @@ class PlanTools(
             }
             if (commitments.isEmpty()) {
                 return ToolResult("weeks 里每周至少要有一个单元", isError = true)
+            }
+            val weekOrder = commitments.map { it.week }
+            if (weekOrder != weekOrder.sorted() || weekOrder.distinct().size != weekOrder.size) {
+                return ToolResult("weeks 要按时间从早到晚写、不能重复；现在是：${weekOrder.joinToString("、")}", isError = true)
             }
 
             val created = plan.createProcess(

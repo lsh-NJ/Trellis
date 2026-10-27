@@ -80,11 +80,20 @@ class PlanRepairTest {
 
         runtime.repairPastPlan()
 
-        assertEquals(null, runtime.planMessage, "重排不该有错误提示")
+        assertEquals(null, runtime.planMessage?.takeIf { it.startsWith("没重排成") }, "重排不该有错误提示")
         assertEquals(2, runtime.planWeekCards.size, "周数应当搬过来")
         assertEquals(weekOf(monday), runtime.planWeekCards.first().week, "第一周应当挪到本周")
         assertFalse(runtime.planStartsInPast, "重排之后不该再显示「过去」")
         assertEquals(4, runtime.planWeekCards.sumOf { it.unitCount }, "四个单元一个都不能丢")
+        assertEquals("旧计划", runtime.planTitle, "挪到本周是原地平移：计划名不该变成「旧计划（重排）」")
+
+        val reread = LearningPlanStore.open(
+            File(home, "plans/plan.db").toPath(),
+            System::currentTimeMillis,
+            ZoneId.systemDefault(),
+        )
+        assertEquals(1, reread.plans().size, "挪到本周不该多出一条计划")
+        assertEquals("旧计划", reread.plans().single().title)
 
         runtime.shutdown()
     }

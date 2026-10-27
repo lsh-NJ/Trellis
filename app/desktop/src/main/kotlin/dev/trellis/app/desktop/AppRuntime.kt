@@ -1707,33 +1707,24 @@ class AppRuntime private constructor() {
                 grouped += indexes
             }
             require(units.isNotEmpty()) { "这份计划里没有可搬的单元" }
-            val created = service.createProcess(
-                uiCommand(null),
-                title = (planTitle ?: "学习计划") + "（重排）",
-                goal = "把这份计划挪到本周起，按原来的顺序学完。",
-            ).also { require(it.ok) { it.error?.message ?: "建计划失败" } }.value!!
             val commitments = grouped.mapIndexed { index, unitIndexes ->
                 CommitmentDraft(week = isoWeekOf(monday.plusWeeks(index.toLong())), unitIndexes = unitIndexes)
             }
+            // 在原计划里出一版新草稿并生效：planId / 标题 / 单元都不变，只把周次平移到本周起。
+            // 不新建计划——用户点「挪到本周」要的是「这份计划回到本周」，不是多一条计划。
             val saved = service.saveDraft(
-                uiCommand(created.planId),
-                planId = created.planId,
+                uiCommand(planId),
+                planId = planId,
                 versionId = null,
                 units = units,
                 commitments = commitments,
             ).also { require(it.ok) { it.error?.message ?: "存草稿失败" } }.value!!
             service.acceptDraft(
-                uiCommand(created.planId),
+                uiCommand(planId),
                 versionId = saved.versionId,
                 firstWeek = isoWeekOf(monday),
             ).also { require(it.ok) { it.error?.message ?: "确认草稿失败" } }
-            service.endPlan(
-                uiCommand(planId),
-                planId = planId,
-                reason = "周次写错了，重排到本周",
-            )
-            learningPlanId = created.planId
-            planFocusId = created.planId
+            planMessage = "已经挪到本周起：从 ${isoWeekOf(monday)} 这周开始排，之前的完成记录留在上一版里。"
         }.exceptionOrNull()?.let { error -> failure = "没重排成：" + (error.message ?: "未知原因") }
         refreshPlan()
         failure?.let { planMessage = it }
