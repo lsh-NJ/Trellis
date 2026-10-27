@@ -48,6 +48,8 @@ Set-Location C:\Users\breakM\Desktop\work\CreateandTrack
 | `TRELLIS_LLM_KEY` / `TRELLIS_LLM_MODEL` / `TRELLIS_LLM_ENDPOINT` | 覆盖 LLM 配置（也可写 `~/.trellis/llm.json`） |
 
 > 仓库里的 `.dev/` 是历史会话留下的几百个临时脚本，**不是**构建脚本，别当入口读。
+>
+> **多个会话可能同时在改这个仓库**：开工第一句先写清「这轮只动哪几个文件」再动手（见 §10）。靠分支解决不了这个问题——它隔离提交历史，不隔离磁盘上的文件。
 
 ---
 
@@ -221,6 +223,7 @@ ChatScreen ──> AppRuntime.sendChat()
 10. **宿主自己的界面也是插件**：任务页 header/board 由 `PlanUiPlugin` 贡献，AI 才排得动、改得了样式。
 11. **中文源码/文档只用 read/edit/write 工具改**，别用 PowerShell 回写（会把 UTF-8 读成 ANSI 写回，中文全变问号）。
 12. **应用运行时别编译**（见 §1 警告）；改代码 → 关窗口 → 编译 → 再跑。
+13. **动手前先划文件范围**：开工第一句写清「这轮只动哪几个文件」，只改列出来的；多会话并行时这是第一步（见 §10）。同时改同一个文件不会有冲突提示，后落盘的直接盖掉先落盘的。
 
 ---
 
@@ -247,3 +250,52 @@ ChatScreen ──> AppRuntime.sendChat()
 **加一条主题校验规则**：`app/desktop/.../ThemePacks.kt`（token 词表/对比度/派生）→ `ThemePacksTest` → 若是脚本主题，还要同步 `ScriptSandbox` 的 `trellis.theme` 解析。
 
 **跑一次界面截图**：启动应用（`TRELLIS_HOME` 指到演示目录）→ 用 DPI-aware 的 `PrintWindow` 截图；本项目历史上做过，脚本思路在 `.dev/shot2.sh`（仅供参考，不要直接依赖）。
+
+---
+
+## 10. 多会话协作（同一台机器常有多个会话在改这个仓库）
+
+**先划范围，再动手。** 开工第一句就写清「这轮只改这几个文件」，列到具体路径；要越界先说明。这不是流程洁癖：两个会话同时改同一个文件，后落盘的那份会把先落盘的整个盖掉，**不报错、不冲突提示**——等发现时往往已经隔了好几轮。
+
+为什么不能靠分支：分支隔离的是提交历史，**不是磁盘上的文件**。多个会话共用一个工作目录，A 会话 `git checkout` 换分支，B 会话正在编辑的文件会被原地换掉。真并行只能靠 `git worktree`（一个目录一个分支），代价见 §10.4。
+
+### 10.1 开工前
+
+1. **划范围**：写一句「这轮我改这几个文件」，只改列出来的。
+2. **看别人干到哪了**：`git status --short` 有未提交改动 = 另一个会话正干到一半，别碰那些文件。
+3. **认领大文件**：`AppRuntime.kt`（2000 行）、`ChatScreen.kt`、`AppScreen.kt`、`DynamicSlotView.kt` 是最容易被覆盖的四个，同一时刻只让一个会话改其中一个。
+4. **编译前确认没人在跑应用**：`Get-Process java`（见 §1 那条「应用开着别编译」）。
+
+### 10.2 收尾
+
+- **一个能编译的完整步子提交一次**，别攒一整天。未提交的改动是并行会话最大的风险来源。
+- 提交信息写「改了什么 + 为什么」，仓库历史一直是这个风格。
+- 合回 `main` 前先 `git rebase main`，冲突在分支里解决，别带到 `main`。
+
+### 10.3 git 只在 WSL 里
+
+这台机器 Windows 侧**没有** `git.exe`（`where.exe git` 是空的），只有 WSL Ubuntu 里的 2.53.0：
+
+```powershell
+wsl.exe -e bash -lc "cd /mnt/c/Users/breakM/Desktop/work/CreateandTrack && git status --short"
+wsl.exe -e bash -lc "cd /mnt/c/Users/breakM/Desktop/work/CreateandTrack && git add -A && git commit -m '...'"
+```
+
+别用 PowerShell 读 `.git/logs/HEAD` 或 `.git/COMMIT_EDITMSG`：那是 UTF-8，PowerShell 默认按 GBK 解，中文提交信息会变成「璁╂ā鍨嬭嚜宸」。要读就走 `wsl git log`。
+
+> 装 Git for Windows（`winget install --id Git.Git`）能让 IDE 的 git 面板和 hook 正常工作；不装也能干活，就是每次多套一层 `wsl.exe`。
+
+### 10.4 真并行时才开 worktree
+
+```powershell
+wsl.exe -e bash -lc "cd /mnt/c/Users/breakM/Desktop/work/CreateandTrack && git worktree add ../Trellis-aw -b feat/activity-watch"
+
+# 新目录里开发。必须换 home：两个实例默认都读写 ~/.trellis，会抢同一份
+# store.json / plugins/ / chat/*.json / audit.log，互相看到对方装的插件。
+$env:TRELLIS_HOME = "C:\Users\breakM\Desktop\work\.trellis-aw"
+
+# 合回 main 后拆掉
+wsl.exe -e bash -lc "cd /mnt/c/Users/breakM/Desktop/work/CreateandTrack && git merge feat/activity-watch && git worktree remove ../Trellis-aw"
+```
+
+代价：两份 `build/`（各编译一遍）、两个 Gradle daemon 抢内存（`gradle.properties` 只有 `-Xmx2048m`）、合并冲突自己解。40 个提交、4MB 的仓库用不着天天开 worktree。
