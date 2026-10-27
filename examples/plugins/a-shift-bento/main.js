@@ -1,4 +1,4 @@
-// 值班台 / BENTO SHIFT —— 把 dashboard-set/a-shift-bento.html 的配色做成一个主题包。
+// Bento / BENTO SHIFT —— 把 dashboard-set/a-shift-bento.html 的配色做成一个主题包。
 //
 // 这个插件交配色 token + 一点外壳基因（圆角、字族），不交卡片；装上之后它是「主题列表里的一项」。
 // 样片里其余的身份（等宽 kicker、大号数字、硬阴影、12 栏 bento 排布）
@@ -8,7 +8,7 @@
 trellis.register({
   theme: {
     id: 'bento',
-    name: '值班台',
+    name: 'Bento',
     description: '纸感米白 / 荧光青柠 / 墨黑；编辑风、硬边小圆角',
     light: {
       primary: '#141414',

@@ -1,4 +1,4 @@
-// 舞台值班台 —— 一个「真的在干活」的复杂插件：
+// Bento 舞台看板 —— 一个「真的在干活」的复杂插件：
 // 三个挂载点、五张卡、六个交互、自己的 KV 数据层，图表/表格/环形都由宿主画。
 // 数据全部来自本插件自己的 KV（不读宿主任务），所以它既是看板也是演示数据源：
 // 第一次装上点「载入演示数据」即可看到完整效果，之后每次点击都会真的改数。
@@ -172,7 +172,7 @@ function banner(data) {
       type: "row",
       gap: 8,
       children: [
-        { type: "badge", text: "值班台", tone: "default" },
+        { type: "badge", text: "Bento", tone: "default" },
         { type: "badge", text: "已售 " + occupancy + "%", tone: "accent" },
         { type: "badge", text: r.list.length > 0 ? r.list.length + " 项风险" : "无风险", tone: r.list.length > 0 ? "danger" : "success" },
         { type: "badge", text: "检查 " + r.checksOk + "/" + CHECKS.length }

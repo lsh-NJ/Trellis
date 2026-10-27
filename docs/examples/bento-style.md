@@ -1,4 +1,4 @@
-# 风格样片「值班台 / BENTO SHIFT」怎么落进 Trellis
+# 风格样片「Bento / BENTO SHIFT」怎么落进 Trellis
 
 样片：`dashboard-set/a-shift-bento.html`（跑调音乐节运营看板）。
 它是一张 neo-brutalist 编辑风的数据看板：纸感米白底、墨黑正文、荧光青柠高亮、蓝作次色；
@@ -25,7 +25,7 @@
 
    > 把主题换成 dev.bento.shift/bento，卡片样式改成 bento，导航放左侧；然后按这个风格做一个「这周练习量」的看板卡片。
 
-3. 手工路径：插件页能看到 `值班台 · BENTO SHIFT`；界面偏好里主题选 `dev.bento.shift/bento`、卡片选 `bento`、导航选 `左侧边栏`。
+3. 手工路径：插件页能看到 `BENTO SHIFT`；界面偏好里主题选 `dev.bento.shift/bento`、卡片选 `bento`、导航选 `左侧边栏`。
 
 ## 为什么数据图不用插件「绘图」
 

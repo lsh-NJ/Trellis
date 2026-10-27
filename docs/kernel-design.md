@@ -1,6 +1,6 @@
 # Trellis  内核设计文档
 
-> 版本 v0.1 Draft ｜ 上游 DESIGN.MD（需求）｜ 读者 实现者本人
+> 版本 v0.1 Draft ｜ 读者 实现者本人
 >
 > 标记约定：`[开工]` 可立即动工 ｜ `[拍板]` 需你决策 ｜ `[锁]` 不变量，破坏即架构失守
 
@@ -24,9 +24,9 @@
 
 ### 1.1 从需求到内核的映射
 
-DESIGN.MD 里的每一条，在内核里都对应一个机制。这张表是本文档的可追溯性：
+原始需求里的每一条，在内核里都对应一个机制。这张表是本文档的可追溯性：
 
-| DESIGN.MD 需求 | 内核提供什么 | 章节 |
+| 原始需求 | 内核提供什么 | 章节 |
 |---|---|---|
 | 待办 / 日历 / 可选管理模式 | 内核不认识任务。提供扩展点 + Slot，业务落在 plan-core 插件 | 5 |
 | 任务进行前的提醒 | Scheduler（幂等 key、可持久化）+ Capability: notify | 6 8 |
@@ -517,7 +517,7 @@ val maybe: AiService? = ctx.services.find(AiService::class)        // 可选，�
 
 ## 6. Capability 与审批
 
-> 这一节直接对应 DESIGN.MD 里的「agent 对程序权限的全面调用（危险操作的自动审查、手动批准）」。
+> 这一节直接对应原始需求里的「agent 对程序权限的全面调用（危险操作的自动审查、手动批准）」。
 
 ### 6.1 Capability 清单
 
@@ -1320,7 +1320,7 @@ Service 扩展点一落地，之前讨论的数据绑定就不再是「三个机
 
 ## 21. 6 Capability + 审批门（v0.5 -> v0.6）
 
-对应 DESIGN.MD 里「agent 对程序权限的全面调用（危险操作的自动审查、手动批准）」
+对应原始需求里「agent 对程序权限的全面调用（危险操作的自动审查、手动批准）」
 那是需求文档里唯一还没动过的一条。
 
 ### 21.1 五处与设计文档的偏差
@@ -1872,3 +1872,92 @@ Try catch is not supported around composable function invocations.
 3. **声明式插件还不能绑数据。** 只有 Service 和存储完成了，缺那个纯字符串的求值器。
 4. **`PluginContext` 里没有 `scope`。** 设计文档 4.4 写了它，一直没实现 
    插件想做后台定时（比如到点提醒）目前做不到。
+
+---
+
+## 25. 插件页的「上次用」（v0.9）
+
+插件列表原来只能回答两个问题：**这是谁、它活着没**。回答不了第三个：
+**我上次用它是什么时候**。主题最明显：它不产出卡片，只在插件页占一行名字，
+用户分不清自己是不是还开着它、上次切换是不是刚才。
+
+### 25.1 只记动作，不猜状态
+
+`app/desktop/.../PluginUsageStore.kt`：`plugin-usage.json` 里一张
+`插件 id -> 毫秒时间戳` 的表。只在两处写：
+
+- `AppRuntime.applyTheme()` 成功换到某个插件主题时，记它的 owner；
+- `AppRuntime.enablePlugin()` 把停用的插件启用回来时，记它自己。
+
+启动时如果 `ui.json` 里已经选着某个插件主题，也会记一次 —— 那一刻它确实在用。
+**不做推断**（比如「主题的表里出现了这个 id 就算用过」）：动作是一次性的、可解释的。
+
+### 25.2 显示规则
+
+悬停折叠行时，名字右边多一句，`PluginsScreen.usageHint()`：
+
+| 情况 | 文案 |
+| --- | --- |
+| 正在用这个插件主题 | `正在使用 · 3 分钟前` |
+| 有主题但没用 | `上次用：昨天 18:02` |
+| 提供了主题、从没用过 | `还没用过` |
+| 普通插件从没用过 | 不显示（悬停不该让布局跳） |
+
+时间写法：一分钟内「刚刚」、一小时内「N 分钟前」、当天「今天 HH:mm」、
+前一天「昨天 HH:mm」、更早「MM-dd HH:mm」。
+
+### 25.3 为什么不塞进 `store.json`
+
+`store.json` 是插件的 KV 数据；「上次用」是**界面层的习惯**。
+插件删了、数据清了，这条记录也不该跟着丢（用户还想知道它上次是什么时候用的）。
+
+测试：`PluginUsageTest` 钉住时间写法、未来时间、坏文件、BOM、重启后还在，
+以及四种悬停文案。
+
+## 26. 生命周期审计（v0.9）
+
+删插件、装插件、停用、启用、清回收站——这些动作以前只在界面上发生，
+事后没人知道是谁、在什么时候、删了什么。`PluginUsageStore` 记的是「用过没」，
+不是「谁动过插件」。
+
+### 26.1 一条流水：`~/.trellis/audit.log`
+
+JSONL，一行一个动作：
+
+```json
+{"at":1792989999000,"actor":"user","action":"remove","plugin":"ai.mood-checkin",
+ "detail":"删除了：文件进了回收站，数据 7 天后清掉","outcome":"completed"}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `at` | 毫秒时间戳 |
+| `actor` | `user`（界面点的）/ `agent`（插件管理员）/ `system`（定时清理） |
+| `action` | `install` `enable` `disable` `remove` `purge` `purge_expired` |
+| `plugin` | 插件 id（没有就空） |
+| `detail` | 一句人话，成功与失败都写清原因 |
+| `outcome` | `completed` / `failed` |
+
+保留最近 500 条，超了丢最老的。写文件用「先写 tmp 再 rename」，
+写到一半断电也不会留半行 JSON：读的时候坏行直接跳过。
+
+### 26.2 谁在写
+
+- `Kernel` 的 `install/disable/remove/enable/purgeNow/purgeExpiredData` 各写一条；
+  `enable()` 内部复用 `installLocked(..., announce = false)`，避免一次启用记两条。
+- 界面来的动作 `actor = USER`；插件管理员工具来的 `actor = AGENT`（`KernelPluginInstaller`）。
+- 定时清回收站 `actor = SYSTEM`，action = `purge_expired`。
+
+### 26.3 在哪看
+
+诊断页上半「最近操作」：最近 20 条，按时间倒序，显示
+「你/管理员/系统 · 动作 · 插件 · 时间 · detail」，失败的行标红。
+下半是原来的「内核错误」。
+
+### 26.4 它不是
+
+不是撤销、不是版本历史、不是数据备份。审计只回答「发生过什么」，
+不负责把东西变回去；撤销仍在各动作自己的 5 秒窗口里。
+
+测试：`kernel/.../LifecycleAuditTest`（三种 actor、成功/失败文案、找不到插件）
+与 `app/desktop/.../FileAuditLedgerTest`（重启后读回、容量截断、坏行跳过）。

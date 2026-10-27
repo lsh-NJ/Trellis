@@ -87,25 +87,6 @@ class ScriptPluginFlowTest {
     }
 
     @Test
-    fun aScriptCardAlsoShowsUpInTheGeneratedPreview() = runTest {
-        val home = tempHome()
-        installSample(home)
-        val runtime = AppRuntime.create(home)
-
-        val preview = runtime.buildPreview(PluginId("dev.mistakes"))
-        assertTrue(preview != null, "刚装上的插件必须能生成预览")
-        val cards = preview.cards
-        assertEquals(1, cards.size, "脚本卡片不该在预览里消失：" + cards)
-        assertEquals("slot.home.section", cards.single().mountPointId)
-        assertTrue(
-            cards.single().title.contains("错题本"),
-            "预览标题该是卡片第一段文字：" + cards.single(),
-        )
-
-        runtime.shutdown()
-    }
-
-    @Test
     fun deletingOneTakesItOutOfTheStore() = runTest {
         val home = tempHome()
         installSample(home)

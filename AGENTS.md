@@ -2,7 +2,7 @@
 
 > 这份文件只做一件事：**让你在 10 分钟内知道这个项目是什么、代码在哪、改一件事该动哪个文件。**
 > 细节不在这一份里——每个主题都有对应文档，见文末索引。
-> 最后更新：2026-10-26。若与代码冲突，以代码为准，并顺手把这份文件改对。
+> 最后更新：2026-10-27。若与代码冲突，以代码为准，并顺手把这份文件改对。
 
 ---
 
@@ -25,10 +25,15 @@
 $env:JAVA_HOME = "$env:USERPROFILE\.jdks\jdk17"; $env:Path = "$env:JAVA_HOME\bin;$env:Path"
 Set-Location C:\Users\breakM\Desktop\work\CreateandTrack
 
+.\run-app.ps1                      # 跑桌面应用（等价的：.\run-app.cmd、双开目录） 
+.\run-app.ps1 --check              # 只编译，验证环境
 .\gradlew.bat :app:desktop:run     # 跑桌面应用
 .\gradlew.bat test                 # 全模块测试（kernel / plan-core / dsl / script / ai / desktop）
 .\gradlew.bat check                # 测试 + 架构断言 verifyKernelPurity
 ```
+
+> `.sh` 在 Windows 上没有执行关联，敲 `run-app.sh` 或双击会交给默认程序打开（通常是编辑器），不是脚本坏了；
+> 要跑 bash 版本请进 WSL 或在 Git Bash 里 `./run-app.sh`。Windows 用 `run-app.cmd` / `run-app.ps1`。
 
 > **跑应用前先确认没有旧实例在跑**：`Get-Process java | Stop-Process -Force`。
 > **应用开着的时候别编译**：`:app:desktop:run` 的 classpath 是 `build/classes/` 目录，编译会原地重写；
@@ -39,7 +44,7 @@ Set-Location C:\Users\breakM\Desktop\work\CreateandTrack
 | 变量 | 作用 |
 |---|---|
 | `TRELLIS_HOME` | 数据根目录，默认 `~/.trellis`；做演示/截图时指到临时目录，别动真实数据 |
-| `TRELLIS_TAB` | 启动落在哪一页：`chat` / `plugins` / `diag` |
+| `TRELLIS_TAB` | 启动落在哪一页：`tasks`（默认）/ `plan` / `chat` / `plugins` / `diag` |
 | `TRELLIS_LLM_KEY` / `TRELLIS_LLM_MODEL` / `TRELLIS_LLM_ENDPOINT` | 覆盖 LLM 配置（也可写 `~/.trellis/llm.json`） |
 
 > 仓库里的 `.dev/` 是历史会话留下的几百个临时脚本，**不是**构建脚本，别当入口读。
@@ -56,8 +61,9 @@ Set-Location C:\Users\breakM\Desktop\work\CreateandTrack
 | `:plugin-dsl` | `plugin-dsl/src/commonMain/kotlin/dev/trellis/dsl/` | 轨道 A：把目录里的 JSON（`manifest.json` + `main.dsl.json`）变成真插件 | `DslLoader.kt`、`DslSchema.kt`、`PluginFileSystem.kt` |
 | `:plugin-script` | `plugin-script/src/main/kotlin/dev/trellis/script/` | 轨道 B：ES5 脚本插件（Rhino 沙箱），可带状态、按钮、输入框 | `ScriptLoader.kt`、`ScriptPlugin.kt`、`ScriptSandbox.kt`（`trellis.register` API）、`NodeBuilder.kt`（脚本对象 → `UiNode`） |
 | `:ui-kernel` | `ui-kernel/src/commonMain/kotlin/dev/trellis/ui/` | Compose 渲染层：把插件贡献画成卡片/挂载点；**只渲染数据，不执行第三方 Compose** | `SlotArea.kt`（挂载点容器 + 12 栏布局 + 卡片外壳）<br>`DynamicSlotView.kt`（`UiNode` 全词汇渲染，36KB，改渲染先看它）<br>`CardStyle.kt` / `ExtraColors.kt` / `Fonts.kt`（宿主样式注入）<br>`ComposeSlot.kt`（内置插件的 Composable 贡献） |
-| `:ai` | `ai/src/commonMain/kotlin/dev/trellis/ai/` | AI 层：提示词、管理器、工具循环、会话无关的纯逻辑 | `manager/ManagerAgent.kt`、`manager/ManagerPrompt.kt`、`manager/Intent.kt`<br>`PromptBuilder.kt`（30KB，创建插件用的系统提示词）<br>`tool/ToolAgent.kt`、`tool/AgentTool.kt`<br>`flow/AgentFlow.kt`（draft→check→ship 备用链路）<br>`PluginAgent.kt`（单发生成，DSL 专用）<br>`LlmClient.kt`；JVM 实现 `ai/src/jvmMain/kotlin/dev/trellis/ai/HttpLlmClient.kt` |
-| `:app:desktop` | `app/desktop/src/main/kotlin/dev/trellis/app/desktop/` | 桌面应用：装配内核、界面、AI 工具、本地存储、会话 | `Main.kt`（窗口/主题/快捷键）<br>`AppRuntime.kt`（73KB，**装配与状态中心**）<br>`AppScreen.kt`（任务页外壳）<br>`ChatScreen.kt`（会话页 UI）、`ChatStore.kt`（会话落盘）<br>`PluginTools.kt`（AI 插件工具）、`LayoutTools.kt`（布局工具）、`UiStyleTools.kt`（样式/主题工具）、`ScreenTools.kt`（截图/点击/打字）<br>`ThemePacks.kt`（主题校验与应用）、`Palette.kt`（参数化配色）、`LayoutStore.kt`、`UiPrefs.kt`<br>`PlanUiPlugin.kt`（**任务页自身也是插件**）<br>`MarkdownText.kt`（对话消息 Markdown 渲染） |
+| `:ai` | `ai/src/commonMain/kotlin/dev/trellis/ai/` | AI 层：提示词、意图路由、工具循环、会话无关的纯逻辑（**唯一的 AI 入口是对话页的管理员**；不再有一次性生成管线） | `manager/ManagerRouter.kt`（意图单选 + 按意图给工具 + 拼提示词）、`manager/ManagerAgent.kt`、`manager/ManagerPrompt.kt`、`manager/Intent.kt`<br>`PromptBuilder.kt`（创建插件用的系统提示词）<br>`tool/ToolAgent.kt`、`tool/AgentTool.kt`<br>`tool/DeepSeekMarkup.kt`（DSML 方言解析）<br>`PluginInstaller.kt`（安装器接口，`KernelPluginInstaller` 实现）<br>`LlmClient.kt`；JVM 实现 `ai/src/jvmMain/kotlin/dev/trellis/ai/HttpLlmClient.kt` |
+| `:features:learning-process` | `features/learning-process/src/jvmMain/kotlin/dev/trellis/feature/learning/` | **学习计划后端**（事件溯源 + SQLite）：计划版本、承诺、occurrence、结算结转、复盘。契约在 `sdk-domain/.../plan/`，与任务型 `PlanService` 是两套，勿混用 | `SqliteLearningPlanService.kt`（命令外壳/撤销/幂等/事务）<br>`PlanCommands.kt`（20 条命令）<br>`PlanQueries.kt`（日/周/地图/复盘/待办视图）<br>`PlanRhythm.kt`（结算 + 复盘 + JSONL 导出）<br>`PlanSchema.kt`（内嵌 DDL）、`PlanDatabase.kt`<br>`LearningPlanStore.kt`（对外唯一入口）<br>测试 `src/jvmTest/.../LearningPlanServiceTest.kt` |
+| `:app:desktop` | `app/desktop/src/main/kotlin/dev/trellis/app/desktop/` | 桌面应用：装配内核、界面、AI 工具、本地存储、会话 | `Main.kt`（窗口/主题/快捷键）<br>`AppRuntime.kt`（73KB，**装配与状态中心**）<br>`AppScreen.kt`（任务页外壳）<br>`ChatScreen.kt`（会话页 UI）、`ChatStore.kt`（会话落盘）<br>`PluginTools.kt`（AI 插件工具）、`LayoutTools.kt`（布局工具）、`UiStyleTools.kt`（样式/主题工具）、`ScreenTools.kt`（截图/点击/打字）<br>`ThemePacks.kt`（主题校验与应用）、`Palette.kt`（参数化配色）、`LayoutStore.kt`、`UiPrefs.kt`<br>`PlanUiPlugin.kt`（**任务页自身也是插件**）<br>`PlanScreen.kt`（计划页：周卡片/天条/当天安排）、`PlanTools.kt`（AI 建计划工具：`create_learning_plan`）、`PlanPanel.kt`（右侧常驻执行清单）、`PlanCategoryStore.kt`（计划分类）<br>`WorkflowTools.kt`（`set_plan`/`step_done`/`ask_choices`）<br>`BilibiliClient.kt`/`BilibiliTools.kt`（B 站课程检索与分集）、`TaskTools.kt`（`add_tasks`）<br>`PluginUsageStore.kt`（插件页「上次用」）、`FileAuditLedger.kt`（`audit.log` 生命周期审计）<br>`MarkdownText.kt`（对话消息 Markdown 渲染） |
 | `:demo` | `demo/src/main/kotlin/dev/trellis/demo/Main.kt` | 控制台演示（无界面，跑 `.\gradlew.bat :demo:run`） | `Main.kt` |
 
 其它目录：
@@ -99,11 +105,14 @@ Set-Location C:\Users\breakM\Desktop\work\CreateandTrack
 | 给 AI 的工具：排版/看卡片 | `app/desktop/.../LayoutTools.kt` |
 | 给 AI 的工具：颜色/密度/主题/单卡样式 | `app/desktop/.../UiStyleTools.kt` |
 | 给 AI 的工具：截图/描述界面/点击/打字/按键 | `app/desktop/.../ScreenTools.kt` |
+| 给 AI 的工具：搜 B 站学习资源、拿分集目录、把分集建成待办 | `app/desktop/.../BilibiliTools.kt`；HTTP/WBI 签名在 `BilibiliClient.kt`（只读元数据，不下载不播放） |
 | 会话记录读写 | `app/desktop/.../ChatStore.kt`（`<home>/chat/<id>.json`） |
 | 会话页 UI（气泡/过程折叠/三动作/输入条） | `app/desktop/.../ChatScreen.kt` |
 | 会话消息 Markdown 解析与渲染 | `app/desktop/.../MarkdownText.kt` |
 | 任务数据模型与查询 | `sdk-domain/.../Model.kt`、`PlanService.kt`；实现 `features/plan-core/.../KvPlanService.kt` |
+| 学习计划后端（版本/承诺/occurrence/结算/复盘） | `sdk-domain/.../plan/Contract.kt` → `features/learning-process/.../SqliteLearningPlanService.kt`、`PlanCommands.kt`、`PlanQueries.kt`、`PlanRhythm.kt`；语义见 `docs/plan-backend.md` |
 | 任务页 UI（任务行/分组/新任务输入/撤销） | `app/desktop/.../AppScreen.kt` + `PlanUiPlugin.kt`（它们已是插件卡片） |
+| 计划页 UI（周视图 / 天条 / 当天安排） | `app/desktop/.../PlanScreen.kt` + `AppRuntime.refreshPlan`（数据全来自 `LearningPlanService` 的 view model） |
 | 自然语言日期（「周三前」「3天后」） | `app/desktop/.../NaturalDates.kt` |
 | 插件页 / 诊断页 UI | `app/desktop/.../PluginsScreen.kt`、`DiagnosticsScreen.kt` |
 | 存储后端（KV → JSON 文件） | `kernel/.../storage/*`；JVM 实现 `app/desktop/.../FileStorageBackend.kt` |
@@ -131,6 +140,10 @@ Set-Location C:\Users\breakM\Desktop\work\CreateandTrack
 | `llm.json` | LLM endpoint / apiKey / model |
 | `app.log` | 运行日志（关窗卡死、插件异常都看这里） |
 | `diag/screenshots/` | `take_screenshot` 存的截图 |
+| `plans/plan.db` | 学习计划后端（SQLite）：计划版本、承诺、occurrence、事件；备份在 `plans/plan.db.bak-*` |
+| `plans/categories.json` | 计划分类（左侧列表分组） |
+| `audit.log` | 生命周期审计（JSONL，装/启用/停用/删/彻底删，保留 500 条；诊断页「最近操作」读它） |
+| `plugin-usage.json` | 插件页「上次用 N 分钟前」的依据 |
 
 > 文件都可能带 UTF-8 BOM（PowerShell 写的）。读配置的地方统一做了去 BOM；**你自己写 JSON 时别加 BOM**。
 
@@ -162,17 +175,18 @@ Set-Location C:\Users\breakM\Desktop\work\CreateandTrack
 
 ```
 ChatScreen ──> AppRuntime.sendChat()
-                 ├─ llm = HttpLlmClient(llm.json)   （stream 走 SSE）
-                 ├─ tools = PluginTools + LayoutTools + UiStyleTools + ScreenTools
-                 ├─ ManagerPrompt.buildBase(catalog, allTools, guidance)   ← 静态前缀（缓存命中）
-                 └─ ManagerAgent.respond(state, request, history, onDelta, onLog)
-                        ├─ intent = KeywordIntentClassifier.classify(request)
-                        ├─ Chat          → llm.stream(...) + 剥协议壳 + Markdown
-                        └─ 其它意图      → ToolAgent.run(messages, onLog)（无步数上限，重复检测兜底）
+                 ├─ router = ManagerRouter(catalog, tools, guidance)
+                 ├─ decision = router.decide(request)      ← 意图单选（Ambiguous 就先问，不调模型）
+                 ├─ tools    = router.toolsForIntent(intent)  ← 工具单选：聊天给空集
+                 ├─ prompt   = router.promptFor(intent, state, history)  ← 按意图拼，前缀缓存各一份
+                 └─ ManagerAgent.respond(prompt, decision, request, onDelta, onLog)
+                        ├─ Chat      → llm.stream(...) + 剥 DSML/协议壳 + Markdown
+                        └─ 其它意图  → ToolAgent.run(...)（DSML 方言 + JSON 双解；无步数上限）
                                   └─ beforeFinishing 仅 CreatePlugin 挂「必须 try_plugin + deploy」
 ```
 
-分层提示词顺序（**别乱动**，动了前缀缓存就没了）：静态 system → 动态 `<current_state>` → 历史（最近 20 条）→ 按意图的 `<task:...>` → 用户这句话。
+固定流程（用户定的，别乱改顺序）：**意图（单选）→ 工具（单选）→ 提示词 → 歧义先问 → 模型 → 工具/流程**。
+分层提示词顺序：静态 system → 动态 `<current_state>` → 历史（最近 20 条）→ 按意图的 `<task:...>` → 用户这句话。
 
 ### 6.2 工具清单（改工具就改这几个文件）
 
@@ -180,6 +194,10 @@ ChatScreen ──> AppRuntime.sendChat()
 - `LayoutTools`：`list_cards`、`arrange_cards`
 - `UiStyleTools`：`list_ui_options`、`set_ui`、`set_plugin_card`、`list_themes`、`set_theme`
 - `ScreenTools`：`describe_screen`、`take_screenshot`、`open_tab`、`click`、`type_text`、`press_key`
+- `WorkflowTools`：`set_plan`（2–12 步）、`step_done`、`ask_choices`（2–5 个竖向选项，调完即停）
+- `PlanTools`：`create_learning_plan`（ISO 周不得早于本周，超 12 周由 `PlanRhythm` 分批建）
+- `BilibiliTools`：`search_bilibili`、`list_bilibili_parts`（WBI 签名在 `BilibiliClient.kt`，只读元数据；时长 `约 N 分钟` 直接当节点预估）
+- `TaskTools`：`add_tasks`（2–12 条，把分集/章节变成用户能勾的待办）
 
 ### 6.3 会话
 

@@ -1,4 +1,4 @@
-// 值班台：把宿主给的语义节点拼成一张高密度看板。
+// Bento：把宿主给的语义节点拼成一张高密度看板。
 // 数据只有两份：data.tasks（含时间戳）和 data.summary —— 没有任何绘图代码，
 // 柱状/走势/环形/方格都由宿主画，插件只决定「画什么数」。
 function dayIndex(ms) { return Math.floor(ms / 86400000); }

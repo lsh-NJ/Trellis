@@ -14,6 +14,8 @@ dependencies {
     implementation(project(":ui-kernel"))
     implementation(project(":sdk-domain"))
     implementation(project(":features:plan-core"))
+    // 学习计划后端（SQLite 事件库）。计划页只认 LearningPlanStore 这一句，不摸表结构。
+    implementation(project(":features:learning-process"))
     implementation(project(":plugin-dsl"))
     implementation(project(":plugin-script"))
     implementation(compose.desktop.currentOs)

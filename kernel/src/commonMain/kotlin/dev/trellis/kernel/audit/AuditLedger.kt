@@ -13,6 +13,12 @@ enum class AuditOutcome {
     APPROVED_AUTO,
     APPROVED_MANUAL,
     DENIED,
+
+    /** 生命周期动作（装 / 启用 / 停用 / 删除 / 彻底删除）执行成功。 */
+    COMPLETED,
+
+    /** 生命周期动作被内核拒绝，或者执行到一半失败了。 */
+    FAILED,
 }
 
 data class AuditEntry(

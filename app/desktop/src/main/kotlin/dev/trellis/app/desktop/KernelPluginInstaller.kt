@@ -3,6 +3,7 @@ package dev.trellis.app.desktop
 import dev.trellis.ai.PluginInstaller
 import dev.trellis.kernel.api.InstallResult
 import dev.trellis.kernel.api.Kernel
+import dev.trellis.kernel.audit.Actor
 import dev.trellis.kernel.core.CapabilityId
 import dev.trellis.kernel.core.PluginId
 import java.io.File
@@ -57,7 +58,7 @@ class KernelPluginInstaller(
 
         // 覆盖安装：先把可能正在跑的旧版本摘下来。
         // 不存在时 disable 返回 NotFound，是无害的。
-        kernel.disable(pluginId)
+        kernel.disable(pluginId, Actor.AGENT)
 
         dir.deleteRecursively()
         if (!dir.mkdirs()) return "无法创建插件目录：" + dir.absolutePath
@@ -68,7 +69,7 @@ class KernelPluginInstaller(
             target.writeText(content, Charsets.UTF_8)
         }
 
-        val problems = when (val result = kernel.install(pluginId)) {
+        val problems = when (val result = kernel.install(pluginId, Actor.AGENT)) {
             // 装载成功还不够：贡献被拒（K019）的话卡片根本不会出现，
             // 用户会以为「AI 生成的插件不工作」。所以这也算失败。
             is InstallResult.Installed -> kernel.plugin(pluginId)?.errors.orEmpty()

@@ -227,6 +227,11 @@ private fun TabBar(runtime: AppRuntime) {
             text = { Text("任务") },
         )
         Tab(
+            selected = runtime.currentTab == TAB_PLAN,
+            onClick = { runtime.currentTab = TAB_PLAN },
+            text = { Text("计划") },
+        )
+        Tab(
             selected = runtime.currentTab == TAB_CHAT,
             onClick = { runtime.currentTab = TAB_CHAT },
             text = { Text(if (runtime.chatBusy) "对话 ···" else "对话") },
@@ -248,7 +253,7 @@ private fun TabBar(runtime: AppRuntime) {
  * 左栏式导航。
  *
  * 不复用 M3 的 NavigationRail：它自带胶囊选中态、56dp 图标位和固定内边距，
- * 换主题也只能换颜色 —— 而「值班台」这类风格要的是方角小项、等宽小标、88dp 窄栏。
+ * 换主题也只能换颜色 —— 而「Bento」这类风格要的是方角小项、等宽小标、88dp 窄栏。
  * 这里用 Column 自己画，仍然只取 MaterialTheme 的语义色，所以换主题/暗色自动跟随。
  */
 @Composable
@@ -287,6 +292,7 @@ private fun NavRail(runtime: AppRuntime) {
         }
         Spacer(Modifier.height(8.dp))
         NavRailItem(runtime, ChromeIcon.Tasks, "任务", TAB_TASKS, foreground)
+        NavRailItem(runtime, ChromeIcon.Plan, "计划", TAB_PLAN, foreground)
         NavRailItem(runtime, ChromeIcon.Chat, if (runtime.chatBusy) "对话 ···" else "对话", TAB_CHAT, foreground)
         NavRailItem(runtime, ChromeIcon.Plugins, "插件 " + runtime.pluginInfos.size, TAB_PLUGINS, foreground)
         NavRailItem(
@@ -334,6 +340,7 @@ private fun NavRailItem(runtime: AppRuntime, icon: ChromeIcon, label: String, ta
 private fun TabContent(runtime: AppRuntime, modifier: Modifier) {
     when (runtime.currentTab) {
         TAB_TASKS -> TasksTab(runtime, modifier)
+        TAB_PLAN -> PlanScreen(runtime, modifier)
         TAB_CHAT -> ChatScreen(runtime, modifier)
         TAB_PLUGINS -> PluginsScreen(runtime, modifier)
         else -> DiagnosticsScreen(runtime, modifier)

@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -30,6 +29,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import dev.trellis.kernel.api.PluginInfo
 import dev.trellis.kernel.capability.Capabilities
@@ -53,31 +54,21 @@ import kotlinx.coroutines.launch
 fun PluginsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     val scope = rememberCoroutineScope()
     var expanded by remember { mutableStateOf(emptySet<String>()) }
-    var aiDialog by remember { mutableStateOf(false) }
-    // 正在改哪个插件。非空表示这次打开对话框是「改」，不是「新写」。
-    var editing by remember { mutableStateOf<String?>(null) }
-
-    // Dialog 自己开一个窗口，放在哪儿都行，所以搁在最前面
-    if (aiDialog) {
-        AiPluginDialog(
-            runtime = runtime,
-            initialRequest = editing?.let { "改造插件 " + it + "：" } ?: "",
-            onClose = { aiDialog = false; editing = null },
-        )
-    }
 
     Column(modifier) {
+        // 标题、目录、一个按钮挤在一行：这一页真正要看的是下面的列表，
+        // 头部占两行只是把「最近一次出事的插件」往下推。
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("插件", style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.weight(1f))
-            Button(onClick = { aiDialog = true }) { Text("让 AI 写一个插件") }
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(12.dp))
+            Text(
+                runtime.pluginsDir.absolutePath + "　·　把两份 JSON 丢进去，重启就会多一张卡片",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
             TextButton(onClick = { runtime.openPluginsFolder() }) { Text("打开插件目录") }
         }
-        Text(
-            runtime.pluginsDir.absolutePath + "　（把两份 JSON 丢进去，重启就会多一张卡片）",
-            style = MaterialTheme.typography.labelSmall,
-        )
         Spacer(Modifier.height(12.dp))
 
         // 「彻底删除」不可撤销，所以要点两下：第一下只是把按钮换成确认，第二下才真删。
@@ -98,6 +89,9 @@ fun PluginsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                 PluginCard(
                     info = info,
                     expanded = id in expanded,
+                    lastUsedMs = runtime.lastUsedAt(id),
+                    providesTheme = runtime.pluginProvidesTheme(id),
+                    themeActive = runtime.themeIsActiveFrom(id),
                     onToggle = { expanded = if (id in expanded) expanded - id else expanded + id },
                     contributions = runtime.contributionsOf(info.manifest.id),
                     services = runtime.servicesOf(info.manifest.id),
@@ -106,7 +100,7 @@ fun PluginsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                     onGrant = {
                         scope.launch { runtime.grantAndReload(info.manifest.id, declared) }
                     },
-                    onEdit = { editing = id; aiDialog = true },
+                    onEdit = { runtime.askInChat("改造插件 " + id + "：") },
                     onDisable = { scope.launch { runtime.disablePlugin(id) } },
                     onRemove = { scope.launch { runtime.removePlugin(id) } },
                 )
@@ -257,6 +251,9 @@ private fun DisabledRow(
 private fun PluginCard(
     info: PluginInfo,
     expanded: Boolean,
+    lastUsedMs: Long?,
+    providesTheme: Boolean,
+    themeActive: Boolean,
     onToggle: () -> Unit,
     contributions: List<Contribution>,
     services: List<ServiceBinding>,
@@ -271,7 +268,24 @@ private fun PluginCard(
         Column(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
 
             // ---- 折叠时只有这一行 ----
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            //
+            // 悬停时多给一句「上次用」。插件页原本只能回答「这是谁、活着没」，
+            // 回答不了「我上次用它是什么时候」——主题这种不产生卡片的插件尤其明显。
+            var hovered by remember { mutableStateOf(false) }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            when (awaitPointerEvent().type) {
+                                PointerEventType.Enter -> hovered = true
+                                PointerEventType.Exit -> hovered = false
+                                else -> Unit
+                            }
+                        }
+                    }
+                },
+            ) {
                 StatusDot(info.state)
                 Spacer(Modifier.width(10.dp))
                 Text(
@@ -279,6 +293,13 @@ private fun PluginCard(
                     style = MaterialTheme.typography.titleSmall,
                     modifier = Modifier.weight(1f),
                 )
+                if (hovered) {
+                    val hint = usageHint(System.currentTimeMillis(), lastUsedMs, providesTheme, themeActive)
+                    if (hint != null) {
+                        Text(hint, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.width(10.dp))
+                    }
+                }
                 Text(stateLabel(info.state), style = MaterialTheme.typography.labelMedium, color = stateColor(info.state))
                 Spacer(Modifier.width(4.dp))
                 TextButton(onClick = onToggle) { Text(if (expanded) "收起" else "详情") }
@@ -414,6 +435,26 @@ private fun stateLabel(state: PluginState): String = when (state) {
     PluginState.UNAVAILABLE -> "本设备不可用"
     PluginState.DISPOSED -> "已卸载"
     else -> state.name
+}
+
+/**
+ * 悬停时那句提示。
+ *
+ * 主题类插件先说「在用 / 上次用」，普通插件只说「上次用」；
+ * 没有任何可说的就返回 null —— 这一行不长东西，悬停时布局才不跳。
+ */
+internal fun usageHint(
+    nowMs: Long,
+    lastUsedMs: Long?,
+    providesTheme: Boolean,
+    themeActive: Boolean,
+): String? = when {
+    themeActive && lastUsedMs != null ->
+        "正在使用 · " + PluginUsageStore.describe(nowMs, lastUsedMs)
+    themeActive -> "正在使用"
+    lastUsedMs != null -> "上次用：" + PluginUsageStore.describe(nowMs, lastUsedMs)
+    providesTheme -> "还没用过"
+    else -> null
 }
 
 private fun loaderLabel(loader: String): String = when (loader) {

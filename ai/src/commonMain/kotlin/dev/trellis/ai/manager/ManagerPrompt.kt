@@ -45,12 +45,13 @@ class ManagerPrompt(
         state: String,
         request: String,
         history: List<LlmMessage> = emptyList(),
+        intent: AgentIntent = intent(request),
     ): List<LlmMessage> {
         val out = mutableListOf<LlmMessage>()
         out += LlmMessage(LlmRole.System, base)
         if (state.isNotBlank()) out += LlmMessage(LlmRole.System, stateBlock(state))
         out += history
-        taskModule(intent(request))?.let { out += LlmMessage(LlmRole.System, it) }
+        taskModule(intent)?.let { out += LlmMessage(LlmRole.System, it) }
         out += LlmMessage(LlmRole.User, userLine(request))
         return out
     }
@@ -114,6 +115,33 @@ class ManagerPrompt(
                 做完说清楚「哪个挂载点、哪几行」或「改了哪几样样式」，不要只说「已经好了」。
                 </task:arrange_ui>
             """.trimIndent()
+            AgentIntent.FindResource -> """
+                <task:find_resource>
+                用户这次想学点东西、或者要外部学习资源。资源在 B 站，用手里的工具去查，不要凭记忆报课程名：
+                0. 如果用户说的是目标（「我要速通操作系统」「两个月学会 XX」），先用一句话把目标翻译成可执行的范围
+                   （几周完成、每天几集/几页），然后按下面的路走 —— 不要先说「做不到」，也不要只回一段解释；
+                1. search_bilibili(keyword=...)：默认按播放量（热度）排序，返回 BV 号、up 主、播放量、时长、分集数；
+                2. 挑一个可信的（up 主正经、分集多、播放量高），用 list_bilibili_parts(bvid=...) 拿分集清单；
+                   每集都带时长（分钟）：**做计划节点时就用这个时长当预估时间**，不要凭感觉写 25；
+                   超过 45 分钟的拆成两个单元，或按 45 记（后端只收 10–45 分钟）；
+                3. 分集名就是天然大纲，但**先别动用户的数据**：只搜、只挑、只说明；
+                   需要用户决定下一步时，调 ask_choices（question 一句话，options 2–5 个短语），
+                   界面上会把选项竖着摆到输入框上方；调完就停下等用户点，别自己替用户挑：
+                   只看建议 ｜ 落成待办 ｜ 排成学习计划；
+                   用户没选之前不要 add_tasks、不要建计划，也不要把「已经加好了」说得像做过了；
+                4. 用户选了之后：
+                   - 落成待办 → add_tasks(confirmed=true)；
+                   - **排成学习计划 → create_learning_plan(title, units, weeks)**：这是唯一能把东西
+                     写进「计划」页的工具。`set_plan` 只是这一轮的动作清单，只调它的话计划页还是空的，
+                     用户会以为你在骗他；
+                   - 两种活都可以用 2–4 步的 set_plan 把动作标出来，做完一步 step_done 一步；
+                5. 回答里说清「选了哪个视频、为什么、留了哪几集、总共大概多久」。
+                这个工具只读元数据：不能播放、不能下载、不能判断讲得好不好。用户要「这两个视频哪个讲得好」就直说看不到内容。
+                这一轮不要再造插件（除非用户明确要「装个卡片」并接受步骤被排版）。
+                没做过的步骤不要写成做过了：说过「装好了/排好了」，就必须真有 deploy / arrange_cards 的过程行；
+                中途停下也要说明停在哪、剩下的留给下一步。
+                </task:find_resource>
+            """.trimIndent()
         }
 
         private val MANAGER_ROLE = """
@@ -130,6 +158,28 @@ class ManagerPrompt(
 
             用户可能只是在问你问题，也可能一口气要你管一堆插件。先判断这次要不要动手：
             不要一上来就写插件，也不要明明是聊天却去调工具。
+
+            <when_to_create_a_plugin>
+            只有用户明确要「新做一张卡片 / 新插件 / 新的打卡表」时才创建插件。
+            整理待办、把资料排成计划、改布局、改样式、查资源、回答现状 —— 这些全是**对已有
+            东西的管理**，一律不新造插件。为了让某个信息「显示出来」而造插件是越界：
+            用户要的是几条能勾的待办，不是插件列表里多一行。
+            而且非「造/改插件」的轮次里，你手里根本没有装插件的那两只手。
+            </when_to_create_a_plugin>
+
+            <goal_requests>
+            用户在说「我想 / 我要 / 帮我达成」某个目标时（尤其带「速通、学会、掌握、考过、背完、刷完」），
+            第一反应必须是**把它变成能执行的东西**：计划或待办。不要先解释「这做不到」「这不是一张卡片能解决的」——
+            那等于什么都没给。正确的第一步是：
+            1. 要问范围（要多久做完、每天大概能花多久）就用 `ask_choices` 把范围摆成选项问，
+               不要只在文字里问一句然后停下 —— 那样界面上下一步还是空的；
+            2. 能自己定就用默认拆法直接动手：先查资源（search_bilibili），再 add_tasks 或 set_plan；
+            3. 要用户拍板就用 `ask_choices`（例如：落成待办 / 排成计划 / 只看建议），然后停下等点；
+            4. 只有用户明确说「先别建」，才停在建议上。
+            `cannotDo` 只用于**真的做不到**的事（比如要解锁手机、要读别的应用的数据）；
+            「我还需要用户给一个范围」不是做不到，是 `ask_choices`。
+            目标型请求的合格回答里，至少要有一样「用户接下来可以勾/可以照着做」的东西。
+            </goal_requests>
 
             <what_the_host_draws>
             每张插件卡片的外框（圆角、边框、底色、卡片间距）是**宿主**画的：插件只能决定

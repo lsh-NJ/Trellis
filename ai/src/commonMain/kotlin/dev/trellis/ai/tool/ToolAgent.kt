@@ -32,8 +32,8 @@ data class ToolRun(
 /**
  * 会自己动手的 agent。
  *
- * 和 [dev.trellis.ai.PluginAgent] 的区别：那个是「问一句、答一段、装一次」，
- * 这个可以**先去看再动手** —— 查已装插件、查真实的事件和动作、把草稿丢进去试跑、
+ * 它不是「问一句、答一段、装一次」的一次性生成器：
+ * 它可以**先去看再动手** —— 查已装插件、查真实的事件和动作、把草稿丢进去试跑、
  * 看到报错再改。它不再是盲写。
  *
  * ### 为什么用文字协议而不是原生 function calling
@@ -218,6 +218,17 @@ class ToolAgent(
     }
 
     private fun parse(reply: String): AgentStep {
+        // 有些模型不吐约定的 JSON，而是吐自己训练里的标记语言（见 DeepSeekMarkup）。
+        // 认出来就按工具调用执行 —— 否则界面上是一屏乱码，而且工具一次都不跑。
+        DeepSeekMarkup.firstInvocation(reply)?.let { invocation ->
+            val obj = try {
+                json.parseToJsonElement(invocation.arguments.ifBlank { "{}" }).jsonObject
+            } catch (t: Throwable) {
+                return AgentStep.Malformed("工具参数不是 JSON")
+            }
+            return AgentStep.UseTool(invocation.name, obj)
+        }
+
         val raw = JsonExtraction.extractFirstObject(reply)
             ?: return AgentStep.Malformed("里面没有 JSON")
         val obj = try {

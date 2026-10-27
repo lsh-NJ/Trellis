@@ -3,6 +3,7 @@ package dev.trellis.ai.manager
 import dev.trellis.ai.LlmClient
 import dev.trellis.ai.LlmMessage
 import dev.trellis.ai.tool.AgentTool
+import dev.trellis.ai.tool.DeepSeekMarkup
 import dev.trellis.ai.tool.ToolAgent
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
@@ -22,12 +23,14 @@ data class ManagerResult(
     val transcript: List<String> = emptyList(),
     val refused: Boolean = false,
     val ok: Boolean = true,
+    /** 有歧义时摆给用户的选项（点了就等于把那句话发出去）。 */
+    val choices: List<String> = emptyList(),
 )
 
 /**
  * 插件管理员。
  *
- * 和 [dev.trellis.ai.PluginAgent]（一问一答一装）以及 [ToolAgent]（只管干活）的区别：
+ * 和 [ToolAgent]（只管干活、不管该不该干）的区别：
  * 它是**长期角色**，每轮先判断「这次到底该不该动手、动哪一类手」，再决定走哪条路：
  *
  * - 聊天：流式回答，不碰工具；
@@ -38,8 +41,12 @@ data class ManagerResult(
  */
 class ManagerAgent(
     private val llm: LlmClient,
-    private val prompt: ManagerPrompt,
-    private val tools: List<AgentTool>,
+    /**
+     * 意图 → 工具 → 提示词，三件事在这里一次定完。
+     * 不再把「整套工具 + 整段静态前缀」直接塞给模型：那样它总会挑一个
+     * 看起来像在干活的工具，越界就这么来的。
+     */
+    private val router: ManagerRouter,
     /** `null` = 不设步数额度；给「只想让它看一眼」的场景留的硬闸。 */
     private val maxSteps: Int? = null,
     /**
@@ -49,6 +56,15 @@ class ManagerAgent(
      */
     private val beforeFinishing: (AgentIntent) -> String? = { null },
 ) {
+
+    /** 老调用点：一份提示词 + 全套工具，工具仍按意图裁，但提示词不重建。 */
+    constructor(
+        llm: LlmClient,
+        prompt: ManagerPrompt,
+        tools: List<AgentTool>,
+        maxSteps: Int? = null,
+        beforeFinishing: (AgentIntent) -> String? = { null },
+    ) : this(llm, ManagerRouter(prompt, tools), maxSteps, beforeFinishing)
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -62,8 +78,19 @@ class ManagerAgent(
         onDelta: suspend (String) -> Unit = {},
         onLog: (String) -> Unit = {},
     ): ManagerResult {
-        val intent = prompt.intent(request)
-        val messages = prompt.messages(state, request, history)
+        // ① 意图（单选）② 歧义就停下先问 ③ 选工具 ④ 按这轮的意图拼提示词 ⑤ 发模型
+        val decision = router.decide(request)
+        if (decision.ambiguous) {
+            onLog("判断：这句话有歧义，先问清楚")
+            return ManagerResult(
+                intent = decision.intent,
+                text = decision.question,
+                choices = decision.choices,
+            )
+        }
+        val intent = decision.intent
+        val tools = router.tools(intent)
+        val messages = router.prompt(intent).messages(state, request, history, intent)
 
         if (intent == AgentIntent.Chat) {
             val streamed = StringBuilder()
@@ -145,7 +172,8 @@ class ManagerAgent(
      * 转义过的 \n 和一整行大括号。这里只剥壳，不改内容；剥不出来就原样返回。
      */
     private fun unwrapReply(raw: String): String {
-        val body = raw.trim()
+        val cleaned = DeepSeekMarkup.strip(raw).ifBlank { raw }
+        val body = cleaned.trim()
             .removePrefix("```json")
             .removePrefix("```")
             .removeSuffix("```")
@@ -158,14 +186,14 @@ class ManagerAgent(
                 if (!refused.isNullOrBlank()) return refused
                 val message = obj["message"]?.jsonPrimitive?.contentOrNull
                 if (!message.isNullOrBlank() && obj.containsKey("done")) return message
-                raw
+                cleaned
             } else if (body.startsWith("\"")) {
                 val text = json.parseToJsonElement(body).jsonPrimitive.content
-                if (text.isNotBlank()) text else raw
+                if (text.isNotBlank()) text else cleaned
             } else {
-                raw
+                cleaned
             }
-        }.getOrDefault(raw)
+        }.getOrDefault(cleaned)
     }
 
     /**
@@ -177,12 +205,13 @@ class ManagerAgent(
      * 「我先截个图」就这么停在界面上。
      */
     private fun looksLikeToolCall(text: String): Boolean =
-        Regex("\"tool\"\\s*:").containsMatchIn(text)
+        DeepSeekMarkup.contains(text) || Regex("\"tool\"\\s*:").containsMatchIn(text)
 
     private fun labelOf(intent: AgentIntent): String = when (intent) {
         AgentIntent.Chat -> "手"
         AgentIntent.CreatePlugin -> "插件（造或改）"
         AgentIntent.ManagePlugin -> "已装插件"
         AgentIntent.ArrangeUi -> "布局"
+        AgentIntent.FindResource -> "学习资源"
     }
 }
