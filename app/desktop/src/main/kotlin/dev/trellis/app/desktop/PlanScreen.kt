@@ -91,10 +91,11 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     }
 }
 
-/** 左侧计划列表：按大类分组（没有大类归「未分类」）。 */
+/** 左侧计划列表：按大类分组（没有大类归「未分类」）。已结束的计划不占列表。 */
 @Composable
 private fun PlanList(runtime: AppRuntime, modifier: Modifier = Modifier) {
-    val grouped = runtime.planAll.groupBy { runtime.planCategories[it.id] ?: "未分类" }
+    val visible = runtime.planAll.filter { it.status != "ended" }
+    val grouped = visible.groupBy { runtime.planCategories[it.id] ?: "未分类" }
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(
             "计划",
@@ -112,7 +113,11 @@ private fun PlanList(runtime: AppRuntime, modifier: Modifier = Modifier) {
             plans.forEach { plan ->
                 ListRow(
                     text = plan.title,
-                    sub = if (plan.id == runtime.planAll.firstOrNull()?.id) "进行中" else plan.status,
+                    sub = when {
+                        plan.id == runtime.planFocusId -> "进行中"
+                        plan.status == "draft" -> "草稿"
+                        else -> ""
+                    },
                     selected = runtime.planFocusId == plan.id,
                     onClick = { runtime.selectPlan(plan.id) },
                 )
