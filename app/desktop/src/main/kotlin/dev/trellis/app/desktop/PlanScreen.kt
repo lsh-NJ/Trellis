@@ -84,8 +84,11 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                 item { PlanEmpty(runtime) }
             } else {
                 item { WeekStrip(runtime) }
-                if (runtime.planPool.isNotEmpty()) item { PoolCard(runtime) }
-                item { WeekDetail(runtime) }
+                if (runtime.planPendingSelected) {
+                    item { PendingDetail(runtime) }
+                } else {
+                    item { WeekDetail(runtime) }
+                }
             }
         }
     }
@@ -242,12 +245,78 @@ private fun WeekStrip(runtime: AppRuntime) {
                 }
             },
         ) {
-            items(runtime.planWeekCards, key = { it.week }) { card ->
-                WeekCard(card, selected = card.week == runtime.planSelectedWeek) {
+            items(runtime.planWeekCards.filter { it.scheduled }, key = { it.week }) { card ->
+                WeekCard(card, selected = !runtime.planPendingSelected && card.week == runtime.planSelectedWeek) {
                     runtime.selectPlanWeek(card.week)
                 }
             }
+            // 没铺到天的周不再各占一张卡：全部收进一张「待安排」，宽度是周卡的一半。
+            if (runtime.planPendingNodes.isNotEmpty()) {
+                item(key = "pending") {
+                    PendingWeekCard(
+                        count = runtime.planPendingNodes.size,
+                        selected = runtime.planPendingSelected,
+                    ) { runtime.selectPlanPending() }
+                }
+            }
         }
+    }
+}
+
+/**
+ * 「待安排」那一张卡：宽度是周卡的一半，灰得更明显，右上角挂一个显眼的待安排标记。
+ *
+ * 只显示一个 —— 待安排不是「第 N 周」，而是一个集合；点开在下面看全部节点。
+ */
+@Composable
+private fun PendingWeekCard(count: Int, selected: Boolean, onClick: () -> Unit) {
+    val style = LocalCardStyle.current
+    val shape = RoundedCornerShape(style.radius)
+    Column(
+        modifier = Modifier
+            .width(98.dp)
+            .height(184.dp)
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f))
+            .border(
+                if (selected) 2.dp else 1.dp,
+                if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                shape,
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(4.dp))
+                .background(MaterialTheme.colorScheme.outline)
+                .padding(horizontal = 6.dp, vertical = 2.dp),
+        ) {
+            Text(
+                "待安排",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.surface,
+            )
+        }
+        Spacer(Modifier.weight(1f))
+        Text(
+            count.toString(),
+            style = MaterialTheme.typography.headlineMedium,
+            fontFamily = AppFonts.mono,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            "个节点",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            "点开看",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -355,47 +424,68 @@ private fun PendingChip() {
     }
 }
 
-/** 待安排池：还没排到具体某天的单元，按时间顺序列出来（最多 4 条）。 */
+/**
+ * 「待安排」详情：把整个集合平铺出来（带预计分钟），按章节分组。
+ *
+ * 这里不排程、不勾选：这些节点还没落到某一天，勾选得先等它被排进某周某天。
+ */
 @Composable
-private fun PoolCard(runtime: AppRuntime) {
+private fun PendingDetail(runtime: AppRuntime) {
     PlanCard {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("待安排 · " + runtime.planPool.size, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "待安排 · " + runtime.planPendingNodes.size + " 个节点",
+                    style = MaterialTheme.typography.titleMedium,
+                )
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "这些单元有了格式，但还没落到某一天",
+                    "还没排到某一天，排的时候按每天投入分钟数往里塞",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            runtime.planPool.take(4).forEach { unit ->
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Box(
-                        Modifier.size(16.dp).clip(RoundedCornerShape(3.dp))
-                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(3.dp)),
-                    )
-                    Text(unit.title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                    Text(
-                        buildString {
-                            if (unit.chapter.isNotBlank()) append(unit.chapter).append(" · ")
-                            append(unit.estimateMinutes).append(" 分钟")
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            if (runtime.planPool.size > 4) {
+            val totalMinutes = runtime.planPendingNodes.sumOf { it.estimateMinutes }
+            Text(
+                buildString {
+                    append("合计 ").append(totalMinutes).append(" 分钟")
+                    val daily = runtime.planDailyMinutes
+                    if (daily != null && daily > 0) {
+                        append(" · 按每天 ").append(daily).append(" 分钟算，约 ")
+                        append((totalMinutes + daily - 1) / daily).append(" 天")
+                    } else {
+                        append(" · 还没定每天投入多少分钟，排程会问你要")
+                    }
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            runtime.planPendingNodes.groupBy { it.chapter.ifBlank { "未分章" } }.forEach { (chapter, units) ->
                 Text(
-                    "还有 " + (runtime.planPool.size - 4) + " 个没列出来",
+                    chapter,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp),
                 )
+                units.forEach { unit ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Box(
+                            Modifier.size(16.dp).clip(RoundedCornerShape(3.dp))
+                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(3.dp)),
+                        )
+                        Text(unit.title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                        Text(
+                            unit.estimateMinutes.toString() + " 分钟",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = AppFonts.mono,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
             }
         }
     }
@@ -616,15 +706,8 @@ private fun OccurrenceRow(occurrence: DayOccurrence, onComplete: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        if (occurrence.minimal.available) {
-            Text(
-                "最小版 " + occurrence.minimal.minutes + " 分",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
         Text(
-            if (occurrence.mode == "minimal") "最小版" else "待做",
+            "待做",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

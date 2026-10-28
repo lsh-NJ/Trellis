@@ -176,6 +176,8 @@ data class PlanStateView(
     val pendingReview: Boolean,
     val carryPending: Int,
     val title: String = "",
+    /** 计划里「每天投入多少分钟」：由 `process.weekly_capacity_minutes / 7` 反推；没设就是 null。 */
+    val dailyMinutes: Int? = null,
 )
 
 @Serializable

@@ -428,6 +428,16 @@ internal fun SqliteLearningPlanService.buildPlanState(planId: String): PlanState
         ps.setString(1, planId)
         ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
     }
+    // 计划级的「每天投入」存在 process.weekly_capacity_minutes 里（×7 写入），这里反推成年。
+    val dailyMinutes = connection.prepareStatement(
+        "SELECT p.weekly_capacity_minutes FROM process p " +
+            "JOIN plan pl ON pl.process_id = p.id WHERE pl.id = ?",
+    ).use { ps ->
+        ps.setString(1, planId)
+        ps.executeQuery().use { rs ->
+            if (rs.next()) rs.getInt(1).takeIf { !rs.wasNull() && it > 0 }?.div(7) else null
+        }
+    }
     return PlanStateView(
         planId = planId,
         status = status,
@@ -437,6 +447,7 @@ internal fun SqliteLearningPlanService.buildPlanState(planId: String): PlanState
         pendingReview = pendingReview,
         carryPending = carryPending,
         title = planTitle(planId),
+        dailyMinutes = dailyMinutes,
     )
 }
 
