@@ -522,7 +522,7 @@ internal fun TaskBoard(runtime: AppRuntime, taskFocus: FocusRequester, framed: B
                     TaskRow(
                         task = task,
                         onToggle = { scope.launch { runtime.toggle(it) } },
-                        onLog = { scope.launch { runtime.logTime(it, 25) } },
+                        onTimer = { runtime.openTimer(it) },
                         onDelete = { scope.launch { runtime.delete(it) } },
                     )
                 }
@@ -539,7 +539,7 @@ internal fun TaskBoard(runtime: AppRuntime, taskFocus: FocusRequester, framed: B
                         TaskRow(
                             task = task,
                             onToggle = { scope.launch { runtime.toggle(it) } },
-                            onLog = { scope.launch { runtime.logTime(it, 25) } },
+                            onTimer = { runtime.openTimer(it) },
                             onDelete = { scope.launch { runtime.delete(it) } },
                         )
                     }
@@ -679,7 +679,7 @@ private data class Quad(
 private fun TaskRow(
     task: Task,
     onToggle: (Task) -> Unit,
-    onLog: (Task) -> Unit,
+    onTimer: (Task) -> Unit,
     onDelete: (Task) -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -764,7 +764,8 @@ private fun TaskRow(
 
         // 行内操作只在悬停时出现：不悬停时那一整行都是「任务」，不是「按钮条」。
         if (hovered) {
-            IconAction("⏱", "记 25 分钟投入") { onLog(task) }
+            // 一个任务只有一个计时入口（原来那个「记 25 分钟」并进计时窗口里）。
+            if (!task.isDone) IconAction("⏱", "开计时器") { onTimer(task) }
             IconAction("⌫", "删除", tint = extra.danger) { onDelete(task) }
         }
     }
