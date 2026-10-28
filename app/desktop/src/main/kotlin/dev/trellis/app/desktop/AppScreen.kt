@@ -212,14 +212,14 @@ private fun navContentColor(runtime: AppRuntime): Color = when (runtime.uiPrefs.
     else -> MaterialTheme.colorScheme.onSurface
 }
 
-/** 导航里的五页，顺序就是标签栏/左栏的顺序。 */
-private val NAV_TABS = listOf(TAB_TASKS, TAB_PLAN, TAB_CHAT, TAB_PLUGINS, TAB_SETTINGS)
+/** 导航里的四页，顺序就是标签栏/左栏的顺序。 */
+private val NAV_TABS = listOf(TAB_TASKS, TAB_PLAN, TAB_CHAT, TAB_SETTINGS)
 
 /**
  * 当前该点亮第几个导航项。
  *
- * 诊断页不在导航里（它从设置页的按钮进），所以不能直接拿 `currentTab` 当索引：
- * 停在那里的把「设置」点亮 —— 用户是从那里来的，回去也是那一条路。
+ * 插件页和诊断页都不在导航里（它们从设置页进去），所以不能直接拿 `currentTab`
+ * 当索引：停在那里的把「设置」点亮 —— 用户是从那里来的，回去也是那一条路。
  */
 private fun navIndexOf(tab: Int): Int {
     val index = NAV_TABS.indexOf(tab)
@@ -248,11 +248,6 @@ private fun TabBar(runtime: AppRuntime) {
             selected = runtime.currentTab == TAB_CHAT,
             onClick = { runtime.currentTab = TAB_CHAT },
             text = { Text(if (runtime.chatBusy) "对话 ···" else "对话") },
-        )
-        Tab(
-            selected = runtime.currentTab == TAB_PLUGINS,
-            onClick = { runtime.currentTab = TAB_PLUGINS },
-            text = { Text("插件 " + runtime.pluginInfos.size) },
         )
         Tab(
             selected = runtime.currentTab == TAB_SETTINGS,
@@ -306,14 +301,13 @@ private fun NavRail(runtime: AppRuntime) {
         NavRailItem(runtime, ChromeIcon.Tasks, "任务", TAB_TASKS, foreground)
         NavRailItem(runtime, ChromeIcon.Plan, "计划", TAB_PLAN, foreground)
         NavRailItem(runtime, ChromeIcon.Chat, if (runtime.chatBusy) "对话 ···" else "对话", TAB_CHAT, foreground)
-        NavRailItem(runtime, ChromeIcon.Plugins, "插件 " + runtime.pluginInfos.size, TAB_PLUGINS, foreground)
         NavRailItem(runtime, ChromeIcon.Settings, "设置", TAB_SETTINGS, foreground)
     }
 }
 
 @Composable
 private fun NavRailItem(runtime: AppRuntime, icon: ChromeIcon, label: String, tab: Int, foreground: Color) {
-    // 诊断页不在导航里：停在那里时点亮「设置」，因为用户是从设置进来的。
+    // 插件页、诊断页不在导航里：停在那里时点亮「设置」，因为用户是从设置进来的。
     val selected = navIndexOf(runtime.currentTab) == navIndexOf(tab)
     // 导航底色是主色时，选中项再刷主色就看不见了 —— 换成 primary 打底、onPrimary 出字。
     val accentBackground = runtime.uiPrefs.navTone == "accent"

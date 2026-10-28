@@ -1,6 +1,7 @@
 package dev.trellis.app.desktop
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -47,6 +48,8 @@ import kotlinx.coroutines.launch
  * **默认折叠**：不点开时一行只回答两个问题  「这是谁」「它活着吗」。
  * 贡献清单和错误都在详情里，因为那是要看的时候才看的，
  * 平时铺开会把「哪些插件出问题了」这个最重要的信息淹掉。
+ *
+ * 这一页不在导航里：从设置页的「插件」那块进来（左侧导航会把「设置」点亮）。
  */
 @Composable
 fun PluginsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
@@ -54,6 +57,14 @@ fun PluginsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     var expanded by remember { mutableStateOf(emptySet<String>()) }
 
     Column(modifier) {
+        // 这一页是从设置页进来的，给一条回去的路。
+        Text(
+            "← 返回设置",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.clickable { runtime.currentTab = TAB_SETTINGS },
+        )
+        Spacer(Modifier.height(6.dp))
         // 标题、目录、一个按钮挤在一行：这一页真正要看的是下面的列表，
         // 头部占两行只是把「最近一次出事的插件」往下推。
         Row(verticalAlignment = Alignment.CenterVertically) {

@@ -117,8 +117,8 @@ Set-Location C:\Users\breakM\Desktop\work\CreateandTrack
 | 计划页 UI（周视图 / 天条 / 当天安排） | `app/desktop/.../PlanScreen.kt` + `AppRuntime.refreshPlan`（数据全来自 `LearningPlanService` 的 view model） |
 | 计时器小窗（倒计时 / 正计时 / 结束记入） | `app/desktop/.../FocusTimer.kt`（模型 + 窗口）、`AppRuntime` 的 `timer*` 状态与 `openTimer/stopTimerAndLog`、`Main.kt` 的第二 `Window`；说明见 `docs/focus-timer.md` |
 | 自然语言日期（「周三前」「3天后」） | `app/desktop/.../NaturalDates.kt` |
-| 插件页 / 诊断页 UI | `app/desktop/.../PluginsScreen.kt`、`DiagnosticsScreen.kt` |
-| 设置页 UI（每日预计投入 / 插件设置分组） | `app/desktop/.../SettingsScreen.kt` + `StudyPrefs.kt`（`study.json`）；挂载点 `slot.settings.section` 原先挂在插件页底部，2026-10-28 移到这一页；同一天诊断页也撤出导航，改成这一页底部的「诊断」卡片，点进去，诊断页顶部有「← 返回设置」 |
+| 插件页 / 诊断页 UI（两页都不在导航里：从设置页进去） | `app/desktop/.../PluginsScreen.kt`、`DiagnosticsScreen.kt` |
+| 设置页 UI（每日预计投入 / 插件设置分组） | `app/desktop/.../SettingsScreen.kt` + `StudyPrefs.kt`（`study.json`）；挂载点 `slot.settings.section` 原先挂在插件页底部，2026-10-28 移到这一页；同一天诊断页也撤出导航，改成这一页底部的「诊断」卡片，点进去，诊断页顶部有「← 返回设置」；插件页也一样撤出导航，改成这一页的「插件」卡片（显示插件数与错误数），插件页顶部同样有「← 返回设置」，导航最终只剩 任务 / 计划 / 对话 / 设置 四条 |
 | 存储后端（KV → JSON 文件） | `kernel/.../storage/*`；JVM 实现 `app/desktop/.../FileStorageBackend.kt` |
 | 时间源 | `kernel/.../time/KernelClock.kt`（禁止直接 `System.currentTimeMillis()`） |
 | 权限/审批 | `kernel/.../capability/*`、`kernel/.../approval/*`；桌面弹窗 `app/desktop/.../AskDialogs.kt` |
@@ -227,6 +227,7 @@ ChatScreen ──> AppRuntime.sendChat()
 11. **中文源码/文档只用 read/edit/write 工具改**，别用 PowerShell 回写（会把 UTF-8 读成 ANSI 写回，中文全变问号）。
 12. **应用运行时别编译**（见 §1 警告）；改代码 → 关窗口 → 编译 → 再跑。
 13. **动手前先划文件范围**：开工第一句写清「这轮只动哪几个文件」，只改列出来的；多会话并行时这是第一步（见 §10）。同时改同一个文件不会有冲突提示，后落盘的直接盖掉先落盘的。
+14. **提交前先核对清单**：`git diff --stat` 逐条确认都是自己这轮改的，只 `git add` 具体文件；**不要 `git add -A`、不要 `git commit -a`**（工作区里随时有别人的半成品，`-A` 一定把它带走，见 §10.2）。
 
 ---
 
@@ -266,11 +267,17 @@ ChatScreen ──> AppRuntime.sendChat()
 
 1. **划范围**：写一句「这轮我改这几个文件」，只改列出来的。
 2. **看别人干到哪了**：`git status --short` 有未提交改动 = 另一个会话正干到一半，别碰那些文件。
-3. **认领大文件**：`AppRuntime.kt`（2000 行）、`ChatScreen.kt`、`AppScreen.kt`、`DynamicSlotView.kt` 是最容易被覆盖的四个，同一时刻只让一个会话改其中一个。
+3. **认领大文件**：`AppRuntime.kt`（2000 行，装配与状态中心）、`ChatScreen.kt`、`AppScreen.kt`、`DynamicSlotView.kt` 是最容易被覆盖的四个，同一时刻只让一个会话改其中一个。
+   「认领」的动作很轻：在开工说明里写出文件名（如「这轮我改 `AppRuntime.kt` + `SettingsScreen.kt`」），别人看到这句就不碰；没写出名字的文件默认不是你的。
 4. **编译前确认没人在跑应用**：`Get-Process java`（见 §1 那条「应用开着别编译」）。
 
 ### 10.2 收尾
 
+- **提交前先核对清单**：`git diff --stat` 一条条看，每条都得是自己这轮改的。裹进别人的改动不会报错、不会冲突，但历史会变成「他做的事挂在他的提交消息下」——2026-10-28 就真发生过：一条「计划页加计划设置」的提交里 13 个文件有 8 个是另一个会话的节点改动（`OpenNode.kt`、`PlanNodes.kt`、`PlanNodesTest.kt`、`PlanQueries.kt`、`SqliteLearningPlanService.kt`、`LearningPlanService.kt` 等），事后只能靠读 diff 才能还原归属。
+- **只 add 具体文件**，别 `git add -A`、别 `git commit -a`。工作区里随时可能有别人的半成品（尤其 `.kotlin/` 这类构建副产物），`-A` 一律带走：
+  ```powershell
+  wsl.exe -e bash -lc "cd /mnt/c/Users/breakM/Desktop/work/CreateandTrack && git add path/to/A.kt path/to/B.kt && git status --short"
+  ```
 - **一个能编译的完整步子提交一次**，别攒一整天。未提交的改动是并行会话最大的风险来源。
 - 提交信息写「改了什么 + 为什么」，仓库历史一直是这个风格。
 - 合回 `main` 前先 `git rebase main`，冲突在分支里解决，别带到 `main`。
@@ -302,3 +309,21 @@ wsl.exe -e bash -lc "cd /mnt/c/Users/breakM/Desktop/work/CreateandTrack && git m
 ```
 
 代价：两份 `build/`（各编译一遍）、两个 Gradle daemon 抢内存（`gradle.properties` 只有 `-Xmx2048m`）、合并冲突自己解。40 个提交、4MB 的仓库用不着天天开 worktree。
+
+### 10.5 分工怎么划
+
+按**目录**划比按功能划稳：目录不重叠，文件就不会撞。现成的天然边界：
+
+| 边界 | 里面是什么 | 谁常动 |
+| --- | --- | --- |
+| `kernel/` | 扩展点、能力、审批、存储接口、错误码 | 改机制才动，平时别碰 |
+| `sdk-domain/` + `features/` | 领域契约与适配器（计划、学习进程、活动采集） | 动数据模型和 SQL 的人 |
+| `app/desktop/` 的界面外壳 | `AppScreen.kt`、`SettingsScreen.kt`、`PluginsScreen.kt`、`Chrome.kt`、`PixelIcons.kt` | 动导航/页面结构的人 |
+| `app/desktop/AppRuntime.kt` | **装配与状态中心，谁都可能碰** | 动之前必须在开工说明里点名，别人看到就等 |
+| `ai/` | 提示词、工具、管理员流程 | 动 agent 行为的人 |
+| `docs/`、`AGENTS.md`、`README.md` | 文档 | 跟随代码一起提交，别留到最后补 |
+
+两条硬规矩：
+
+1. **同一个文件同一轮只让一个人动**。两个人都要改，就轮流：A 改完提交、B 再动，中间不并行。
+2. **跨边界的功能拆不开就别拆**。「计时器接计划节点」要同时动 `app/desktop` 和 `features/learning-process`，这种一次只交给一个会话，别按层拆给两个人——按层拆的结果就是两边都改到 `AppRuntime.kt` 和 `PlanQueries.kt`，最后谁也说不清哪个 hunk 是谁的。
