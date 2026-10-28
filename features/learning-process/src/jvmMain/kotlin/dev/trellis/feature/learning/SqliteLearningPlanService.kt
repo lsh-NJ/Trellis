@@ -385,6 +385,9 @@ internal class SqliteLearningPlanService(
         }
     }
 
+    override fun unitOccurrenceId(planId: String, week: String, unitId: String): String? =
+        unitOccurrenceOf(planId, week, unitId)
+
     override fun pool(planId: String): List<PoolUnit> {
         val versionId = currentVersion(planId) ?: return emptyList()
         return connection.prepareStatement(

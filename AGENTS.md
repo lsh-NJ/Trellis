@@ -65,7 +65,7 @@ Set-Location C:\Users\breakM\Desktop\work\CreateandTrack
 | `:ui-kernel` | `ui-kernel/src/commonMain/kotlin/dev/trellis/ui/` | Compose 渲染层：把插件贡献画成卡片/挂载点；**只渲染数据，不执行第三方 Compose** | `SlotArea.kt`（挂载点容器 + 12 栏布局 + 卡片外壳）<br>`DynamicSlotView.kt`（`UiNode` 全词汇渲染，36KB，改渲染先看它）<br>`CardStyle.kt` / `ExtraColors.kt` / `Fonts.kt`（宿主样式注入）<br>`ComposeSlot.kt`（内置插件的 Composable 贡献） |
 | `:ai` | `ai/src/commonMain/kotlin/dev/trellis/ai/` | AI 层：提示词、意图路由、工具循环、会话无关的纯逻辑（**唯一的 AI 入口是对话页的管理员**；不再有一次性生成管线） | `manager/ManagerRouter.kt`（意图单选 + 按意图给工具 + 拼提示词）、`manager/ManagerAgent.kt`、`manager/ManagerPrompt.kt`、`manager/Intent.kt`<br>`PromptBuilder.kt`（创建插件用的系统提示词）<br>`tool/ToolAgent.kt`、`tool/AgentTool.kt`<br>`tool/DeepSeekMarkup.kt`（DSML 方言解析）<br>`PluginInstaller.kt`（安装器接口，`KernelPluginInstaller` 实现）<br>`LlmClient.kt`；JVM 实现 `ai/src/jvmMain/kotlin/dev/trellis/ai/HttpLlmClient.kt` |
 | `:features:learning-process` | `features/learning-process/src/jvmMain/kotlin/dev/trellis/feature/learning/` | **学习计划后端**（事件溯源 + SQLite）：计划版本、承诺、occurrence、结算结转、复盘。契约在 `sdk-domain/.../plan/`，与任务型 `PlanService` 是两套，勿混用 | `SqliteLearningPlanService.kt`（命令外壳/撤销/幂等/事务）<br>`PlanCommands.kt`（20 条命令）<br>`PlanQueries.kt`（日/周/地图/复盘/待办视图）<br>`PlanRhythm.kt`（结算 + 复盘 + JSONL 导出）<br>`PlanSchema.kt`（内嵌 DDL）、`PlanDatabase.kt`<br>`LearningPlanStore.kt`（对外唯一入口）<br>测试 `src/jvmTest/.../LearningPlanServiceTest.kt` |
-| `:app:desktop` | `app/desktop/src/main/kotlin/dev/trellis/app/desktop/` | 桌面应用：装配内核、界面、AI 工具、本地存储、会话 | `Main.kt`（窗口/主题/快捷键）<br>`AppRuntime.kt`（73KB，**装配与状态中心**）<br>`AppScreen.kt`（任务页外壳）<br>`ChatScreen.kt`（会话页 UI）、`ChatStore.kt`（会话落盘）<br>`PluginTools.kt`（AI 插件工具）、`LayoutTools.kt`（布局工具）、`UiStyleTools.kt`（样式/主题工具）、`ScreenTools.kt`（截图/点击/打字）<br>`ThemePacks.kt`（主题校验与应用）、`Palette.kt`（参数化配色）、`LayoutStore.kt`、`UiPrefs.kt`<br>`PlanUiPlugin.kt`（**任务页自身也是插件**）<br>`PlanScreen.kt`（计划页：周卡片/天条/当天安排）、`PlanTools.kt`（AI 建计划工具：`create_learning_plan`）、`PlanPanel.kt`（右侧常驻执行清单）、`PlanCategoryStore.kt`（计划分类）<br>`WorkflowTools.kt`（`set_plan`/`step_done`/`ask_choices`）<br>`BilibiliClient.kt`/`BilibiliTools.kt`（B 站课程检索与分集）、`TaskTools.kt`（`add_tasks`）<br>`PluginUsageStore.kt`（插件页「上次用」）、`FileAuditLedger.kt`（`audit.log` 生命周期审计）<br>`MarkdownText.kt`（对话消息 Markdown 渲染） |
+| `:app:desktop` | `app/desktop/src/main/kotlin/dev/trellis/app/desktop/` | 桌面应用：装配内核、界面、AI 工具、本地存储、会话 | `Main.kt`（窗口/主题/快捷键）<br>`AppRuntime.kt`（73KB，**装配与状态中心**）<br>`AppScreen.kt`（任务页外壳）<br>`ChatScreen.kt`（会话页 UI）、`ChatStore.kt`（会话落盘）<br>`PluginTools.kt`（AI 插件工具）、`LayoutTools.kt`（布局工具）、`UiStyleTools.kt`（样式/主题工具）、`ScreenTools.kt`（截图/点击/打字）<br>`ThemePacks.kt`（主题校验与应用）、`Palette.kt`（参数化配色）、`LayoutStore.kt`、`UiPrefs.kt`、`StudyPrefs.kt`（`study.json`：每天预计投入）、`SettingsScreen.kt`（设置页）<br>`PlanUiPlugin.kt`（**任务页自身也是插件**）<br>`PlanScreen.kt`（计划页：周卡片/天条/当天安排）、`PlanTools.kt`（AI 建计划工具：`create_learning_plan`）、`PlanPanel.kt`（右侧常驻执行清单）、`PlanCategoryStore.kt`（计划分类）<br>`WorkflowTools.kt`（`set_plan`/`step_done`/`ask_choices`）<br>`BilibiliClient.kt`/`BilibiliTools.kt`（B 站课程检索与分集）、`TaskTools.kt`（`add_tasks`）<br>`PluginUsageStore.kt`（插件页「上次用」）、`FileAuditLedger.kt`（`audit.log` 生命周期审计）<br>`MarkdownText.kt`（对话消息 Markdown 渲染） |
 | `:demo` | `demo/src/main/kotlin/dev/trellis/demo/Main.kt` | 控制台演示（无界面，跑 `.\gradlew.bat :demo:run`） | `Main.kt` |
 
 其它目录：
@@ -118,6 +118,7 @@ Set-Location C:\Users\breakM\Desktop\work\CreateandTrack
 | 计时器小窗（倒计时 / 正计时 / 结束记入） | `app/desktop/.../FocusTimer.kt`（模型 + 窗口）、`AppRuntime` 的 `timer*` 状态与 `openTimer/stopTimerAndLog`、`Main.kt` 的第二 `Window`；说明见 `docs/focus-timer.md` |
 | 自然语言日期（「周三前」「3天后」） | `app/desktop/.../NaturalDates.kt` |
 | 插件页 / 诊断页 UI | `app/desktop/.../PluginsScreen.kt`、`DiagnosticsScreen.kt` |
+| 设置页 UI（每日预计投入 / 插件设置分组） | `app/desktop/.../SettingsScreen.kt` + `StudyPrefs.kt`（`study.json`）；挂载点 `slot.settings.section` 原先挂在插件页底部，2026-10-28 移到这一页；同一天诊断页也撤出导航，改成这一页底部的「诊断」卡片，点进去，诊断页顶部有「← 返回设置」 |
 | 存储后端（KV → JSON 文件） | `kernel/.../storage/*`；JVM 实现 `app/desktop/.../FileStorageBackend.kt` |
 | 时间源 | `kernel/.../time/KernelClock.kt`（禁止直接 `System.currentTimeMillis()`） |
 | 权限/审批 | `kernel/.../capability/*`、`kernel/.../approval/*`；桌面弹窗 `app/desktop/.../AskDialogs.kt` |
@@ -137,6 +138,7 @@ Set-Location C:\Users\breakM\Desktop\work\CreateandTrack
 | `plugins/<pluginId>/` | 第三方插件目录（`manifest.json` + `main.dsl.json` 或 `main.js` + 资产） |
 | `plugins/.trash/` | 卸载后的回收站（7 天后可彻底清） |
 | `ui.json` | 界面偏好 `UiPrefs`（主题 key、配色、密度、导航、字号、卡片样式） |
+| `study.json` | 学习节奏偏好 `StudyPrefs`：每天预计投入的分钟数（15–240，默认 60）；建学习计划时 ×7 写进 `process.weekly_capacity_minutes` |
 | `layout.json` | 每个挂载点的行/跨栏布局 |
 | `plugin-style.json` | 单插件卡片样式覆盖 |
 | `chat/<id>.json` | 会话记录（每轮结束后落盘） |

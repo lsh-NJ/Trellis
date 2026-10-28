@@ -38,6 +38,14 @@ interface LearningPlanService {
     /** 还没被任何一周承诺收进去的单元（节点池）；空列表 = 全排完了。 */
     fun pool(planId: String): List<PoolUnit>
 
+    /**
+     * 某个单元本周被排到的那一次 occurrence；还没排到具体某天就是 null。
+     *
+     * 计时器要把时间落成 session，而 session 只能挂在 occurrence 上，所以界面得先拿到它。
+     * 默认返回 null：不实现学习计划的适配器不必关心这件事。
+     */
+    fun unitOccurrenceId(planId: String, week: String, unitId: String): String? = null
+
     fun todos(planId: String? = null): List<TodoView>
 
     /** 截至事件序号 [seq] 的某周完成单元数（历史不可变，用于审计/黄金测试）。 */
