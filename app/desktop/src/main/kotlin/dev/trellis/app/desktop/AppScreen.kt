@@ -10,8 +10,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -34,8 +36,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -61,7 +61,9 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import dev.trellis.domain.Task
 import dev.trellis.kernel.slot.Slots
 import dev.trellis.ui.LocalCardStyle
@@ -140,11 +142,12 @@ fun AppScreen(runtime: AppRuntime) {
 
 @Composable
 private fun AppHeader(runtime: AppRuntime) {
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         // 品牌块：样片里的 logo 是一块实心色 + 一个字，这里用主色方块 + 「T」。
         Box(
             modifier = Modifier.size(30.dp)
-                .clip(RoundedCornerShape(3.dp))
+                .clip(RoundedCornerShape(4.dp))
                 .background(MaterialTheme.colorScheme.primary),
             contentAlignment = Alignment.Center,
         ) {
@@ -155,32 +158,49 @@ private fun AppHeader(runtime: AppRuntime) {
                 color = MaterialTheme.colorScheme.onPrimary,
             )
         }
-        Spacer(Modifier.width(10.dp))
-        Column {
+        Spacer(Modifier.width(12.dp))
+        // 两行「刊头」：上面一行等宽小标是刊名，下面一行才是当前计划 ——
+        // 计划名是这页唯一需要被一眼读到的字，所以它独占一行、可以省略号截断。
+        Column(Modifier.weight(1f)) {
             Text(
                 "TRELLIS · 任务台",
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontFamily = AppFonts.mono,
+                color = muted,
             )
+            Spacer(Modifier.height(2.dp))
             Text(
                 runtime.goal?.title ?: "还没有计划",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
-        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.width(16.dp))
         val s = runtime.summary
-        Pill(
-            text = if (s.overdue > 0) "逾期 " + s.overdue + " 条" else "剩 " + (s.total - s.done) + " 条",
-            background = MaterialTheme.colorScheme.primaryContainer,
-            foreground = MaterialTheme.colorScheme.onPrimaryContainer,
-        )
-        Spacer(Modifier.width(10.dp))
-        Text(
-            "内核 " + runtime.kernel.currentState,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Pill(
+                text = if (s.overdue > 0) "逾期 " + s.overdue + " 条" else "剩 " + (s.total - s.done) + " 条",
+                background = MaterialTheme.colorScheme.primaryContainer,
+                foreground = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
+            // 内核状态：点 + 等宽小标。点用主色，不用红绿 —— 它不是告警，只是「在跑」。
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier.size(6.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(MaterialTheme.colorScheme.primary),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "内核 " + runtime.kernel.currentState,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = AppFonts.mono,
+                    color = muted,
+                )
+            }
+        }
     }
 }
 
@@ -212,39 +232,104 @@ private fun navContentColor(runtime: AppRuntime): Color = when (runtime.uiPrefs.
     else -> MaterialTheme.colorScheme.onSurface
 }
 
-/** 顶栏式导航。 */
+/**
+ * 顶栏式导航。
+ *
+ * 不用 M3 的 [TabRow]：它的指示条是「铺满整个 tab 宽」的下划线 + 默认内边距，
+ * 在这套「等宽小标 + 细线」的语言里会显得又软又飘 —— 一行 5 个 tab 铺满 1120px 时，
+ * 指示条比文字长一倍，视觉重心落在空白上。
+ * 这里自己画：等宽小标、悬停淡底、选中项一条和文字等宽的 2dp 实线，
+ * 数字角标只在该页真的有时才出现（诊断页 0 个错误不该长出一个「0」）。
+ */
 @Composable
 private fun TabBar(runtime: AppRuntime) {
-    val errorCount = runtime.kernelErrors.size
-    TabRow(
-        selectedTabIndex = runtime.currentTab,
-        containerColor = navContainerColor(runtime),
-        contentColor = navContentColor(runtime),
+    val background = navContainerColor(runtime)
+    val foreground = navContentColor(runtime)
+    val divider = MaterialTheme.colorScheme.outlineVariant
+    val tabs = listOf(
+        NavTab(TAB_TASKS, "任务", null),
+        NavTab(TAB_PLAN, "计划", null),
+        NavTab(TAB_CHAT, if (runtime.chatBusy) "对话 ···" else "对话", null),
+        NavTab(TAB_PLUGINS, "插件", runtime.pluginInfos.size.takeIf { it > 0 }),
+        NavTab(TAB_DIAG, "诊断", runtime.kernelErrors.size.takeIf { it > 0 }),
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(background)
+            .drawBehind {
+                val y = size.height - 1.dp.toPx()
+                drawLine(divider, Offset(0f, y), Offset(size.width, y), 1.dp.toPx())
+            },
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Tab(
-            selected = runtime.currentTab == TAB_TASKS,
-            onClick = { runtime.currentTab = TAB_TASKS },
-            text = { Text("任务") },
-        )
-        Tab(
-            selected = runtime.currentTab == TAB_PLAN,
-            onClick = { runtime.currentTab = TAB_PLAN },
-            text = { Text("计划") },
-        )
-        Tab(
-            selected = runtime.currentTab == TAB_CHAT,
-            onClick = { runtime.currentTab = TAB_CHAT },
-            text = { Text(if (runtime.chatBusy) "对话 ···" else "对话") },
-        )
-        Tab(
-            selected = runtime.currentTab == TAB_PLUGINS,
-            onClick = { runtime.currentTab = TAB_PLUGINS },
-            text = { Text("插件 " + runtime.pluginInfos.size) },
-        )
-        Tab(
-            selected = runtime.currentTab == TAB_DIAG,
-            onClick = { runtime.currentTab = TAB_DIAG },
-            text = { Text(if (errorCount == 0) "诊断" else "诊断 " + errorCount) },
+        tabs.forEach { tab ->
+            TabEntry(
+                label = tab.label,
+                badge = tab.badge,
+                selected = runtime.currentTab == tab.id,
+                foreground = foreground,
+                onClick = { runtime.currentTab = tab.id },
+            )
+        }
+    }
+}
+
+private data class NavTab(val id: Int, val label: String, val badge: Int?)
+
+/**
+ * 单个顶栏 tab。
+ *
+ * 选中态同时给三样东西：更深的字色、加粗、以及和文字等宽的实线下划线 ——
+ * 只给颜色的话，在低对比度主题下「现在在哪一页」会消失。
+ */
+@Composable
+private fun TabEntry(
+    label: String,
+    badge: Int?,
+    selected: Boolean,
+    foreground: Color,
+    onClick: () -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val muted = foreground.copy(alpha = 0.58f)
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
+            .background(if (hovered && !selected) foreground.copy(alpha = 0.045f) else Color.Transparent)
+            .hoverable(interaction)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 22.dp, vertical = 12.dp)
+            // 收成内容宽：不然下面那条 fillMaxWidth 的指示线会把整个 tab 撑满，
+            // 五个 tab 各占满一行，导航就只剩第一个露在外面。
+            .width(IntrinsicSize.Max),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelLarge,
+                fontFamily = AppFonts.mono,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (selected) foreground else muted,
+            )
+            if (badge != null) {
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    badge.toString(),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = AppFonts.mono,
+                    color = if (selected) foreground.copy(alpha = 0.7f) else muted.copy(alpha = 0.8f),
+                )
+            }
+        }
+        Spacer(Modifier.height(7.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(2.dp)
+                .background(if (selected) MaterialTheme.colorScheme.primary else Color.Transparent),
         )
     }
 }
@@ -518,7 +603,7 @@ internal fun TaskBoard(runtime: AppRuntime, taskFocus: FocusRequester, framed: B
                 firstGroup = false
                 GroupLabel(label, groupTasks.size)
                 groupTasks.forEach { task ->
-                    HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
+                    RowDivider()
                     TaskRow(
                         task = task,
                         onToggle = { scope.launch { runtime.toggle(it) } },
@@ -535,7 +620,7 @@ internal fun TaskBoard(runtime: AppRuntime, taskFocus: FocusRequester, framed: B
                 }
                 if (doneOpen) {
                     done.forEach { task ->
-                        HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
+                        RowDivider()
                         TaskRow(
                             task = task,
                             onToggle = { scope.launch { runtime.toggle(it) } },
@@ -546,6 +631,10 @@ internal fun TaskBoard(runtime: AppRuntime, taskFocus: FocusRequester, framed: B
                 }
             }
         }
+        // 输入区和清单之间画一条细线：这一张卡里其实有两个区（看清单 / 写一条），
+        // 之前只靠 14dp 的空隙，滚到长清单底部时输入框像是清单的一部分。
+        Spacer(Modifier.height(12.dp))
+        RowDivider()
         Spacer(Modifier.height(14.dp))
         AddTaskRow(runtime, taskFocus)
 
@@ -573,13 +662,28 @@ internal fun TaskBoard(runtime: AppRuntime, taskFocus: FocusRequester, framed: B
     }
 }
 
+/**
+ * 行间分隔线。
+ *
+ * 不铺满整行：两侧各留 4dp 缩进，线就只在「内容区」里出现，
+ * 卡片左右内边距不会因为一条线被切出一条硬边。
+ */
+@Composable
+private fun RowDivider() {
+    HorizontalDivider(
+        thickness = 1.dp,
+        color = MaterialTheme.colorScheme.outlineVariant,
+        modifier = Modifier.padding(horizontal = 4.dp),
+    )
+}
+
 /** 分组小标：等宽大写 + 条数，像样片里每个卡片的 kicker。点了能折叠的会带下划线暗示。 */
 @Composable
 private fun GroupLabel(text: String, count: Int?, onClick: (() -> Unit)? = null) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 6.dp, bottom = 2.dp)
+            .padding(top = 10.dp, bottom = 4.dp)
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -587,13 +691,15 @@ private fun GroupLabel(text: String, count: Int?, onClick: (() -> Unit)? = null)
             text.uppercase(),
             style = MaterialTheme.typography.labelSmall,
             fontFamily = AppFonts.mono,
+            letterSpacing = 0.6.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (count != null) {
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(7.dp))
             Text(
                 count.toString(),
                 style = MaterialTheme.typography.labelSmall,
+                fontFamily = AppFonts.mono,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
             )
         }
@@ -608,8 +714,9 @@ internal fun Header(runtime: AppRuntime, framed: Boolean = true) {
     val cells = listOf(
         Quad("待办", (s.total - s.done).toString(), "条", MaterialTheme.colorScheme.onSurface),
         Quad("今天到期", s.dueToday.toString(), "条", MaterialTheme.colorScheme.onSurface),
-        // 「逾期」是唯一需要被追问的数字，用语义红；其余数字保持墨色。
-        Quad("逾期", s.overdue.toString(), "条", extra.danger),
+        // 「逾期」是唯一需要被追问的数字，用语义红；但 0 条逾期不该红 ——
+        // 一个红色的 0 会让人以为出了问题。
+        Quad("逾期", s.overdue.toString(), "条", if (s.overdue > 0) extra.danger else MaterialTheme.colorScheme.onSurface),
         Quad("已投入", s.spentMinutes.toString(), "分钟", MaterialTheme.colorScheme.onSurface),
     )
     BentoCard(
@@ -617,28 +724,23 @@ internal fun Header(runtime: AppRuntime, framed: Boolean = true) {
         title = "今日盘点",
         framed = framed,
         trailing = {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                // 连续天数：它是「测量值」，属数据岗位，用靛，不用强调色。
-                Pill(
-                    "连续 " + s.streakDays + " 天",
-                    extra.data.copy(alpha = 0.12f),
-                    extra.data,
-                )
-                Pill(
-                    "完成率 " + s.completionRate + "%",
-                    MaterialTheme.colorScheme.primaryContainer,
-                    extra.accentText,
-                )
-            }
+            // 完成率不再重复写一遍：下面的进度条就是同一个数，重复的小牌只会分散注意力。
+            Pill(
+                "连续 " + s.streakDays + " 天",
+                extra.data.copy(alpha = 0.12f),
+                extra.data,
+            )
         },
     ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+        // 四个数：标签在上（等宽小标、加宽字距），数字在下（大号窄体、贴底对齐小数单位）。
+        // 单位跟着数字走基线，不另起一行 —— 否则「45 分钟」会被读成两个格子。
+        Row(Modifier.fillMaxWidth()) {
             cells.forEachIndexed { index, cell ->
                 if (index > 0) {
                     Box(
-                        Modifier.padding(horizontal = 16.dp)
+                        Modifier.padding(horizontal = 14.dp)
                             .width(1.dp)
-                            .height(42.dp)
+                            .height(44.dp)
                             .background(MaterialTheme.colorScheme.outlineVariant),
                     )
                 }
@@ -646,23 +748,63 @@ internal fun Header(runtime: AppRuntime, framed: Boolean = true) {
                     Text(
                         cell.label,
                         style = MaterialTheme.typography.labelSmall,
+                        fontFamily = AppFonts.mono,
+                        letterSpacing = 0.6.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Row(verticalAlignment = Alignment.Bottom) {
+                    Spacer(Modifier.height(8.dp))
+                    Row {
                         Text(
                             cell.value,
                             style = MaterialTheme.typography.displaySmall,
                             fontWeight = FontWeight.Bold,
                             color = cell.color,
+                            modifier = Modifier.alignByBaseline(),
                         )
-                        Spacer(Modifier.width(4.dp))
+                        Spacer(Modifier.width(5.dp))
                         Text(
                             cell.unit,
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.alignByBaseline(),
                         )
                     }
                 }
+            }
+        }
+
+        // 完成率：标签 + 数值 + 一条 4dp 的进度条。
+        // 只画线不写标签的话，它会被读成卡片的下边框（第一版就是这样）；只写数字又看不出比例。
+        Spacer(Modifier.height(18.dp))
+        val fraction = (s.completionRate / 100f).coerceIn(0f, 1f)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "完成进度",
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = AppFonts.mono,
+                letterSpacing = 0.6.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                s.completionRate.toString() + "%",
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = AppFonts.mono,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Box(
+            Modifier.fillMaxWidth().height(4.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+        ) {
+            if (fraction > 0f) {
+                Box(
+                    Modifier.fillMaxWidth(fraction).fillMaxHeight()
+                        .background(MaterialTheme.colorScheme.primary),
+                )
             }
         }
     }
@@ -692,13 +834,19 @@ private fun TaskRow(
 
     Row(
         modifier = Modifier.fillMaxWidth().hoverable(interaction)
-            // 完成用「面」表示（青柠淡底），比给整行字上色更轻；逾期不用面，只给红点红字。
-            .clip(RoundedCornerShape(3.dp))
+            // 三档底色，从弱到强：普通行透明、悬停一层淡面、已完成给淡底。
+            // 完成用「面」表示（主色淡底），比给整行字上色更轻；逾期不用面，只给红点红字。
+            .clip(RoundedCornerShape(4.dp))
             .background(
-                if (task.isDone) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.30f)
-                else Color.Transparent,
+                when {
+                    task.isDone -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.30f)
+                    hovered -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                    else -> Color.Transparent
+                },
             )
-            .padding(vertical = 4.dp),
+            // 行高 46dp：低于 44 的行在触控板上容易点空，高于 48 一屏就少一条任务。
+            .defaultMinSize(minHeight = 46.dp)
+            .padding(start = 4.dp, end = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // 点击区 44dp，视觉框 20dp：勾选框是整行里最常点的东西，不能只有 20px。
