@@ -1704,10 +1704,25 @@ class AppRuntime private constructor() {
         private set
 
     /**
+     * 计划设置弹窗是否打开。
+     *
+     * 这是「计划自己的属性」，不是全局设置：同一台机器上不同计划可以是不一样的每天投入，
+     * 所以入口只放在计划页、只改当前这个计划。
+     */
+    var planSettingsOpen by mutableStateOf(false)
+        private set
+
+    /** 弹窗里正在编辑的每天投入（分钟）；打开时用当前值填。 */
+    var planDailyDraft by mutableStateOf(60)
+        private set
+
+    /**
      * 待办板上的「学习计划节点」：所有没结束的计划各一组。
      *
      * 和 [planPool] 的区别：那个只看当前聚焦的计划、只给计划页用；这个跨全部计划，
      * 是首页待办要摊出来的东西。
+     *
+     * 只摊今天到期和之前逾期的节点：还没排期的在计划页的「待安排」里，不占待办。
      */
     internal var todoPlanNodes by mutableStateOf<List<PlanNodeGroup>>(emptyList())
         private set
@@ -1744,20 +1759,16 @@ class AppRuntime private constructor() {
     /**
      * 待办板要的节点：所有计划各算一遍。
      *
-     * 计划页只关心聚焦的那一个计划，待办板要跨全部，所以单独查一遍。
+     * 计划页只关心聚焦的那一个计划，待办板要跨全部，所以单独查一遍。只问今天到期和之前
+     * 逾期的那些（`openNodes` 自己按 `day <= 今天` 筛），还没排期的不进待办。
      * 单个计划读失败只让那一组缺失，不影响别的计划。
      */
     private fun collectTodoPlanNodes(service: LearningPlanService): List<PlanNodeGroup> = runCatching {
+        val today = java.time.LocalDate.now().toString()
         planNodeGroups(
             plans = planAll,
-            currentWeekOf = { id -> runCatching { service.planState(id).week }.getOrNull() },
-            weekUnitsOf = { id, week ->
-                runCatching { service.week(id, week).commitment.units }.getOrDefault(emptyList())
-            },
-            poolOf = { id -> runCatching { service.pool(id) }.getOrDefault(emptyList()) },
-            occurrenceOf = { planId, week, unitId ->
-                runCatching { service.unitOccurrenceId(planId, week, unitId) }.getOrNull()
-            },
+            today = today,
+            openNodesOf = { id -> runCatching { service.openNodes(id, today) }.getOrDefault(emptyList()) },
         )
     }.getOrDefault(emptyList())
 
@@ -1911,6 +1922,54 @@ class AppRuntime private constructor() {
     /** 点「待安排」那张卡：下面显示整个待安排集合，而不是某一周。 */
     fun selectPlanPending() {
         planPendingSelected = true
+        refreshPlan()
+    }
+
+    // ---------------- 计划设置（当前计划自己的属性） ----------------
+
+    fun openPlanSettings() {
+        if (planTitle == null) return
+        planDailyDraft = planDailyMinutes ?: 60
+        planSettingsOpen = true
+    }
+
+    fun closePlanSettings() {
+        planSettingsOpen = false
+    }
+
+    fun bumpPlanDailyDraft(delta: Int) {
+        planDailyDraft = (planDailyDraft + delta).coerceIn(15, 240)
+    }
+
+    fun choosePlanDailyDraft(minutes: Int) {
+        planDailyDraft = minutes.coerceIn(15, 240)
+    }
+
+    /** 保存「每天投入」：写到当前计划的 process 上，然后重取整页。 */
+    fun savePlanDailyMinutes() {
+        val service = learningPlan() ?: return
+        val planId = learningPlanId
+        if (planId == null) {
+            planMessage = "还没有选中的计划。"
+            return
+        }
+        val command = CommandEnvelope(
+            commandId = "cmd_" + java.util.UUID.randomUUID().toString().replace("-", ""),
+            actor = Actor.USER,
+            planId = planId,
+            origin = "ui.plan.settings",
+        )
+        val result = runCatching { service.setPlanDailyMinutes(command, planId, planDailyDraft) }
+            .getOrElse {
+                planMessage = "没存上：" + (it.message ?: "未知原因")
+                null
+            }
+        if (result != null && !result.ok) {
+            planMessage = result.error?.message
+            return
+        }
+        planSettingsOpen = false
+        planMessage = "每天投入已改成 " + planDailyDraft + " 分钟。"
         refreshPlan()
     }
 

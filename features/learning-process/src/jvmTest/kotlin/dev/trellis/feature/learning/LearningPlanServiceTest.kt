@@ -73,6 +73,58 @@ class LearningPlanServiceTest {
     }
 
     @Test
+    fun theDailyMinutesCommandIsAPlanPropertyThatDrivesLaterPacking() {
+        val svc = service()
+
+        // 计划 A：不设每天投入，老规矩一天一个。
+        val plain = svc.createProcess(env(), "不设节奏", "一天一个")
+        assertTrue(plain.ok, plain.error?.message)
+        val plainId = plain.value!!.planId
+        val plainDraft = svc.saveDraft(
+            env(plainId),
+            plainId,
+            null,
+            listOf(
+                UnitDraft("第 1 章", "20 分钟", 20, 10),
+                UnitDraft("第 1 章", "25 分钟", 25, 10),
+            ),
+            listOf(CommitmentDraft("2026-W44", listOf(0, 1))),
+        )
+        assertTrue(plainDraft.ok, plainDraft.error?.message)
+        assertTrue(svc.acceptDraft(env(plainId), plainDraft.value!!.versionId, "2026-W44").ok)
+        assertEquals(listOf("20 分钟"), svc.today(plainId, "2026-10-26").occurrences.map { it.title })
+        assertEquals(listOf("25 分钟"), svc.today(plainId, "2026-10-27").occurrences.map { it.title })
+
+        // 计划 B：先设每天 60 分钟，再铺天 → 20+25 塞进同一天。
+        val paced = svc.createProcess(env(), "按自己的节奏", "每天 60")
+        assertTrue(paced.ok, paced.error?.message)
+        val pacedId = paced.value!!.planId
+        assertTrue(svc.setPlanDailyMinutes(env(pacedId), pacedId, 60).ok)
+        assertEquals(60, svc.planState(pacedId).dailyMinutes)
+        val pacedDraft = svc.saveDraft(
+            env(pacedId),
+            pacedId,
+            null,
+            listOf(
+                UnitDraft("第 1 章", "20 分钟", 20, 10),
+                UnitDraft("第 1 章", "25 分钟", 25, 10),
+            ),
+            listOf(CommitmentDraft("2026-W44", listOf(0, 1))),
+        )
+        assertTrue(pacedDraft.ok, pacedDraft.error?.message)
+        assertTrue(svc.acceptDraft(env(pacedId), pacedDraft.value!!.versionId, "2026-W44").ok)
+        assertEquals(
+            listOf("20 分钟", "25 分钟"),
+            svc.today(pacedId, "2026-10-26").occurrences.map { it.title },
+        )
+
+        // 越界要报人话。
+        val tooMany = svc.setPlanDailyMinutes(env(pacedId), pacedId, 600)
+        assertFalse(tooMany.ok)
+        assertEquals(ErrorCode.E_INVALID, tooMany.error?.code)
+    }
+
+    @Test
     fun daysArePackedUpToTheDailyBudget() {
         val svc = service()
         val created = svc.createProcess(

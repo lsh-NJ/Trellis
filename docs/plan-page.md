@@ -108,3 +108,33 @@
    - 测试：`PlanToolsTest.aPlanThatStartsNextWeekIsRejected`（新增）、`PlanRepairTest` 断言计划数不变、标题不变。
 3. **数据清理**：旧逻辑在真实 home 里留下的重复计划已整理为「一条 active、两条 ended」；
    原库备份在 `~/.trellis/plans/plan.db.bak-20261027-2240`。
+
+## 9. 2026-10-28：待安排收成一张卡、按每天投入排期、计划设置
+
+1. **待安排不再是一排灰周卡**
+   - 没排到具体某天的周不出周卡：它们的单元并入「待安排」集合（和 `pool()` 里没分到周的单元去重合并）。
+   - 总览末尾只有一张半宽卡：`PendingWeekCard` 98dp（周卡 196dp 的一半）、`surfaceVariant` 底 + 1dp 描边、
+     顶部实心「待安排」胶囊、中间节点数、底部「点开看」。
+   - 点开后下方换成「待安排 · N 个节点」：合计分钟 +「按每天 60 分钟算，约 N 天」+ 按章节分组的节点与预计时间。
+   - 运行时字段：`AppRuntime.planPendingNodes`、`planPendingSelected`、`selectPlanPending()`。
+2. **排期按每天投入分钟数打包**
+   - `PlanStateView.dailyMinutes`（= `process.weekly_capacity_minutes / 7`）。
+   - `materializeWeek` 按每天预算塞（20+25 同一天，超过预算换下一天；单单元超预算独占一天）。
+   - 没设过投入时间的计划保持旧规矩「一天一个」，不猜容量。
+3. **计划设置（计划级属性，不是全局设置）**
+   - 入口：计划页头部右侧「计划设置」文字按钮（有当前计划才出现）。
+   - 弹窗：`PlanSettingsDialog` ——「只改当前这个计划（标题）；换一个计划就是另一套。」、
+     −/＋ 调 15–240、预设 30′/45′/60′/90′/120′、说明「排程按这个数往一天里塞节点；
+     已经排好的天不会自动重排，只影响之后铺的天数。」、取消/保存。
+   - 保存走 `setPlanDailyMinutes`（见 `plan-backend.md`），成功后关弹窗并 `refreshPlan()`。
+   - 运行时：`planSettingsOpen`、`planDailyDraft`、`openPlanSettings/closePlanSettings/
+     bumpPlanDailyDraft/choosePlanDailyDraft/savePlanDailyMinutes`。
+4. **去「最小版」**：节点行不再显示「最小版 N 分」，统一「待做」。
+5. **建计划工具**：`create_learning_plan` 新增 `dailyMinutes`（15–240，×7 写进 `process`），
+   第一次只建本周 + 下周两个承诺，其余单元留在待安排池；guidance 写明预计时间取 B 站分集时长。
+6. **验证**：`LearningPlanServiceTest.daysArePackedUpToTheDailyBudget`（20+25 同一天、30 次日、35 再次日）、
+   `setPlanDailyMinutes` 的写入/越界/事件三例；全仓 `gradlew test` 绿。
+   截图：`_shots/pending-1.png`（半宽待安排卡）、`_shots/pending-3.png`（点开明细）、
+   `_shots/settings-plan-5.png`（设置弹窗）。
+   DB 实证：选 90 保存后 `process.weekly_capacity_minutes = 630`，`event` 新增
+   `plan.capacity_changed` `{"dailyMinutes":90,"weeklyCapacityMinutes":630}`。

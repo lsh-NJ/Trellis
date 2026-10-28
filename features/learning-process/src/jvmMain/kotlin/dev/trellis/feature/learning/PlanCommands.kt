@@ -503,6 +503,37 @@ internal fun SqliteLearningPlanService.cmdChangeCommitment(
     }
 }
 
+internal fun SqliteLearningPlanService.cmdSetPlanDailyMinutes(
+    env: CommandEnvelope,
+    planId: String,
+    dailyMinutes: Int,
+): CommandResult<Unit> {
+    if (dailyMinutes !in 15..240) {
+        return fail(ErrorCode.E_INVALID, "每天投入要在 15–240 分钟之间（写 15 到 240 的数字）。")
+    }
+    return write(env) {
+        if (planStatus(planId) == null) return@write fail(ErrorCode.E_NOT_FOUND, "找不到这个计划。")
+        val weekly = dailyMinutes * 7
+        connection.prepareStatement(
+            "UPDATE process SET weekly_capacity_minutes = ? WHERE id = " +
+                "(SELECT process_id FROM plan WHERE id = ?)",
+        ).use { ps ->
+            ps.setInt(1, weekly)
+            ps.setString(2, planId)
+            ps.executeUpdate()
+        }
+        appendEvent(
+            type = "plan.capacity_changed", entity = "plan", entityId = planId, planId = planId,
+            payload = eventJson(
+                "dailyMinutes" to JsonPrimitive(dailyMinutes),
+                "weeklyCapacityMinutes" to JsonPrimitive(weekly),
+            ),
+            actor = env.actor, commandId = env.commandId,
+        )
+        ok(Unit)
+    }
+}
+
 internal fun SqliteLearningPlanService.cmdPausePlan(
     env: CommandEnvelope,
     planId: String,

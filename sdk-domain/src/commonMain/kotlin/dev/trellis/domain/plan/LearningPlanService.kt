@@ -39,12 +39,15 @@ interface LearningPlanService {
     fun pool(planId: String): List<PoolUnit>
 
     /**
-     * 某个单元本周被排到的那一次 occurrence；还没排到具体某天就是 null。
+     * 今天到期和之前逾期、还没做完的计划节点，按天升序。
      *
-     * 计时器要把时间落成 session，而 session 只能挂在 occurrence 上，所以界面得先拿到它。
-     * 默认返回 null：不实现学习计划的适配器不必关心这件事。
+     * 待办板要的就是这两拨：`day <= untilDay` 且 `status = 'planned'`。只有 planned 算数 ——
+     * 周结算会把过了日子还没做的标成 `missed` 并（最多两条）结转进下一周，再把 missed
+     * 摊出来，同一件事就会在待办里出现两次。哪一天算「今天」由调用方给截止日。
+     *
+     * 默认返回空：不实现学习计划的适配器不必关心这件事。
      */
-    fun unitOccurrenceId(planId: String, week: String, unitId: String): String? = null
+    fun openNodes(planId: String, untilDay: String): List<OpenNode> = emptyList()
 
     fun todos(planId: String? = null): List<TodoView>
 
@@ -54,6 +57,12 @@ interface LearningPlanService {
     // ---------------- 计划层命令 ----------------
 
     fun createProcess(env: CommandEnvelope, title: String, goal: String, deadline: String? = null, weeklyCapacityMinutes: Int? = null): CommandResult<CreatedProcess>
+
+    /**
+     * 改「这个计划每天投入多少分钟」。这是计划的属性，不是全局设置：
+     * 写进 `process.weekly_capacity_minutes`（= daily × 7），影响之后铺天的容量。
+     */
+    fun setPlanDailyMinutes(env: CommandEnvelope, planId: String, dailyMinutes: Int): CommandResult<Unit>
 
     fun saveDraft(env: CommandEnvelope, planId: String, versionId: String?, units: List<UnitDraft>, commitments: List<CommitmentDraft>): CommandResult<SavedDraft>
 

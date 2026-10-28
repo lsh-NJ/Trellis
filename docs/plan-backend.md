@@ -79,6 +79,30 @@
 - `PlanTools.create_learning_plan` 新增 `dailyMinutes`（15–240）：写进 `process` 的同时，
   把「第一次只排本周 + 下一周，其余留待安排」这条也写进工具提示与校验。
 
+## 6.1 改计划每天投入：`setPlanDailyMinutes`（2026-10-28）
+
+计划属性，不是全局设置——弹窗改的是**当前这个计划**，换一个计划是另一套。
+
+- 契约：`sdk-domain/.../plan/LearningPlanService.kt`
+  `fun setPlanDailyMinutes(env: CommandEnvelope, planId: String, dailyMinutes: Int): CommandResult<Unit>`
+- 实现：`PlanCommands.cmdSetPlanDailyMinutes` — `dailyMinutes !in 15..240` 直接
+  `E_INVALID`（文案「每天投入要在 15–240 分钟之间（写 15 到 240 的数字）。」）；
+  计划不存在 `E_NOT_FOUND`；成功后
+
+  ```sql
+  UPDATE process SET weekly_capacity_minutes = ?
+  WHERE id = (SELECT process_id FROM plan WHERE id = ?)   -- 参数：dailyMinutes * 7, planId
+  ```
+
+  并追加事件 `plan.capacity_changed`，payload `{"dailyMinutes":N,"weeklyCapacityMinutes":N*7}`、
+  `actor` 取命令里的 actor（UI 是 `user`）。
+- 语义：只影响**之后铺的天**；已经 materialize 的 occurrence 不动（`materializeWeek` 只在
+  `commitment` 尚无 occurrence 时插入）。
+- 验证：`LearningPlanServiceTest.aDailyBudgetPacksTheFirstDay` 覆盖「写入后 `planState().dailyMinutes` 回读」与
+  「没设节奏的计划仍一天一个」；`daysArePackedUpToTheDailyBudget` 覆盖 20+25 同一天；越界（600）返回
+  `E_INVALID`。桌面侧用真实 DB 验过「选 90 → `weekly_capacity_minutes = 630`，
+  `event` 里 `payload_json={"dailyMinutes":90,"weeklyCapacityMinutes":630}`」。
+
 ## 7. 下一步（按优先级）
 
 1. **P3 agent 工具**：`design/plan-agent-tools.md` 里的工具（日视图/完成/顺延/结算…）包一层 `AgentTool`，

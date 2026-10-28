@@ -13,6 +13,7 @@ import dev.trellis.domain.plan.MapView
 import dev.trellis.domain.plan.MapWeek
 import dev.trellis.domain.plan.Milestone
 import dev.trellis.domain.plan.MinimalVersion
+import dev.trellis.domain.plan.OpenNode
 import dev.trellis.domain.plan.OriginLabel
 import dev.trellis.domain.plan.PlanDiff
 import dev.trellis.domain.plan.PlanStateView
@@ -244,20 +245,29 @@ private fun SqliteLearningPlanService.unitStateIn(planId: String, week: String, 
 }
 
 /**
- * 单元 → 本周那一次 occurrence。
+ * 这个计划「今天到期和之前逾期」的节点，按天升序。
  *
- * 一个单元在一周里可能被排到好几天（拆分/移动都会多出一条），这里只要「还没做完的最早一条」：
- * 计时器挂着它就行，把几分钟分摊到几段上没有意义。
+ * 只取 `planned`：周结算会把过了日子的标成 `missed` 并（最多两条）结转进下一周，
+ * 那些再摊到待办就和结转出来的那一份重复了。
+ *
+ * 排除 todo 型 occurrence：待办板摊的是计划节点（单元），排进日历的待办任务归任务那一组。
  */
-internal fun SqliteLearningPlanService.unitOccurrenceOf(planId: String, week: String, unitId: String): String? =
+internal fun SqliteLearningPlanService.openNodesOf(planId: String, untilDay: String): List<OpenNode> =
     connection.prepareStatement(
-        "SELECT o.id FROM occurrence o JOIN commitment c ON c.id = o.commitment_id " +
-            "JOIN plan_version pv ON pv.id = c.plan_version_id " +
-            "WHERE pv.plan_id = ? AND c.week = ? AND o.unit_id = ? AND o.status IN ('planned','done') " +
-            "ORDER BY CASE WHEN o.status = 'planned' THEN 0 ELSE 1 END, o.day LIMIT 1",
+        "SELECT d.id, COALESCE(d.unit_title, ''), COALESCE(d.chapter, ''), d.estimate_minutes, d.day " +
+            "FROM v_occurrence_detail d " +
+            "WHERE d.plan_id = ? AND d.status = 'planned' AND d.day <= ? AND d.unit_id IS NOT NULL " +
+            "ORDER BY d.day, d.id",
     ).use { ps ->
-        ps.setString(1, planId); ps.setString(2, week); ps.setString(3, unitId)
-        ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+        ps.setString(1, planId)
+        ps.setString(2, untilDay)
+        ps.executeQuery().use { rs ->
+            buildList {
+                while (rs.next()) {
+                    add(OpenNode(rs.getString(1), rs.getString(2), rs.getString(3), rs.getInt(4), rs.getString(5)))
+                }
+            }
+        }
     }
 
 private fun SqliteLearningPlanService.dayItems(planId: String, day: String): List<WeekDayItem> =

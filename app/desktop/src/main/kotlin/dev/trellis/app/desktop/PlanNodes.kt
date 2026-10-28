@@ -1,28 +1,33 @@
 package dev.trellis.app.desktop
 
-import dev.trellis.domain.plan.CommitmentUnitView
 import dev.trellis.domain.plan.LearningPlanInfo
-import dev.trellis.domain.plan.PoolUnit
+import dev.trellis.domain.plan.OpenNode
+import java.time.LocalDate
+import java.time.temporal.ChronoUnit
 
 /**
  * 待办板里的一行「计划节点」。
  *
- * 节点 = 学习计划里的一个单元。被某一周承诺收进去的算 [scheduled] = true（本周要做），
- * 还没被任何一周收进去的还在节点池里，是「待安排」。
+ * 只有排到具体某天、还没做完的节点才进待办：今天排到的（[daysLate] = 0），
+ * 和之前排到却没做的（[daysLate] > 0）。还没排期的节点留在计划页的「待安排」里，不占待办。
  *
  * 每行都带 [planTitle]：待办板是跨计划的，只写节点名看不出它属于哪个计划。
  */
 internal data class PlanNodeRow(
     val planId: String,
     val planTitle: String,
-    val unitId: String,
+    /** 这一次排期；计时器的 session 只能挂在 occurrence 上，所以它必须一直带着。 */
+    val occurrenceId: String,
     val title: String,
     val chapter: String,
     val minutes: Int,
-    val scheduled: Boolean,
-    /** 本周排到的那一次 occurrence；待安排的节点还没排期，是 null。 */
-    val occurrenceId: String? = null,
-)
+    /** 排到的那一天（`yyyy-MM-dd`）。 */
+    val day: String,
+    /** 逾期几天；0 就是今天。 */
+    val daysLate: Int,
+) {
+    val today: Boolean get() = daysLate <= 0
+}
 
 /**
  * 一个计划在待办板里的分组。
@@ -43,8 +48,7 @@ internal data class PlanNodeGroup(
 /**
  * 计时器正在计的那个计划节点。
  *
- * [occurrenceId] 是 session 唯一能挂的东西，所以点 ⏱ 的那一刻就得先拿到它；
- * 拿不到（还没排到具体某天）就不给计时器入口。
+ * [occurrenceId] 是 session 唯一能挂的东西，所以点 ⏱ 的那一刻就得先拿到它。
  */
 internal data class TimerNodeTarget(
     val planId: String,
@@ -56,65 +60,47 @@ internal data class TimerNodeTarget(
 internal const val PLAN_NODES_PER_PLAN: Int = 10
 
 /**
- * 把所有计划的未完成节点摊成待办板要的几组。
+ * 把各计划「今天到期 + 之前逾期」的节点摊成待办板要的几组。
  *
- * 只取两份：本周承诺里还没做完的单元 + 节点池里还没排期的单元。更远的周不摊 ——
- * 那是计划页「地图」的活，摆进待办只会变成噪声。
+ * 今天排到的排在前面，逾期的接着按「最近的在前」排：截断时先保今天；拖了一个月的那几条
+ * 翻上去也没人动，不如让前几天的露在上面。
  *
- * 入参是几个取值函数而不是 [dev.trellis.domain.plan.LearningPlanService]，
- * 是为了这个函数能用纯数据测，不必拖一个 SQLite 库进来。
- *
- * [occurrenceOf] 给出每个节点本周排到的那一次 occurrence；没排到具体某天的节点拿不到，
- * 界面上也就不给计时器。
+ * 入参是取值函数而不是 [dev.trellis.domain.plan.LearningPlanService]，是为了这个函数能用
+ * 纯数据测，不必拖一个 SQLite 库进来。
  */
 internal fun planNodeGroups(
     plans: List<LearningPlanInfo>,
-    currentWeekOf: (String) -> String?,
-    weekUnitsOf: (String, String) -> List<CommitmentUnitView>,
-    poolOf: (String) -> List<PoolUnit>,
-    occurrenceOf: (String, String, String) -> String? = { _, _, _ -> null },
-): List<PlanNodeGroup> = plans
-    .filter { it.status != "ended" }
-    .mapNotNull { plan ->
-        val week = currentWeekOf(plan.id)
-        val thisWeek = if (week == null) {
-            emptyList()
-        } else {
-            weekUnitsOf(plan.id, week)
-                .filter { it.state != "done" }
-                .map { unit ->
-                    PlanNodeRow(
-                        planId = plan.id,
-                        planTitle = plan.title,
-                        unitId = unit.id,
-                        title = unit.title,
-                        chapter = unit.chapter,
-                        minutes = unit.estimateMinutes,
-                        scheduled = true,
-                        occurrenceId = occurrenceOf(plan.id, week, unit.id),
-                    )
-                }
+    today: String,
+    openNodesOf: (String) -> List<OpenNode>,
+): List<PlanNodeGroup> {
+    val todayDate = LocalDate.parse(today)
+    return plans
+        .filter { it.status != "ended" }
+        .mapNotNull { plan ->
+            val rows = openNodesOf(plan.id).map { node ->
+                PlanNodeRow(
+                    planId = plan.id,
+                    planTitle = plan.title,
+                    occurrenceId = node.occurrenceId,
+                    title = node.title,
+                    chapter = node.chapter,
+                    minutes = node.minutes,
+                    day = node.day,
+                    daysLate = ChronoUnit.DAYS.between(LocalDate.parse(node.day), todayDate).toInt(),
+                )
+            }
+            val dueToday = rows.filter { it.today }
+            val overdue = rows.filterNot { it.today }.sortedBy { it.daysLate }
+            val all = dueToday + overdue
+            if (all.isEmpty()) {
+                null
+            } else {
+                PlanNodeGroup(
+                    planId = plan.id,
+                    planTitle = plan.title,
+                    nodes = all.take(PLAN_NODES_PER_PLAN),
+                    total = all.size,
+                )
+            }
         }
-        val pool = poolOf(plan.id).map { unit ->
-            PlanNodeRow(
-                planId = plan.id,
-                planTitle = plan.title,
-                unitId = unit.id,
-                title = unit.title,
-                chapter = unit.chapter,
-                minutes = unit.estimateMinutes,
-                scheduled = false,
-            )
-        }
-        val all = thisWeek + pool
-        if (all.isEmpty()) {
-            null
-        } else {
-            PlanNodeGroup(
-                planId = plan.id,
-                planTitle = plan.title,
-                nodes = all.take(PLAN_NODES_PER_PLAN),
-                total = all.size,
-            )
-        }
-    }
+}

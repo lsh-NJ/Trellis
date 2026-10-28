@@ -1,4 +1,4 @@
-package dev.trellis.app.desktop
+﻿package dev.trellis.app.desktop
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -23,8 +23,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
@@ -92,6 +95,7 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
             }
         }
     }
+    if (runtime.planSettingsOpen) PlanSettingsDialog(runtime)
 }
 
 /** 左侧计划列表：按大类分组（没有大类归「未分类」）。已结束的计划不占列表。 */
@@ -191,6 +195,12 @@ private fun PlanHeader(runtime: AppRuntime) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        if (runtime.planTitle != null) {
+            TextButton(onClick = { runtime.openPlanSettings() }) {
+                Text("计划设置", style = MaterialTheme.typography.labelLarge)
+            }
+            Spacer(Modifier.width(8.dp))
+        }
         if (runtime.planWeekCards.isNotEmpty()) {
             Text(
                 runtime.planWeekCards.size.toString() + " 周",
@@ -199,6 +209,61 @@ private fun PlanHeader(runtime: AppRuntime) {
             )
         }
     }
+}
+
+/**
+ * 计划设置：只放「这个计划自己的属性」。
+ *
+ * 为什么不做成全局设置页的一项：每天投入是计划属性——同一台机器上「考研」和「读书」的节奏不一样，
+ * 所以入口必须在计划页、只改当前选中的计划。
+ */
+@Composable
+private fun PlanSettingsDialog(runtime: AppRuntime) {
+    AlertDialog(
+        onDismissRequest = { runtime.closePlanSettings() },
+        title = { Text("计划设置") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "只改当前这个计划（" + (runtime.planTitle ?: "") + "）；换一个计划就是另一套。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text("每天能投入多少分钟", style = MaterialTheme.typography.labelLarge)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    OutlinedButton(onClick = { runtime.bumpPlanDailyDraft(-5) }) { Text("−") }
+                    Text(
+                        runtime.planDailyDraft.toString(),
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text("分钟", style = MaterialTheme.typography.bodyMedium)
+                    OutlinedButton(onClick = { runtime.bumpPlanDailyDraft(5) }) { Text("+") }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    listOf(30, 45, 60, 90, 120).forEach { minutes ->
+                        TextButton(onClick = { runtime.choosePlanDailyDraft(minutes) }) {
+                            Text(minutes.toString() + "′", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+                Text(
+                    "排程按这个数往一天里塞节点；已经排好的天不会自动重排，只影响之后铺的天数。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { runtime.savePlanDailyMinutes() }) { Text("保存") }
+        },
+        dismissButton = {
+            TextButton(onClick = { runtime.closePlanSettings() }) { Text("取消") }
+        },
+    )
 }
 
 @Composable

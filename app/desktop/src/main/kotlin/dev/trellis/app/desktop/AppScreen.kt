@@ -631,10 +631,10 @@ private fun TaskBoardPlanNodes(runtime: AppRuntime) {
 }
 
 /**
- * 一条节点：圆点 + 标题 + 章与预估 + 本周/待安排。节点在待办里不可勾，勾选走计划页。
+ * 一条节点：圆点 + 标题 + 章与预估 + 今天/逾期几天。节点在待办里不可勾，勾选走计划页。
  *
- * 排到具体某天的节点（有 occurrence 的）才给 ⏱：计时要落成 session，而 session 只能挂在
- * occurrence 上，「待安排」的节点还没有那条记录。
+ * 能进待办的都是排到过具体某天的节点，所以每一行都给 ⏱：计时要落成 session，而 session
+ * 只能挂在 occurrence 上。
  */
 @Composable
 private fun PlanNodeRowView(node: PlanNodeRow, onTimer: () -> Unit, onClick: () -> Unit) {
@@ -675,13 +675,15 @@ private fun PlanNodeRowView(node: PlanNodeRow, onTimer: () -> Unit, onClick: () 
                 )
             }
         }
-        if (node.occurrenceId != null) {
-            IconAction("⏱", "对这个节点开计时器") { onTimer() }
-        }
+        IconAction("⏱", "对这个节点开计时器") { onTimer() }
         Text(
-            if (node.scheduled) "本周" else "待安排",
+            if (node.today) "今天" else "逾期 " + node.daysLate + " 天",
             style = MaterialTheme.typography.labelSmall,
-            color = if (node.scheduled) MaterialTheme.colorScheme.primary else muted.copy(alpha = 0.7f),
+            color = if (node.today) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.error.copy(alpha = 0.8f)
+            },
         )
     }
 }
