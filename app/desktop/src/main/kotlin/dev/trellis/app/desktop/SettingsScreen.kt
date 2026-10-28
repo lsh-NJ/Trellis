@@ -33,7 +33,9 @@ import dev.trellis.ui.SlotArea
  *
  * 宿主自己只认一项（[StudyPrefs.dailyMinutes]），其余都交给插件 ——
  * 「设置页分组」这个挂载点（`slot.settings.section`）就是给它们的。
- * 以前这块挂在插件页底下，把「应用设置」和「插件管理」混成了一页。
+ *
+ * 插件管理和诊断也收在这里：两者都不常用（插件交给对话里的 agent 装、停、删），
+ * 各占一个导航位不值当，所以导航只剩 任务 / 计划 / 对话 / 设置 四条。
  */
 @Composable
 fun SettingsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
@@ -44,6 +46,11 @@ fun SettingsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             item { DailyBudgetCard(runtime) }
+
+            item {
+                Spacer(Modifier.height(10.dp))
+                PluginsCard(runtime)
+            }
 
             // 插件设置：没有插件贡献时 SlotArea 自己什么都不画，不占位。
             item {
@@ -63,6 +70,41 @@ fun SettingsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                 Spacer(Modifier.height(10.dp))
                 DiagnosticsCard(runtime)
             }
+        }
+    }
+}
+
+/**
+ * 插件页的入口。
+ *
+ * 装插件、看贡献、授权能力这些事现在基本交给对话里的 agent，人只在「怎么没反应了」
+ * 的时候来这一页看一眼，所以它不该常年占一个导航位。
+ */
+@Composable
+private fun PluginsCard(runtime: AppRuntime) {
+    val plugins = runtime.pluginInfos
+    val broken = plugins.count { it.errors.isNotEmpty() }
+    val status = when {
+        plugins.isEmpty() -> "还没有装插件"
+        broken > 0 -> plugins.size.toString() + " 个插件 · " + broken + " 个有错误"
+        else -> plugins.size.toString() + " 个插件 · 都在跑"
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable { runtime.currentTab = TAB_PLUGINS },
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
+            Text("插件", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "装了什么、贡献了哪些卡片、拿了哪些能力，都在这一页。",
+                style = MaterialTheme.typography.labelSmall,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                status + " · 点这一块进去 ›",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
