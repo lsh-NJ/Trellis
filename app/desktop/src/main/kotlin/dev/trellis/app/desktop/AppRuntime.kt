@@ -109,6 +109,9 @@ internal const val TAB_CHAT = 2
 internal const val TAB_PLUGINS = 3
 internal const val TAB_DIAG = 4
 
+/** 设置页：宿主自己认的设置项都在这一页，插件也能在这里挂卡片。 */
+internal const val TAB_SETTINGS = 5
+
 internal val RENDERED_MOUNT_POINTS: Set<ExtensionPointId> = setOf(
     Slots.HomeHeader.id,
     Slots.HomeSection.id,
@@ -242,7 +245,7 @@ class AppRuntime private constructor() {
 
     // ---- 计时器小窗 ----
 
-    /** 计时窗口开着没有。关窗只清状态，不往任务里写东西。 */
+    /** 计时窗口开着没有。关窗会收掉节点计时还开着的 session，但不会往待办任务里写东西。 */
     var timerVisible by mutableStateOf(false)
         private set
 
@@ -272,12 +275,30 @@ class AppRuntime private constructor() {
     var timerFinished by mutableStateOf(false)
         private set
 
+    /**
+     * 计时器现在计的是学习计划的哪个节点；计待办任务时是 null。
+     *
+     * 节点不是 [Task]，落不了 [logTime]，所以走计划侧的 session（`source = "timer"`）。
+     */
+    internal var timerNodeTarget by mutableStateOf<TimerNodeTarget?>(null)
+        private set
+
+    /** 节点计时开着的那段 session；正式点「开始」才创建，收掉就置空。 */
+    internal var timerSessionId by mutableStateOf<String?>(null)
+        private set
+
+    /** 现在计的是计划节点（不是待办任务）：小窗据此把「直接记 25 分钟」藏起来。 */
+    val timerOnPlanNode: Boolean
+        get() = timerNodeTarget != null
+
     /** 已经开过表（或跑过）——这时不再允许切换模式/改分钟数，免得把进行中的计时改乱。 */
     val timerStarted: Boolean
         get() = timerElapsedSeconds > 0 || timerRunning || timerFinished
 
     /** 从任务行点 ⏱ 进来：默认番茄钟 25 分钟，等人点「开始」。 */
     fun openTimer(task: Task) {
+        endNodeSession()
+        timerNodeTarget = null
         timerTaskId = task.id
         timerTaskTitle = task.title
         timerVisible = true
@@ -290,6 +311,8 @@ class AppRuntime private constructor() {
     }
 
     fun closeTimer() {
+        endNodeSession()
+        timerNodeTarget = null
         timerVisible = false
         timerRunning = false
     }
@@ -312,6 +335,7 @@ class AppRuntime private constructor() {
         timerElapsedSeconds = 0
         timerFinished = false
         timerRunning = true
+        startNodeSession()
     }
 
     /** 「再来一轮」：同一任务、同样的长度，重新开始。 */
@@ -351,12 +375,76 @@ class AppRuntime private constructor() {
         closeTimer()
     }
 
-    /** 结束并把「投入分钟」记到那条任务上（不足一分钟按一分钟算）。 */
+    /**
+     * 结束并记入。
+     *
+     * 待办任务记「投入分钟」（不足一分钟按一分钟算）；计划节点没有分钟字段，落的是 session ——
+     * 计划侧要的是「这段时间在做什么」，分钟由 session 的起止自己算。
+     */
     suspend fun stopTimerAndLog() {
-        val task = timerTaskId?.let { id -> tasks.firstOrNull { it.id == id } }
         val minutes = minutesToLog(timerElapsedSeconds)
-        if (task != null && minutes > 0) logTime(task, minutes)
+        val node = timerNodeTarget
+        if (node != null) {
+            endNodeSession()
+            if (minutes > 0) planMessage = "记了 $minutes 分钟：" + node.title
+        } else {
+            val task = timerTaskId?.let { id -> tasks.firstOrNull { it.id == id } }
+            if (task != null && minutes > 0) logTime(task, minutes)
+        }
         closeTimer()
+    }
+
+    /** 从待办板的计划节点点 ⏱ 进来：和任务共用同一个小窗，只是落账走 session。 */
+    internal fun openNodeTimer(node: PlanNodeRow) {
+        val occurrenceId = node.occurrenceId ?: return
+        endNodeSession()
+        timerNodeTarget = TimerNodeTarget(node.planId, occurrenceId, node.title)
+        timerTaskId = null
+        timerTaskTitle = node.title
+        timerVisible = true
+        timerMode = FocusMode.Countdown
+        timerMinutes = 25
+        timerTotalSeconds = 0
+        timerElapsedSeconds = 0
+        timerRunning = false
+        timerFinished = false
+    }
+
+    /**
+     * 把节点计时的 session 开起来。
+     *
+     * 失败只提示、不拦住计时：记不上账是账本的问题，不该让秒表停下来。
+     */
+    private fun startNodeSession() {
+        val target = timerNodeTarget ?: return
+        if (timerSessionId != null) return
+        val service = learningPlan() ?: return
+        val result = runCatching { service.startSession(uiCommand(target.planId), target.occurrenceId, "timer") }
+            .getOrElse {
+                planMessage = "这段计时没能记进计划：" + (it.message ?: "未知原因")
+                return
+            }
+        val ref = result.value
+        if (!result.ok || ref == null) {
+            planMessage = result.error?.message ?: "这段计时没能记进计划。"
+            return
+        }
+        timerSessionId = ref.sessionId
+    }
+
+    /**
+     * 收掉节点计时的 session（没开过就什么都不做）。
+     *
+     * session 记的是墙上的时间段，不是计时器数出来的秒数 —— 中间暂停过两者会差一点，
+     * 但计划侧要的是「这段时间在用」，差这点不影响判断。
+     */
+    private fun endNodeSession() {
+        val sessionId = timerSessionId ?: return
+        timerSessionId = null
+        val planId = timerNodeTarget?.planId
+        val service = learningPlan() ?: return
+        runCatching { service.endSession(uiCommand(planId), sessionId) }
+            .onFailure { planMessage = "这段计时没记上：" + (it.message ?: "未知原因") }
     }
 
     // ---- 对话式管理员 ----
@@ -977,6 +1065,7 @@ class AppRuntime private constructor() {
         TAB_PLAN -> "计划"
         TAB_CHAT -> "对话"
         TAB_PLUGINS -> "插件"
+        TAB_SETTINGS -> "设置"
         else -> "诊断"
     }
 
@@ -993,7 +1082,8 @@ class AppRuntime private constructor() {
             "对话", "chat" -> TAB_CHAT
             "插件", "plugins", "plugin" -> TAB_PLUGINS
             "诊断", "diag", "diagnostics" -> TAB_DIAG
-            else -> return "没有这一页：" + tab + "。只有 任务 / 计划 / 对话 / 插件 / 诊断。"
+            "设置", "settings", "setting" -> TAB_SETTINGS
+            else -> return "没有这一页：" + tab + "。只有 任务 / 计划 / 对话 / 插件 / 诊断 / 设置。"
         }
         currentTab = target
         return "切到了「" + tabName(target) + "」页。"
@@ -1201,7 +1291,7 @@ class AppRuntime private constructor() {
             val taskTools = TaskTools(this)
             // 计划页是三只手之外的第四个去处：`set_plan` 只是这一轮的动作清单，
             // 真正的周/单元要 createProcess → saveDraft → acceptDraft 才写得进去。
-            val planTools = PlanTools({ learningPlan() }, { refreshPlan() })
+            val planTools = PlanTools({ learningPlan() }, { refreshPlan() }, { studyPrefs.weeklyMinutes })
             val allTools = tools.all + screenTools.all + layoutTools.all + styleTools.all +
                 workflowTools.all + bilibiliTools.all + taskTools.all + planTools.all
             val guidance = tools.guidance + "\n\n" + screenTools.guidance +
@@ -1339,6 +1429,16 @@ class AppRuntime private constructor() {
         private set
 
     private lateinit var uiPrefsStore: UiPrefsStore
+
+    /**
+     * 学习节奏偏好：用户对自己「一天能投多少」的估计。
+     *
+     * 和 [uiPrefs] 分开存（`study.json`）：那个决定界面长什么样，这个决定计划怎么排。
+     */
+    var studyPrefs: StudyPrefs by mutableStateOf(StudyPrefs())
+        private set
+
+    private lateinit var studyPrefsStore: StudyPrefsStore
 
     /**
      * 插件「上次用」的记录：插件 id → 毫秒时间戳。
@@ -1586,6 +1686,15 @@ class AppRuntime private constructor() {
     var planPool by mutableStateOf<List<PoolUnit>>(emptyList())
         private set
 
+    /**
+     * 待办板上的「学习计划节点」：所有没结束的计划各一组。
+     *
+     * 和 [planPool] 的区别：那个只看当前聚焦的计划、只给计划页用；这个跨全部计划，
+     * 是首页待办要摊出来的东西。
+     */
+    internal var todoPlanNodes by mutableStateOf<List<PlanNodeGroup>>(emptyList())
+        private set
+
     /** 顶部标题：库里的计划名；没有计划时为 null。 */
     var planTitle by mutableStateOf<String?>(null)
         private set
@@ -1615,11 +1724,32 @@ class AppRuntime private constructor() {
             ?.also { learningPlanService = it }
     }
 
+    /**
+     * 待办板要的节点：所有计划各算一遍。
+     *
+     * 计划页只关心聚焦的那一个计划，待办板要跨全部，所以单独查一遍。
+     * 单个计划读失败只让那一组缺失，不影响别的计划。
+     */
+    private fun collectTodoPlanNodes(service: LearningPlanService): List<PlanNodeGroup> = runCatching {
+        planNodeGroups(
+            plans = planAll,
+            currentWeekOf = { id -> runCatching { service.planState(id).week }.getOrNull() },
+            weekUnitsOf = { id, week ->
+                runCatching { service.week(id, week).commitment.units }.getOrDefault(emptyList())
+            },
+            poolOf = { id -> runCatching { service.pool(id) }.getOrDefault(emptyList()) },
+            occurrenceOf = { planId, week, unitId ->
+                runCatching { service.unitOccurrenceId(planId, week, unitId) }.getOrNull()
+            },
+        )
+    }.getOrDefault(emptyList())
+
     /** 进计划页、切周切天、写完一条之后都走这里：一次取齐整页要显示的 view model。 */
     fun refreshPlan() {
         val service = learningPlan() ?: return
         runCatching {
             planAll = service.plans()
+            todoPlanNodes = collectTodoPlanNodes(service)
             planCategories = planCategoryStore.load()
             val planId = planFocusId?.takeIf { id -> planAll.any { it.id == id } }
                 ?: service.activePlanId()
@@ -1734,6 +1864,11 @@ class AppRuntime private constructor() {
         planSelectedDay = null
         refreshPlan()
     }
+    /** 点待办板里的计划节点：切到计划页，并把这个计划选中。 */
+    internal fun openPlanNode(planId: String) {
+        selectPlan(planId)
+        currentTab = TAB_PLAN
+    }
 
     fun selectPlanWeek(week: String) {
         planSelectedWeek = week
@@ -1767,7 +1902,8 @@ class AppRuntime private constructor() {
     }
 
     /** 把勾错的改回「没做」。只允许 done → planned。 */
-    fun uncompletePlanOccurrence(occurrenceId: String) {        val service = learningPlan() ?: return
+    fun uncompletePlanOccurrence(occurrenceId: String) {
+        val service = learningPlan() ?: return
         val planId = learningPlanId ?: return
         val command = CommandEnvelope(
             commandId = "cmd_" + java.util.UUID.randomUUID().toString().replace("-", ""),
@@ -2087,6 +2223,24 @@ class AppRuntime private constructor() {
         return "界面偏好已更新：" + clean.describe()
     }
 
+    /**
+     * 改「每天预计投入」。
+     *
+     * 越界的值不拒绝，按 [StudyPrefs.normalized] 收进合法区间 —— 设置页的加减按钮
+     * 和以后的 agent 工具都走这里，夹取逻辑只留一处。
+     */
+    fun setDailyMinutes(minutes: Int): String {
+        val clean = studyPrefs.copy(dailyMinutes = minutes).normalized()
+        studyPrefs = clean
+        if (::studyPrefsStore.isInitialized) studyPrefsStore.save(clean)
+        return "每天预计投入改成了 " + clean.describe() + "。"
+    }
+
+    /** 设置页那对加减按钮：一次 15 分钟。 */
+    fun bumpDailyMinutes(step: Int) {
+        setDailyMinutes(studyPrefs.dailyMinutes + step)
+    }
+
     /** 这个点上有哪些卡片，给 list_cards 用：插件 id -> 卡片标题。 */
     fun cardsOn(point: ExtensionPointId): List<Pair<PluginId, String>> {
         val extensionPoint = Slots.byId(point) ?: return emptyList()
@@ -2157,6 +2311,8 @@ class AppRuntime private constructor() {
             runtime.cardLayout = runtime.layoutStore.load()
             runtime.uiPrefsStore = UiPrefsStore(home)
             runtime.uiPrefs = runtime.uiPrefsStore.load()
+            runtime.studyPrefsStore = StudyPrefsStore(home)
+            runtime.studyPrefs = runtime.studyPrefsStore.load()
             runtime.pluginUsageStore = PluginUsageStore(home)
             runtime.pluginUsage.putAll(runtime.pluginUsageStore.load())
             // 启动时正在用的插件主题算「正在用」：插件页悬停那句「正在使用 · 刚刚」
@@ -2176,6 +2332,8 @@ class AppRuntime private constructor() {
 
             if (plan.plans().isEmpty()) plan.createPlan("我的第一个计划")
             runtime.refresh()
+            // 待办板上的计划节点是启动时就要有的：不点计划页也得看得见。
+            runtime.refreshPlan()
 
             // 截图/联调用：TRELLIS_DEMO_CHOICES="落成待办|排成计划" 直接模拟「模型调了 ask_choices」，
             // 把选项竖着摆到输入框上方。真实路径是模型调工具，这里只是省得每次都等模型。
@@ -2193,7 +2351,7 @@ class AppRuntime private constructor() {
 }
 
 /**
- * 启动时落在哪一页。默认任务页；`TRELLIS_TAB=plan|chat|plugins|diag` 可用于演示/截图，
+ * 启动时落在哪一页。默认任务页；`TRELLIS_TAB=plan|chat|plugins|diag|settings` 可用于演示/截图，
  * 省得每次手动点导航（也省得用鼠标自动化去点 —— 那个把窗口点最小化过）。
  */
 private fun initialTab(): Int = when (System.getenv("TRELLIS_TAB")?.trim()?.lowercase()) {
@@ -2201,6 +2359,7 @@ private fun initialTab(): Int = when (System.getenv("TRELLIS_TAB")?.trim()?.lowe
     "chat" -> TAB_CHAT
     "plugins" -> TAB_PLUGINS
     "diag" -> TAB_DIAG
+    "settings" -> TAB_SETTINGS
     else -> TAB_TASKS
 }
 

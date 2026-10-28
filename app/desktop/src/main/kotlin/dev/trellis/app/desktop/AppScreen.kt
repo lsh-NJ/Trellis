@@ -212,12 +212,25 @@ private fun navContentColor(runtime: AppRuntime): Color = when (runtime.uiPrefs.
     else -> MaterialTheme.colorScheme.onSurface
 }
 
+/** 导航里的五页，顺序就是标签栏/左栏的顺序。 */
+private val NAV_TABS = listOf(TAB_TASKS, TAB_PLAN, TAB_CHAT, TAB_PLUGINS, TAB_SETTINGS)
+
+/**
+ * 当前该点亮第几个导航项。
+ *
+ * 诊断页不在导航里（它从设置页的按钮进），所以不能直接拿 `currentTab` 当索引：
+ * 停在那里的把「设置」点亮 —— 用户是从那里来的，回去也是那一条路。
+ */
+private fun navIndexOf(tab: Int): Int {
+    val index = NAV_TABS.indexOf(tab)
+    return if (index >= 0) index else NAV_TABS.indexOf(TAB_SETTINGS)
+}
+
 /** 顶栏式导航。 */
 @Composable
 private fun TabBar(runtime: AppRuntime) {
-    val errorCount = runtime.kernelErrors.size
     TabRow(
-        selectedTabIndex = runtime.currentTab,
+        selectedTabIndex = navIndexOf(runtime.currentTab),
         containerColor = navContainerColor(runtime),
         contentColor = navContentColor(runtime),
     ) {
@@ -242,9 +255,9 @@ private fun TabBar(runtime: AppRuntime) {
             text = { Text("插件 " + runtime.pluginInfos.size) },
         )
         Tab(
-            selected = runtime.currentTab == TAB_DIAG,
-            onClick = { runtime.currentTab = TAB_DIAG },
-            text = { Text(if (errorCount == 0) "诊断" else "诊断 " + errorCount) },
+            selected = runtime.currentTab == TAB_SETTINGS,
+            onClick = { runtime.currentTab = TAB_SETTINGS },
+            text = { Text("设置") },
         )
     }
 }
@@ -261,7 +274,6 @@ private fun NavRail(runtime: AppRuntime) {
     val background = navContainerColor(runtime)
     val foreground = navContentColor(runtime)
     val divider = MaterialTheme.colorScheme.outlineVariant
-    val errorCount = runtime.kernelErrors.size
     Column(
         modifier = Modifier.fillMaxHeight().width(88.dp)
             .background(background)
@@ -295,19 +307,14 @@ private fun NavRail(runtime: AppRuntime) {
         NavRailItem(runtime, ChromeIcon.Plan, "计划", TAB_PLAN, foreground)
         NavRailItem(runtime, ChromeIcon.Chat, if (runtime.chatBusy) "对话 ···" else "对话", TAB_CHAT, foreground)
         NavRailItem(runtime, ChromeIcon.Plugins, "插件 " + runtime.pluginInfos.size, TAB_PLUGINS, foreground)
-        NavRailItem(
-            runtime,
-            ChromeIcon.Diagnostics,
-            if (errorCount == 0) "诊断" else "诊断 " + errorCount,
-            TAB_DIAG,
-            foreground,
-        )
+        NavRailItem(runtime, ChromeIcon.Settings, "设置", TAB_SETTINGS, foreground)
     }
 }
 
 @Composable
 private fun NavRailItem(runtime: AppRuntime, icon: ChromeIcon, label: String, tab: Int, foreground: Color) {
-    val selected = runtime.currentTab == tab
+    // 诊断页不在导航里：停在那里时点亮「设置」，因为用户是从设置进来的。
+    val selected = navIndexOf(runtime.currentTab) == navIndexOf(tab)
     // 导航底色是主色时，选中项再刷主色就看不见了 —— 换成 primary 打底、onPrimary 出字。
     val accentBackground = runtime.uiPrefs.navTone == "accent"
     val container = when {
@@ -343,6 +350,7 @@ private fun TabContent(runtime: AppRuntime, modifier: Modifier) {
         TAB_PLAN -> PlanScreen(runtime, modifier)
         TAB_CHAT -> ChatScreen(runtime, modifier)
         TAB_PLUGINS -> PluginsScreen(runtime, modifier)
+        TAB_SETTINGS -> SettingsScreen(runtime, modifier)
         else -> DiagnosticsScreen(runtime, modifier)
     }
 }
@@ -546,6 +554,9 @@ internal fun TaskBoard(runtime: AppRuntime, taskFocus: FocusRequester, framed: B
                 }
             }
         }
+
+        TaskBoardPlanNodes(runtime)
+
         Spacer(Modifier.height(14.dp))
         AddTaskRow(runtime, taskFocus)
 
@@ -570,6 +581,108 @@ internal fun TaskBoard(runtime: AppRuntime, taskFocus: FocusRequester, framed: B
                 }
             }
         }
+    }
+}
+
+/** 待办板上摊开的学习计划节点：每个没结束的计划一组，组头点进去就是计划页。 */
+@Composable
+private fun TaskBoardPlanNodes(runtime: AppRuntime) {
+    val groups = runtime.todoPlanNodes
+    if (groups.isEmpty()) return
+
+    GroupLabel("学习计划", groups.sumOf { it.nodes.size })
+    groups.forEach { group ->
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(3.dp))
+                .clickable { runtime.openPlanNode(group.planId) }
+                .padding(top = 6.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                group.planTitle,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Medium,
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                group.nodes.size.toString() + " 个节点 · 约 " + group.minutes + " 分钟",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+            )
+        }
+        group.nodes.forEach { node ->
+            PlanNodeRowView(
+                node = node,
+                onTimer = { runtime.openNodeTimer(node) },
+                onClick = { runtime.openPlanNode(group.planId) },
+            )
+        }
+        if (group.hidden > 0) {
+            Text(
+                "还有 " + group.hidden + " 个节点，去计划页看",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                modifier = Modifier.padding(start = 18.dp, bottom = 4.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 一条节点：圆点 + 标题 + 章与预估 + 本周/待安排。节点在待办里不可勾，勾选走计划页。
+ *
+ * 排到具体某天的节点（有 occurrence 的）才给 ⏱：计时要落成 session，而 session 只能挂在
+ * occurrence 上，「待安排」的节点还没有那条记录。
+ */
+@Composable
+private fun PlanNodeRowView(node: PlanNodeRow, onTimer: () -> Unit, onClick: () -> Unit) {
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(3.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier.size(18.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(Modifier.size(6.dp).clip(RoundedCornerShape(3.dp)).background(muted.copy(alpha = 0.5f)))
+        }
+        Spacer(Modifier.width(6.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = node.title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (node.chapter.isNotBlank()) {
+                    Text(
+                        node.chapter,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = muted.copy(alpha = 0.8f),
+                    )
+                }
+                Text(
+                    node.minutes.toString() + " 分钟",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = muted.copy(alpha = 0.8f),
+                )
+            }
+        }
+        if (node.occurrenceId != null) {
+            IconAction("⏱", "对这个节点开计时器") { onTimer() }
+        }
+        Text(
+            if (node.scheduled) "本周" else "待安排",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (node.scheduled) MaterialTheme.colorScheme.primary else muted.copy(alpha = 0.7f),
+        )
     }
 }
 
