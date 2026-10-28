@@ -73,19 +73,33 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     Row(modifier = modifier) {
         PlanList(runtime, Modifier.width(232.dp).fillMaxHeight())
         Spacer(Modifier.width(20.dp))
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            item { PlanHeader(runtime) }
-            if (runtime.planStartsInPast) item { PlanStaleBanner(runtime) }
-
-            if (runtime.planTitle == null) {
-                item { PlanEmpty(runtime) }
+        // 页头固定在顶上，只有下面的内容滚：翻到第 8 周时还能看见「这是哪份计划、一共几周」。
+        // 空状态不挂在 LazyColumn 里 —— 那样它会被排到标题正下方，页面剩下 600px 全是空白，
+        // 看起来像没加载出来。空的时候让它在剩余高度里居中。
+        val empty = runtime.planTitle == null
+        Column(Modifier.weight(1f).fillMaxHeight()) {
+            PlanHeader(runtime)
+            if (runtime.planStartsInPast) {
+                Spacer(Modifier.height(16.dp))
+                PlanStaleBanner(runtime)
+            }
+            if (empty) {
+                Box(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(Modifier.widthIn(max = 560.dp)) { PlanEmpty(runtime) }
+                }
             } else {
-                item { WeekStrip(runtime) }
-                if (runtime.planPool.isNotEmpty()) item { PoolCard(runtime) }
-                item { WeekDetail(runtime) }
+                Spacer(Modifier.height(16.dp))
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    item { WeekStrip(runtime) }
+                    if (runtime.planPool.isNotEmpty()) item { PoolCard(runtime) }
+                    item { WeekDetail(runtime) }
+                }
             }
         }
     }
@@ -98,11 +112,22 @@ private fun PlanList(runtime: AppRuntime, modifier: Modifier = Modifier) {
     val grouped = visible.groupBy { runtime.planCategories[it.id] ?: "未分类" }
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(
-            "计划",
+            "PLANNING",
             style = MaterialTheme.typography.labelSmall,
+            fontFamily = AppFonts.mono,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(4.dp))
+        // 空列表也要说一句话：只留一个小标下面一片空，读起来像加载失败。
+        if (visible.isEmpty()) {
+            Text(
+                "还没有计划",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                modifier = Modifier.padding(vertical = 2.dp),
+            )
+            return@Column
+        }
         grouped.forEach { (category, plans) ->
             Text(
                 category,
@@ -176,14 +201,25 @@ private fun PlanStaleBanner(runtime: AppRuntime) {
 @Composable
 private fun PlanHeader(runtime: AppRuntime) {
     Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        // 页头用和任务页同一套「刊头」语言：等宽小标在上、标题在下。
+        // 原来是 32sp 的裸标题，比全局刊头里的计划名还大，层级是反的。
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                "PLAN · 一周一格",
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = AppFonts.mono,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(4.dp))
             Text(
                 "计划",
-                style = MaterialTheme.typography.headlineLarge,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onBackground,
             )
+            Spacer(Modifier.height(4.dp))
             Text(
-                runtime.planTitle?.let { it + " · 一周一格，点开看那一天" } ?: "还没有计划",
+                runtime.planTitle?.let { it + " · 点开看那一天" } ?: "还没有计划",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -192,6 +228,7 @@ private fun PlanHeader(runtime: AppRuntime) {
             Text(
                 runtime.planWeekCards.size.toString() + " 周",
                 style = MaterialTheme.typography.labelMedium,
+                fontFamily = AppFonts.mono,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
