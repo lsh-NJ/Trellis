@@ -263,7 +263,28 @@ internal fun SqliteLearningPlanService.cmdAcceptDraft(
     }
 }
 
-/** 把某周承诺铺成日任务：从今天开始，一天一个；放不下就叠在最后一天。 */
+/**
+ * 这个计划「每天投入多少分钟」：周容量 / 7。
+ *
+ * @return null 表示用户没设过投入时间——这时保持老规矩「一天只排一个单元」，
+ * 不去猜容量，免得把没设置的计划塞成一天两三个。
+ */
+internal fun SqliteLearningPlanService.planDailyMinutes(planId: String): Int? =
+    connection.prepareStatement(
+        "SELECT p.weekly_capacity_minutes FROM process p JOIN plan pl ON pl.process_id = p.id WHERE pl.id = ?",
+    ).use { ps ->
+        ps.setString(1, planId)
+        ps.executeQuery().use { rs ->
+            if (rs.next()) {
+                val weekly = rs.getInt(1)
+                if (!rs.wasNull() && weekly > 0) (weekly / 7).coerceAtLeast(15) else null
+            } else {
+                null
+            }
+        }
+    }
+
+/** 把某周承诺铺成日任务：从今天开始，按「每天投入分钟数」往一天里塞，塞满换下一天。 */
 internal fun SqliteLearningPlanService.materializeWeek(planId: String, versionId: String, week: String): Int {
     val commitmentId = connection.prepareStatement(
         "SELECT id FROM commitment WHERE plan_version_id = ? AND week = ?",
@@ -292,8 +313,21 @@ internal fun SqliteLearningPlanService.materializeWeek(planId: String, versionId
     val weekStart = PlanTime.weekStart(week)
     val today = today()
     var day = if (today in weekStart..weekStart.plusDays(6)) today else weekStart
+    val dailyBudget = planDailyMinutes(planId)
+    var usedToday = 0
     var created = 0
+    fun nextDay() {
+        if (day < weekStart.plusDays(6)) day = day.plusDays(1)
+        usedToday = 0
+    }
     units.forEach { (unitId, minutes, _) ->
+        // 设了「每天投入」就按容量打包：当天再放会超预算就换下一天；单个单元本身超预算就独占一天。
+        // 没设过投入时间时保持老规矩：一天只排一个。
+        if (dailyBudget == null) {
+            if (usedToday > 0) nextDay()
+        } else if (usedToday > 0 && usedToday + minutes > dailyBudget) {
+            nextDay()
+        }
         val dayText = day.toString()
         val id = insertOccurrence(
             commitmentId = commitmentId,
@@ -317,7 +351,8 @@ internal fun SqliteLearningPlanService.materializeWeek(planId: String, versionId
             commandId = null,
         )
         created++
-        if (day < weekStart.plusDays(6)) day = day.plusDays(1)
+        usedToday += minutes
+        if (dailyBudget != null && usedToday >= dailyBudget) nextDay()
     }
     return created
 }

@@ -1687,6 +1687,23 @@ class AppRuntime private constructor() {
         private set
 
     /**
+     * 「待安排」集合：池里的单元 + 还没铺到天的周里的单元。
+     *
+     * 周卡片只给「已排到天」的周用；没排的周不再各占一张卡，全都收进这一个集合，
+     * 免得出现「卡片写待安排、里面又列着内容」这种自相矛盾的画面。
+     */
+    internal var planPendingNodes by mutableStateOf<List<PoolUnit>>(emptyList())
+        private set
+
+    /** 计划页右下：现在看的是「待安排」集合（true），还是某一周（false）。 */
+    var planPendingSelected by mutableStateOf(false)
+        private set
+
+    /** 这个计划的「每天投入多少分钟」；没设就是 null（排程按 60 分钟兜底）。 */
+    var planDailyMinutes by mutableStateOf<Int?>(null)
+        private set
+
+    /**
      * 待办板上的「学习计划节点」：所有没结束的计划各一组。
      *
      * 和 [planPool] 的区别：那个只看当前聚焦的计划、只给计划页用；这个跨全部计划，
@@ -1766,15 +1783,25 @@ class AppRuntime private constructor() {
                 return
             }
             val state = service.planState(planId)
+            planDailyMinutes = state.dailyMinutes
 
             // 到期的周才铺天：这周变成当周、或周日提前铺下周；铺过的不重复。
             scheduleDueWeeks(service, planId, state.week)
 
             val map = service.map(planId)
             planTitle = map.planTitle.ifBlank { state.title }
+            val unscheduledUnits = mutableListOf<PoolUnit>()
             planWeekCards = map.weeks.mapIndexed { index, week ->
                 val view = service.week(planId, week.week)
                 val units = view.commitment.units
+                // 没铺到天的周不进周卡片：整周的单元收进「待安排」集合，卡片只留一张。
+                if (!view.scheduled) {
+                    units.forEach { unit ->
+                        unscheduledUnits.add(
+                            PoolUnit(unit.id, unit.title, unit.chapter, unit.estimateMinutes),
+                        )
+                    }
+                }
                 // 卡片第二行要「这一周在讲什么」：单元里出现最多的章节名，比承诺标签更具体。
                 val chapter = units.groupingBy { it.chapter }.eachCount().maxByOrNull { it.value }?.key
                     ?: view.commitment.label
@@ -1791,9 +1818,12 @@ class AppRuntime private constructor() {
                 )
             }
             planPool = service.pool(planId)
-            val week = planSelectedWeek?.takeIf { w -> planWeekCards.any { it.week == w } }
-                ?: state.week.takeIf { w -> planWeekCards.any { it.week == w } }
-                ?: planWeekCards.firstOrNull()?.week
+            planPendingNodes = (unscheduledUnits + planPool).distinctBy { it.id }
+            if (planPendingSelected && planPendingNodes.isEmpty()) planPendingSelected = false
+            val scheduledWeeks = planWeekCards.filter { it.scheduled }.map { it.week }
+            val week = planSelectedWeek?.takeIf { w -> scheduledWeeks.contains(w) }
+                ?: state.week.takeIf { w -> scheduledWeeks.contains(w) }
+                ?: scheduledWeeks.firstOrNull()
             planSelectedWeek = week
             if (week != null) {
                 val weekView = service.week(planId, week)
@@ -1862,6 +1892,7 @@ class AppRuntime private constructor() {
         planFocusId = planId
         planSelectedWeek = null
         planSelectedDay = null
+        planPendingSelected = false
         refreshPlan()
     }
     /** 点待办板里的计划节点：切到计划页，并把这个计划选中。 */
@@ -1873,6 +1904,13 @@ class AppRuntime private constructor() {
     fun selectPlanWeek(week: String) {
         planSelectedWeek = week
         planSelectedDay = null
+        planPendingSelected = false
+        refreshPlan()
+    }
+
+    /** 点「待安排」那张卡：下面显示整个待安排集合，而不是某一周。 */
+    fun selectPlanPending() {
+        planPendingSelected = true
         refreshPlan()
     }
 

@@ -42,12 +42,16 @@ class PlanTools(
         "<how_to_create_learning_plan>",
         "1. `set_plan` 只写这一轮的动作；**计划页要的是 create_learning_plan**。",
         "   用户点「排成学习计划」、或者说「排个计划 / 安排每周」时，调 create_learning_plan。",
-        "2. 参数是结构与承诺：units 写单元（章节 + 标题 + 分钟），weeks 写每周承诺哪些单元；",
-        "   每周 1–7 个单元，单元总时长 10–45 分钟一个，别把 80 集一次塞进来。",
-        "3. 只排用户看得完的那一段（比如前 12 集 / 前两周），剩下的说「想继续往后排跟我说」。",
-        "4. 第一周必须是**本周**（今天所在的那一周，例如今天是 2026-10-27 就写 2026-W44）：",
-        "   计划从今天开始排，今天之后的日子才铺任务；不要从下周开始（周一再开始也违反这条）。",
-        "5. 写之前先说清你要怎么拆（一句），写完说清「计划页第 X 周有多少单元」，不要去改用户别的数据。",
+        "2. 排计划前先问一句「你每天大概能投入多少分钟」（15–240），拿到的值填 dailyMinutes。",
+        "   不知道就先按 60 分钟建，并在回复里说明「按每天 60 分钟排的，要改跟我说」。",
+        "3. 单元的时间要按**真实时长**估：B 站视频用 `list_bilibili_parts` 返回的每集时长",
+        "   （比如 20:18 → 20 分钟），不要自己发明 25 分钟；没有时长的来源才按 20–30 分钟估。",
+        "4. 第一次只给**本周和下一周**建承诺（weeks 1–2 周），其余单元留在「待安排」池子里；",
+        "   用户想往后排再调一次，别一次把 80 集全塞进 weeks。",
+        "5. 第一周必须是**本周**（今天所在的那一周，例如今天是 2026-10-27 就写 2026-W44）：",
+        "   计划从今天开始排，今天之后的日子才铺任务；不要从下周开始。",
+        "6. 写之前先说清你要怎么拆（一句），写完说清「计划页第 X 周有多少单元、待安排还剩几个」，",
+        "   不要去改用户别的数据。",
         "</how_to_create_learning_plan>",
     ).joinToString("\n")
 
@@ -56,13 +60,14 @@ class PlanTools(
     private inner class CreateLearningPlan : AgentTool {
         override val name: String = "create_learning_plan"
         override val description: String =
-            "在「计划」页建一份学习计划：units 是单元清单，weeks 是每周承诺哪几个单元。" +
-                "第一周必须写本周（今天所在周），计划从今天开始排。" +
-                "会写用户数据，只在用户要「排成计划」时调用。"
+            "在「计划」页建一份学习计划：units 是单元清单（分钟按真实时长估），weeks 是每周承诺哪几个单元。" +
+                "第一次只建本周和下一周（1–2 周），其余单元自动进「待安排」。第一周必须是本周。" +
+                "dailyMinutes 是用户每天能投入的分钟数（15–240，拿不准就按 60）。会写用户数据，只在用户要「排成计划」时调用。"
         override val parameters: String =
             "title：计划标题（如「操作系统速通」）；" +
+                "dailyMinutes：每天投入分钟数（15–240，默认 60）；" +
                 "units：数组，每项 {title, minutes?, chapter?}（title 必填，minutes 10–45，默认 25）；" +
-                "weeks：数组，每项 {week: \"2026-W44\", units: [单元 title...]}（1–12 周，每周 1–7 个）。"
+                "weeks：数组，每项 {week: \"2026-W44\", units: [单元 title...]}（最多 2 周，每周 1–7 个）。"
 
         override suspend fun call(arguments: JsonObject): ToolResult {
             val plan = service() ?: return ToolResult(
@@ -98,7 +103,12 @@ class PlanTools(
 
             val rawWeeks = arguments["weeks"] as? JsonArray
                 ?: return ToolResult("weeks 要写成数组：[{week, units: [标题...]}, …]", isError = true)
-            if (rawWeeks.size > 12) return ToolResult("最多 12 周，现在有 ${rawWeeks.size} 周", isError = true)
+            if (rawWeeks.size > 2) {
+                return ToolResult(
+                    "第一次只排本周和下一周（最多 2 周），剩下的单元留在「待安排」池里；现在写了 ${rawWeeks.size} 周。",
+                    isError = true,
+                )
+            }
 
             val indexByTitle = units.mapIndexed { index, unit -> unit.title to index }.toMap()
             val commitments = rawWeeks.mapIndexedNotNull { position, element ->
@@ -150,11 +160,16 @@ class PlanTools(
                 return ToolResult("weeks 要按时间从早到晚写、不能重复；现在是：${weekOrder.joinToString("、")}", isError = true)
             }
 
+            val dailyMinutes = arguments["dailyMinutes"]?.jsonPrimitive?.contentOrNull
+                ?.toIntOrNull()?.coerceIn(15, 240)
+                ?: (weeklyCapacity()?.div(7)?.takeIf { it >= 15 } ?: 60)
+
             val created = plan.createProcess(
                 env(null, "plan.create"),
                 title = title,
                 goal = title,
-                weeklyCapacityMinutes = weeklyCapacity(),
+                // 后端按「周容量」存；用户说的是每天多少分钟，×7 折成周。
+                weeklyCapacityMinutes = dailyMinutes * 7,
             )
             val createdValue = created.value
                 ?: return ToolResult("建计划失败：" + (created.error?.message ?: "未知原因"), isError = true)
@@ -184,8 +199,9 @@ class PlanTools(
                 "${draft.week} $count 个单元"
             }
             return ToolResult(
-                "计划「$title」建好了：${units.size} 个单元，分 ${commitments.size} 周（$weekLines）。" +
-                    "第一周已经排到天，去「计划」页能看到每周卡片和每天安排。",
+                "计划「$title」建好了：${units.size} 个单元，其中 ${commitments.sumOf { it.unitIndexes.size }} 个排在 " +
+                    "${commitments.size} 周里（$weekLines），其余 ${units.size - commitments.sumOf { it.unitIndexes.size }} 个" +
+                    "留在「待安排」池。每天按 $dailyMinutes 分钟排；去「计划」页能看到周卡片、待安排集合和每天安排。",
             )
         }
     }

@@ -65,7 +65,21 @@
 - 并发/不变量：旧 `expectedLastSeq` → `E_CONFLICT`、`dryRun` 不留数据、同 `commandId` 不双写；
 - 触发器：事件 UPDATE/DELETE、active 版本 `plan_unit` UPDATE、occurrence 改 day 全部抛 `SQLException`。
 
-## 6. 下一步（按优先级）
+## 6. 每天投入与容量打包（2026-10-28）
+
+- 计划可以带一个「每天投入多少分钟」，存在 `process.weekly_capacity_minutes = 每天 × 7`
+  （`PlanCommands.cmdCreateProcess` 校验 30–3000）。页面通过 `PlanStateView.dailyMinutes`
+  读回来（`PlanQueries.buildPlanState` 里 `/7`，不足 15 按 15 算）。
+- `materializeWeek(planId, versionId, week)` 铺天时的规则：
+  - **设过投入时间**：`planDailyMinutes(planId)` 拿到每天预算；按顺序往当天塞，
+    `usedToday` 累加，「再放就超预算」就换下一天；单个单元本身超预算则独占一天。
+  - **没设过**：保持老规矩「一天只排一个单元」——不猜容量，免得把没设置的计划塞成一天两三个。
+- 测试：`LearningPlanServiceTest.daysArePackedUpToTheDailyBudget`
+  （20+25 同一天、30 顺到第二天、35 顺到第三天）。
+- `PlanTools.create_learning_plan` 新增 `dailyMinutes`（15–240）：写进 `process` 的同时，
+  把「第一次只排本周 + 下一周，其余留待安排」这条也写进工具提示与校验。
+
+## 7. 下一步（按优先级）
 
 1. **P3 agent 工具**：`design/plan-agent-tools.md` 里的工具（日视图/完成/顺延/结算…）包一层 `AgentTool`，
    接进 `AppRuntime.sendChat` 的 `allTools`，并把清单（`set_plan`）里的步骤和这里的命令对齐。

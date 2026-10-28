@@ -72,6 +72,39 @@ class LearningPlanServiceTest {
         return Triple(planId, draft.value!!.versionId, accepted.value!!.versionId)
     }
 
+    @Test
+    fun daysArePackedUpToTheDailyBudget() {
+        val svc = service()
+        val created = svc.createProcess(
+            env(),
+            "按每天投入排",
+            "验证一天能塞几个",
+            weeklyCapacityMinutes = 60 * 7,
+        )
+        assertTrue(created.ok, created.error?.message)
+        val planId = created.value!!.planId
+        val draft = svc.saveDraft(
+            env(planId),
+            planId,
+            null,
+            listOf(
+                UnitDraft("第 1 章", "20 分钟", 20, 10),
+                UnitDraft("第 1 章", "25 分钟", 25, 10),
+                UnitDraft("第 1 章", "30 分钟", 30, 10),
+                UnitDraft("第 1 章", "35 分钟", 35, 10),
+            ),
+            listOf(CommitmentDraft("2026-W44", listOf(0, 1, 2, 3))),
+        )
+        assertTrue(draft.ok, draft.error?.message)
+        val accepted = svc.acceptDraft(env(planId), draft.value!!.versionId, "2026-W44")
+        assertTrue(accepted.ok, accepted.error?.message)
+
+        // 每天 60 分钟：20+25 放第一天；再加 30 会超，所以 30 顺到第二天、35 顺到第三天。
+        assertEquals(listOf("20 分钟", "25 分钟"), svc.today(planId, "2026-10-26").occurrences.map { it.title })
+        assertEquals(listOf("30 分钟"), svc.today(planId, "2026-10-27").occurrences.map { it.title })
+        assertEquals(listOf("35 分钟"), svc.today(planId, "2026-10-28").occurrences.map { it.title })
+    }
+
     // ---------------------------------------------------------------- P0
 
     @Test
