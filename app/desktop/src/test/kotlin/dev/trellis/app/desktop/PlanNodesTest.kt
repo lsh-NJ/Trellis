@@ -1,8 +1,7 @@
 package dev.trellis.app.desktop
 
-import dev.trellis.domain.plan.CommitmentUnitView
 import dev.trellis.domain.plan.LearningPlanInfo
-import dev.trellis.domain.plan.PoolUnit
+import dev.trellis.domain.plan.OpenNode
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -11,92 +10,111 @@ class PlanNodesTest {
     private fun plan(id: String, title: String, status: String = "active") =
         LearningPlanInfo(id = id, title = title, status = status)
 
-    private fun unit(
-        id: String,
+    private fun node(
+        occurrenceId: String,
         title: String,
+        day: String,
         chapter: String = "第一章",
         minutes: Int = 20,
-        state: String = "this_week",
-    ) = CommitmentUnitView(
-        id = id,
+    ) = OpenNode(
+        occurrenceId = occurrenceId,
         title = title,
         chapter = chapter,
-        estimateMinutes = minutes,
-        state = state,
-        stateLabel = state,
+        minutes = minutes,
+        day = day,
     )
 
-    private fun pool(id: String, title: String, chapter: String = "第二章", minutes: Int = 30) =
-        PoolUnit(id = id, title = title, chapter = chapter, estimateMinutes = minutes)
+    @Test
+    fun 今天到期和之前逾期都摊出来() {
+        val group = planNodeGroups(
+            plans = listOf(plan("p1", "线代")),
+            today = "2026-10-28",
+            openNodesOf = {
+                listOf(
+                    node("o1", "矩阵", "2026-10-27"),
+                    node("o2", "行列式", "2026-10-28"),
+                )
+            },
+        ).single()
+
+        assertEquals(listOf("行列式", "矩阵"), group.nodes.map { it.title })
+        assertEquals(listOf(0, 1), group.nodes.map { it.daysLate })
+    }
 
     @Test
-    fun 每个没结束的计划各成一组() {
-        val groups = planNodeGroups(
-            plans = listOf(plan("p1", "线代"), plan("p2", "英语")),
-            currentWeekOf = { "2026-W44" },
-            weekUnitsOf = { id, _ -> if (id == "p1") listOf(unit("u1", "矩阵")) else listOf(unit("u2", "听力")) },
-            poolOf = { emptyList() },
-        )
+    fun 逾期的按最近的在前() {
+        val group = planNodeGroups(
+            plans = listOf(plan("p1", "线代")),
+            today = "2026-10-28",
+            openNodesOf = {
+                listOf(
+                    node("o1", "上周三", "2026-10-21"),
+                    node("o2", "昨天", "2026-10-27"),
+                    node("o3", "今天", "2026-10-28"),
+                    node("o4", "前天", "2026-10-26"),
+                )
+            },
+        ).single()
 
-        assertEquals(2, groups.size)
-        assertEquals("p1", groups[0].planId)
-        assertEquals("线代", groups[0].planTitle)
-        assertEquals("矩阵", groups[0].nodes.single().title)
-        assertEquals("英语", groups[1].planTitle)
+        assertEquals(listOf("今天", "昨天", "前天", "上周三"), group.nodes.map { it.title })
+    }
+
+    @Test
+    fun 逾期天数按排到的那一天算() {
+        val row = planNodeGroups(
+            plans = listOf(plan("p1", "线代")),
+            today = "2026-10-28",
+            openNodesOf = { listOf(node("o1", "矩阵", "2026-10-21")) },
+        ).single().nodes.single()
+
+        assertEquals(7, row.daysLate)
+        assertEquals("2026-10-21", row.day)
+        assertTrue(row.today.not())
+    }
+
+    @Test
+    fun 今天排到的算今天() {
+        val row = planNodeGroups(
+            plans = listOf(plan("p1", "线代")),
+            today = "2026-10-28",
+            openNodesOf = { listOf(node("o1", "矩阵", "2026-10-28")) },
+        ).single().nodes.single()
+
+        assertEquals(0, row.daysLate)
+        assertTrue(row.today)
     }
 
     @Test
     fun 结束的计划不出现在待办里() {
         val groups = planNodeGroups(
             plans = listOf(plan("p1", "线代", status = "ended"), plan("p2", "英语", status = "paused")),
-            currentWeekOf = { "2026-W44" },
-            weekUnitsOf = { id, _ -> listOf(unit("u-$id", "节点 " + id)) },
-            poolOf = { emptyList() },
+            today = "2026-10-28",
+            openNodesOf = { id -> listOf(node("o-" + id, "节点 " + id, "2026-10-28")) },
         )
 
         assertEquals(listOf("p2"), groups.map { it.planId })
     }
 
     @Test
-    fun 本周已经做完的单元不摊到待办() {
+    fun 没有任何节点的计划不出组() {
         val groups = planNodeGroups(
-            plans = listOf(plan("p1", "线代")),
-            currentWeekOf = { "2026-W44" },
-            weekUnitsOf = { _, _ ->
-                listOf(
-                    unit("u1", "矩阵", state = "done"),
-                    unit("u2", "行列式", state = "this_week"),
-                )
+            plans = listOf(plan("p1", "线代"), plan("p2", "英语")),
+            today = "2026-10-28",
+            openNodesOf = { id ->
+                if (id == "p2") listOf(node("o2", "听力", "2026-10-28")) else emptyList()
             },
-            poolOf = { emptyList() },
         )
 
-        assertEquals(listOf("行列式"), groups.single().nodes.map { it.title })
-    }
-
-    @Test
-    fun 节点池的单元排在周承诺之后并标成待安排() {
-        val group = planNodeGroups(
-            plans = listOf(plan("p1", "线代")),
-            currentWeekOf = { "2026-W44" },
-            weekUnitsOf = { _, _ -> listOf(unit("u1", "矩阵")) },
-            poolOf = { listOf(pool("u9", "特征值")) },
-        ).single()
-
-        assertEquals(listOf("矩阵", "特征值"), group.nodes.map { it.title })
-        assertEquals(listOf(true, false), group.nodes.map { it.scheduled })
-        assertEquals("第二章", group.nodes[1].chapter)
-        assertEquals(30, group.nodes[1].minutes)
+        assertEquals(listOf("p2"), groups.map { it.planId })
     }
 
     @Test
     fun 超过上限只留前十条但总数是真实值() {
-        val units = (1..12).map { unit("u" + it, "节点 " + it, minutes = 10) }
+        val nodes = (1..12).map { node("o" + it, "节点 " + it, "2026-10-28", minutes = 10) }
         val group = planNodeGroups(
             plans = listOf(plan("p1", "线代")),
-            currentWeekOf = { "2026-W44" },
-            weekUnitsOf = { _, _ -> units },
-            poolOf = { emptyList() },
+            today = "2026-10-28",
+            openNodesOf = { nodes },
         ).single()
 
         assertEquals(PLAN_NODES_PER_PLAN, group.nodes.size)
@@ -107,80 +125,18 @@ class PlanNodesTest {
     }
 
     @Test
-    fun 没有任何节点的计划不出组() {
-        val groups = planNodeGroups(
-            plans = listOf(plan("p1", "线代"), plan("p2", "英语")),
-            currentWeekOf = { "2026-W44" },
-            weekUnitsOf = { id, _ -> if (id == "p2") listOf(unit("u2", "听力")) else emptyList() },
-            poolOf = { emptyList() },
-        )
-
-        assertEquals(listOf("p2"), groups.map { it.planId })
-    }
-
-    @Test
-    fun 拿不到当前周时只看节点池() {
-        var askedWeek = 0
+    fun 每行都带所属计划的名字和那一次_occurrence() {
         val group = planNodeGroups(
             plans = listOf(plan("p1", "线代")),
-            currentWeekOf = { null },
-            weekUnitsOf = { _, _ -> askedWeek++; listOf(unit("u1", "矩阵")) },
-            poolOf = { listOf(pool("u9", "特征值")) },
+            today = "2026-10-28",
+            openNodesOf = { listOf(node("occ_1", "矩阵", "2026-10-28", chapter = "第三章", minutes = 30)) },
         ).single()
 
-        assertEquals(0, askedWeek)
-        assertEquals(listOf("特征值"), group.nodes.map { it.title })
-        assertTrue(group.nodes.single().scheduled.not())
+        val row = group.nodes.single()
+        assertEquals("p1", row.planId)
+        assertEquals("线代", row.planTitle)
+        assertEquals("occ_1", row.occurrenceId)
+        assertEquals("第三章", row.chapter)
+        assertEquals(30, row.minutes)
     }
-
-    @Test
-    fun 每行都带所属计划的名字() {
-        val group = planNodeGroups(
-            plans = listOf(plan("p1", "线代")),
-            currentWeekOf = { "2026-W44" },
-            weekUnitsOf = { _, _ -> listOf(unit("u1", "矩阵")) },
-            poolOf = { listOf(pool("u9", "特征值")) },
-        ).single()
-
-        assertTrue(group.nodes.all { it.planTitle == "线代" })
-    }
-
-    @Test
-    fun 排到具体某天的节点带上那一次_occurrence() {
-        val groups = planNodeGroups(
-            plans = listOf(plan("p1", "线代")),
-            currentWeekOf = { "2026-W44" },
-            weekUnitsOf = { _, _ -> listOf(unit("u1", "矩阵"), unit("u2", "行列式")) },
-            poolOf = { listOf(pool("u9", "还没排的")) },
-            occurrenceOf = { planId, week, unitId ->
-                if (planId == "p1" && week == "2026-W44" && unitId == "u1") "occ_1" else null
-            },
-        )
-
-        val nodes = groups.single().nodes
-        assertEquals("occ_1", nodes[0].occurrenceId)
-        assertEquals(null, nodes[1].occurrenceId)
-        assertEquals(null, nodes[2].occurrenceId)
-    }
-
-    @Test
-    fun 待安排的节点不查_occurrence() {
-        var asked = 0
-        val groups = planNodeGroups(
-            plans = listOf(plan("p1", "线代")),
-            currentWeekOf = { null },
-            weekUnitsOf = { _, _ -> error("没有当前周就不该查承诺") },
-            poolOf = { listOf(pool("u9", "还没排的")) },
-            occurrenceOf = { _, _, _ ->
-                asked++
-                "occ_x"
-            },
-        )
-
-        val node = groups.single().nodes.single()
-        assertEquals(0, asked)
-        assertEquals(false, node.scheduled)
-        assertEquals(null, node.occurrenceId)
-    }
-
 }

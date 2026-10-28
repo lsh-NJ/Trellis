@@ -8,6 +8,7 @@ import dev.trellis.domain.plan.ErrorCode
 import dev.trellis.domain.plan.LearningPlanService
 import dev.trellis.domain.plan.PlanStateView
 import dev.trellis.domain.plan.LearningPlanInfo
+import dev.trellis.domain.plan.OpenNode
 import dev.trellis.domain.plan.PoolUnit
 import dev.trellis.domain.plan.UndoInfo
 import dev.trellis.domain.plan.UndoView
@@ -385,8 +386,7 @@ internal class SqliteLearningPlanService(
         }
     }
 
-    override fun unitOccurrenceId(planId: String, week: String, unitId: String): String? =
-        unitOccurrenceOf(planId, week, unitId)
+    override fun openNodes(planId: String, untilDay: String): List<OpenNode> = openNodesOf(planId, untilDay)
 
     override fun pool(planId: String): List<PoolUnit> {
         val versionId = currentVersion(planId) ?: return emptyList()
@@ -441,6 +441,9 @@ internal class SqliteLearningPlanService(
     ) = cmdChangeCommitment(env, versionId, week, unitIds, reason, diff)
 
     override fun pausePlan(env: CommandEnvelope, planId: String, reason: String) = cmdPausePlan(env, planId, reason)
+
+    override fun setPlanDailyMinutes(env: CommandEnvelope, planId: String, dailyMinutes: Int) =
+        cmdSetPlanDailyMinutes(env, planId, dailyMinutes)
 
     override fun resumePlan(env: CommandEnvelope, planId: String) = cmdResumePlan(env, planId)
 
