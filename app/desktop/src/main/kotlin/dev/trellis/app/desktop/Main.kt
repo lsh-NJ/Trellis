@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPlacement
+import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import dev.trellis.ui.LocalPluginImage
@@ -186,6 +187,7 @@ private fun App(holder: RuntimeHolder) {
                     LocalPluginCardStyle provides { owner -> current.pluginCardStyle(owner) },
                 ) {
                     AppScreen(current)
+                    if (current.timerVisible) TimerWindow(current)
                 }
             }
         }
@@ -212,5 +214,48 @@ private fun FailureView(message: String) {
     ) {
         Text("启动失败", style = MaterialTheme.typography.headlineSmall)
         Text(message, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+
+/**
+ * 计时器小窗：独立窗口，不挡主窗口，永远置顶。
+ *
+ * Window 是另一套 composition，主题/字体不会从主窗口继承，所以这里把 AppTheme 再包一层；
+ * 每秒走一格的驱动也挂在这里，窗口关掉就自然停。
+ */
+@Composable
+private fun TimerWindow(runtime: AppRuntime) {
+    val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
+    val dark = when (runtime.uiPrefs.appearance) {
+        "light" -> false
+        "dark" -> true
+        else -> systemDark
+    }
+    Window(
+        onCloseRequest = { runtime.closeTimer() },
+        title = "计时 · " + runtime.timerTaskTitle,
+        state = rememberWindowState(
+            size = DpSize(380.dp, 400.dp),
+            position = WindowPosition(Alignment.BottomEnd),
+        ),
+        alwaysOnTop = true,
+        resizable = false,
+    ) {
+        AppTheme(
+            runtime.uiPrefs,
+            runtime.themeScheme(dark),
+            dark,
+            chrome = runtime.chromeStyle(),
+            extra = runtime.extraColors(dark),
+        ) {
+            LaunchedEffect(runtime.timerRunning) {
+                while (runtime.timerRunning) {
+                    kotlinx.coroutines.delay(1_000)
+                    runtime.timerTick(1)
+                }
+            }
+            FocusTimerWindow(runtime)
+        }
     }
 }

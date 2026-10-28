@@ -14,6 +14,7 @@
 | [`agent-workflow-ui.md`](agent-workflow-ui.md) | Agent 工作流清单的**设计说明**：放哪、数据模型、工具契约、状态机、视觉规格、明确不做什么、已知缺口 | 实现记录（2026-10-26） | 改清单 UI / 讨论 `set_plan` 语义 / 加步骤状态 |
 | [`plan-backend.md`](plan-backend.md) | 学习计划后端（事件溯源 + SQLite）：模块分工、与设计稿的差异、命令语义、测试、P3/P4 待接 | 实现记录（2026-10-26） | 改 `:features:learning-process` / 接 UI / 加 plan 工具 |
 | [`plan-page.md`](plan-page.md) | 计划页：上半一周一格、下半选中周的那一天；数据全部来自 plan 后端的 view model | 实现记录（2026-10-27） | 改计划页 / 接视图 / 讨论「周视图该显示什么」 |
+| [`focus-timer.md`](focus-timer.md) | 计时器小窗：为什么独立窗口、倒计时（有进度条）/ 正计时（无进度条）、结束记入分钟数、边界与验证 | 实现记录（2026-10-28） | 改计时器 / 讨论「计时要不要进主窗口」 |
 | [`conversation-redesign.md`](conversation-redesign.md) | 会话页五层信息、三态、三动作、撤销语义 | 实现记录（2026-10-24） | 改会话页 UI / 理解「过程与结论分离」 |
 | [`roadmap.md`](roadmap.md) | 已知缺口与优先级（能力面、视觉、插件市场、端） | 活文档 | 动手前先查有没有人记过这个坑 |
 | [`eval-prompts.md`](eval-prompts.md) | 验收题库（送检用，与提示词里的示例互为镜像） | 活文档（测试配套） | 调提示词后自测、验收 AI 能力 |
