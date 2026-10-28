@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPlacement
+import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import dev.trellis.ui.LocalPluginImage
@@ -234,7 +235,10 @@ private fun TimerWindow(runtime: AppRuntime) {
     Window(
         onCloseRequest = { runtime.closeTimer() },
         title = "计时 · " + runtime.timerTaskTitle,
-        state = rememberWindowState(size = DpSize(380.dp, 330.dp)),
+        state = rememberWindowState(
+            size = DpSize(380.dp, 400.dp),
+            position = WindowPosition(Alignment.BottomEnd),
+        ),
         alwaysOnTop = true,
         resizable = false,
     ) {
