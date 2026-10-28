@@ -34,6 +34,8 @@ private fun currentIsoWeek(): String = "%04d-W%02d".format(
 class PlanTools(
     private val service: () -> LearningPlanService?,
     private val onChanged: () -> Unit,
+    /** 设置页里的「每天预计投入」×7；没设置就是 null，计划就只记标题和目标。 */
+    private val weeklyCapacity: () -> Int? = { null },
 ) {
 
     val guidance: String = listOf(
@@ -152,6 +154,7 @@ class PlanTools(
                 env(null, "plan.create"),
                 title = title,
                 goal = title,
+                weeklyCapacityMinutes = weeklyCapacity(),
             )
             val createdValue = created.value
                 ?: return ToolResult("建计划失败：" + (created.error?.message ?: "未知原因"), isError = true)

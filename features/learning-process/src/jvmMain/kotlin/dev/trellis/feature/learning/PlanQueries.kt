@@ -243,6 +243,23 @@ private fun SqliteLearningPlanService.unitStateIn(planId: String, week: String, 
     return if (week == currentWeek()) "this_week" else "future"
 }
 
+/**
+ * 单元 → 本周那一次 occurrence。
+ *
+ * 一个单元在一周里可能被排到好几天（拆分/移动都会多出一条），这里只要「还没做完的最早一条」：
+ * 计时器挂着它就行，把几分钟分摊到几段上没有意义。
+ */
+internal fun SqliteLearningPlanService.unitOccurrenceOf(planId: String, week: String, unitId: String): String? =
+    connection.prepareStatement(
+        "SELECT o.id FROM occurrence o JOIN commitment c ON c.id = o.commitment_id " +
+            "JOIN plan_version pv ON pv.id = c.plan_version_id " +
+            "WHERE pv.plan_id = ? AND c.week = ? AND o.unit_id = ? AND o.status IN ('planned','done') " +
+            "ORDER BY CASE WHEN o.status = 'planned' THEN 0 ELSE 1 END, o.day LIMIT 1",
+    ).use { ps ->
+        ps.setString(1, planId); ps.setString(2, week); ps.setString(3, unitId)
+        ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+    }
+
 private fun SqliteLearningPlanService.dayItems(planId: String, day: String): List<WeekDayItem> =
     connection.prepareStatement(
         "SELECT d.id, COALESCE(d.unit_title, d.todo_title), d.status, d.estimate_minutes, d.carried_from " +
