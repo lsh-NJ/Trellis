@@ -239,6 +239,118 @@ class AppRuntime private constructor() {
     /** 撤回窗口：5 秒，够看清「删错了」，又不至于让界面一直挂着一个条。 */
     private val undoWindowMs = 5_000L
 
+    // ---- 计时器小窗 ----
+
+    /** 计时窗口开着没有。关窗只清状态，不往任务里写东西。 */
+    var timerVisible by mutableStateOf(false)
+        private set
+
+    var timerTaskId by mutableStateOf<String?>(null)
+        private set
+
+    var timerTaskTitle by mutableStateOf("")
+        private set
+
+    var timerMode by mutableStateOf(FocusMode.Countdown)
+        private set
+
+    /** 还没开始时选的番茄钟长度（分钟）。 */
+    var timerMinutes by mutableStateOf(25)
+        private set
+
+    /** 倒计时的总秒数；正计时恒为 0。 */
+    var timerTotalSeconds by mutableStateOf(0)
+        private set
+
+    var timerElapsedSeconds by mutableStateOf(0)
+        private set
+
+    var timerRunning by mutableStateOf(false)
+        private set
+
+    var timerFinished by mutableStateOf(false)
+        private set
+
+    /** 已经开过表（或跑过）——这时不再允许切换模式/改分钟数，免得把进行中的计时改乱。 */
+    val timerStarted: Boolean
+        get() = timerElapsedSeconds > 0 || timerRunning || timerFinished
+
+    /** 从任务行点 ⏲ 进来：默认番茄钟 25 分钟，等人点「开始」。 */
+    fun openTimer(task: Task) {
+        timerTaskId = task.id
+        timerTaskTitle = task.title
+        timerVisible = true
+        timerMode = FocusMode.Countdown
+        timerMinutes = 25
+        timerTotalSeconds = 0
+        timerElapsedSeconds = 0
+        timerRunning = false
+        timerFinished = false
+    }
+
+    fun closeTimer() {
+        timerVisible = false
+        timerRunning = false
+    }
+
+    fun setTimerMode(mode: FocusMode) {
+        if (timerStarted) return
+        timerMode = mode
+    }
+
+    fun bumpTimerMinutes(delta: Int) {
+        timerMinutes = clampTimerMinutes(timerMinutes + delta)
+    }
+
+    fun setTimerMinutes(minutes: Int) {
+        timerMinutes = clampTimerMinutes(minutes)
+    }
+
+    fun startTimer() {
+        timerTotalSeconds = if (timerMode == FocusMode.Countdown) timerMinutes * 60 else 0
+        timerElapsedSeconds = 0
+        timerFinished = false
+        timerRunning = true
+    }
+
+    /** 「再来一轮」：同一任务、同样的长度，重新开始。 */
+    fun restartTimer() {
+        startTimer()
+    }
+
+    fun toggleTimerPause() {
+        if (timerFinished) return
+        if (timerElapsedSeconds >= timerTotalSeconds && timerMode == FocusMode.Countdown && timerTotalSeconds > 0) return
+        timerRunning = !timerRunning
+    }
+
+    /** 番茄钟加时：总时长变长，接着跑。 */
+    fun extendTimer(minutes: Int) {
+        if (timerMode != FocusMode.Countdown) return
+        timerTotalSeconds += minutes * 60
+        timerFinished = false
+        timerRunning = true
+    }
+
+    /** 每秒被窗口里的协程调一次。倒计时到 0 就停住并置 finished。 */
+    fun timerTick(seconds: Int = 1) {
+        if (!timerRunning) return
+        val step = advanceTimer(timerElapsedSeconds, seconds, timerTotalSeconds, timerMode)
+        timerElapsedSeconds = step.elapsedSeconds
+        if (step.finished) {
+            timerFinished = true
+            timerRunning = false
+        }
+    }
+
+    /** 结束并把「投入分钟」记到那条任务上（不足一分钟按一分钟算）。 */
+    suspend fun stopTimerAndLog() {
+        val task = timerTaskId?.let { id -> tasks.firstOrNull { it.id == id } }
+        val minutes = minutesToLog(timerElapsedSeconds)
+        if (task != null && minutes > 0) logTime(task, minutes)
+        closeTimer()
+    }
+
     // ---- 对话式管理员 ----
 
     /** 对话页的全部内容：用户发言、管理员回答、以及它干活的过程。 */
