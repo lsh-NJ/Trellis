@@ -57,27 +57,15 @@ fun PluginsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     var expanded by remember { mutableStateOf(emptySet<String>()) }
 
     Column(modifier) {
-        // 这一页是从设置页进来的，给一条回去的路。
-        Text(
-            "← 返回设置",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.clickable { runtime.currentTab = TAB_SETTINGS },
+        // 二级页统一头部：返回箭头贴在标题左边（之前是一行小字「← 返回设置」，像脚注）。
+        ChromeSecondaryHeader(
+            title = "插件",
+            subtitle = runtime.pluginsDir.absolutePath + "　·　把两份 JSON 丢进去，重启就会多一张卡片",
+            onBack = { runtime.currentTab = TAB_SETTINGS },
+            trailing = {
+                TextButton(onClick = { runtime.openPluginsFolder() }) { Text("打开插件目录") }
+            },
         )
-        Spacer(Modifier.height(6.dp))
-        // 标题、目录、一个按钮挤在一行：这一页真正要看的是下面的列表，
-        // 头部占两行只是把「最近一次出事的插件」往下推。
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("插件", style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.width(12.dp))
-            Text(
-                runtime.pluginsDir.absolutePath + "　·　把两份 JSON 丢进去，重启就会多一张卡片",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
-            )
-            TextButton(onClick = { runtime.openPluginsFolder() }) { Text("打开插件目录") }
-        }
         Spacer(Modifier.height(12.dp))
 
         // 「彻底删除」不可撤销，所以要点两下：第一下只是把按钮换成确认，第二下才真删。

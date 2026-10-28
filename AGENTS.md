@@ -118,7 +118,7 @@ Set-Location C:\Users\breakM\Desktop\work\CreateandTrack
 | 计时器小窗（倒计时 / 正计时 / 结束记入） | `app/desktop/.../FocusTimer.kt`（模型 + 窗口）、`AppRuntime` 的 `timer*` 状态与 `openTimer/stopTimerAndLog`、`Main.kt` 的第二 `Window`；说明见 `docs/focus-timer.md` |
 | 自然语言日期（「周三前」「3天后」） | `app/desktop/.../NaturalDates.kt` |
 | 插件页 / 诊断页 UI（两页都不在导航里：从设置页进去） | `app/desktop/.../PluginsScreen.kt`、`DiagnosticsScreen.kt` |
-| 设置页 UI（每日预计投入 / 插件设置分组） | `app/desktop/.../SettingsScreen.kt` + `StudyPrefs.kt`（`study.json`）；挂载点 `slot.settings.section` 原先挂在插件页底部，2026-10-28 移到这一页；同一天诊断页也撤出导航，改成这一页底部的「诊断」卡片，点进去，诊断页顶部有「← 返回设置」；插件页也一样撤出导航，改成这一页的「插件」卡片（显示插件数与错误数），插件页顶部同样有「← 返回设置」，导航最终只剩 任务 / 计划 / 对话 / 设置 四条 |
+| 设置页 UI（每日预计投入 / 插件设置分组） | `app/desktop/.../SettingsScreen.kt` + `StudyPrefs.kt`（`study.json`）；挂载点 `slot.settings.section` 原先挂在插件页底部，2026-10-28 移到这一页；同一天诊断页也撤出导航，改成这一页底部的「诊断」卡片，点进去，诊断页头部是「← 诊断」（返回箭头在标题左侧，二级页统一走 `Chrome.kt` 的 `ChromeSecondaryHeader`）；插件页也一样撤出导航，改成这一页的「插件」卡片（显示插件数与错误数），插件页头部同样是「← 插件」，导航最终只剩 任务 / 计划 / 对话 / 设置 四条 |
 | 存储后端（KV → JSON 文件） | `kernel/.../storage/*`；JVM 实现 `app/desktop/.../FileStorageBackend.kt` |
 | 时间源 | `kernel/.../time/KernelClock.kt`（禁止直接 `System.currentTimeMillis()`） |
 | 权限/审批 | `kernel/.../capability/*`、`kernel/.../approval/*`；桌面弹窗 `app/desktop/.../AskDialogs.kt` |

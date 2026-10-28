@@ -37,14 +37,10 @@ fun DiagnosticsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     val errors = runtime.kernelErrors
 
     Column(modifier) {
-        Text("诊断", style = MaterialTheme.typography.titleLarge)
-        Text("内核记下的事，不是插件自己说的", style = MaterialTheme.typography.labelSmall)
-        Spacer(Modifier.height(6.dp))
-        Text(
-            "← 返回设置",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.clickable { runtime.currentTab = TAB_SETTINGS },
+        ChromeSecondaryHeader(
+            title = "诊断",
+            subtitle = "内核记下的事，不是插件自己说的",
+            onBack = { runtime.currentTab = TAB_SETTINGS },
         )
         Spacer(Modifier.height(12.dp))
 
