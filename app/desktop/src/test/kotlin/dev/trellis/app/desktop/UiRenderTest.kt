@@ -65,14 +65,24 @@ class UiRenderTest {
             runtime.logTime(runtime.tasks.last(), 45)
         }
 
+        // 任务页：浅色 + 深色（这两张是评审时最常看的主界面）。
+        runtime.currentTab = TAB_TASKS
         val light = render(runtime, dark = false)
         val dark = render(runtime, dark = true)
-
         write("ui-shot.png", light)
         write("ui-shot-dark.png", dark)
-
         assertTrue(light.size > 5_000, "PNG 太小了，八成是空白画面：" + light.size)
         assertTrue(dark.size > 5_000, "深色截图太小了，八成是空白画面：" + dark.size)
+
+        // 计划页 / 对话页也各留一张：外壳组件（按钮、输入框、卡片）是三个页签共用的，
+        // 只拍任务页的话，改外壳时另外两页什么时候坏掉没人知道。
+        for ((tab, name) in listOf(TAB_PLAN to "ui-shot-plan.png", TAB_CHAT to "ui-shot-chat.png")) {
+            runtime.currentTab = tab
+            val shot = render(runtime, dark = false)
+            write(name, shot)
+            assertTrue(shot.size > 5_000, name + " 太小了，八成是空白画面：" + shot.size)
+        }
+        runtime.currentTab = TAB_TASKS
 
         runBlocking { runtime.shutdown() }
     }
