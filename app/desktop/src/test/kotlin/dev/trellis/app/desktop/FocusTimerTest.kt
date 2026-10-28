@@ -64,7 +64,7 @@ class FocusTimerTest {
         assertEquals(1, minutesToLog(1))
         assertEquals(1, minutesToLog(60))
         assertEquals(2, minutesToLog(61))
-        assertEquals(61, minutesToLog(3661))
+        assertEquals(62, minutesToLog(3661))
     }
 
     @Test

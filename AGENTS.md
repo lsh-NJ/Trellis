@@ -115,6 +115,7 @@ Set-Location C:\Users\breakM\Desktop\work\CreateandTrack
 | 学习计划后端（版本/承诺/occurrence/结算/复盘） | `sdk-domain/.../plan/Contract.kt` → `features/learning-process/.../SqliteLearningPlanService.kt`、`PlanCommands.kt`、`PlanQueries.kt`、`PlanRhythm.kt`；语义见 `docs/plan-backend.md` |
 | 任务页 UI（任务行/分组/新任务输入/撤销） | `app/desktop/.../AppScreen.kt` + `PlanUiPlugin.kt`（它们已是插件卡片） |
 | 计划页 UI（周视图 / 天条 / 当天安排） | `app/desktop/.../PlanScreen.kt` + `AppRuntime.refreshPlan`（数据全来自 `LearningPlanService` 的 view model） |
+| 计时器小窗（倒计时 / 正计时 / 结束记入） | `app/desktop/.../FocusTimer.kt`（模型 + 窗口）、`AppRuntime` 的 `timer*` 状态与 `openTimer/stopTimerAndLog`、`Main.kt` 的第二 `Window`；说明见 `docs/focus-timer.md` |
 | 自然语言日期（「周三前」「3天后」） | `app/desktop/.../NaturalDates.kt` |
 | 插件页 / 诊断页 UI | `app/desktop/.../PluginsScreen.kt`、`DiagnosticsScreen.kt` |
 | 存储后端（KV → JSON 文件） | `kernel/.../storage/*`；JVM 实现 `app/desktop/.../FileStorageBackend.kt` |

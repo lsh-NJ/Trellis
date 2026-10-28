@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -28,6 +29,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
 
 /**
  * 计时器的模型层（不碰 Compose，方便单测）。
@@ -36,7 +38,7 @@ import androidx.compose.ui.unit.sp
  * - 倒计时：番茄钟。有总时长、有进度条；到 0 停住并提示「时间到」。
  * - 正计时：只往上数，没有总时长也**没有进度条**（用户定的）。
  */
-internal enum class FocusMode { Countdown, Stopwatch }
+enum class FocusMode { Countdown, Stopwatch }
 
 /** 秒 → "mm:ss"；超过一小时给 "h:mm:ss"。 */
 internal fun formatClock(seconds: Int): String {
@@ -92,6 +94,7 @@ internal fun FocusTimerWindow(runtime: AppRuntime) {
         else -> elapsed
     }
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val scope = rememberCoroutineScope()
 
     Surface(color = MaterialTheme.colorScheme.background) {
         Column(
@@ -143,6 +146,19 @@ internal fun FocusTimerWindow(runtime: AppRuntime) {
                 }
                 Spacer(Modifier.height(2.dp))
                 ChromeButton("开始", onClick = { runtime.startTimer() }, modifier = Modifier.fillMaxWidth())
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { scope.launch { runtime.logManualMinutes(25) } }
+                        .padding(vertical = 4.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "不计时，直接记 25 分钟",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = muted,
+                    )
+                }
             } else {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ChromeButton(
@@ -160,7 +176,7 @@ internal fun FocusTimerWindow(runtime: AppRuntime) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ChromeButton(
                         label = "结束并记入",
-                        onClick = { runtime.stopTimerAndLog() },
+                        onClick = { scope.launch { runtime.stopTimerAndLog() } },
                         modifier = Modifier.weight(1f),
                         filled = true,
                     )
@@ -174,8 +190,8 @@ internal fun FocusTimerWindow(runtime: AppRuntime) {
 @Composable
 private fun ModeRow(runtime: AppRuntime, mode: FocusMode) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        ModeChip("倒计时", selected = mode == FocusMode.Countdown) { runtime.setTimerMode(FocusMode.Countdown) }
-        ModeChip("正计时", selected = mode == FocusMode.Stopwatch) { runtime.setTimerMode(FocusMode.Stopwatch) }
+        ModeChip("倒计时", selected = mode == FocusMode.Countdown) { runtime.chooseTimerMode(FocusMode.Countdown) }
+        ModeChip("正计时", selected = mode == FocusMode.Stopwatch) { runtime.chooseTimerMode(FocusMode.Stopwatch) }
     }
 }
 
@@ -222,7 +238,7 @@ private fun MinutesRow(runtime: AppRuntime) {
                     .height(26.dp)
                     .clip(RoundedCornerShape(4.dp))
                     .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(4.dp))
-                    .clickable { runtime.setTimerMinutes(preset) }
+                    .clickable { runtime.chooseTimerMinutes(preset) }
                     .padding(horizontal = 8.dp),
                 contentAlignment = Alignment.Center,
             ) {

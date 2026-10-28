@@ -25,6 +25,7 @@ import dev.trellis.domain.Plan
 import dev.trellis.domain.PlanService
 import dev.trellis.domain.PlanSummary
 import dev.trellis.domain.Task
+import dev.trellis.domain.TaskId
 import dev.trellis.domain.TaskStatus
 import dev.trellis.domain.plan.Actor
 import dev.trellis.domain.plan.CommitmentDraft
@@ -245,7 +246,7 @@ class AppRuntime private constructor() {
     var timerVisible by mutableStateOf(false)
         private set
 
-    var timerTaskId by mutableStateOf<String?>(null)
+    var timerTaskId by mutableStateOf<TaskId?>(null)
         private set
 
     var timerTaskTitle by mutableStateOf("")
@@ -275,7 +276,7 @@ class AppRuntime private constructor() {
     val timerStarted: Boolean
         get() = timerElapsedSeconds > 0 || timerRunning || timerFinished
 
-    /** 从任务行点 ⏲ 进来：默认番茄钟 25 分钟，等人点「开始」。 */
+    /** 从任务行点 ⏱ 进来：默认番茄钟 25 分钟，等人点「开始」。 */
     fun openTimer(task: Task) {
         timerTaskId = task.id
         timerTaskTitle = task.title
@@ -293,7 +294,7 @@ class AppRuntime private constructor() {
         timerRunning = false
     }
 
-    fun setTimerMode(mode: FocusMode) {
+    fun chooseTimerMode(mode: FocusMode) {
         if (timerStarted) return
         timerMode = mode
     }
@@ -302,7 +303,7 @@ class AppRuntime private constructor() {
         timerMinutes = clampTimerMinutes(timerMinutes + delta)
     }
 
-    fun setTimerMinutes(minutes: Int) {
+    fun chooseTimerMinutes(minutes: Int) {
         timerMinutes = clampTimerMinutes(minutes)
     }
 
@@ -341,6 +342,13 @@ class AppRuntime private constructor() {
             timerFinished = true
             timerRunning = false
         }
+    }
+
+    /** 不跑计时、直接把固定分钟数记到这条任务上（老的「记 25 分钟」挪进了窗口）。 */
+    suspend fun logManualMinutes(minutes: Int) {
+        val task = timerTaskId?.let { id -> tasks.firstOrNull { it.id == id } }
+        if (task != null) logTime(task, minutes)
+        closeTimer()
     }
 
     /** 结束并把「投入分钟」记到那条任务上（不足一分钟按一分钟算）。 */
