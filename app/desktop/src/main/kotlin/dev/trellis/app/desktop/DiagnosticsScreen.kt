@@ -1,5 +1,6 @@
 package dev.trellis.app.desktop
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -27,6 +28,8 @@ import java.time.format.DateTimeFormatter
  * 上面是「最近操作」—— 装、启用、停用、删除、彻底删除都留一行，重启之后还在
  * （`~/.trellis/audit.log`）。用户问「谁把插件删了」时，这里就是答案。
  * 下面是「出过什么事」—— 全部内核错误，按发生顺序。
+ *
+ * 这一页不在导航里：从设置页的「诊断」那块进来（左侧导航会把「设置」点亮）。
  */
 @Composable
 fun DiagnosticsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
@@ -36,6 +39,13 @@ fun DiagnosticsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     Column(modifier) {
         Text("诊断", style = MaterialTheme.typography.titleLarge)
         Text("内核记下的事，不是插件自己说的", style = MaterialTheme.typography.labelSmall)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "← 返回设置",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.clickable { runtime.currentTab = TAB_SETTINGS },
+        )
         Spacer(Modifier.height(12.dp))
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {

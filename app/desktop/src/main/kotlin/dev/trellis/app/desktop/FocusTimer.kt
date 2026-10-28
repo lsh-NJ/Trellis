@@ -146,18 +146,21 @@ internal fun FocusTimerWindow(runtime: AppRuntime) {
                 }
                 Spacer(Modifier.height(2.dp))
                 ChromeButton("开始", onClick = { runtime.startTimer() }, modifier = Modifier.fillMaxWidth())
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { scope.launch { runtime.logManualMinutes(25) } }
-                        .padding(vertical = 4.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        "不计时，直接记 25 分钟",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = muted,
-                    )
+                // 计划节点不认「直接记 25 分钟」：session 记的是真实时间段，起点得是现在。
+                if (!runtime.timerOnPlanNode) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { scope.launch { runtime.logManualMinutes(25) } }
+                            .padding(vertical = 4.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            "不计时，直接记 25 分钟",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = muted,
+                        )
+                    }
                 }
             } else {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
