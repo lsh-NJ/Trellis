@@ -23,7 +23,7 @@
 
 ```powershell
 $env:JAVA_HOME = "$env:USERPROFILE\.jdks\jdk17"; $env:Path = "$env:JAVA_HOME\bin;$env:Path"
-Set-Location C:\Users\breakM\Desktop\work\CreateandTrack
+Set-Location C:\Users\breakM\Desktop\work\Trellis
 
 .\run-app.ps1                      # 跑桌面应用（等价的：.\run-app.cmd、双开目录） 
 .\run-app.ps1 --check              # 只编译，验证环境
@@ -276,7 +276,7 @@ ChatScreen ──> AppRuntime.sendChat()
 - **提交前先核对清单**：`git diff --stat` 一条条看，每条都得是自己这轮改的。裹进别人的改动不会报错、不会冲突，但历史会变成「他做的事挂在他的提交消息下」——2026-10-28 就真发生过：一条「计划页加计划设置」的提交里 13 个文件有 8 个是另一个会话的节点改动（`OpenNode.kt`、`PlanNodes.kt`、`PlanNodesTest.kt`、`PlanQueries.kt`、`SqliteLearningPlanService.kt`、`LearningPlanService.kt` 等），事后只能靠读 diff 才能还原归属。
 - **只 add 具体文件**，别 `git add -A`、别 `git commit -a`。工作区里随时可能有别人的半成品（尤其 `.kotlin/` 这类构建副产物），`-A` 一律带走：
   ```powershell
-  wsl.exe -e bash -lc "cd /mnt/c/Users/breakM/Desktop/work/CreateandTrack && git add path/to/A.kt path/to/B.kt && git status --short"
+  wsl.exe -e bash -lc "cd /mnt/c/Users/breakM/Desktop/work/Trellis && git add path/to/A.kt path/to/B.kt && git status --short"
   ```
 - **一个能编译的完整步子提交一次**，别攒一整天。未提交的改动是并行会话最大的风险来源。
 - 提交信息写「改了什么 + 为什么」，仓库历史一直是这个风格。
@@ -287,8 +287,8 @@ ChatScreen ──> AppRuntime.sendChat()
 这台机器 Windows 侧**没有** `git.exe`（`where.exe git` 是空的），只有 WSL Ubuntu 里的 2.53.0：
 
 ```powershell
-wsl.exe -e bash -lc "cd /mnt/c/Users/breakM/Desktop/work/CreateandTrack && git status --short"
-wsl.exe -e bash -lc "cd /mnt/c/Users/breakM/Desktop/work/CreateandTrack && git add -A && git commit -m '...'"
+wsl.exe -e bash -lc "cd /mnt/c/Users/breakM/Desktop/work/Trellis && git status --short"
+wsl.exe -e bash -lc "cd /mnt/c/Users/breakM/Desktop/work/Trellis && git add -A && git commit -m '...'"
 ```
 
 别用 PowerShell 读 `.git/logs/HEAD` 或 `.git/COMMIT_EDITMSG`：那是 UTF-8，PowerShell 默认按 GBK 解，中文提交信息会变成「璁╂ā鍨嬭嚜宸」。要读就走 `wsl git log`。
@@ -298,14 +298,14 @@ wsl.exe -e bash -lc "cd /mnt/c/Users/breakM/Desktop/work/CreateandTrack && git a
 ### 10.4 真并行时才开 worktree
 
 ```powershell
-wsl.exe -e bash -lc "cd /mnt/c/Users/breakM/Desktop/work/CreateandTrack && git worktree add ../Trellis-aw -b feat/activity-watch"
+wsl.exe -e bash -lc "cd /mnt/c/Users/breakM/Desktop/work/Trellis && git worktree add ../Trellis-aw -b feat/activity-watch"
 
 # 新目录里开发。必须换 home：两个实例默认都读写 ~/.trellis，会抢同一份
 # store.json / plugins/ / chat/*.json / audit.log，互相看到对方装的插件。
 $env:TRELLIS_HOME = "C:\Users\breakM\Desktop\work\.trellis-aw"
 
 # 合回 main 后拆掉
-wsl.exe -e bash -lc "cd /mnt/c/Users/breakM/Desktop/work/CreateandTrack && git merge feat/activity-watch && git worktree remove ../Trellis-aw"
+wsl.exe -e bash -lc "cd /mnt/c/Users/breakM/Desktop/work/Trellis && git merge feat/activity-watch && git worktree remove ../Trellis-aw"
 ```
 
 代价：两份 `build/`（各编译一遍）、两个 Gradle daemon 抢内存（`gradle.properties` 只有 `-Xmx2048m`）、合并冲突自己解。40 个提交、4MB 的仓库用不着天天开 worktree。
