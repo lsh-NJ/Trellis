@@ -37,6 +37,8 @@ class GoalAsideSlot(
     private val service: GoalService,
     private val today: () -> String,
     private val onOpenChat: () -> Unit,
+    /** 出计划时按多少分钟排。读宿主的 study.json，插件自己不存这份设置。 */
+    private val dailyMinutes: () -> Int = { 60 },
 ) : DynamicSlot {
 
     override val id: String = "goal-bar"
@@ -62,18 +64,50 @@ class GoalAsideSlot(
         ),
     )
 
+    /**
+     * 采集中的常驻条：**直接在这里问，直接在这里答**。
+     *
+     * 之前的版本只有一个「去回答」按钮，点了只是切到对话页 —— 用户到了对话页，
+     * 看到的是模型用一段话把问题说了一遍，既没有选项也没有输入口；随手打一句答案，
+     * 那句话又会被意图分类判成「聊天」，而聊天按设计不给任何工具，
+     * 于是模型只能回「我这没有能记录的工具」。一条链路三处断，用户看到的就是「没让我回答」。
+     *
+     * 现在把问题放在卡片上：选项是枚举值，点一下直接写进契约，不经过模型、不经过意图分类。
+     * 一次只问一个字段，答完刷出下一个；问完了给「出计划」，出完给「就这样开始」。
+     */
     private fun collecting(mirror: GoalMirror): UiNode {
         val confidence = Confidence.of(mirror.contract)
         val missing = Confidence.remaining(mirror.contract)
-        return UiNode.Column(
-            children = listOf(
-                text("正在收集", style = UiTextStyle.Caption, tone = UiTone.Muted),
-                text(mirror.contract.statement.ifBlank { "（还没说目标）" }, weight = UiTextWeight.Medium),
-                text("还差 " + missing + " 个信息", size = UiTextSize.Small, tone = UiTone.Muted),
-                UiNode.Progress((confidence * 100).toInt(), 100, "信息完整度"),
-                UiNode.Button("去回答", tap("open")),
-            ),
+        val children = mutableListOf<UiNode>()
+        children += text("正在收集", style = UiTextStyle.Caption, tone = UiTone.Muted)
+        children += text(mirror.contract.statement.ifBlank { "（还没说目标）" }, weight = UiTextWeight.Medium)
+        children += text("还差 " + missing + " 个信息", size = UiTextSize.Small, tone = UiTone.Muted)
+        children += UiNode.Progress((confidence * 100).toInt(), 100, "信息完整度")
+
+        val key = GoalEngine.questions(mirror).firstOrNull()
+        if (key == null) {
+            // 问完了（或已经问满三轮）：决定权交回用户，别自动开工。
+            children += text("信息够了，可以出计划了。", size = UiTextSize.Small)
+            children += UiNode.Button("出计划", tap("draft"))
+            return UiNode.Column(children = children)
+        }
+
+        children += text(key.label, size = UiTextSize.Small, weight = UiTextWeight.Medium)
+        // 一列，不是两列：侧条只有 260dp，切成两栏后每个按钮只剩 5 个字，
+        // 「在职，只有晚上」会被折成两行 —— 看着像排版坏了，也更容易点错。
+        children += UiNode.Column(
+            children = GoalQuestions.options(key).map { option ->
+                UiNode.Button(option, tap("answer", "field" to key.name, "value" to option))
+            },
         )
+        // 选项是枚举值不是封闭集合：想自己说就写在框里，回车记下。
+        children += UiNode.Input(
+            hint = "或自己说一句",
+            submitLabel = "记下",
+            onSubmit = tap("answer", "field" to key.name),
+        )
+        children += UiNode.Button(GoalQuestions.SKIP_LABEL, tap("skip", "field" to key.name))
+        return UiNode.Column(children = children)
     }
 
     private fun draft(mirror: GoalMirror): UiNode {
@@ -146,11 +180,46 @@ class GoalAsideSlot(
         ),
     )
 
-    override suspend fun perform(handler: String, payload: Map<String, String>): ActionOutcome =
-        when (handler) {
+    override suspend fun perform(handler: String, payload: Map<String, String>): ActionOutcome {
+        return when (handler) {
             "start", "open" -> {
                 onOpenChat()
                 ActionOutcome(true, "已切到对话页")
+            }
+            // 卡片上的选项与输入框都走这里：写进契约、推进轮次、立刻刷出下一个问题。
+            "answer" -> {
+                val key = fieldOf(payload)
+                    ?: return ActionOutcome(false, unknownField(payload["field"]))
+                val value = payload["value"]?.trim().orEmpty()
+                if (value.isEmpty()) {
+                    return ActionOutcome(false, "没收到内容：点上面某个选项，或在框里写一句再按「记下」")
+                }
+                val mirror = service.answer(key, value)
+                val next = GoalEngine.questions(mirror).firstOrNull()
+                ActionOutcome(
+                    true,
+                    "记下了：" + key.label + " = " + value +
+                        if (next == null) "。信息够了，点「出计划」。" else "。下一个：" + next.label,
+                )
+            }
+            "skip" -> {
+                val key = fieldOf(payload)
+                    ?: return ActionOutcome(false, unknownField(payload["field"]))
+                val mirror = service.skip(key)
+                val next = GoalEngine.questions(mirror).firstOrNull()
+                ActionOutcome(
+                    true,
+                    "跳过了「" + key.label + "」。" +
+                        if (next == null) "点「出计划」安排今天。" else "下一个：" + next.label,
+                )
+            }
+            "draft" -> {
+                val plan = service.draft(dailyMinutes()).dayPlan(today())
+                ActionOutcome(
+                    true,
+                    if (plan == null) "计划排好了" else "计划排好了：今天 " + plan.entries.size +
+                        " 件事，共 " + plan.totalMinutes + " 分钟"
+                )
             }
             "confirm" -> {
                 service.update { GoalEngine.confirm(it) }
@@ -173,8 +242,21 @@ class GoalAsideSlot(
                 service.update { it.copy(phase = GoalPhase.ACTIVE, cycleStartedOn = today()) }
                 ActionOutcome(true, "已顺延一期")
             }
-            else -> ActionOutcome(false, "没有这个动作：" + handler + "；可用的是 start / open / confirm / review / review-start / review-skip")
+            else -> ActionOutcome(
+                false,
+                "没有这个动作：" + handler +
+                    "；可用的是 start / open / answer / skip / draft / confirm / review / review-start / review-skip",
+            )
         }
+    }
+
+    private fun fieldOf(payload: Map<String, String>): FieldKey? =
+        payload["field"]?.let { raw -> enumValues<FieldKey>().firstOrNull { it.name == raw } }
+
+    /** 报错要能指导修改：把全部可用字段列出来。 */
+    private fun unknownField(raw: String?): String =
+        "没有这个字段：" + (raw ?: "（空）") + "；可用的是 " +
+            enumValues<FieldKey>().joinToString { it.name }
 }
 
 /**

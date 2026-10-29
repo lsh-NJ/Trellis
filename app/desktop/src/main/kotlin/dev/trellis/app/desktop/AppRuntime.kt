@@ -74,6 +74,8 @@ import dev.trellis.ui.ExtraColors
 import dev.trellis.ui.SlotCell
 import dev.trellis.kernel.plugin.Plugin
 import dev.trellis.kernel.plugin.PluginManifest
+import dev.trellis.kernel.time.KernelClock
+import dev.trellis.kernel.time.SystemClock
 import dev.trellis.kernel.context.ContextSection
 import dev.trellis.kernel.context.Contexts
 import dev.trellis.kernel.approval.ActionRequest
@@ -251,6 +253,15 @@ class AppRuntime private constructor() {
 
     lateinit var home: File
         private set
+
+    /**
+     * 业务时间的唯一来源（docs/time-conventions.md）。
+     *
+     * 传给内核的是**同一个实例**：插件拿 `ctx.clock`，宿主拿这里，两边差一秒都会
+     * 让「昨天结算没结算」这类判断对不上。将来抽出带 zone 的 `TrellisClock` 时，
+     * 换掉这一个字段就行，调用点不用动。
+     */
+    internal val clock: KernelClock = SystemClock
 
     /**
      * 「目标达成规划」插件的实例。
@@ -1386,6 +1397,17 @@ class AppRuntime private constructor() {
         val text = request.trim()
         if (text.isEmpty() || chatBusy) return
 
+        // 目标正在收信息时，用户打回来的短答多半就是答案本身。
+        // 「4 小时以上」这种句子判不出意图，会被路由成聊天 —— 而聊天按设计没有工具，
+        // 模型只能回「我这没有能记录的工具」。所以先在契约里落库，再决定要不要问模型：
+        // 记上了就不用问了，那句话本身就是一句完整回复。
+        goalPlugin?.serviceOrNull()?.captureSpokenAnswer(text)?.let { captured ->
+            chatChoices = emptyList()
+            addChatLine(ChatRole.User, text)
+            addChatLine(ChatRole.Assistant, captured.message)
+            return
+        }
+
         val config = LlmConfigLoader.load(home)
         if (config == null) {
             addChatLine(ChatRole.Step, llmSetupHint())
@@ -1433,7 +1455,8 @@ class AppRuntime private constructor() {
             val goalTools = GoalTools(
                 service = { goalPlugin?.serviceOrNull() },
                 dailyMinutes = { studyPrefs.dailyMinutes },
-                today = { java.time.LocalDate.now().toString() },
+                today = { todayIso() },
+                nowMs = { clock.nowMs() },
             )
             val allTools = tools.all + screenTools.all + layoutTools.all + styleTools.all +
                 workflowTools.all + bilibiliTools.all + taskTools.all + planTools.all + goalTools.all
@@ -2531,7 +2554,12 @@ class AppRuntime private constructor() {
      */
     private var effortMemo: EffortMemo? = null
 
-    private data class EffortMemo(val dayStartMs: Long, val readAtMs: Long, val value: TodayEffort?)
+    private data class EffortMemo(
+        val dayStartMs: Long,
+        /** 读取时刻，用**单调钟**：缓存年龄是时长，墙钟会被校时跳变影响。 */
+        val readAtMonotonicMs: Long,
+        val value: TodayEffort?,
+    )
 
     /** 轮询间隔，来自 settings.json（默认 60 秒）。 */
     internal val activitySyncIntervalMs: Long
@@ -2630,6 +2658,19 @@ class AppRuntime private constructor() {
     }
 
     /**
+     * 业务日期：从**注入的时钟** + 本地时区推出来，不直接取 `LocalDate.now()`。
+     *
+     * 规范见 docs/time-conventions.md：业务时间只有一个来源。现在直取系统时间也能跑，
+     * 但等「TRELLIS_TODAY 跳日期」接进来时，直取的那些地方不会跟着跳 ——
+     * 那样调出来的跨天、跨周行为全是假的（真到点才会跑，等于没验）。
+     *
+     * zone 暂时用系统默认：`TrellisClock`（带 zone 的那个类型）还没抽出来，
+     * 它落地之后这里换成 `clock.zone` 就行，调用点不用动。
+     */
+    private fun todayIso(): String =
+        Instant.ofEpochMilli(clock.nowMs()).atZone(ZoneId.systemDefault()).toLocalDate().toString()
+
+    /**
      * 今天的实际投入，给「目标达成规划」插件用。
      *
      * 这里定死三件事：
@@ -2638,11 +2679,13 @@ class AppRuntime private constructor() {
      * 2. 按「当天 + [EFFORT_MEMO_MS]」缓存。卡片的重新求值很频繁，不能每次都是一次聚合查询。
      * 3. 有 AFK 记录才敢把这个数当「在电脑前的时间」；没有就如实交给插件，由它决定怎么说。
      */
-    internal suspend fun goalTodayEffort(nowMs: Long = System.currentTimeMillis()): TodayEffort? {
+    internal suspend fun goalTodayEffort(nowMs: Long = clock.nowMs()): TodayEffort? {
         val dayStart = startOfLocalDay(nowMs)
+        // 缓存年龄是「过了多久」，用单调钟量：用户校时之后墙钟会跳，
+        // 拿墙钟相减会让缓存要么永不过期、要么立刻过期（docs/time-conventions.md §4）。
+        val readAt = clock.monotonicMs()
         val memo = effortMemo
-        // nowMs - readAtMs 可能是负的（用户改了系统时间），那种情况一律当过期。
-        if (memo != null && memo.dayStartMs == dayStart && nowMs - memo.readAtMs in 0..EFFORT_MEMO_MS) {
+        if (memo != null && memo.dayStartMs == dayStart && readAt - memo.readAtMonotonicMs in 0..EFFORT_MEMO_MS) {
             return memo.value
         }
         val settingsFile = File(File(home, "activity"), "settings.json")
@@ -2657,7 +2700,7 @@ class AppRuntime private constructor() {
         } else {
             null
         }
-        effortMemo = EffortMemo(dayStart, nowMs, value)
+        effortMemo = EffortMemo(dayStart, readAt, value)
         return value
     }
 
@@ -2724,12 +2767,12 @@ class AppRuntime private constructor() {
             val pluginsDir = File(home, "plugins").apply { mkdirs() }
 
             // 目标达成规划：required = true，卸载会被内核拒绝。
-            // 「每天投入」读宿主的 study.json，「今天」用本地时区算 ——
-            // 插件在 common 里没有时区，猜一个会比不猜更糟。
+            // 「每天投入」读宿主的 study.json，「今天」走注入时钟（见 todayIso）——
+            // 插件在 common 里没有时区，宿主不给，它只能猜，而猜一个比不猜更糟。
             // 单独留一个引用：内核只发 PluginInfo，截图和诊断要能直接摆状态。
             val goalPlugin = GoalPlugin(
                 dailyMinutes = { runtime.studyPrefs.dailyMinutes },
-                today = { java.time.LocalDate.now().toString() },
+                today = { runtime.todayIso() },
                 onOpenChat = { runtime.currentTab = TAB_CHAT },
                 // 活动数据是**可选依赖**：没启用过采集 → null，
                 // 首页卡上那一行就不出现（不显示 0，那是另一个意思）。
@@ -2740,6 +2783,9 @@ class AppRuntime private constructor() {
                 KernelConfig(
                     sdkVersion = SemVer.parse("1.0.0"),
                     platform = Platform.JVM,
+                    // 和宿主共用一个时钟实例：插件走 ctx.clock，宿主走 this.clock，
+                    // 两边对「今天」的判断必须来自同一个源（docs/time-conventions.md §2）。
+                    clock = runtime.clock,
                     pluginsDir = pluginsDir.absolutePath,
                     loaders = listOf(
                         BuiltinLoader(

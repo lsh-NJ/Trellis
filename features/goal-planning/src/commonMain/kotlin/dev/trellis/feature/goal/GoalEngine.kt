@@ -89,6 +89,24 @@ object GoalEngine {
     }
 
     /**
+     * 已经问到第几轮 = 问过的必备字段数 ÷ 2，向上取整。
+     *
+     * 为什么由这里算，而不是让调用方自己加一：`Confidence.MAX_ROUNDS` 是**一条闸门**，
+     * 得有东西推动它。之前 `collectingRounds` 谁都不写，于是「最多问三轮」在真实链路上
+     * 从来没生效过 —— 建了目标之后可以无限问下去。
+     *
+     * 用「问过几个字段」推，而不是「收到第几次调用就加一」：一轮两个字段，
+     * 按调用次数算会把 8 个字段记成 8 轮，等于没有上限。
+     */
+    fun roundsOf(contract: GoalContract): Int {
+        val asked = RequiredFields.of(contract.kind).count { key ->
+            val field = contract.field(key)
+            field.resolved || field.skips > 0
+        }
+        return (asked + 1) / 2
+    }
+
+    /**
      * 出草稿：生成今天 + 明天两天。
      *
      * 只生成两天，不做 30 天预排。预排看起来很有诚意，但第三天开始就是猜的，

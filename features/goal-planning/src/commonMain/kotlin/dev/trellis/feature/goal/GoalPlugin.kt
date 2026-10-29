@@ -67,7 +67,8 @@ class GoalPlugin(
 
         ctx.extensions.register(
             Slots.ChatAside,
-            GoalAsideSlot(goalService, today, onOpenChat),
+            // 采集中的问答就在这张卡上完成：选项 → 直接写契约，不经过模型。
+            GoalAsideSlot(goalService, today, onOpenChat, dailyMinutes),
         )
         ctx.extensions.register(
             Slots.HomeSection,

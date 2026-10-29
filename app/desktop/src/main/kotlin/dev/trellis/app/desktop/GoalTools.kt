@@ -34,7 +34,12 @@ class GoalTools(
     private val service: () -> GoalService?,
     private val dailyMinutes: () -> Int,
     private val today: () -> String,
-    private val nowMs: () -> Long = { System.currentTimeMillis() },
+    /**
+     * 写进契约的时间戳。**必须注入**，不在类里自己取系统时间：
+     * 业务时间只有一个来源（docs/time-conventions.md），这里多留一个默认值，
+     * 等于给「绕过时钟」留了一扇门。
+     */
+    private val nowMs: () -> Long,
 ) {
 
     val guidance: String = listOf(
@@ -49,6 +54,8 @@ class GoalTools(
         "4. 目标只有方向、还没定死时，不要替他挑学校或公司 —— 计划里已经排了一条「查 N 所」的决策任务，" +
             "那是他自己的事。",
         "5. 改目标用 action=answer 改具体字段（不要用 start 覆盖整份契约），复盘结束用 action=review_done。",
+        "6. 如果你这一轮手里**没有** goal_plan（纯聊天那一轮不给工具），不要说自己能记；" +
+            "直接让用户在右侧卡片上点选项或输入框 —— 那句话在到你这里之前已经被卡片接住了。",
         "</how_to_plan_a_long_term_goal>",
     ).joinToString("\n")
 
@@ -105,19 +112,15 @@ class GoalTools(
                             isError = true,
                         )
                     }
-                    target.update { mirror ->
-                        val answered = GoalEngine.answer(mirror, key, value, FieldState.CONFIRMED, now)
-                        answered.copy(collectingRounds = roundsOf(answered))
-                    }
+                    // 走服务上的同一个入口：卡片按钮和模型工具必须共用一套「记轮次」逻辑，
+                    // 各写一遍的话，总有一条路能无限追问。
+                    target.answer(key, value)
                 }
 
                 "skip" -> {
                     val key = parseField(arguments.text("field"))
                         ?: return ToolResult(unknownField(arguments.text("field")), isError = true)
-                    target.update { mirror ->
-                        val skipped = GoalEngine.skip(mirror, key, now)
-                        skipped.copy(collectingRounds = roundsOf(skipped))
-                    }
+                    target.skip(key)
                 }
 
                 "draft" -> {
@@ -204,24 +207,6 @@ class GoalTools(
         this[key]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
 
     private fun JsonObject.int(key: String): Int? = this[key]?.jsonPrimitive?.intOrNull
-
-    /**
-     * 已经问到第几轮 = 问过的必备字段数 ÷ 2，向上取整。
-     *
-     * 为什么由工具来算而不是让模型自己报：`Confidence.MAX_ROUNDS` 这条闸门要有东西推动它。
-     * 之前 `collectingRounds` 谁都不写，于是「最多问三轮」在实际调用链里永远不生效 ——
-     * 建了目标之后可以无限问下去，用户只会觉得被盘问。
-     *
-     * 用「问过几个字段」推而不是收到第几次调用就加一：一轮两个字段，
-     * 按调用次数算会把 8 个字段记成 8 轮，等于没有上限。
-     */
-    private fun roundsOf(mirror: GoalMirror): Int {
-        val asked = RequiredFields.of(mirror.contract.kind).count { key ->
-            val field = mirror.contract.field(key)
-            field.resolved || field.skips > 0
-        }
-        return (asked + 1) / 2
-    }
 
     private fun parseKind(raw: String): GoalKind? = when (raw.lowercase()) {
         "", "general" -> GoalKind.GENERAL

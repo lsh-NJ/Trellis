@@ -26,6 +26,14 @@ data class TodayEffort(
 }
 
 /**
+ * 一句话被认成了某个字段的答案。
+ *
+ * 带上现成的回话，是为了让宿主不必知道「下一个该问什么」——
+ * 那句话本身就是插件对这次写入的解释，谁调用谁直接显示。
+ */
+data class CapturedAnswer(val field: FieldKey, val message: String)
+
+/**
  * 插件对外的唯一门面：缓存 + 结算 + 推送，都在这里。
  *
  * 为什么不把 kv 读写散到三个卡片里：三张卡同时渲染时，各自 load 一次会读到
@@ -119,6 +127,82 @@ class GoalService(
 
     /** 今天的实际投入；没有活动数据时 null（不是 0）。 */
     suspend fun todayEffort(): TodayEffort? = effort()
+
+    /**
+     * 回答一个字段：写进契约，并把「问到第几轮」一起推进。
+     *
+     * 卡片按钮、输入框、模型的工具三条路都走这一个入口。三处各写一遍的话，
+     * 迟早有一处忘了记轮数，那个入口就可以无限追问下去 —— 这正是之前的状态。
+     */
+    suspend fun answer(key: FieldKey, value: String): GoalMirror = update { mirror ->
+        val answered = GoalEngine.answer(mirror, key, value, FieldState.CONFIRMED, clock.nowMs())
+        answered.copy(collectingRounds = GoalEngine.roundsOf(answered.contract))
+    }
+
+    /** 跳过：记 UNKNOWN，两次之后这个字段降权并不再追问。 */
+    suspend fun skip(key: FieldKey): GoalMirror = update { mirror ->
+        val skipped = GoalEngine.skip(mirror, key, clock.nowMs())
+        skipped.copy(collectingRounds = GoalEngine.roundsOf(skipped.contract))
+    }
+
+    /** 出草稿（今天 + 明天）。只做状态转移，不替用户确认。 */
+    suspend fun draft(dailyMinutes: Int): GoalMirror =
+        update { mirror -> GoalEngine.toDraft(mirror, today(), dailyMinutes.coerceIn(5, 240)) }
+
+    /**
+     * 用户把答案打在对话里时，先把这句话记进契约。
+     *
+     * 为什么需要这一条：对话那一轮走的意图分类器只看**用户这一句话**，
+     * 「4 小时以上」这种短答会被判成聊天，而聊天按设计不给任何工具 ——
+     * 模型只能回一句「我这没有能记录的工具」，用户看到的就是「功能坏了」。
+     * 所以答案在进模型之前就被识别并落库，模型只需要接着聊。
+     *
+     * 只在「正在收集、且这句话恰好等于当前某个选项」时生效：宁可漏记，不可误记。
+     * 漏了还有卡片上的按钮兜底；误记则是把用户没说过的话写进了他的契约。
+     */
+    suspend fun captureSpokenAnswer(text: String): CapturedAnswer? {
+        val mirror = mirror()
+        if (mirror.phase != GoalPhase.COLLECTING) return null
+        val clean = text.trim().trimEnd('。', '.', '！', '!', '，', ',')
+        if (clean.isEmpty()) return null
+        val asking = GoalEngine.questions(mirror)
+        if (asking.isEmpty()) return null
+
+        // 先认「正好是某个选项」，这是最可靠的；认不出来再看形状。
+        val hit = asking.firstOrNull { key -> GoalQuestions.options(key).any { it == clean } }
+            ?: asking.firstOrNull { key -> clean.length <= 20 && looksLikeAnswer(key, clean) }
+            ?: return null
+
+        val after = answer(hit, clean)
+        val next = GoalEngine.questions(after).firstOrNull()
+        val message = "记下了：".plus(hit.label).plus(" = ").plus(clean).plus("。").plus(
+            if (next == null) {
+                "信息够了，右边卡片上点「出计划」。"
+            } else {
+                "下一个：".plus(next.label).plus("（点右边的选项，或直接说）")
+            },
+        )
+        return CapturedAnswer(hit, message)
+    }
+
+    /**
+     * 「这句话像不像那个字段的答案」。
+     *
+     * 只给两个字段开这个口子，因为只有它们的答案**一定带形状**：
+     * 时长会带「小时 / 分钟」，截止时间会带「个月 / 半年 / 明年」。
+     * 别的字段（比如「当前水平」）自由发挥的空间太大，按形状猜会把「今天太累了」
+     * 记成「零基础」——那比不记更糟。
+     *
+     * 这个判断只在**该字段正好是当前要问的那一个**时才会跑，所以「2 小时」这句话
+     * 出现在别的问题上不会被误收。
+     */
+    private fun looksLikeAnswer(key: FieldKey, text: String): Boolean = when (key) {
+        FieldKey.DAILY_MINUTES ->
+            text.contains("小时") || text.contains("分钟") || text.contains("半小时")
+        FieldKey.DEADLINE ->
+            text.contains("个月") || text.contains("半年") || text.contains("年") || text.contains("月")
+        else -> false
+    }
 
     private fun hourOfDay(): Int = ((clock.nowMs() / 3_600_000L) % 24L).toInt()
 
