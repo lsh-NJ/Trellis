@@ -28,6 +28,7 @@
 | [`research/product.md`](research/product.md) | 产品 / 主动性 HCI / 伦理证据简报（Duolingo streak、通知疲劳、付费结构、Khanmigo 追问翻车） | 调研证据（2026-10-26） | 做主动性、推送、定价、AI 语气前 |
 | [`research/tech.md`](research/tech.md) | 技术选型证据简报（记忆框架、sqlite-vec、中文 embedding、GraphRAG、隐私与追踪、视觉、LLM 工程） | 调研证据（2026-10-26） | 选依赖、评估本地优先/隐私边界前 |
 | [`assets/icons/`](assets/icons/) | 自绘像素风图标 SVG（导航用） | 资产 | 改导航图标 |
+| [pluginization-plan-2026-10-29.md](pluginization-plan-2026-10-29.md) | 革新插件化计划草记：AGENT 如何核验与定完成标准、学习终端与知识体系图、目标转能力地图 | 构想草记（2026-10-29，未整理） | 讨论产品方向 / 知识体系时 |
 
 ## 阅读路径
 
