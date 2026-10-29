@@ -109,6 +109,7 @@ Set-Location C:\Users\breakM\Desktop\work\Trellis
 | 给 AI 的工具：颜色/密度/主题/单卡样式 | `app/desktop/.../UiStyleTools.kt` |
 | 给 AI 的工具：截图/描述界面/点击/打字/按键 | `app/desktop/.../ScreenTools.kt` |
 | 给 AI 的工具：搜 B 站学习资源、拿分集目录、把分集建成待办 | `app/desktop/.../BilibiliTools.kt`；HTTP/WBI 签名在 `BilibiliClient.kt`（只读元数据，不下载不播放） |
+| 模型 API 的「一键导入」（设置页一行 + 对话框） | `app/desktop/.../LlmImportDialog.kt`；解析与落盘 `ai/.../LlmImport.kt`、`ai/.../LlmConfigLoader.kt`（`save`/`fromFile`/`source`）；配置在 `<home>/llm.json`，**导入后立即生效**（客户端每次发消息按配置新建） |
 | 会话记录读写 | `app/desktop/.../ChatStore.kt`（`<home>/chat/<id>.json`） |
 | 会话页 UI（气泡/过程折叠/三动作/输入条） | `app/desktop/.../ChatScreen.kt` |
 | 会话消息 Markdown 解析与渲染 | `app/desktop/.../MarkdownText.kt` |
