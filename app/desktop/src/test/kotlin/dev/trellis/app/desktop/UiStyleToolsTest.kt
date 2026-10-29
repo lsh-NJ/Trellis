@@ -267,7 +267,7 @@ class UiStyleToolsTest {
 
             assertTrue(result.isError, result.content)
             assertTrue(result.content.contains("没有这个主题"), result.content)
-            assertEquals("builtin", runtime.uiPrefs.theme)
+            assertEquals(DEFAULT_THEME, runtime.uiPrefs.theme)
         } finally {
             runtime.shutdown()
         }

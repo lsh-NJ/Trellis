@@ -49,7 +49,7 @@ class UiStyleTools(private val runtime: AppRuntime) {
                 appendLine("卡片：bordered 描边圆角 / flat 扁平无边框 / filled 浅底填充")
                 appendLine("圆角：0-24dp")
                 appendLine("字号：0.85-1.25（85%-125%）")
-                appendLine("导航：top 顶部标签栏 / left 左侧边栏")
+                appendLine("导航：top 顶部标签栏 / left 左侧边栏（默认）")
                 appendLine("导航底色：default 跟随主题 / dark 深色 / accent 主色")
                 if (runtime.pluginCardStyles.isNotEmpty()) {
                     appendLine("单个插件的卡片样式（没列出的跟随全局）：")
@@ -72,7 +72,7 @@ class UiStyleTools(private val runtime: AppRuntime) {
                 "palette：default/ocean/forest/sunset/mono/custom；hue：palette=custom 时的色相 0-359；" +
                 "chroma：palette=custom 时的彩度 0-100（0 灰阶）；density：compact/normal/relaxed；" +
                 "card：bordered/flat/filled；radius：0-24 的整数；font_scale：0.85-1.25 的小数；" +
-                "nav：top（顶部标签栏）/ left（左侧边栏）；nav_tone：default/dark/accent（导航底色）。全部可选。"
+                "nav：top（顶部标签栏）/ left（左侧边栏，默认）；nav_tone：default/dark/accent（导航底色）。全部可选。"
 
         override suspend fun call(arguments: JsonObject): ToolResult {
             val current = runtime.uiPrefs
@@ -124,8 +124,13 @@ class UiStyleTools(private val runtime: AppRuntime) {
         override suspend fun call(arguments: JsonObject): ToolResult {
             val current = runtime.uiPrefs.theme.ifBlank { "builtin" }
             val options = runtime.themeOptions()
+            val currentLabel = when (current) {
+                "builtin" -> "builtin（跟随配色方案）"
+                DEFAULT_THEME -> current + "（默认）"
+                else -> current
+            }
             val text = buildString {
-                appendLine("当前主题：" + if (current == "builtin") "builtin（跟随配色方案）" else current)
+                appendLine("当前主题：" + currentLabel)
                 appendLine("builtin：内置，跟随 palette / hue / chroma 生成的配色方案")
                 if (options.isEmpty()) {
                     appendLine("现在没有插件贡献主题。")

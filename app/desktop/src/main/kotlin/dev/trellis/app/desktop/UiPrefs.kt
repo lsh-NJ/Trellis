@@ -21,6 +21,19 @@ import kotlinx.serialization.json.put
  * 和插件契约的分工：插件决定卡片**里面**写什么；这里决定宿主**怎么画**卡片、
  * 怎么排间距、用什么主色。改的是宿主，不是插件。
  */
+
+/**
+ * 默认主题：内置的 Bento（`dev.bento.shift/bento`）。
+ *
+ * 选它当默认，是因为它**随应用一起编译进来**（[BentoThemePlugin]），不依赖
+ * `~/.trellis/plugins/` 里的文件，误删/误停用户目录也不会让默认主题消失。
+ * 想回到「跟随 palette 的默认紫」，把 `ui.json` 的 theme 写成 `builtin` 即可。
+ */
+internal const val DEFAULT_THEME: String = "dev.bento.shift/bento"
+
+/** 默认导航：左侧边栏。宽屏上比顶栏省纵向空间，任务页首屏能多放一张卡。 */
+internal const val DEFAULT_NAV: String = "left"
+
 data class UiPrefs(
     val palette: String = "default",
     /** 自定义配色用：色相 0-359。预设配色的色相是写好的参数，这两个值只在 palette=custom 时生效。 */
@@ -31,9 +44,9 @@ data class UiPrefs(
     val card: String = "bordered",
     val radius: Int = 12,
     val fontScale: Float = 1f,
-    val nav: String = "top",
+    val nav: String = DEFAULT_NAV,
     val navTone: String = "default",
-    val theme: String = "builtin",
+    val theme: String = DEFAULT_THEME,
     /** auto = 跟随系统；light / dark = 明确指定。一整页只认这一个开关。 */
     val appearance: String = "auto",
 ) {
@@ -45,9 +58,9 @@ data class UiPrefs(
         card = card.takeIf { it in CARDS } ?: "bordered",
         radius = radius.coerceIn(0, 24),
         fontScale = fontScale.coerceIn(0.85f, 1.25f),
-        nav = nav.takeIf { it in NAVS } ?: "top",
+        nav = nav.takeIf { it in NAVS } ?: DEFAULT_NAV,
         navTone = navTone.takeIf { it in NAV_TONES } ?: "default",
-        theme = theme.ifBlank { "builtin" },
+        theme = theme.ifBlank { DEFAULT_THEME },
         appearance = appearance.takeIf { it in APPEARANCES } ?: "auto",
     )
 
@@ -95,8 +108,11 @@ internal fun paletteLabel(palette: String): String = when (palette) {
     else -> "默认紫"
 }
 
-internal fun themeLabel(theme: String): String =
-    if (theme == "builtin" || theme.isBlank()) "跟随配色" else theme
+internal fun themeLabel(theme: String): String = when {
+    theme.isBlank() || theme == "builtin" -> "跟随配色"
+    theme == DEFAULT_THEME -> "Bento（默认）"
+    else -> theme
+}
 
 internal fun densityLabel(density: String): String = when (density) {
     "compact" -> "紧凑"
@@ -136,9 +152,9 @@ internal class UiPrefsStore(home: File) {
             card = str("card") ?: "bordered",
             radius = obj["radius"]?.jsonPrimitive?.intOrNull ?: 12,
             fontScale = obj["fontScale"]?.jsonPrimitive?.floatOrNull ?: 1f,
-            nav = str("nav") ?: "top",
+            nav = str("nav") ?: DEFAULT_NAV,
             navTone = str("navTone") ?: "default",
-            theme = str("theme") ?: "builtin",
+            theme = str("theme") ?: DEFAULT_THEME,
             appearance = str("appearance") ?: "auto",
         ).normalized()
     }
