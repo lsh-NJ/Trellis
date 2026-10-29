@@ -36,23 +36,39 @@ class ManagerRouterTest {
         guidance = "",
     )
 
+    /**
+     * `<tools>` 段才是「这一轮给了哪些工具」的权威清单。
+     *
+     * base 里还有一段不变的 `<your_role>` 守则，会拿具体工具名举例
+     * （比如「先查资源（search_bilibili）」）——那是给模型的流程建议，不是工具目录。
+     * 断言必须只看目录，否则守则里提一次工具名就会被误判成「工具被列出来了」。
+     */
+    private fun toolCatalogue(prompt: String): String {
+        val start = prompt.indexOf("<tools>")
+        val end = prompt.indexOf("</tools>")
+        return if (start >= 0 && end > start) prompt.substring(start, end) else ""
+    }
+
     @Test
     fun thePromptOnlyListsTheToolsOfThisIntent() {
-        val find = router.prompt(AgentIntent.FindResource).base
+        val find = toolCatalogue(router.prompt(AgentIntent.FindResource).base)
         assertTrue("search_bilibili" in find)
-        assertFalse("deploy" in find, "找资源的提示词里不该出现 deploy")
+        assertFalse("deploy" in find, "找资源的工具目录里不该出现 deploy")
         assertFalse("arrange_cards" in find)
 
-        val create = router.prompt(AgentIntent.CreatePlugin).base
+        val create = toolCatalogue(router.prompt(AgentIntent.CreatePlugin).base)
         assertTrue("deploy" in create)
         assertFalse("search_bilibili" in create)
     }
 
     @Test
     fun chatGetsNoToolCatalogueAtAll() {
-        val chat = router.prompt(AgentIntent.Chat).base
+        assertTrue(router.tools(AgentIntent.Chat).isEmpty(), "纯聊天不该拿到任何工具")
+
+        val chat = toolCatalogue(router.prompt(AgentIntent.Chat).base)
+        assertTrue(chat.isNotBlank(), "空清单也要有 <tools> 段，模型才知道这一轮没有手")
         for (name in listOf("deploy", "search_bilibili", "arrange_cards", "list_plugins")) {
-            assertFalse(name in chat, "聊天那一轮不该看到工具 $name")
+            assertFalse(name in chat, "聊天那一轮的工具目录里不该有 $name")
         }
     }
 

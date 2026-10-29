@@ -56,7 +56,15 @@ class ScreenToolsTest {
             },
         )
 
-        assertTrue(result.content.contains("先 take_screenshot"), "没截图不该让鼠标乱跑：" + result.content)
+        if (GraphicsEnvironment.isHeadless()) {
+            // 无屏幕时连鼠标都不该碰：headless 分支先被拦住，这也是「不乱点」的一种。
+            assertTrue(
+                result.content.contains("headless"),
+                "无屏幕时要先说是 headless，而不是让它以为只是缺截图：" + result.content,
+            )
+        } else {
+            assertTrue(result.content.contains("先 take_screenshot"), "没截图不该让鼠标乱跑：" + result.content)
+        }
     }
 
     @Test
