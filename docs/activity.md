@@ -135,7 +135,21 @@ Trellis 的规则：
 - **范围总览**：起止日期（Material3 DatePicker）+「最近 7 天 / 最近 30 天」，分类与应用按时长倒序；
   数据来自 `ActivityAggregator.rangeSummary(fromMs, toMs)`（逐日累加，分类按 id 合并）。
 - **片段详情浮层**：点时间轴片段或未分类条目，显示 app、窗口标题、标签页 URL、分类色点、时间段与时长，
-  以及 `classifier.explain()` 的命中规则；没命中时提示去 `activity/taxonomy.json` 补规则。
+  以及 `classifier.explain()` 的命中规则；底部「归到分类…」可以就地建一条规则（见下）。
+- **分类规则页**（页头第三个按钮，`ActivityMode.Rules`）：在程序内管理分类树，不用再手改 JSON。
+  页面在 `app/desktop/src/main/kotlin/dev/trellis/app/desktop/ActivityRules.kt`（`ActivityRulesView`）：
+  - 分类树平铺展示（缩进、色点、路径、规则条数），「新建大类」/「加子类」/「删除」（删除时子类挂到上一级，规则一起删；
+    `uncategorized` 是保留分类，不能删/不能改父级）；
+  - 「编辑分类」对话框：名字、颜色（`#RRGGBB` 或 16 色色板，留空按 id 从调色板派生）、父分类下拉
+    （候选里过滤自己、未分类和自己的后代，避免成环）、规则列表（正则 + 字段 + 优先级摘要，可增删改）；
+  - 「编辑规则」对话框：正则、`APP/TITLE/URL/DOMAIN` 四个字段开关（或关系）、忽略大小写、优先级
+    （留空 = 按分类层级 `depth*10`）；保存前校验空正则和 `Regex` 编译失败；
+  - 保存走 `AppRuntime.saveActivityTaxonomy(next)`：`ActivityTaxonomy.validate()` + `ActivityClassifier.problems`
+    合并去重，有问题就不落盘、原样显示；通过则 `ActivityTaxonomyStore.save()` 写 `taxonomy.json`，
+    并**就地重建 `ActivityAggregator`**（同一个 store，不关库），页面 `reloadTick++` 后日视图/范围数字按新规则重算。
+- **片段一键归类**（`QuickClassifyDialog`）：详情浮层点「归到分类…」弹窗，正则预填按片段自动生成——
+  有域名就 `Regex.escape(domain)` + `DOMAIN`，否则 app + `APP`，再否则 title + `TITLE`；
+  选一个分类后把这条规则追加到该分类（`withCategory`），保存即重新分类；以后同类片段不再进未分类。
 - **隐私分层**：列表只显示 app 名 + 分类；窗口标题、标签页 URL 只在点开详情后才出现。
   将来接 AI 时仍要过 `aiExposure` 这一层（见 §5）。
 
@@ -158,6 +172,14 @@ Trellis 的规则：
 | `ActivityStore.kt` | SQLite 读写与 schema 迁移 |
 | `ActivityAggregator.kt` | 片段化、AFK/排除/去重、贴 url、分类、日汇总与排行 |
 
+桌面端 UI（`app/desktop/src/main/kotlin/dev/trellis/app/desktop/`）：
+
+| 文件 | 职责 |
+|---|---|
+| `ActivityScreen.kt` | 「活动」页外壳：日视图 / 范围总览 / 分类规则三个模式、时间轴、片段详情、一键归类入口 |
+| `ActivityRules.kt` | 分类规则页：分类树管理、分类/规则编辑对话框、`QuickClassifyDialog` |
+| `AppRuntime.kt`（活动段） | 懒开引擎、60 秒同步循环、日/范围查询、`saveActivityTaxonomy` 校验+落盘+重建聚合器 |
+
 ## 9. 测试
 
 ```powershell
@@ -165,17 +187,19 @@ $env:JAVA_HOME = "$env:USERPROFILE\.jdks\jdk17"; $env:Path = "$env:JAVA_HOME\bin
 .\gradlew.bat :features:activity:test --console=plain
 ```
 
-当前 56 个用例：聚合（AFK 交集、碎片、排除、日界、层级汇总、标签页 URL 取重叠最大者、双 bucket 去重）、
-分类（默认分类归类、优先级压深度、并列按声明顺序、字段语义、坏正则/空正则、validate、path/descendant、domainOf、序列化往返）、
+当前 62 个用例：聚合（AFK 交集、碎片、排除、日界、层级汇总、标签页 URL 取重叠最大者、双 bucket 去重、范围汇总）、
+分类（默认分类归类、优先级压深度、并列按声明顺序、字段语义、坏正则/空正则、validate、path/descendant、domainOf、
+序列化往返、`withCategory`/`withoutCategory`/`nextCategoryId`）、
 taxonomy.json 读写（缺失/坏文件留档）、store（url、COALESCE、v1 库自动迁移）、client（web/window 解析）、sync（web bucket 同步）。
 `LiveAwSmokeTest` 需要真实 aw-server，默认不跑（`TRELLIS_AW_LIVE` 环境变量控制）。
 
 ## 10. 已知缺口 / 下一步
 
-1. **活动页只读**：能看日视图/范围总览/片段详情，但还没有分类编辑界面（规则仍手改 `taxonomy.json`）、
-   没有 CSV 导出、同步状态只在页头一行字。
+1. **活动页还不能做的**：没有 CSV 导出、没有分类/规则的拖拽排序、没有「规则试跑」（输入 app/title/url 看命中哪条）、
+   同步状态只在页头一行字；分类规则页只能逐条编辑，不能批量导入/导出 JSON。
 2. **没接任务/计划**：追溯（「这段时间对应哪个计划节点」）需要把 `Segment` 与计划后端的时间轴对上，接口还没设计。
-3. **规则只能手改 JSON**：没有 UI；`ActivityTaxonomy.validate()` 与 `classifier.problems` 是将来做编辑器的校验基础。
+3. **分类编辑的边界**：规则编辑只覆盖分类树与规则本身；`activity/settings.json`（轮询间隔、排除进程、`titleRedactions`）
+   仍要手改文件，页面上还不能编辑。
 4. **`titleRedactions` 还没生效**：设置里有字段，聚合时尚未应用；接 AI 前要和 `aiExposure` 一起补上。
 5. **正则方言差异**：Kotlin 用 `java.util.regex`，AW 是 Python `re` / Rust regex crate；默认规则只用了公共子集，用户写高级语法时要注意。
 6. **URL 只来自浏览器扩展**：没装 `aw-watcher-web` 就没有标签页数据；没有浏览器历史 API 兜底。

@@ -41,6 +41,7 @@ import dev.trellis.domain.plan.RhythmResult
 import dev.trellis.domain.plan.WeekDay
 import dev.trellis.feature.learning.LearningPlanStore
 import dev.trellis.activity.ActivityAggregator
+import dev.trellis.activity.ActivityClassifier
 import dev.trellis.activity.ActivitySettings
 import dev.trellis.activity.ActivityStore
 import dev.trellis.activity.ActivitySync
@@ -2736,6 +2737,10 @@ class AppRuntime private constructor() {
     private var activityAggregator: ActivityAggregator? = null
     private var activitySettingsCache: ActivitySettings? = null
 
+    /** 分类树与它的存储；「分类规则」页读写这一份。 */
+    private var activityTaxonomy: ActivityTaxonomy? = null
+    private var activityTaxonomyStore: ActivityTaxonomyStore? = null
+
     private val activityLock = Mutex()
 
     /** 活动页最近一次失败的一句话；成功时清空。 */
@@ -2782,6 +2787,8 @@ class AppRuntime private constructor() {
                         settings = { settings },
                     )
                     activitySettingsCache = settings
+                    activityTaxonomyStore = taxonomyStore
+                    activityTaxonomy = taxonomy
                     activityAggregator = ActivityAggregator(store, settings, taxonomy)
                     activityAggregator
                 }.getOrElse { error ->
@@ -2878,6 +2885,39 @@ class AppRuntime private constructor() {
 
     /** 分类规则里编译不过的正则（有问题时活动页要提示，而不是静默把时间算成未分类）。 */
     internal fun activityProblems(): List<String> = activityAggregator?.classifierProblems ?: emptyList()
+
+    /** 当前分类树（「分类规则」页渲染用）；引擎没开时先开。 */
+    internal suspend fun activityTaxonomySnapshot(): ActivityTaxonomy? {
+        ensureActivityEngine() ?: return null
+        return activityTaxonomy
+    }
+
+    /**
+     * 保存分类树：先校验，再落盘，最后换掉整理器里的分类器 —— 不用关库，下一次取数就用新规则。
+     *
+     * 返回空列表表示保存成功；非空是给界面逐条显示的问题（校验错误 + 编译不过的正则）。
+     * 保存失败时旧的 [activityTaxonomy] 不动，页面仍能继续用。
+     */
+    internal suspend fun saveActivityTaxonomy(next: ActivityTaxonomy): List<String> {
+        ensureActivityEngine() ?: return listOf(activityMessage ?: "活动库打不开")
+        val problems = (next.validate() + ActivityClassifier(next).problems).distinct()
+        if (problems.isNotEmpty()) return problems
+        val taxonomyStore = activityTaxonomyStore ?: return listOf("活动库打不开")
+        val failure = runCatching {
+            activityIo {
+                taxonomyStore.save(next)
+                activityTaxonomy = next
+                val store = activityStore
+                val settings = activitySettingsCache
+                if (store != null && settings != null) {
+                    activityAggregator = ActivityAggregator(store, settings, next)
+                }
+            }
+        }.exceptionOrNull()
+        if (failure != null) return listOf("分类规则保存失败：" + (failure.message ?: "未知原因"))
+        activityMessage = null
+        return emptyList()
+    }
 
     companion object {
 

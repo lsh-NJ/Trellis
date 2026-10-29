@@ -92,6 +92,7 @@ internal fun ActivityScreen(runtime: AppRuntime, modifier: Modifier = Modifier) 
     var showStartPicker by remember { mutableStateOf(false) }
     var showEndPicker by remember { mutableStateOf(false) }
     var detail by remember { mutableStateOf<Segment?>(null) }
+    var classify by remember { mutableStateOf<Segment?>(null) }
 
     // 进页面才开库，然后按 settings.json 的间隔轮询；离开页面时作用域取消，后台不再跑。
     LaunchedEffect(Unit) {
@@ -160,6 +161,11 @@ internal fun ActivityScreen(runtime: AppRuntime, modifier: Modifier = Modifier) 
             )
 
             ActivityMode.Range -> RangeView(summary = rangeSummary, loading = loading)
+
+            ActivityMode.Rules -> ActivityRulesView(
+                runtime = runtime,
+                onChanged = { reloadTick++ },
+            )
         }
     }
 
@@ -188,11 +194,31 @@ internal fun ActivityScreen(runtime: AppRuntime, modifier: Modifier = Modifier) 
     }
 
     detail?.let { segment ->
-        SegmentDetailDialog(runtime = runtime, segment = segment, onDismiss = { detail = null })
+        SegmentDetailDialog(
+            runtime = runtime,
+            segment = segment,
+            onDismiss = { detail = null },
+            onClassify = {
+                classify = segment
+                detail = null
+            },
+        )
+    }
+
+    classify?.let { segment ->
+        QuickClassifyDialog(
+            runtime = runtime,
+            segment = segment,
+            onDismiss = { classify = null },
+            onSaved = {
+                classify = null
+                reloadTick++
+            },
+        )
     }
 }
 
-private enum class ActivityMode { Day, Range }
+private enum class ActivityMode { Day, Range, Rules }
 
 /** 页头：标题 + 日/范围切换 + 日期导航 + 同步状态。 */
 @Composable
@@ -231,6 +257,11 @@ private fun ActivityHeader(
                     onClick = { onMode(ActivityMode.Range) },
                     filled = mode == ActivityMode.Range,
                 )
+                ChromeButton(
+                    label = "分类规则",
+                    onClick = { onMode(ActivityMode.Rules) },
+                    filled = mode == ActivityMode.Rules,
+                )
                 ChromeButton(label = "同步", onClick = onSync, filled = false)
             }
         }
@@ -257,7 +288,7 @@ private fun ActivityHeader(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-        } else {
+        } else if (mode == ActivityMode.Range) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ChromeButton(label = dayShortLabel(rangeStart), onClick = onPickStart, filled = false)
                 Text("到", style = MaterialTheme.typography.labelSmall)
@@ -722,16 +753,24 @@ private fun RangeAppRow(slice: AppSlice, maxMs: Long) {
     }
 }
 
-/** 片段详情浮层：窗口标题、网址、分类、时间段，以及「为什么归到这里」。 */
+/** 片段详情浮层：窗口标题、网址、分类、时间段，以及「为什么归到这里」；可顺手建规则归类。 */
 @Composable
-private fun SegmentDetailDialog(runtime: AppRuntime, segment: Segment, onDismiss: () -> Unit) {
+private fun SegmentDetailDialog(
+    runtime: AppRuntime,
+    segment: Segment,
+    onDismiss: () -> Unit,
+    onClassify: () -> Unit,
+) {
     val explanation by produceState<ClassificationExplanation?>(initialValue = null, segment) {
         value = runtime.activityExplain(segment.app, segment.title, segment.url)
     }
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("关闭") }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = onClassify) { Text("归到分类…") }
+                TextButton(onClick = onDismiss) { Text("关闭") }
+            }
         },
         title = { Text("片段详情") },
         text = {
@@ -768,7 +807,7 @@ private fun SegmentDetailDialog(runtime: AppRuntime, segment: Segment, onDismiss
                         )
                     } else {
                         Text(
-                            "没有规则命中，归到未分类。可以在 activity/taxonomy.json 里补一条。",
+                            "没有规则命中，归到未分类。点「归到分类…」可以就地建一条规则。",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

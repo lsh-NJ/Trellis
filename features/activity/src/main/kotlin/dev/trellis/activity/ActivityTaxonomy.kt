@@ -79,6 +79,43 @@ data class ActivityTaxonomy(
         categories.firstOrNull { pathNames(it.id) == path }
 
     /**
+     * 插入或替换一个分类（按 id），返回新树。
+     *
+     * 给程序内的分类编辑器用：界面只改一个节点的名字/颜色/规则，然后整棵树换掉，
+     * 不在原地改 [categories]（数据类保持不可变，存盘失败时手里的旧树还能用）。
+     */
+    fun withCategory(node: CategoryNode): ActivityTaxonomy {
+        val exists = categories.any { it.id == node.id }
+        val next = if (exists) {
+            categories.map { if (it.id == node.id) node else it }
+        } else {
+            categories + node
+        }
+        return copy(categories = next)
+    }
+
+    /**
+     * 删掉一个分类，返回新树：它的子类挂到它的父级下（不连坐删光用户建的小类），
+     * 它自己的规则一起删掉。`uncategorized` 是保留分类，删不掉。
+     */
+    fun withoutCategory(id: String): ActivityTaxonomy {
+        if (id == UNCATEGORIZED_ID) return this
+        val target = node(id) ?: return this
+        val next = categories
+            .filterNot { it.id == id }
+            .map { if (it.parentId == id) it.copy(parentId = target.parentId) else it }
+        return copy(categories = next)
+    }
+
+    /** 给新建分类生成一个没被占用的 id：`cat-1`、`cat-2`……（id 定了就别再改，历史归因靠它）。 */
+    fun nextCategoryId(): String {
+        val used = categories.mapTo(HashSet()) { it.id }
+        var n = 1
+        while (("cat-$n") in used) n++
+        return "cat-$n"
+    }
+
+    /**
      * 补齐可以推导的东西，交给 classifier / UI 用：
      * - 缺颜色（空串或写坏）的按 id 哈希从 [PALETTE] 里取一个稳定的颜色；
      * - 没有 `uncategorized` 兜底分类时补一个。

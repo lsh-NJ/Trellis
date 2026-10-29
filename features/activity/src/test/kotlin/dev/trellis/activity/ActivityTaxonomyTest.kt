@@ -270,4 +270,50 @@ class ActivityTaxonomyTest {
             restored.categories.sumOf { it.rules.size },
         )
     }
+
+    @Test
+    fun `withCategory 按 id 插入或替换，不原地改旧树`() {
+        val base = taxonomyOf(
+            CategoryNode(id = "a", name = "甲", color = "#4ADE80"),
+            CategoryNode(id = ActivityTaxonomy.UNCATEGORIZED_ID, name = "未分类", color = "#9CA3AF"),
+        )
+
+        val added = base.withCategory(CategoryNode(id = "b", name = "乙", parentId = "a", color = "#F87171"))
+        assertEquals(listOf("a", "uncategorized", "b"), added.categories.map { it.id })
+        assertEquals(2, base.categories.size, "旧树不能被改")
+
+        val renamed = added.withCategory(added.node("b")!!.copy(name = "乙改"))
+        assertEquals("乙改", renamed.node("b")?.name)
+        assertEquals("乙", added.node("b")?.name)
+    }
+
+    @Test
+    fun `withoutCategory 把子类挂到父级并删掉自己的规则，未分类删不掉`() {
+        val base = taxonomyOf(
+            CategoryNode(id = "a", name = "甲", color = "#4ADE80"),
+            CategoryNode(id = "b", name = "乙", parentId = "a", color = "#F87171", rules = listOf(CategoryRule("x"))),
+            CategoryNode(id = "c", name = "丙", parentId = "b", color = "#60A5FA"),
+            CategoryNode(id = ActivityTaxonomy.UNCATEGORIZED_ID, name = "未分类", color = "#9CA3AF"),
+        )
+
+        val removed = base.withoutCategory("b")
+        assertEquals(listOf("a", "c", "uncategorized"), removed.categories.map { it.id })
+        assertEquals("a", removed.node("c")?.parentId, "丙应该挂到甲的下面，而不是一起被删")
+        assertEquals(null, removed.node("b"))
+
+        val kept = base.withoutCategory(ActivityTaxonomy.UNCATEGORIZED_ID)
+        assertEquals(base.categories, kept.categories, "未分类是保留分类，删不掉")
+    }
+
+    @Test
+    fun `nextCategoryId 跳过已占用的 cat-n`() {
+        val base = taxonomyOf(
+            CategoryNode(id = "cat-1", name = "一", color = "#4ADE80"),
+            CategoryNode(id = "cat-3", name = "三", color = "#F87171"),
+        )
+        assertEquals("cat-2", base.nextCategoryId())
+
+        val withTwo = base.withCategory(CategoryNode(id = "cat-2", name = "二", color = "#60A5FA"))
+        assertEquals("cat-4", withTwo.nextCategoryId())
+    }
 }
