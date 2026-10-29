@@ -120,18 +120,39 @@ if [ "${free_gb:-0}" -lt 6 ]; then
     echo "警告：当前磁盘只剩 ${free_gb}GB，编译/打包可能失败（建议 ≥ 6GB）。" >&2
 fi
 
+fail_hint() {
+    cat >&2 <<'MSG'
+
+构建/启动失败。常见原因（按顺序排查）：
+  1. 依赖下载卡在 Maven Central 的 TLS（日志里是 "Remote host terminated the handshake"）：
+     国内网络会重置到 repo.maven.apache.org 的握手。settings.gradle.kts 已把阿里云
+     public 镜像放在官方源前面；仍然失败就挂代理（Clash 等）或直接重试。
+  2. 端口/锁冲突：先执行 ./gradlew --stop 再重跑。
+  3. JDK 不是 17：脚本会自动找 17；也可以手动 export JAVA_HOME=<JDK 17 目录>。
+MSG
+}
+
 # ---------------------------------------------------------------- 执行 ----
 case "$MODE" in
     check)
-        exec "$PWD/gradlew" :app:desktop:compileKotlin --console=plain
+        "$PWD/gradlew" :app:desktop:compileKotlin --console=plain
+        status=$?
+        [ "$status" -ne 0 ] && fail_hint
+        exit "$status"
         ;;
     test)
-        exec "$PWD/gradlew" check --console=plain
+        "$PWD/gradlew" check --console=plain
+        status=$?
+        [ "$status" -ne 0 ] && fail_hint
+        exit "$status"
         ;;
     run)
         echo
         echo "启动中：窗口关闭后命令才返回；应用开着的时候不要再编译（见 README 的「铁律」）。"
-        exec "$PWD/gradlew" :app:desktop:run --console=plain
+        "$PWD/gradlew" :app:desktop:run --console=plain
+        status=$?
+        [ "$status" -ne 0 ] && fail_hint
+        exit "$status"
         ;;
     package)
         "$PWD/gradlew" :app:desktop:createDistributable :app:desktop:packageDmg --console=plain
