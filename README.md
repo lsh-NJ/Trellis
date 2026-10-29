@@ -58,6 +58,10 @@ $env:JAVA_HOME = "$env:USERPROFILE\.jdks\jdk17"; $env:Path = "$env:JAVA_HOME\bin
 
 macOS 上不用手动配 JDK：`./build-mac.sh --test` 会自动找 JDK 17 再跑同样的 `check`。
 
+> 国内网络如果卡在 Maven Central 的 TLS 握手（日志里是
+> `Remote host terminated the handshake`），不用手动改：`settings.gradle.kts`
+> 已把阿里云 public 镜像排在官方源前面。仍然失败就挂代理或重试。
+
 ## 写一个声明式插件
 
 ```
