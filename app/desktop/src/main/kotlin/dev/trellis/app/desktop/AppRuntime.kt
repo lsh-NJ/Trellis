@@ -1428,12 +1428,19 @@ class AppRuntime private constructor() {
             // 计划页是三只手之外的第四个去处：`set_plan` 只是这一轮的动作清单，
             // 真正的周/单元要 createProcess → saveDraft → acceptDraft 才写得进去。
             val planTools = PlanTools({ learningPlan() }, { refreshPlan() }, { studyPrefs.weeklyMinutes })
+            // 目标也是「写进去」而不是「说出来」：没有这只手，插件的状态机永远没有调用方，
+            // 三张卡会一直停在「还没有目标」。
+            val goalTools = GoalTools(
+                service = { goalPlugin?.serviceOrNull() },
+                dailyMinutes = { studyPrefs.dailyMinutes },
+                today = { java.time.LocalDate.now().toString() },
+            )
             val allTools = tools.all + screenTools.all + layoutTools.all + styleTools.all +
-                workflowTools.all + bilibiliTools.all + taskTools.all + planTools.all
+                workflowTools.all + bilibiliTools.all + taskTools.all + planTools.all + goalTools.all
             val guidance = tools.guidance + "\n\n" + screenTools.guidance +
                 "\n\n" + layoutTools.guidance + "\n\n" + styleTools.guidance +
                 "\n\n" + workflowTools.guidance + "\n\n" + bilibiliTools.guidance +
-                "\n\n" + taskTools.guidance + "\n\n" + planTools.guidance
+                "\n\n" + taskTools.guidance + "\n\n" + planTools.guidance + "\n\n" + goalTools.guidance
 
             // 意图 → 工具 → 提示词，一次定完：每条工具的目录只出现在它该出现的那一版
             // 提示词里。以前是把整套工具和整段前缀一股脑塞进去，模型总会挑一个

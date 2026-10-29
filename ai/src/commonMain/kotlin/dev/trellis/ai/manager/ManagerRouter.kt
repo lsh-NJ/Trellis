@@ -90,6 +90,9 @@ private val TOOL_INTENTS: Map<String, Set<AgentIntent>> = mapOf(
     "add_tasks" to setOf(AgentIntent.FindResource),
     // 计划页：用户点「排成学习计划」时要真的写进计划库，不是只写这一轮的动作清单
     "create_learning_plan" to setOf(AgentIntent.FindResource),
+    // 长期目标：只在「找资源 / 排学习」这一类里出现。聊天意图按设计不给任何工具，
+    // 所以「我想考研」这种话必须被判成 FindResource 才走得到这里（见 Intent.kt 的 resourceWords）。
+    "goal_plan" to setOf(AgentIntent.FindResource),
 
     // 清单：多步活都要，聊天不要
     "set_plan" to setOf(AgentIntent.CreatePlugin, AgentIntent.ManagePlugin, AgentIntent.ArrangeUi, AgentIntent.FindResource),
