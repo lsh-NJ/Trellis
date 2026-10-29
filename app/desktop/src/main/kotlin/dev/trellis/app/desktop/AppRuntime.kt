@@ -39,6 +39,7 @@ import dev.trellis.domain.plan.LearningPlanInfo
 import dev.trellis.domain.plan.PoolUnit
 import dev.trellis.domain.plan.WeekDay
 import dev.trellis.feature.goal.GoalPlugin
+import dev.trellis.feature.goal.TodayEffort
 import dev.trellis.feature.learning.LearningPlanStore
 import dev.trellis.activity.ActivityAggregator
 import dev.trellis.activity.ActivitySettings
@@ -73,8 +74,8 @@ import dev.trellis.ui.ExtraColors
 import dev.trellis.ui.SlotCell
 import dev.trellis.kernel.plugin.Plugin
 import dev.trellis.kernel.plugin.PluginManifest
-import dev.trellis.kernel.prompt.PromptSection
-import dev.trellis.kernel.prompt.PromptSections
+import dev.trellis.kernel.context.ContextSection
+import dev.trellis.kernel.context.Contexts
 import dev.trellis.kernel.approval.ActionRequest
 import dev.trellis.kernel.approval.DefaultApprovalGate
 import dev.trellis.kernel.core.CapabilityId
@@ -149,6 +150,14 @@ internal val RENDERED_MOUNT_POINTS: Set<ExtensionPointId> = setOf(
     Slots.SettingsSection.id,
     Slots.ChatAside.id,
 )
+
+/**
+ * 「目标」卡片读今日投入的缓存时长。
+ *
+ * 30 秒是「够短到看不出延迟、够长到不把 UI 重新求值变成一次数据库聚合」的那个点。
+ * 手动同步之后不看这个值，直接作废（见 [AppRuntime.syncActivity]）。
+ */
+private const val EFFORT_MEMO_MS = 30_000L
 
 /** 一次截图：[text] 是给人看的话（存到哪、多大），[dataUrl] 是给模型看的图片。 */
 data class ScreenCapture(
@@ -241,6 +250,16 @@ class AppRuntime private constructor() {
         private set
 
     lateinit var home: File
+        private set
+
+    /**
+     * 「目标达成规划」插件的实例。
+     *
+     * 内核对外只发 [PluginInfo]（manifest + 状态），拿不到实例；而截图、诊断、演示
+     * 需要先把插件摆到某个状态（EMPTY / ACTIVE / REVIEWING）再画，只能从这里进。
+     * 产品代码**不要**从这儿改数据：改数据走卡片按钮和 AI 工具，那样才留痕。
+     */
+    internal var goalPlugin: GoalPlugin? = null
         private set
 
     /**
@@ -1018,11 +1037,11 @@ class AppRuntime private constructor() {
      * 而用户只会觉得「它怎么忘了」。
      */
     private suspend fun promptSections(): List<String> {
-        val contributions = kernel.extensions.contributionsAt(PromptSections.AiContext)
+        val contributions = kernel.extensions.contributionsAt(Contexts.Host)
         if (contributions.isEmpty()) return emptyList()
         val out = mutableListOf<String>()
         for (contribution in contributions) {
-            val section = contribution.value as? PromptSection ?: continue
+            val section = contribution.value as? ContextSection ?: continue
             val text = try {
                 section.render()
             } catch (error: Throwable) {
@@ -2496,6 +2515,17 @@ class AppRuntime private constructor() {
     internal var activitySyncedAtMs by mutableStateOf<Long?>(null)
         private set
 
+    /**
+     * 「目标达成规划」读今日投入的短期缓存。
+     *
+     * 三张卡（对话侧条、首页卡、AI 上下文）每秒各重算一次，每次都去查 SQLite 的
+     * 日聚合，等于把一个一天才变几次的数字算了几百遍。按「当天 + [EFFORT_MEMO_MS]」
+     * 记住结果，手动同步成功后主动作废。
+     */
+    private var effortMemo: EffortMemo? = null
+
+    private data class EffortMemo(val dayStartMs: Long, val readAtMs: Long, val value: TodayEffort?)
+
     /** 轮询间隔，来自 settings.json（默认 60 秒）。 */
     internal val activitySyncIntervalMs: Long
         get() = (activitySettingsCache?.syncIntervalSeconds ?: 60) * 1000L
@@ -2575,6 +2605,8 @@ class AppRuntime private constructor() {
             else -> {
                 activityMessage = null
                 activitySyncedAtMs = report.nowMs
+                // 刚同步完，缓存里那行「实际 xx 分钟」已经旧了，得让它重读一次。
+                effortMemo = null
                 "已同步 " + report.buckets + " 个 bucket、" + report.rows + " 条事件"
             }
         }
@@ -2589,6 +2621,43 @@ class AppRuntime private constructor() {
                 null
             }
     }
+
+    /**
+     * 今天的实际投入，给「目标达成规划」插件用。
+     *
+     * 这里定死三件事：
+     * 1. **没启用过活动采集就返回 null**。不为了一张卡片顺手建一个空的 activity.db ——
+     *    用户没打开过活动页，却突然多出一个数据库目录，那是插件越界。
+     * 2. 按「当天 + [EFFORT_MEMO_MS]」缓存。卡片的重新求值很频繁，不能每次都是一次聚合查询。
+     * 3. 有 AFK 记录才敢把这个数当「在电脑前的时间」；没有就如实交给插件，由它决定怎么说。
+     */
+    internal suspend fun goalTodayEffort(nowMs: Long = System.currentTimeMillis()): TodayEffort? {
+        val dayStart = startOfLocalDay(nowMs)
+        val memo = effortMemo
+        // nowMs - readAtMs 可能是负的（用户改了系统时间），那种情况一律当过期。
+        if (memo != null && memo.dayStartMs == dayStart && nowMs - memo.readAtMs in 0..EFFORT_MEMO_MS) {
+            return memo.value
+        }
+        val settingsFile = File(File(home, "activity"), "settings.json")
+        val value = if (settingsFile.exists()) {
+            // 传正午而不是 0 点：刚好卡在时区/夏令时边界上时，0 点可能落到前一天。
+            activityDay(dayStart + 12 * 3_600_000L)?.let { summary ->
+                TodayEffort(
+                    minutes = (summary.activeMs / 60_000L).toInt(),
+                    hasAfkData = summary.hasAfkData,
+                )
+            }
+        } else {
+            null
+        }
+        effortMemo = EffortMemo(dayStart, nowMs, value)
+        return value
+    }
+
+    /** 本地时区当天 0 点。 */
+    private fun startOfLocalDay(nowMs: Long): Long =
+        Instant.ofEpochMilli(nowMs).atZone(ZoneId.systemDefault()).toLocalDate()
+            .atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
 
     /** 某一天的清洗后时间轴（时间轴 / 详情用）。 */
     internal suspend fun activitySegments(dayMs: Long): List<Segment> {
@@ -2647,6 +2716,19 @@ class AppRuntime private constructor() {
             val storeFile = File(home, "store.json")
             val pluginsDir = File(home, "plugins").apply { mkdirs() }
 
+            // 目标达成规划：required = true，卸载会被内核拒绝。
+            // 「每天投入」读宿主的 study.json，「今天」用本地时区算 ——
+            // 插件在 common 里没有时区，猜一个会比不猜更糟。
+            // 单独留一个引用：内核只发 PluginInfo，截图和诊断要能直接摆状态。
+            val goalPlugin = GoalPlugin(
+                dailyMinutes = { runtime.studyPrefs.dailyMinutes },
+                today = { java.time.LocalDate.now().toString() },
+                onOpenChat = { runtime.currentTab = TAB_CHAT },
+                // 活动数据是**可选依赖**：没启用过采集 → null，
+                // 首页卡上那一行就不出现（不显示 0，那是另一个意思）。
+                activityEffort = { runtime.goalTodayEffort() },
+            )
+
             val kernel = Kernel.boot(
                 KernelConfig(
                     sdkVersion = SemVer.parse("1.0.0"),
@@ -2657,14 +2739,7 @@ class AppRuntime private constructor() {
                             listOf(
                                 PlanCorePlugin(),
                                 PlanUiPlugin(runtime),
-                                // 目标达成规划：required = true，卸载会被内核拒绝。
-                                // 「每天投入」读宿主的 study.json，「今天」用本地时区算 ——
-                                // 插件在 common 里没有时区，猜一个会比不猜更糟。
-                                GoalPlugin(
-                                    dailyMinutes = { runtime.studyPrefs.dailyMinutes },
-                                    today = { java.time.LocalDate.now().toString() },
-                                    onOpenChat = { runtime.currentTab = TAB_CHAT },
-                                ),
+                                goalPlugin,
                                 // 默认主题包也是插件：可在插件页停用，停用后回落默认配色。
                                 BentoThemePlugin(),
                             ) + extraBuiltins,
@@ -2688,6 +2763,7 @@ class AppRuntime private constructor() {
 
             runtime.kernel = kernel
             runtime.planService = plan
+            runtime.goalPlugin = goalPlugin
             runtime.storeFile = storeFile
             runtime.pluginsDir = pluginsDir
             runtime.home = home

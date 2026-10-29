@@ -95,14 +95,38 @@ object GoalEngine {
      * 而用户会把它当成承诺。
      */
     fun toDraft(mirror: GoalMirror, today: String, dailyMinutes: Int): GoalMirror {
-        val milestone = mirror.milestone ?: GoalPlanner.defaultMilestone(mirror.contract)
+        // 未知分叉在排期前补齐：planFor 只有拿到 unknownDecisions 才会排决策任务。
+        // 不补这一步，「用规划消解不确定性」就只是一句设计说明，永远跑不到。
+        val contract = withInferredDecisions(mirror.contract)
+        val milestone = mirror.milestone ?: GoalPlanner.defaultMilestone(contract)
         val tomorrow = IsoDate.plusDays(today, 1) ?: today
         val days = mirror.days.toMutableMap()
-        days[today] = GoalPlanner.planFor(mirror.contract, today, dailyMinutes, milestone, dayIndex = 0)
-        days[tomorrow] = GoalPlanner.planFor(mirror.contract, tomorrow, dailyMinutes, milestone, dayIndex = 1)
-        return GoalStateMachine.move(mirror.copy(milestone = milestone), GoalPhase.DRAFT)
-            .getOrElse { mirror.copy(milestone = milestone) }
+        days[today] = GoalPlanner.planFor(contract, today, dailyMinutes, milestone, dayIndex = 0)
+        days[tomorrow] = GoalPlanner.planFor(contract, tomorrow, dailyMinutes, milestone, dayIndex = 1)
+        return GoalStateMachine.move(mirror.copy(milestone = milestone, contract = contract), GoalPhase.DRAFT)
+            .getOrElse { mirror.copy(milestone = milestone, contract = contract) }
             .copy(days = days, settledThrough = today, cycleStartedOn = today)
+    }
+
+    /**
+     * R4 的另一半：还不知道的分叉点要**写下来**，再排成决策任务。
+     *
+     * 三个约束：
+     * 1. 只在没人写过时推断。用户或模型明确给出的分叉优先，模板不许覆盖它。
+     * 2. CONCRETE 不推断 —— 用户已经把对象说死了，这时再问「去哪儿」是没听懂人话。
+     * 3. 措辞里一个实体都没有。「想考研」的时候连查哪三所都不知道，写「查清华复试线」
+     *    就是替用户做了他没做的决定 —— 这正是 R4 要拦的那种「编造具体路径」。
+     */
+    fun withInferredDecisions(contract: GoalContract): GoalContract {
+        if (contract.unknownDecisions.isNotEmpty()) return contract
+        if (contract.clarity == Clarity.CONCRETE) return contract
+        val inferred = when (contract.kind) {
+            GoalKind.ACADEMIC -> listOf("查 3 所院校复试线")
+            GoalKind.JOB -> listOf("查 3 个在招岗位的 JD")
+            // 通用目标连领域都不知道，这时候编一个决策任务只会更空。
+            GoalKind.GENERAL -> emptyList()
+        }
+        return if (inferred.isEmpty()) contract else contract.copy(unknownDecisions = inferred)
     }
 
     fun confirm(mirror: GoalMirror): GoalMirror =
@@ -237,7 +261,7 @@ object GoalEngine {
      * 结构：目标契约（谁、多清楚、什么约束、什么还没定）+ 压缩过的历史 + 今天 + 明天。
      * 总长硬限 [GoalCompressor.CONTEXT_BUDGET]；超了先砍历史，最后才砍今天。
      */
-    fun contextBlock(mirror: GoalMirror, today: String): String {
+    fun contextBlock(mirror: GoalMirror, today: String, effort: TodayEffort? = null): String {
         val open = "<goal_context>\n"
         val close = "\n</goal_context>"
         // 预算算的是**整块**（含标签）：调用方关心的是「塞进提示词有多长」，
@@ -257,6 +281,18 @@ object GoalEngine {
         val restRoom = (room - contract.length - 1).coerceAtLeast(80)
         val body = buildString {
             append(contract)
+            // 实际投入只作对照，**不参与**明天的排期：排期是承诺，
+            // 按昨天的偶然数据自动缩水，用户会觉得「计划自己在退」。
+            // 没有 AFK 记录时这个数只是「窗口开着」，得让模型知道它不可直接采信。
+            if (effort != null && effort.visible) {
+                val planned = mirror.dayPlan(today)?.totalMinutes ?: 0
+                if (planned > 0) {
+                    append("\n【投入】计划 ").append(planned).append(" 分 · 实际 ")
+                        .append(effort.minutes).append(" 分")
+                    if (!effort.hasAfkData) append("（仅窗口统计，可能偏高）")
+                    append("；不参与次日排期")
+                }
+            }
             if (rest.isNotBlank()) append('\n').append(GoalCompressor.clamp(rest, restRoom))
         }
         return open + GoalCompressor.clamp(body, room) + close

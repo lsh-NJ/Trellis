@@ -117,6 +117,42 @@ class GoalRulesTest {
     }
 
     @Test
+    fun aVagueGoalGetsItsUndecidedForkWrittenDownAndScheduled() {
+        // 「想考研」时谁都不知道考哪儿。这条断言守的是：它必须**被写下来并排进今天**，
+        // 而不是被悄悄跳过 —— 跳过等于把「选学校」这件事永远留给以后。
+        val drafted = GoalEngine.toDraft(fillAll(academicVague()), today, 90)
+
+        assertTrue(drafted.contract.unknownDecisions.isNotEmpty(), "VAGUE 必须留下未决策项")
+        val decision = drafted.dayPlan(today)!!.entries.firstOrNull { it.kind == EntryKind.DECISION }
+        assertNotNull(decision, "未决策项要变成今天的决策任务：" + drafted.dayPlan(today)!!.entries.map { it.text })
+        assertTrue(decision.text.startsWith("查"), "决策任务动词开头：" + decision.text)
+        assertTrue(
+            EntityLexicon.hits(decision.text + decision.output).isEmpty(),
+            "决策任务里不许出现具体院校/公司：" + decision.text,
+        )
+    }
+
+    @Test
+    fun anUndecidedForkSomeoneAlreadyWroteIsNotOverwritten() {
+        val mirror = fillAll(academicVague()).let {
+            it.copy(contract = it.contract.copy(unknownDecisions = listOf("要不要脱产备考")))
+        }
+        val drafted = GoalEngine.toDraft(mirror, today, 90)
+        assertEquals(
+            listOf("要不要脱产备考"),
+            drafted.contract.unknownDecisions,
+            "用户/模型写过的分叉优先，模板不许覆盖",
+        )
+
+        // CONCRETE 不再推断：对象已经说死了，还问「去哪儿」是没听懂。
+        val concrete = mirror.copy(contract = mirror.contract.copy(clarity = Clarity.CONCRETE, unknownDecisions = emptyList()))
+        assertTrue(
+            GoalEngine.toDraft(concrete, today, 90).contract.unknownDecisions.isEmpty(),
+            "CONCRETE 不该再凭空生成分叉",
+        )
+    }
+
+    @Test
     fun concretePlansMayNameTheTarget() {
         val concrete = GoalEngine.start(
             GoalMirror(),
@@ -299,6 +335,69 @@ class GoalRulesTest {
         val second = GoalEngine.pushDue(first.mirror, nextDay, 9, 0)
         assertNotNull(second, "次日要能补推一次")
         assertEquals(nextDay, second.mirror.lastPushedDate)
+    }
+
+    // ---------------------------------------------------------------- 7 实际投入
+
+    @Test
+    fun withoutActivityDataTheEffortLineNeverAppears() {
+        val active = fillAll(academicVague()).let { GoalEngine.confirm(GoalEngine.toDraft(it, today, 60)) }
+
+        // 0 分不是「没干活」，更常见的是「没同步」——所以它连显示资格都没有。
+        assertTrue(!TodayEffort(0, hasAfkData = true).visible, "0 分钟不显示")
+        assertTrue(TodayEffort(12, hasAfkData = true).visible, "有分钟的才显示")
+
+        val none = GoalEngine.contextBlock(active, today, null)
+        assertTrue(!none.contains("【投入】"), "没有活动数据就不该出现投入这一行：" + none)
+
+        val zero = GoalEngine.contextBlock(active, today, TodayEffort(0, hasAfkData = true))
+        assertTrue(!zero.contains("【投入】"), "0 分钟同样不出现：" + zero)
+    }
+
+    @Test
+    fun effortIsShownForComparisonButNeverReschedulesTomorrow() {
+        val active = fillAll(academicVague()).let { GoalEngine.confirm(GoalEngine.toDraft(it, today, 60)) }
+        val plannedToday = active.dayPlan(today)!!.totalMinutes
+
+        val block = GoalEngine.contextBlock(active, today, TodayEffort(62, hasAfkData = true))
+        assertTrue(block.contains("【投入】"), "有数据就该显示：" + block)
+        assertTrue(
+            block.contains("计划 " + plannedToday + " 分 · 实际 62 分"),
+            "要给出计划/实际的对照：" + block,
+        )
+        assertTrue(block.contains("不参与次日排期"), "必须说清这个数不能拿来改计划：" + block)
+        assertTrue(
+            block.length <= GoalCompressor.CONTEXT_BUDGET,
+            "加上投入这一行也不能撑破 " + GoalCompressor.CONTEXT_BUDGET + "，实际 " + block.length,
+        )
+
+        // 排期是承诺：昨天一条没勾，新的一天还是按每日投入排，不会自己缩水。
+        // settle() 的入参里根本没有「实际投入」这一项，这是结构上的保证，不是巧合。
+        val nextToday = IsoDate.plusDays(today, 1)!!
+        val settled = GoalEngine.settle(active, nextToday, 60).mirror
+        val fresh = GoalPlanner.planFor(
+            settled.contract,
+            IsoDate.plusDays(nextToday, 1)!!,
+            60,
+            settled.milestone!!,
+            dayIndex = 0,
+        )
+        assertTrue(
+            fresh.totalMinutes >= 40,
+            "昨天没完成不该让今天的计划缩水，实际只排了 " + fresh.totalMinutes + " 分钟",
+        )
+    }
+
+    @Test
+    fun windowOnlyDataIsLabelledInsteadOfBeingTrusted() {
+        val active = fillAll(academicVague()).let { GoalEngine.confirm(GoalEngine.toDraft(it, today, 60)) }
+
+        // 只装了窗口采集：activeMs 就是「窗口开着」，人在不在不知道。界面和上下文都要说出来。
+        val block = GoalEngine.contextBlock(active, today, TodayEffort(62, hasAfkData = false))
+        assertTrue(block.contains("仅窗口统计，可能偏高"), "没有 AFK 记录时必须标注：" + block)
+
+        val trusted = GoalEngine.contextBlock(active, today, TodayEffort(62, hasAfkData = true))
+        assertTrue(!trusted.contains("仅窗口统计"), "有 AFK 记录就不该再标：" + trusted)
     }
 
     // ---------------------------------------------------------------- 附带

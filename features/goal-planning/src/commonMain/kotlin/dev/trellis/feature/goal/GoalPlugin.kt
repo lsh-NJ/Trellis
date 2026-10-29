@@ -7,7 +7,7 @@ import dev.trellis.kernel.plugin.ContributionDecl
 import dev.trellis.kernel.plugin.Plugin
 import dev.trellis.kernel.plugin.PluginContext
 import dev.trellis.kernel.plugin.PluginManifest
-import dev.trellis.kernel.prompt.PromptSections
+import dev.trellis.kernel.context.Contexts
 import dev.trellis.kernel.slot.Slots
 
 /**
@@ -26,6 +26,13 @@ class GoalPlugin(
     private val dailyMinutes: () -> Int,
     private val today: () -> String,
     private val onOpenChat: () -> Unit,
+    /**
+     * 今天的实际投入（活动记录）。没接活动采集 / 今天没同步过就返回 null。
+     *
+     * 用 lambda 注入而不是 import `:features:activity`：插件和「今天干了什么」的数据源
+     * 之间不应该是硬依赖 —— 换一个活动采集方案，这里一行都不用改。
+     */
+    private val activityEffort: suspend () -> TodayEffort? = { null },
 ) : Plugin {
 
     private var service: GoalService? = null
@@ -47,7 +54,7 @@ class GoalPlugin(
             Slots.ChatAside.id to listOf(ContributionDecl("goal-bar", order = 40)),
             Slots.HomeSection.id to listOf(ContributionDecl("goal-today", order = 30)),
             Slots.SettingsSection.id to listOf(ContributionDecl("goal-settings", order = 30)),
-            PromptSections.AiContext.id to listOf(ContributionDecl("goal-context", order = 20)),
+            Contexts.Host.id to listOf(ContributionDecl("goal-context", order = 20)),
         ),
     )
 
@@ -55,7 +62,7 @@ class GoalPlugin(
         val kit = GoalKit(ctx.kv)
         // 时间一律走 ctx.clock：插件里出现 System.currentTimeMillis()，
         // 「跳到次日补推一次」这条测试就永远只能靠改系统时间。
-        val goalService = GoalService(kit, ctx.clock, dailyMinutes, today)
+        val goalService = GoalService(kit, ctx.clock, dailyMinutes, today, activityEffort)
         service = goalService
 
         ctx.extensions.register(
@@ -71,8 +78,8 @@ class GoalPlugin(
             GoalSettingsSlot(goalService, dailyMinutes),
         )
         ctx.extensions.register(
-            PromptSections.AiContext,
-            GoalPromptSection(goalService, today),
+            Contexts.Host,
+            GoalContextSection(goalService, today),
         )
     }
 

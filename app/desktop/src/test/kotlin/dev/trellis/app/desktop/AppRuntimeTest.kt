@@ -1,6 +1,8 @@
 package dev.trellis.app.desktop
 
+import dev.trellis.feature.goal.GoalPlugin
 import dev.trellis.kernel.api.KernelState
+import dev.trellis.kernel.api.UninstallResult
 import dev.trellis.kernel.plugin.PluginState
 import dev.trellis.kernel.slot.TextSlot
 import dev.trellis.kernel.extension.displayName
@@ -154,13 +156,25 @@ class AppRuntimeTest {
         // 第一方插件用 ComposeSlot 往挂载点上放卡片：任务界面（今日盘点/待办清单，
         // 交给 agent 也能调位置和样式）。演示用的「危险操作」已经从产品里删掉，
         // 只留测试夹具，所以这里不会再出现 danger-zone。
+        //
+        // 首页还挂着「目标达成规划」的今日卡：它是 DynamicSlot（只交 UiNode 数据）。
+        // 两种贡献同一个挂载点并存，正好是「代码型 / 数据型」的分界样本，别把那条删了。
         val sections = runtime.kernel.extensions.all(Slots.HomeSection)
         assertEquals(
-            setOf("plan-board"),
+            setOf("plan-board", "goal-today"),
             sections.map { it.id }.toSet(),
             sections.map { it.id }.toString(),
         )
-        assertTrue(sections.all { it is dev.trellis.ui.ComposeSlot })
+        assertEquals(
+            setOf("plan-board"),
+            sections.filterIsInstance<dev.trellis.ui.ComposeSlot>().map { it.id }.toSet(),
+            "ComposeSlot 只应该是第一方任务界面",
+        )
+        assertEquals(
+            setOf("goal-today"),
+            sections.filterIsInstance<dev.trellis.kernel.slot.DynamicSlot>().map { it.id }.toSet(),
+            "目标卡只交数据，不往宿主里注入 Compose",
+        )
 
         val headers = runtime.kernel.extensions.all(Slots.HomeHeader)
         assertEquals(
@@ -414,6 +428,31 @@ class AppRuntimeTest {
         val message = runtime.applyTheme("dev.bento.shift/bento")
         assertEquals("dev.bento.shift/bento", runtime.uiPrefs.theme, message)
         assertNotNull(runtime.themeScheme(dark = false), "选中的主题要能变成配色方案")
+
+        runtime.shutdown()
+    }
+
+    /**
+     * R1 的内核层保证：必需插件连内核都拒绝卸载。
+     *
+     * 为什么不在插件页测：那里最多把按钮变灰。这条要证明的是「绕过界面直接调内核也删不掉」——
+     * 否则一次工具调用、一段脚本就能把用户攒了三个月的目标契约抹掉。
+     * 断言的是**内核返回的原文**，因为这句话要原样透给 AI 和用户。
+     */
+    @Test
+    fun theGoalPluginCannotBeRemovedEvenByTheKernel() = runTest {
+        val runtime = AppRuntime.create(tempHome())
+        val id = GoalPlugin.PLUGIN_ID
+        assertEquals(PluginState.ACTIVE, runtime.kernel.plugin(id)?.state, "插件应当默认启动")
+
+        val result = runtime.kernel.remove(id)
+        assertTrue(result is UninstallResult.Rejected, "必需插件必须被拒绝卸载，实际是 " + result)
+        assertEquals(
+            "必需插件不可卸载",
+            (result as UninstallResult.Rejected).error.detail,
+            "这句话要原样透给 AI 和用户，改了就等于换了契约",
+        )
+        assertNotNull(runtime.kernel.plugin(id), "被拒绝之后插件还得在，数据也不能动")
 
         runtime.shutdown()
     }

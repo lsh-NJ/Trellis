@@ -5,6 +5,27 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
+ * 今天实际投入了多少。
+ *
+ * [hasAfkData] 不是附带信息，它决定这个数**能不能和计划比**：只装了窗口采集时，
+ * `activeMs` 就是「窗口开着的时间」，人离开电脑那一段照样算进去。
+ * 把它当成「真实专注时长」去对计划，用户会以为自己在偷懒。
+ */
+data class TodayEffort(
+    val minutes: Int,
+    /** 这一天的数据里有没有 AFK 记录。false 表示「窗口开着」，不等于「人在」。 */
+    val hasAfkData: Boolean,
+) {
+    /**
+     * 值得显示吗。
+     *
+     * 0 分不显示：那更常见的意思是「没同步 / 没开采集」，而不是「今天什么都没干」。
+     * 把两者混在一起显示，用户第一次看到就会觉得这个功能在骗他。
+     */
+    val visible: Boolean get() = minutes > 0
+}
+
+/**
  * 插件对外的唯一门面：缓存 + 结算 + 推送，都在这里。
  *
  * 为什么不把 kv 读写散到三个卡片里：三张卡同时渲染时，各自 load 一次会读到
@@ -17,6 +38,14 @@ class GoalService(
     private val dailyMinutes: () -> Int,
     /** 今天（ISO 日期）。宿主注入：common 里没有时区，猜一个会比不猜更糟。 */
     private val today: () -> String,
+    /**
+     * 今天的实际投入。**可选依赖**：宿主没接活动采集、或今天还没同步过，
+     * 就返回 null，界面直接不显示这一行 —— 不能显示成 0，那会被读成「今天什么都没干」。
+     *
+     * 用 lambda 而不是 `ctx.services`：活动采集是宿主层能力，没有发布成服务契约。
+     * 硬 import `:features:activity` 会让插件和某个具体实现绑死。
+     */
+    private val effort: suspend () -> TodayEffort? = { null },
 ) {
 
     private val mutex = Mutex()
@@ -87,6 +116,9 @@ class GoalService(
         pushNote = null
         next
     }
+
+    /** 今天的实际投入；没有活动数据时 null（不是 0）。 */
+    suspend fun todayEffort(): TodayEffort? = effort()
 
     private fun hourOfDay(): Int = ((clock.nowMs() / 3_600_000L) % 24L).toInt()
 

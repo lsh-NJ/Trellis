@@ -7,13 +7,17 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * 插件上下文片段在提示词里的位置与形状。
+ * 插件贡献的上下文块在提示词里的位置与形状。
  *
  * 位置是这里唯一重要的东西：片段必须落在 `<current_state>` 之后、`<task:...>` 之前。
  * 放到 task 之后，模型会把「现在是什么」当成「这一轮要干什么」；
  * 放到历史里，它会当成旧闻。两种都实测过，都会让它重做一遍已经做过的事。
+ *
+ * 文件名和内核里的扩展点（`kernel.context.ContextSection`）对齐：
+ * 之前叫 PromptSectionTest，内核那个类型已经因为 `verifyKernelPurity` 改了名，
+ * 测试名留着旧词会让人以为内核里还有一个叫 PromptSection 的东西。
  */
-class PromptSectionTest {
+class PluginContextBlockTest {
 
     private val prompt = ManagerPrompt(base = "BASE")
 

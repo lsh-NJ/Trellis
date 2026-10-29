@@ -233,12 +233,30 @@ class GoalTodaySlot(
             )
         }
 
+        // 实际投入：只有真拿到活动数据才显示。显示成 0 会被读成「今天什么都没干」，
+        // 而真相往往是「活动采集没开」——两者不能混。
+        val effort = service.todayEffort()?.takeIf { it.visible }
+        val effortLine = effort?.let { e ->
+            val diff = e.minutes - plan.totalMinutes
+            "计划 " + plan.totalMinutes + " 分钟 · 实际 " + e.minutes + " 分钟" + when {
+                diff >= 15 -> "（比计划多 " + diff + "）"
+                diff <= -15 -> "（比计划少 " + (-diff) + "）"
+                else -> "（基本吻合）"
+            }
+        }
+        // 只装了窗口采集时，这个数里包含「窗口开着、人不在」的时间。不说清楚，
+        // 用户会拿它跟计划比，然后得出「我今天很努力」这种错误结论。
+        val effortCaveat = effort?.takeIf { !it.hasAfkData }
+            ?.let { "这个数只统计了窗口，可能偏高。" }
+
         return UiNode.Column(
             children = listOf(
                 text("今天 · " + plan.doneCount + "/" + plan.entries.size, style = UiTextStyle.Caption, tone = UiTone.Muted),
                 text(mirror.contract.statement.ifBlank { "今天" }, weight = UiTextWeight.Medium),
                 UiNode.Progress(plan.doneCount, plan.entries.size, ""),
-            ) + rows + listOf(
+            ) + rows + listOfNotNull(
+                effortLine?.let { text(it, size = UiTextSize.Small, tone = UiTone.Muted) },
+                effortCaveat?.let { text(it, size = UiTextSize.Small, tone = UiTone.Muted) },
                 text(
                     "共 " + plan.totalMinutes + " 分钟；明天的安排已经排好，看得见但明天才算。",
                     size = UiTextSize.Small,
@@ -306,7 +324,9 @@ class GoalSettingsSlot(
         val mirror = service.mirror()
         val settings = mirror.settings
         val children = mutableListOf<UiNode>()
-        children += text(GoalStateMachine.describe(mirror), size = UiTextSize.Small, tone = UiTone.Muted)
+        // 加「当前：」三个字：不加的话，进入 REVIEWING 时这一组的第一行就是「复盘周期到了」，
+        // 读起来像一个小标题，用户会以为下面那个步进器是「设置复盘周期到了」。
+        children += text("当前：" + GoalStateMachine.describe(mirror), size = UiTextSize.Small, tone = UiTone.Muted)
         children += UiNode.Stepper(
             label = "复盘周期",
             value = settings.feedbackCycleDays,
@@ -375,10 +395,10 @@ class GoalSettingsSlot(
  * 交的是**事实**（目标、约束、今天排了什么），不是指令。宿主决定措辞、位置和怎么截断 ——
  * 插件没法借这段给自己加权限，这正是扩展点这样设计的理由。
  */
-class GoalPromptSection(
+class GoalContextSection(
     private val service: GoalService,
     private val today: () -> String,
-) : dev.trellis.kernel.prompt.PromptSection {
+) : dev.trellis.kernel.context.ContextSection {
 
     override val id: String = "goal-context"
     override val order: Int = 20
@@ -388,6 +408,6 @@ class GoalPromptSection(
 
     override suspend fun render(): String {
         val mirror = service.refresh()
-        return GoalEngine.contextBlock(mirror, today())
+        return GoalEngine.contextBlock(mirror, today(), service.todayEffort())
     }
 }
