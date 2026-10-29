@@ -37,6 +37,18 @@ import dev.trellis.domain.plan.LearningPlanInfo
 import dev.trellis.domain.plan.PoolUnit
 import dev.trellis.domain.plan.WeekDay
 import dev.trellis.feature.learning.LearningPlanStore
+import dev.trellis.activity.ActivityAggregator
+import dev.trellis.activity.ActivitySettings
+import dev.trellis.activity.ActivityStore
+import dev.trellis.activity.ActivitySync
+import dev.trellis.activity.ActivityTaxonomy
+import dev.trellis.activity.ActivityTaxonomyStore
+import dev.trellis.activity.ActivityWatchClient
+import dev.trellis.activity.AppSlice
+import dev.trellis.activity.ClassificationExplanation
+import dev.trellis.activity.DaySummary
+import dev.trellis.activity.RangeSummary
+import dev.trellis.activity.Segment
 import dev.trellis.dsl.DslLoader
 import dev.trellis.script.ScriptLoader
 import dev.trellis.dsl.JvmPluginFileSystem
@@ -85,6 +97,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /**
  * 界面上**真的**渲染了的挂载点。
@@ -111,6 +126,14 @@ internal const val TAB_DIAG = 4
 
 /** 设置页：宿主自己认的设置项都在这一页，插件也能在这里挂卡片。 */
 internal const val TAB_SETTINGS = 5
+
+/**
+ * 活动页：ActivityWatch 原始数据分类后的日视图与范围总览。
+ *
+ * 序号放 6 而不是插进中间：前进/后退/持久化都可能按数字记页，改老页面的编号会把
+ * 「上次停在设置」变成「停在别的页」。导航顺序由 AppScreen 的 NAV_TABS 决定，跟数字无关。
+ */
+internal const val TAB_ACTIVITY = 6
 
 internal val RENDERED_MOUNT_POINTS: Set<ExtensionPointId> = setOf(
     Slots.HomeHeader.id,
@@ -1020,6 +1043,24 @@ class AppRuntime private constructor() {
                 }
             }
 
+            TAB_ACTIVITY -> {
+                val summary = activityDay(System.currentTimeMillis())
+                if (summary == null) {
+                    appendLine("活动：暂时读不到（" + (activityMessage ?: "库还没打开") + "）")
+                } else {
+                    appendLine(
+                        "活动（今天）：观察 " + summary.observedMs / 60_000 + " 分钟，AFK " +
+                            summary.afkMs / 60_000 + " 分钟，活跃 " + summary.activeMs / 60_000 +
+                            " 分钟，时间轴 " + summary.segmentCount + " 段",
+                    )
+                    summary.categories.take(8).forEach { slice ->
+                        appendLine("- " + slice.path + "：" + slice.totalMs / 60_000 + " 分钟")
+                    }
+                    if (summary.isEmpty) appendLine("（今天还没有采集到任何活动）")
+                }
+                activityProblems().take(3).forEach { appendLine("分类规则问题：" + it) }
+            }
+
             TAB_PLUGINS -> {
                 appendLine(
                     "插件 " + pluginInfos.size + " 个" +
@@ -1064,6 +1105,7 @@ class AppRuntime private constructor() {
         TAB_TASKS -> "任务"
         TAB_PLAN -> "计划"
         TAB_CHAT -> "对话"
+        TAB_ACTIVITY -> "活动"
         TAB_PLUGINS -> "插件"
         TAB_SETTINGS -> "设置"
         else -> "诊断"
@@ -1080,10 +1122,11 @@ class AppRuntime private constructor() {
             "任务", "tasks", "task" -> TAB_TASKS
             "计划", "plan", "plans" -> TAB_PLAN
             "对话", "chat" -> TAB_CHAT
+            "活动", "activity", "activities" -> TAB_ACTIVITY
             "插件", "plugins", "plugin" -> TAB_PLUGINS
             "诊断", "diag", "diagnostics" -> TAB_DIAG
             "设置", "settings", "setting" -> TAB_SETTINGS
-            else -> return "没有这一页：" + tab + "。只有 任务 / 计划 / 对话 / 插件 / 诊断 / 设置。"
+            else -> return "没有这一页：" + tab + "。只有 任务 / 计划 / 对话 / 活动 / 插件 / 诊断 / 设置。"
         }
         currentTab = target
         return "切到了「" + tabName(target) + "」页。"
@@ -2350,6 +2393,166 @@ class AppRuntime private constructor() {
         }
     }
 
+    // ---------------------------------------------------------------- 活动（ActivityWatch）
+
+    /**
+     * 活动页的数据来自 ActivityWatch，但 AW 只当采集器：不读也不写它的 `category_sets`。
+     *
+     * 三份本地数据各管一件事：
+     * - `activity.db`：从 AW 拉来的原始事件（丢了能重新采集）；
+     * - `taxonomy.json`：用户手写的分类规则（丢了就没了，所以独立存、原子写）；
+     * - `settings.json`：轮询间隔、排除进程、浏览器名单。
+     *
+     * 页面第一次打开才开库（同计划页）：不进活动页的人不为 SQLite 付启动时间。
+     */
+    private var activityStore: ActivityStore? = null
+    private var activitySync: ActivitySync? = null
+    private var activityAggregator: ActivityAggregator? = null
+    private var activitySettingsCache: ActivitySettings? = null
+
+    private val activityLock = Mutex()
+
+    /** 活动页最近一次失败的一句话；成功时清空。 */
+    internal var activityMessage by mutableStateOf<String?>(null)
+        private set
+
+    /** 最近一次同步成功的时间（毫秒）；没跑过为 null。 */
+    internal var activitySyncedAtMs by mutableStateOf<Long?>(null)
+        private set
+
+    /** 轮询间隔，来自 settings.json（默认 60 秒）。 */
+    internal val activitySyncIntervalMs: Long
+        get() = (activitySettingsCache?.syncIntervalSeconds ?: 60) * 1000L
+
+    private fun activityDir(): File = File(home, "activity").apply { mkdirs() }
+
+    /**
+     * 打开活动库并装配同步器/整理器；已经开过就直接复用。
+     *
+     * 失败只记一句话，不抛异常 —— 和插件崩溃隔离同一条原则：活动采集坏了，
+     * 任务页、计划页、对话页都必须照常能用。
+     */
+    internal suspend fun ensureActivityEngine(): ActivityAggregator? {
+        activityAggregator?.let { return it }
+        return activityLock.withLock {
+            activityAggregator ?: withContext(Dispatchers.IO) {
+                runCatching {
+                    val dir = activityDir()
+                    val settingsFile = File(dir, "settings.json")
+                    val settings = ActivitySettings.load(settingsFile.toPath())
+                    if (!settingsFile.exists()) ActivitySettings.save(settingsFile.toPath(), settings)
+
+                    val taxonomyFile = ActivityTaxonomyStore.defaultFile(home.toPath())
+                    val taxonomyStore = ActivityTaxonomyStore(taxonomyFile)
+                    val taxonomy = taxonomyStore.load()
+                    // 第一次运行就把出厂规则落盘：用户想改分类时至少有文件可改，而不是面对「不存在」。
+                    if (!taxonomyFile.toFile().exists()) taxonomyStore.save(taxonomy)
+
+                    val store = ActivityStore.open(File(dir, "activity.db").toPath())
+                    activityStore = store
+                    activitySync = ActivitySync(
+                        source = ActivityWatchClient(baseUrl = settings.baseUrl, apiKey = settings.apiKey),
+                        store = store,
+                        settings = { settings },
+                    )
+                    activitySettingsCache = settings
+                    activityAggregator = ActivityAggregator(store, settings, taxonomy)
+                    activityAggregator
+                }.getOrElse { error ->
+                    activityMessage = "活动库打不开：" + (error.message ?: "未知原因")
+                    null
+                }
+            }
+        }
+    }
+
+    private suspend fun <T> activityIo(block: suspend () -> T): T =
+        activityLock.withLock { withContext(Dispatchers.IO) { block() } }
+
+    /**
+     * 跑一轮同步，返回一句给界面看的话。
+     *
+     * AW 没开不算错误：`ActivitySync` 把网络错误收进 `SyncReport.error`，这里把它变成人话，
+     * 用户开 AW/修配置后下一轮自己恢复。
+     */
+    internal suspend fun syncActivity(): String {
+        ensureActivityEngine() ?: return activityMessage ?: "活动库打不开"
+        val sync = activitySync ?: return "活动库打不开"
+        val report = runCatching { activityIo { sync.syncOnce() } }
+            .getOrElse { error ->
+                val text = "活动同步失败：" + (error.message ?: "未知原因")
+                activityMessage = text
+                return text
+            }
+        return when {
+            report.skipped -> {
+                activityMessage = null
+                "活动采集在 settings.json 里关掉了（enabled=false）"
+            }
+
+            report.error != null -> {
+                val text = "活动同步失败：" + report.error
+                activityMessage = text
+                text
+            }
+
+            else -> {
+                activityMessage = null
+                activitySyncedAtMs = report.nowMs
+                "已同步 " + report.buckets + " 个 bucket、" + report.rows + " 条事件"
+            }
+        }
+    }
+
+    /** 某一天的汇总；库没打开 / 读失败时返回 null（错误在 [activityMessage]）。 */
+    internal suspend fun activityDay(dayMs: Long): DaySummary? {
+        val aggregator = ensureActivityEngine() ?: return null
+        return runCatching { activityIo { aggregator.daySummary(dayMs) } }
+            .getOrElse { error ->
+                activityMessage = "活动数据读取失败：" + (error.message ?: "未知原因")
+                null
+            }
+    }
+
+    /** 某一天的清洗后时间轴（时间轴 / 详情用）。 */
+    internal suspend fun activitySegments(dayMs: Long): List<Segment> {
+        val aggregator = ensureActivityEngine() ?: return emptyList()
+        return runCatching { activityIo { aggregator.segments(dayMs) } }
+            .getOrElse { error ->
+                activityMessage = "活动数据读取失败：" + (error.message ?: "未知原因")
+                emptyList()
+            }
+    }
+
+    /** 一段日期范围的汇总（含首尾两天）。 */
+    internal suspend fun activityRange(firstDayMs: Long, lastDayMs: Long): RangeSummary? {
+        val aggregator = ensureActivityEngine() ?: return null
+        return runCatching { activityIo { aggregator.rangeSummary(firstDayMs, lastDayMs) } }
+            .getOrElse { error ->
+                activityMessage = "活动数据读取失败：" + (error.message ?: "未知原因")
+                null
+            }
+    }
+
+    /** 应用排行；[categoryId] 非空时只看该分类及其所有后代。 */
+    internal suspend fun activityAppRanking(dayMs: Long, categoryId: String? = null): List<AppSlice> {
+        val aggregator = ensureActivityEngine() ?: return emptyList()
+        return runCatching { activityIo { aggregator.appRanking(dayMs, categoryId) } }
+            .getOrElse { error ->
+                activityMessage = "活动数据读取失败：" + (error.message ?: "未知原因")
+                emptyList()
+            }
+    }
+
+    /** 「为什么归到这个分类」：详情浮层里的规则调试。 */
+    internal suspend fun activityExplain(app: String?, title: String?, url: String?): ClassificationExplanation? {
+        val aggregator = ensureActivityEngine() ?: return null
+        return runCatching { aggregator.explain(app, title, url) }.getOrNull()
+    }
+
+    /** 分类规则里编译不过的正则（有问题时活动页要提示，而不是静默把时间算成未分类）。 */
+    internal fun activityProblems(): List<String> = activityAggregator?.classifierProblems ?: emptyList()
+
     companion object {
 
         /** [home] 可注入，测试就不必污染真实的家目录。 */
@@ -2454,6 +2657,7 @@ class AppRuntime private constructor() {
 private fun initialTab(): Int = when (System.getenv("TRELLIS_TAB")?.trim()?.lowercase()) {
     "plan" -> TAB_PLAN
     "chat" -> TAB_CHAT
+    "activity" -> TAB_ACTIVITY
     "plugins" -> TAB_PLUGINS
     "diag" -> TAB_DIAG
     "settings" -> TAB_SETTINGS

@@ -44,7 +44,7 @@ Set-Location C:\Users\breakM\Desktop\work\Trellis
 | 变量 | 作用 |
 |---|---|
 | `TRELLIS_HOME` | 数据根目录，默认 `~/.trellis`；做演示/截图时指到临时目录，别动真实数据 |
-| `TRELLIS_TAB` | 启动落在哪一页：`tasks`（默认）/ `plan` / `chat` / `plugins` / `diag` |
+| `TRELLIS_TAB` | 启动落在哪一页：`tasks`（默认）/ `plan` / `chat` / `activity` / `plugins` / `diag` |
 | `TRELLIS_LLM_KEY` / `TRELLIS_LLM_MODEL` / `TRELLIS_LLM_ENDPOINT` | 覆盖 LLM 配置（也可写 `~/.trellis/llm.json`） |
 
 > 历史会话留下的 `.dev/` 临时脚本已于 2026-10-29 清理，仓库里没有 `.dev/` 目录；也别再从别处捡回这类脚本当入口。
@@ -65,7 +65,7 @@ Set-Location C:\Users\breakM\Desktop\work\Trellis
 | `:ui-kernel` | `ui-kernel/src/commonMain/kotlin/dev/trellis/ui/` | Compose 渲染层：把插件贡献画成卡片/挂载点；**只渲染数据，不执行第三方 Compose** | `SlotArea.kt`（挂载点容器 + 12 栏布局 + 卡片外壳）<br>`DynamicSlotView.kt`（`UiNode` 全词汇渲染，36KB，改渲染先看它）<br>`CardStyle.kt` / `ExtraColors.kt` / `Fonts.kt`（宿主样式注入）<br>`ComposeSlot.kt`（内置插件的 Composable 贡献） |
 | `:ai` | `ai/src/commonMain/kotlin/dev/trellis/ai/` | AI 层：提示词、意图路由、工具循环、会话无关的纯逻辑（**唯一的 AI 入口是对话页的管理员**；不再有一次性生成管线） | `manager/ManagerRouter.kt`（意图单选 + 按意图给工具 + 拼提示词）、`manager/ManagerAgent.kt`、`manager/ManagerPrompt.kt`、`manager/Intent.kt`<br>`PromptBuilder.kt`（创建插件用的系统提示词）<br>`tool/ToolAgent.kt`、`tool/AgentTool.kt`<br>`tool/DeepSeekMarkup.kt`（DSML 方言解析）<br>`PluginInstaller.kt`（安装器接口，`KernelPluginInstaller` 实现）<br>`LlmClient.kt`；JVM 实现 `ai/src/jvmMain/kotlin/dev/trellis/ai/HttpLlmClient.kt` |
 | `:features:learning-process` | `features/learning-process/src/jvmMain/kotlin/dev/trellis/feature/learning/` | **学习计划后端**（事件溯源 + SQLite）：计划版本、承诺、occurrence、结算结转、复盘。契约在 `sdk-domain/.../plan/`，与任务型 `PlanService` 是两套，勿混用 | `SqliteLearningPlanService.kt`（命令外壳/撤销/幂等/事务）<br>`PlanCommands.kt`（20 条命令）<br>`PlanQueries.kt`（日/周/地图/复盘/待办视图）<br>`PlanRhythm.kt`（结算 + 复盘 + JSONL 导出）<br>`PlanSchema.kt`（内嵌 DDL）、`PlanDatabase.kt`<br>`LearningPlanStore.kt`（对外唯一入口）<br>测试 `src/jvmTest/.../LearningPlanServiceTest.kt` |
-| `:features:activity` | `features/activity/src/main/kotlin/dev/trellis/activity/` | 活动采集整理：AW 原始事件（窗口/AFK/浏览器标签页）入库 → 分层分类（大类-小类、颜色、正则优先级、可匹配 URL）→ 日汇总。**尚未接入桌面应用** | `ActivityTaxonomy.kt`（分类树/规则/默认分类）、`ActivityAggregator.kt`（片段与汇总）、`ActivitySync.kt`、`ActivityStore.kt`、`ActivityTaxonomyStore.kt`；说明 `docs/activity.md` |
+| `:features:activity` | `features/activity/src/main/kotlin/dev/trellis/activity/` | 活动采集整理：AW 原始事件（窗口/AFK/浏览器标签页）入库 → 分层分类（大类-小类、颜色、正则优先级、可匹配 URL）→ 日汇总。桌面端由导航第五项「活动」页承载（`TRELLIS_TAB=activity`） | `ActivityTaxonomy.kt`（分类树/规则/默认分类）、`ActivityAggregator.kt`（片段与汇总）、`ActivitySync.kt`、`ActivityStore.kt`、`ActivityTaxonomyStore.kt`；页面 `app/desktop/.../ActivityScreen.kt`；说明 `docs/activity.md` |
 | `:app:desktop` | `app/desktop/src/main/kotlin/dev/trellis/app/desktop/` | 桌面应用：装配内核、界面、AI 工具、本地存储、会话 | `Main.kt`（窗口/主题/快捷键）<br>`AppRuntime.kt`（73KB，**装配与状态中心**）<br>`AppScreen.kt`（任务页外壳）<br>`ChatScreen.kt`（会话页 UI）、`ChatStore.kt`（会话落盘）<br>`PluginTools.kt`（AI 插件工具）、`LayoutTools.kt`（布局工具）、`UiStyleTools.kt`（样式/主题工具）、`ScreenTools.kt`（截图/点击/打字）<br>`ThemePacks.kt`（主题校验与应用）、`Palette.kt`（参数化配色）、`LayoutStore.kt`、`UiPrefs.kt`、`StudyPrefs.kt`（`study.json`：每天预计投入）、`SettingsScreen.kt`（设置页）<br>`PlanUiPlugin.kt`（**任务页自身也是插件**）<br>`PlanScreen.kt`（计划页：周卡片/天条/当天安排）、`PlanTools.kt`（AI 建计划工具：`create_learning_plan`）、`PlanPanel.kt`（右侧常驻执行清单）、`PlanCategoryStore.kt`（计划分类）<br>`WorkflowTools.kt`（`set_plan`/`step_done`/`ask_choices`）<br>`BilibiliClient.kt`/`BilibiliTools.kt`（B 站课程检索与分集）、`TaskTools.kt`（`add_tasks`）<br>`PluginUsageStore.kt`（插件页「上次用」）、`FileAuditLedger.kt`（`audit.log` 生命周期审计）<br>`MarkdownText.kt`（对话消息 Markdown 渲染） |
 | `:demo` | `demo/src/main/kotlin/dev/trellis/demo/Main.kt` | 控制台演示（无界面，跑 `.\gradlew.bat :demo:run`） | `Main.kt` |
 
@@ -117,12 +117,13 @@ Set-Location C:\Users\breakM\Desktop\work\Trellis
 | 活动分类规则（大类/小类/颜色/优先级/正则，可匹配标签页 URL） | `features/activity/.../ActivityTaxonomy.kt`（模型/默认分类/`classifier`）；`taxonomy.json` 读写 `ActivityTaxonomyStore.kt`；语义见 `docs/activity.md` |
 | 活动原始数据（AW 同步 / 落库 / schema 迁移） | `features/activity/.../ActivitySync.kt`、`ActivityWatchClient.kt`、`ActivityStore.kt`、`ActivitySettings.kt` |
 | 日活动汇总与按分类时长 | `features/activity/.../ActivityAggregator.kt`（AFK 扣除、碎片合并、标签页 URL 贴片、层级累计） |
+| 活动页 UI（导航第五项「活动」：日视图 / 范围总览 / 片段详情） | `app/desktop/.../ActivityScreen.kt`；引擎与查询在 `AppRuntime`（`ensureActivityEngine` / `syncActivity` / `activityDay` / `activityRange`）；说明 `docs/activity.md` §7 |
 | 任务页 UI（任务行/分组/新任务输入/撤销） | `app/desktop/.../AppScreen.kt` + `PlanUiPlugin.kt`（它们已是插件卡片） |
 | 计划页 UI（周视图 / 天条 / 当天安排） | `app/desktop/.../PlanScreen.kt` + `AppRuntime.refreshPlan`（数据全来自 `LearningPlanService` 的 view model） |
 | 计时器小窗（倒计时 / 正计时 / 结束记入） | `app/desktop/.../FocusTimer.kt`（模型 + 窗口）、`AppRuntime` 的 `timer*` 状态与 `openTimer/stopTimerAndLog`、`Main.kt` 的第二 `Window`；说明见 `docs/focus-timer.md` |
 | 自然语言日期（「周三前」「3天后」） | `app/desktop/.../NaturalDates.kt` |
 | 插件页 / 诊断页 UI（两页都不在导航里：从设置页进去） | `app/desktop/.../PluginsScreen.kt`、`DiagnosticsScreen.kt` |
-| 设置页 UI（主题与导航 / 每日预计投入 / 插件设置分组） | `app/desktop/.../SettingsScreen.kt` + `UiPrefs.kt`（`ui.json`，主题与导航选择器走 `applyTheme` / `updateUiPrefs`）+ `StudyPrefs.kt`（`study.json`）；挂载点 `slot.settings.section` 原先挂在插件页底部，2026-10-28 移到这一页；同一天诊断页也撤出导航，改成这一页底部的「诊断」卡片，点进去，诊断页头部是「← 诊断」（返回箭头在标题左侧，二级页统一走 `Chrome.kt` 的 `ChromeSecondaryHeader`）；插件页也一样撤出导航，改成这一页的「插件」卡片（显示插件数与错误数），插件页头部同样是「← 插件」，导航最终只剩 任务 / 计划 / 对话 / 设置 四条 |
+| 设置页 UI（主题与导航 / 每日预计投入 / 插件设置分组） | `app/desktop/.../SettingsScreen.kt` + `UiPrefs.kt`（`ui.json`，主题与导航选择器走 `applyTheme` / `updateUiPrefs`）+ `StudyPrefs.kt`（`study.json`）；挂载点 `slot.settings.section` 原先挂在插件页底部，2026-10-28 移到这一页；同一天诊断页也撤出导航，改成这一页底部的「诊断」卡片，点进去，诊断页头部是「← 诊断」（返回箭头在标题左侧，二级页统一走 `Chrome.kt` 的 `ChromeSecondaryHeader`）；插件页也一样撤出导航，改成这一页的「插件」卡片（显示插件数与错误数），插件页头部同样是「← 插件」，导航最终是 任务 / 计划 / 对话 / 活动 / 设置 五条（活动页 2026-10-29 加入） |
 | 存储后端（KV → JSON 文件） | `kernel/.../storage/*`；JVM 实现 `app/desktop/.../FileStorageBackend.kt` |
 | 时间源 | `kernel/.../time/KernelClock.kt`（禁止直接 `System.currentTimeMillis()`） |
 | 权限/审批 | `kernel/.../capability/*`、`kernel/.../approval/*`；桌面弹窗 `app/desktop/.../AskDialogs.kt` |

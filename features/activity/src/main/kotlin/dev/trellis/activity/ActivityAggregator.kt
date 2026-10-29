@@ -42,10 +42,87 @@ class ActivityAggregator(
      * @param dayMs 这一天里的任意时刻（通常就是 `System.currentTimeMillis()`）。
      *   日界由 [ActivitySettings.dayStartHour] 决定，所以传进来的时刻只用来定位是哪一天。
      */
-    fun daySummary(dayMs: Long): DaySummary {
-        val snapshot = snapshot(dayMs)
-        val segments = snapshot.pieces.map { it.toSegment(snapshot.tabs) }
+    fun daySummary(dayMs: Long): DaySummary = summaryOf(snapshot(dayMs))
 
+    /**
+     * 一段日期范围的汇总：按天累加，再按分类 / 应用合并。
+     *
+     * @param firstDayMs 范围第一天里的任意时刻（日界由 [ActivitySettings.dayStartHour] 决定）。
+     * @param lastDayMs 范围最后一天里的任意时刻，**包含**这一天。
+     */
+    fun rangeSummary(firstDayMs: Long, lastDayMs: Long): RangeSummary {
+        val fromMs = settings.dayStartMs(firstDayMs)
+        val toMs = settings.dayEndMs(lastDayMs)
+        if (toMs <= fromMs) {
+            return RangeSummary(fromMs, fromMs, 0, 0, 0, 0, 0, 0, emptyList(), emptyList())
+        }
+
+        val directMs = LinkedHashMap<String, Long>()
+        val totalMs = LinkedHashMap<String, Long>()
+        val appMs = LinkedHashMap<String, Long>()
+        var observedMs = 0L
+        var afkMs = 0L
+        var excludedMs = 0L
+        var activeMs = 0L
+        var segmentCount = 0
+        var days = 0
+
+        var cursor = fromMs
+        while (cursor < toMs) {
+            val snapshot = snapshot(cursor)
+            val segments = segmentsOf(snapshot)
+            val day = summaryOf(snapshot, segments)
+            days++
+            observedMs += day.observedMs
+            afkMs += day.afkMs
+            excludedMs += day.excludedMs
+            activeMs += day.activeMs
+            segmentCount += day.segmentCount
+            for (slice in day.categories) {
+                directMs[slice.categoryId] = (directMs[slice.categoryId] ?: 0L) + slice.directMs
+                totalMs[slice.categoryId] = (totalMs[slice.categoryId] ?: 0L) + slice.totalMs
+            }
+            // 应用排行不能用 DaySummary.topApps 累加：那个只留了每天前 10 名，跨天会被截断。
+            for (segment in segments) {
+                val app = segment.app?.takeIf { it.isNotBlank() } ?: UNKNOWN_APP
+                appMs[app] = (appMs[app] ?: 0L) + segment.durationMs
+            }
+            cursor = settings.dayEndMs(cursor)
+        }
+
+        val categories = totalMs.map { (id, total) ->
+            val node = taxonomy.node(id)
+            val path = taxonomy.pathNames(id).ifEmpty { listOf(node?.name ?: id) }
+            CategorySlice(
+                categoryId = id,
+                name = path,
+                color = node?.color ?: ActivityTaxonomy.UNCATEGORIZED_COLOR,
+                depth = path.size,
+                directMs = directMs[id] ?: 0L,
+                totalMs = total,
+            )
+        }.sortedByDescending { it.totalMs }
+
+        val topApps = appMs.entries
+            .map { AppSlice(app = it.key, durationMs = it.value) }
+            .sortedByDescending { it.durationMs }
+            .take(TOP_APPS)
+
+        return RangeSummary(
+            fromMs = fromMs,
+            toMs = toMs,
+            days = days,
+            observedMs = observedMs,
+            afkMs = afkMs,
+            excludedMs = excludedMs,
+            activeMs = activeMs,
+            segmentCount = segmentCount,
+            categories = categories,
+            topApps = topApps,
+        )
+    }
+
+    private fun summaryOf(snapshot: Snapshot, segments: List<Segment> = segmentsOf(snapshot)): DaySummary {
         val directMs = LinkedHashMap<String, Long>()
         for (segment in segments) {
             directMs[segment.categoryId] = (directMs[segment.categoryId] ?: 0L) + segment.durationMs
@@ -103,15 +180,15 @@ class ActivityAggregator(
         classifier.explain(app, title, url)
 
     /**
-     * 清洗后的时间轴（内部用）。
+     * 清洗后的时间轴。
      *
      * 每一段都满足：落在当天之内、不含 AFK 时间、短于 [ActivitySettings.minSegmentSeconds] 的碎片
      * 已经并进相邻段。同一时刻不会有两段重叠 —— 多台机器同时上报时按「先到先占」截断。
      */
-    internal fun segments(dayMs: Long): List<Segment> {
-        val snapshot = snapshot(dayMs)
-        return snapshot.pieces.map { it.toSegment(snapshot.tabs) }
-    }
+    fun segments(dayMs: Long): List<Segment> = segmentsOf(snapshot(dayMs))
+
+    private fun segmentsOf(snapshot: Snapshot): List<Segment> =
+        snapshot.pieces.map { it.toSegment(snapshot.tabs) }
 
     /** 一次读库，同时喂 [daySummary] 与 [segments]，避免同一天算两遍。 */
     private fun snapshot(dayMs: Long): Snapshot {
@@ -422,6 +499,31 @@ data class DaySummary(
     val hasAfkData: Boolean get() = afkMs > 0L
 
     /** 取某个分类（按 id）的切片；没有该分类的活动时返回 null。 */
+    fun category(categoryId: String): CategorySlice? = categories.firstOrNull { it.categoryId == categoryId }
+}
+
+/**
+ * 一段日期范围的汇总（按天累加、按分类/应用合并）。
+ *
+ * 字段含义与 [DaySummary] 一一对应，只是把多天加在一起；[days] 是实际参与统计的天数。
+ * 分类的 [CategorySlice.directMs] / [CategorySlice.totalMs] 是各天同类累加后的结果，
+ * 所以「范围里编程占多少」仍然可以细分到子分类。
+ */
+data class RangeSummary(
+    val fromMs: Long,
+    val toMs: Long,
+    val days: Int,
+    val observedMs: Long,
+    val afkMs: Long,
+    val excludedMs: Long,
+    val activeMs: Long,
+    val segmentCount: Int,
+    val categories: List<CategorySlice>,
+    val topApps: List<AppSlice>,
+) {
+    val isEmpty: Boolean get() = observedMs == 0L
+
+    /** 取某个分类（按 id）的切片；这个分类在范围内没有活动时返回 null。 */
     fun category(categoryId: String): CategorySlice? = categories.firstOrNull { it.categoryId == categoryId }
 }
 
