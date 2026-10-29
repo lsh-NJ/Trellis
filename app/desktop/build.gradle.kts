@@ -54,7 +54,14 @@ compose.desktop {
 
         nativeDistributions {
             // AppImage = 一个自带 JVM 的目录 + 一个 exe，双击即用，不需要机器上装 Java。
-            targetFormats(TargetFormat.AppImage)
+            // macOS 上 Compose 1.7.x 只接受 Dmg / Pkg（配置阶段就拒绝 AppImage），
+            // 所以按当前系统选格式；产物仍然是 jpackage 的 app-image（.app 目录）。
+            val osName = System.getProperty("os.name").lowercase()
+            if (osName.contains("mac")) {
+                targetFormats(TargetFormat.Dmg)
+            } else {
+                targetFormats(TargetFormat.AppImage)
+            }
             packageName = "Trellis"
             packageVersion = "1.0.0"
             description = "计划设定与追踪"
