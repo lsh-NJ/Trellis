@@ -11,6 +11,8 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.unit.dp
 import dev.trellis.ai.CapabilityCatalog
+import dev.trellis.ai.LlmConfig
+import dev.trellis.ai.LlmImport
 import dev.trellis.ai.HttpLlmClient
 import dev.trellis.ai.LlmClient
 import dev.trellis.ai.LlmConfigLoader
@@ -250,6 +252,36 @@ class AppRuntime private constructor() {
     fun llmConfigured(): Boolean = LlmConfigLoader.load(home) != null
 
     fun llmSetupHint(): String = LlmConfigLoader.setupHint(home)
+
+    /** 现在生效的模型配置（环境变量优先）；没配返回 null。 */
+    fun llmConfig(): LlmConfig? = LlmConfigLoader.load(home)
+
+    /** 这份配置从哪来：环境变量 / llm.json / 未配置。 */
+    fun llmSource(): String = LlmConfigLoader.source(home)
+
+    /** 一次导入的结果：失败时 message 是能照着改的一句话。 */
+    data class LlmImportOutcome(val ok: Boolean, val message: String)
+
+    /**
+     * 「一键导入」：把用户粘的东西解析成 [LlmConfig]，写进 `llm.json`。
+     *
+     * 客户端是每次发消息才按配置新建的（见 [ask]），所以这里写完就生效，不用重启。
+     * 唯一会「导入成功但不生效」的情况是环境变量覆盖了文件 —— 那句话必须说出来。
+     */
+    fun importLlmConfig(raw: String, endpoint: String, model: String): LlmImportOutcome {
+        val result = LlmImport.parse(raw, endpoint, model)
+        val config = result.config
+            ?: return LlmImportOutcome(false, result.error ?: "这段没法识别成一份配置。")
+        LlmConfigLoader.save(home, config)
+        tick += 1
+        val host = config.endpoint.substringAfter("://").substringBefore('/')
+        val tail = if (llmSource() == "环境变量") {
+            "。但当前生效的是环境变量 " + LlmConfigLoader.ENV_KEY + "，改文件不会覆盖它。"
+        } else {
+            "，下一句就能用。"
+        }
+        return LlmImportOutcome(true, "已导入 " + config.model + " @ " + host + tail)
+    }
 
     // ---- 删除撤销 ----
 

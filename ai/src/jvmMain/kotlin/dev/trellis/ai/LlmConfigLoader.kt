@@ -2,8 +2,10 @@ package dev.trellis.ai
 
 import java.io.File
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 
 /**
  * 去哪儿找 API key。
@@ -39,6 +41,53 @@ object LlmConfigLoader {
 
         if (key.isNullOrBlank()) return null
         return LlmConfig(endpoint, key, model)
+    }
+
+    /**
+     * 只读 `llm.json`，不看环境变量。
+     *
+     * 界面要区分「文件里存的是哪一份」和「现在生效的是哪一份」：两者不一致时
+     * （比如用户设过 TRELLIS_LLM_KEY），导入新配置会「导入成功但不生效」——
+     * 那是最难查的一类失败，所以必须能分别读到。
+     */
+    fun fromFile(home: File = defaultHome()): LlmConfig? {
+        val fromFile = readFile(File(home, "llm.json")) ?: return null
+        val key = fromFile.key?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        return LlmConfig(
+            endpoint = fromFile.endpoint?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT_ENDPOINT,
+            apiKey = key,
+            model = fromFile.model?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT_MODEL,
+        )
+    }
+
+    /** 现在生效的那份配置是从哪来的。环境变量优先于文件。 */
+    fun source(home: File = defaultHome()): String = when {
+        !System.getenv(ENV_KEY).isNullOrBlank() -> "环境变量"
+        File(home, "llm.json").isFile -> "llm.json"
+        else -> "未配置"
+    }
+
+    /**
+     * 把一份配置写进 `llm.json`。**不写 BOM**（写了 JSON 解析器会认不出，整份配置静默失效）。
+     *
+     * key 是密码：能设权限的平台把它设成「只有自己能读写」。
+     */
+    fun save(home: File, config: LlmConfig): File {
+        val file = File(home, "llm.json")
+        file.parentFile?.mkdirs()
+        val root = buildJsonObject {
+            put("endpoint", config.endpoint)
+            put("apiKey", config.apiKey)
+            put("model", config.model)
+        }
+        file.writeText(root.toString(), Charsets.UTF_8)
+        runCatching {
+            file.setReadable(false, false)
+            file.setReadable(true, true)
+            file.setWritable(false, false)
+            file.setWritable(true, true)
+        }
+        return file
     }
 
     /** 界面上的「怎么配」提示，必须和 [load] 的实现保持同步。 */

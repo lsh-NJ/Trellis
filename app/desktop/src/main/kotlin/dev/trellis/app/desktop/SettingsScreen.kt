@@ -44,12 +44,17 @@ import dev.trellis.ui.SlotArea
  */
 @Composable
 fun SettingsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
+    var llmOpen by remember { mutableStateOf(false) }
+    var llmNote by remember { mutableStateOf<String?>(null) }
+
     Column(modifier) {
         Text("设置", style = MaterialTheme.typography.titleLarge)
         Text("改了就存，重启还在", style = MaterialTheme.typography.labelSmall)
         Spacer(Modifier.height(12.dp))
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            item { ModelCard(runtime, llmNote) { llmOpen = true } }
+
             item { AppearanceCard(runtime) }
 
             item { DailyBudgetCard(runtime) }
@@ -76,6 +81,60 @@ fun SettingsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
             item {
                 Spacer(Modifier.height(10.dp))
                 DiagnosticsCard(runtime)
+            }
+        }
+    }
+
+    if (llmOpen) {
+        LlmImportDialog(
+            runtime = runtime,
+            onDismiss = { llmOpen = false },
+            onDone = { message ->
+                llmNote = message
+                llmOpen = false
+            },
+        )
+    }
+}
+
+/**
+ * 模型 API：一键导入。
+ *
+ * 以前只能设环境变量或手写 `llm.json`（还要记住字段名、路径、不能带 BOM），
+ * 这是给作者用的流程；用户手里通常只有服务商给的一串 key。
+ * 导入后写的是同一个 `llm.json`，客户端每次发消息按配置新建，所以立刻生效。
+ */
+@Composable
+private fun ModelCard(runtime: AppRuntime, note: String?, onImport: () -> Unit) {
+    val config = runtime.llmConfig()
+    val source = runtime.llmSource()
+    val description = if (config == null) {
+        "还没有配置 —— 粘贴一个 key 就能开始对话。"
+    } else {
+        val host = config.endpoint.substringAfter("://").substringBefore('/')
+        val suffix = if (source == "环境变量") "（来自环境变量，改文件不生效）" else ""
+        config.model + " @ " + host + suffix
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
+            Text("模型 API", style = MaterialTheme.typography.titleSmall)
+            Text(description, style = MaterialTheme.typography.labelSmall)
+            Spacer(Modifier.height(10.dp))
+            ChromeButton(
+                label = if (config == null) "导入" else "重新导入",
+                onClick = onImport,
+                filled = config == null,
+            )
+            if (!note.isNullOrBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    note,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
