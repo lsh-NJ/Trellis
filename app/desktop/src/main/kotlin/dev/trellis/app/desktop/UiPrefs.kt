@@ -92,7 +92,8 @@ internal fun paletteLabel(palette: String): String = when (palette) {
     "sunset" -> "晚霞"
     "mono" -> "灰阶"
     "custom" -> "自定义"
-    else -> "默认紫"
+    // 默认配色已从「紫」改成「暖纸 + 靛蓝」，名字跟着改，否则偏好里会写成默认紫。
+    else -> "默认靛蓝"
 }
 
 internal fun themeLabel(theme: String): String =
