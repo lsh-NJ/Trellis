@@ -29,6 +29,21 @@ internal data class PaletteSeed(
     val hue: Double,
     /** OKLCH 彩度，0 是灰阶，0.18 已经很艳；再高就会出界。 */
     val chroma: Double,
+    /**
+     * 中性色（背景/表面/正文/描边）的色相；null = 跟随 [hue]。
+     *
+     * 为什么需要它：默认配色要的是「暖纸 + 冷墨」——纸面偏暖黄，主色偏冷蓝。
+     * 只用一个色相时两者只能同温：要么整页发紫（285），要么蓝得发灰。
+     * 分开以后，主色可以自由选冷调，纸面仍然是暖的，而且两边各自过对比度。
+     */
+    val neutralHue: Double? = null,
+    /**
+     * 主色的 OKLCH 明度；默认 0.475（Material 的中间调）。
+     *
+     * 默认配色把它压到 0.425：同样的色相，深一档就从「链接蓝」变成接近墨色的靛蓝，
+     * 纸底上的按钮也更像印刷出来的实心块。其它预设不动，保持原来的调子。
+     */
+    val primaryLightness: Double = 0.475,
 )
 
 internal const val DEFAULT_HUE = 285
@@ -44,7 +59,9 @@ internal fun paletteSeed(prefs: UiPrefs): PaletteSeed = when (prefs.palette) {
         hue = prefs.paletteHue.toDouble(),
         chroma = prefs.paletteChroma / 100.0 * 0.18,
     )
-    else -> PaletteSeed(285.0, 0.130)
+    // 默认配色：主色靛蓝（258°），中性色暖砂纸（78°），彩度 0.135。
+    // 之前是 285°/0.130 —— 整页连纸面带字都是紫的，和 ExtraColors 的砖红、青柠互相打架。
+    else -> PaletteSeed(258.0, 0.135, neutralHue = 78.0, primaryLightness = 0.425)
 }
 
 /**
@@ -143,9 +160,10 @@ internal fun schemeFor(prefs: UiPrefs): ColorScheme {
     val seed = paletteSeed(prefs)
     val hue = seed.hue
     val chroma = seed.chroma
+    val neutral = seed.neutralHue ?: hue
     val accentHue = (hue + 55.0) % 360.0
 
-    val (onPrimary, primary) = pair(0.475, chroma, 0.995, chroma * 0.05, hue, 4.5)
+    val (onPrimary, primary) = pair(seed.primaryLightness, chroma, 0.995, chroma * 0.05, hue, 4.5)
     val (onPrimaryContainer, primaryContainer) =
         pair(0.925, chroma * 0.34, 0.235, chroma * 0.55, hue, 4.5)
     val (onSecondary, secondary) = pair(0.545, chroma * 0.46, 0.995, chroma * 0.05, hue, 4.5)
@@ -156,15 +174,15 @@ internal fun schemeFor(prefs: UiPrefs): ColorScheme {
         pair(0.930, chroma * 0.24, 0.250, chroma * 0.42, accentHue, 4.5)
     val (onError, error) = pair(0.500, 0.165, 0.995, 0.02, 27.0, 4.5)
     val (onErrorContainer, errorContainer) = pair(0.925, 0.055, 0.265, 0.115, 27.0, 4.5)
-    val (onSurface, surface) = pair(0.985, chroma * 0.045, 0.205, chroma * 0.14, hue, 7.0)
+    val (onSurface, surface) = pair(0.982, chroma * 0.09, 0.205, chroma * 0.16, neutral, 7.0)
     val (onSurfaceVariant, surfaceVariant) =
-        pair(0.935, chroma * 0.10, 0.415, chroma * 0.17, hue, 4.5)
+        pair(0.930, chroma * 0.20, 0.415, chroma * 0.20, neutral, 4.5)
     val background = surface
     val onBackground = onSurface
-    val outline = oklch(0.615, chroma * 0.18, hue)
-    val outlineVariant = oklch(0.845, chroma * 0.10, hue)
-    val inverseSurface = oklch(0.290, chroma * 0.14, hue)
-    val inverseOnSurface = oklch(0.955, chroma * 0.04, hue)
+    val outline = oklch(0.615, chroma * 0.24, neutral)
+    val outlineVariant = oklch(0.845, chroma * 0.16, neutral)
+    val inverseSurface = oklch(0.290, chroma * 0.16, neutral)
+    val inverseOnSurface = oklch(0.955, chroma * 0.06, neutral)
     val inversePrimary = oklch(0.790, chroma * 0.75, hue)
 
     return lightColorScheme(
@@ -210,9 +228,13 @@ internal fun darkSchemeFor(prefs: UiPrefs): ColorScheme {
     val seed = paletteSeed(prefs)
     val hue = seed.hue
     val chroma = seed.chroma
+    val neutral = seed.neutralHue ?: hue
     val accentHue = (hue + 55.0) % 360.0
 
-    val (onPrimary, primary) = pair(0.795, chroma * 0.80, 0.235, chroma * 0.55, hue, 4.5)
+    // 暗色里的主色是「亮一档的同族」：明度差和浅色模式下差不多（0.32 左右），
+    // 这样同一个主色在两种模式下「同样的重」，不会一边墨一边荧光。
+    val (onPrimary, primary) =
+        pair((seed.primaryLightness + 0.32).coerceAtMost(0.86), chroma * 0.80, 0.235, chroma * 0.55, hue, 4.5)
     val (onPrimaryContainer, primaryContainer) =
         pair(0.360, chroma * 0.48, 0.905, chroma * 0.30, hue, 4.5)
     val (onSecondary, secondary) = pair(0.815, chroma * 0.40, 0.245, chroma * 0.30, hue, 4.5)
@@ -223,15 +245,15 @@ internal fun darkSchemeFor(prefs: UiPrefs): ColorScheme {
         pair(0.370, chroma * 0.34, 0.900, chroma * 0.24, accentHue, 4.5)
     val (onError, error) = pair(0.760, 0.130, 0.235, 0.070, 27.0, 4.5)
     val (onErrorContainer, errorContainer) = pair(0.360, 0.120, 0.900, 0.060, 27.0, 4.5)
-    val (onSurface, surface) = pair(0.175, chroma * 0.10, 0.905, chroma * 0.06, hue, 7.0)
+    val (onSurface, surface) = pair(0.175, chroma * 0.12, 0.905, chroma * 0.06, neutral, 7.0)
     val (onSurfaceVariant, surfaceVariant) =
-        pair(0.280, chroma * 0.12, 0.780, chroma * 0.12, hue, 4.5)
+        pair(0.280, chroma * 0.20, 0.780, chroma * 0.14, neutral, 4.5)
     val background = surface
     val onBackground = onSurface
-    val outline = oklch(0.640, chroma * 0.14, hue)
-    val outlineVariant = oklch(0.360, chroma * 0.10, hue)
-    val inverseSurface = oklch(0.950, chroma * 0.03, hue)
-    val inverseOnSurface = oklch(0.220, chroma * 0.10, hue)
+    val outline = oklch(0.640, chroma * 0.20, neutral)
+    val outlineVariant = oklch(0.360, chroma * 0.16, neutral)
+    val inverseSurface = oklch(0.950, chroma * 0.05, neutral)
+    val inverseOnSurface = oklch(0.220, chroma * 0.12, neutral)
     val inversePrimary = oklch(0.475, chroma, hue)
 
     // 必须用 darkColorScheme：没显式赋值的 token（surfaceContainer* 系列等）
