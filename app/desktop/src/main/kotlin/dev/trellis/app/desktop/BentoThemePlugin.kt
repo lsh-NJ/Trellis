@@ -18,10 +18,10 @@ import dev.trellis.kernel.theme.ThemeContribution
  * 话，「换掉这套配色」就退化成改代码重新发版，违背「界面也是插件」这条线。
  *
  * 为什么又要**内置**（而不是留在 `~/.trellis/plugins/` 里）：
- * 它是默认主题包的提供者，属于「装好就有」的东西。放在插件目录里，一次误停用
- * 就整页回落到默认紫，而且插件列表里一旦被删掉就找不回来 —— 默认能力不该依赖
- * 用户目录里的一份脚本。内置插件仍然出现在插件列表里，可以停用、可以看贡献，
- * 和 `core.plan` 是同一类东西。
+ * 它是**默认主题**（应用启动就用它，见 `UiPrefs.kt` 的 `DEFAULT_THEME`），属于「装好就有」
+ * 的东西。放在插件目录里，一次误停用就整页回落到默认紫，而且插件列表里一旦被删掉
+ * 就找不回来 —— 默认能力不该依赖用户目录里的一份脚本。内置插件仍然出现在插件列表里，
+ * 可以停用、可以看贡献，和 `core.plan` 是同一类东西。
  *
  * 这个类的 id 与取值沿用最初的外部样片插件（`dev.bento.shift` / `bento`），
  * 这样已经存在 `ui.json` 里的 `"theme": "dev.bento.shift/bento"` 不用迁移。
@@ -37,7 +37,7 @@ internal class BentoThemePlugin : Plugin {
         loader = "builtin",
         builtin = true,
         description = "纸感米白 / 荧光青柠 / 墨黑的主题包；内置，可在插件页停用",
-        usage = "装上（默认就有）之后，在界面偏好里选「Bento」；卡片样式建议用 bento",
+        usage = "默认主题：开箱即用；想回到配色方案就把 theme 改成 builtin；卡片样式建议用 bento",
         limitation = "只给 token（配色 + 圆角 + 字族），字体文件和排布仍由宿主决定",
         contributes = mapOf(
             KernelPoints.Theme.id to listOf(ContributionDecl(THEME_ID)),

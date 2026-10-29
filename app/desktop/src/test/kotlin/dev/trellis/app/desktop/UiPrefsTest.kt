@@ -53,9 +53,42 @@ class UiPrefsTest {
     }
 
     @Test
-    fun navFallsBackToTopAndIsDescribed() {
-        assertEquals("top", UiPrefs(nav = "right").normalized().nav)
-        assertTrue(UiPrefs(nav = "left").describe().contains("左侧边栏"))
+    fun navFallsBackToLeftAndIsDescribed() {
+        assertEquals("left", UiPrefs(nav = "right").normalized().nav)
+        assertTrue(UiPrefs().describe().contains("左侧边栏"))
+        assertTrue(UiPrefs(nav = "top").describe().contains("顶部标签栏"))
+    }
+
+    @Test
+    fun defaultsAreBentoThemeAndLeftNavigation() {
+        val prefs = UiPrefs()
+
+        assertEquals("dev.bento.shift/bento", prefs.theme)
+        assertEquals(DEFAULT_THEME, prefs.theme)
+        assertEquals("left", prefs.nav)
+        assertTrue(prefs.describe().contains("Bento（默认）"), prefs.describe())
+    }
+
+    @Test
+    fun missingFieldsGetTheNewDefaults() {
+        val home = tempHome()
+        File(home, "ui.json").writeText("""{"palette":"ocean"}""", Charsets.UTF_8)
+
+        val loaded = UiPrefsStore(home).load()
+
+        assertEquals(DEFAULT_THEME, loaded.theme)
+        assertEquals("left", loaded.nav)
+    }
+
+    @Test
+    fun explicitOldChoicesAreNotOverriddenByTheNewDefaults() {
+        val home = tempHome()
+        File(home, "ui.json").writeText("""{"theme":"builtin","nav":"top"}""", Charsets.UTF_8)
+
+        val loaded = UiPrefsStore(home).load()
+
+        assertEquals("builtin", loaded.theme)
+        assertEquals("top", loaded.nav)
     }
 
     @Test
