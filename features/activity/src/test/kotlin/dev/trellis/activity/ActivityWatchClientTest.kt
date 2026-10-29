@@ -70,6 +70,25 @@ class ActivityWatchClientTest {
     }
 
     @Test
+    fun `浏览器标签页事件解析出 url，窗口事件没有 url 就是 null`() = runTest {
+        val payload = """
+            [
+              {"id": 1, "timestamp": "2026-10-27T16:55:07.329000+00:00", "duration": 10.0,
+               "data": {"url": "https://www.bilibili.com/video/BV1", "title": "B 站", "audible": false, "incognito": false}},
+              {"id": 2, "timestamp": "2026-10-27T16:55:17.329000+00:00", "duration": 5.0,
+               "data": {"app": "chrome.exe", "title": "Google Chrome"}}
+            ]
+        """.trimIndent()
+        val client = ActivityWatchClient(fetch = { _, _ -> payload })
+
+        val events = client.events("aw-watcher-web-chrome_H", 0, 1_000_000_000)
+
+        assertEquals("https://www.bilibili.com/video/BV1", events[0].url)
+        assertNull(events[1].url)
+        assertNull(events[0].app, "浏览器 bucket 的事件里没有进程名")
+    }
+
+    @Test
     fun `服务没开时返回空列表而不是抛异常`() = runTest {
         val client = ActivityWatchClient(fetch = { _, _ -> throw java.io.IOException("Connection refused") })
         assertTrue(client.events("any", 0, 1_000).isEmpty())

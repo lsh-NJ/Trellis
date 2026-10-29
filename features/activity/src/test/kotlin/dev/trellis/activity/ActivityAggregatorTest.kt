@@ -4,37 +4,47 @@ import java.time.LocalDate
 import java.time.ZoneId
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
  * 整理层的验收测试。
  *
  * 每个用例都对应一条「不这么写就会算错」的具体场景，不是给代码凑覆盖率：
- * AFK 不扣会把 QQ 的一条 107 分钟算成聊天 107 分钟；碎片不并会让时间轴有三千行。
+ * AFK 不扣会把 QQ 的一条 107 分钟算成聊天 107 分钟；碎片不并会让时间轴有三千行；
+ * 浏览器 URL 贴错段会把「在 B 站看视频」算到旁边的记事本上。
  */
 class ActivityAggregatorTest {
 
     private val zone: ZoneId = ZoneId.systemDefault()
     private val day: LocalDate = LocalDate.of(2026, 10, 27)
+    private val noon: Long = at(day, 12)
 
     private fun at(date: LocalDate, hour: Int, minute: Int = 0): Long =
         date.atTime(hour, minute).atZone(zone).toInstant().toEpochMilli()
 
-    private val noon: Long = at(day, 12)
-
     private fun win(id: Long, fromMs: Long, durMs: Long, app: String, title: String? = null, bucket: String = "win") =
         RawEvent(bucket = bucket, awId = id, tsMs = fromMs, durMs = durMs, app = app, title = title)
+
+    private fun tab(id: Long, fromMs: Long, durMs: Long, url: String, title: String? = null, bucket: String = "web") =
+        RawEvent(bucket = bucket, awId = id, tsMs = fromMs, durMs = durMs, title = title, url = url)
 
     private fun away(id: Long, fromMs: Long, durMs: Long) =
         RawEvent(bucket = "afk", awId = id, tsMs = fromMs, durMs = durMs, status = "afk")
 
     private fun store(vararg events: RawEvent): ActivityStore {
         val store = ActivityStore.inMemory()
-        store.upsertBucket(AwBucket("win", "currentwindow"))
-        store.upsertBucket(AwBucket("afk", "afkstatus"))
+        store.upsertBucket(AwBucket("win", ActivitySettings.WINDOW_TYPE))
+        store.upsertBucket(AwBucket("afk", ActivitySettings.AFK_TYPE))
+        store.upsertBucket(AwBucket("web", ActivitySettings.WEB_TYPE))
         store.upsertEvents(events.toList())
         return store
     }
+
+    /** 小分类树：测试只关心被验证的那几条规则，不依赖出厂默认值。 */
+    private fun taxonomyOf(vararg nodes: CategoryNode): ActivityTaxonomy =
+        ActivityTaxonomy(categories = nodes.toList())
 
     @Test
     fun `AFK 重叠按交集扣除，而不是整条扣或整条留`() {
@@ -98,30 +108,104 @@ class ActivityAggregatorTest {
     @Test
     fun `标题规则可以压过进程规则`() {
         // 在 B 站看视频：进程是 chrome（浏览），标题才是真正的内容。优先级让影音赢。
-        val taxonomy = ActivityTaxonomy(
-            rules = listOf(
-                CategoryRule(name = listOf("浏览"), pattern = "chrome", field = RuleField.APP, priority = 100),
-                CategoryRule(name = listOf("影音", "视频"), pattern = "bilibili", field = RuleField.TITLE, priority = 120),
+        val taxonomy = taxonomyOf(
+            CategoryNode("browse", "浏览"),
+            CategoryNode("browse.browser", "浏览器", parentId = "browse", order = 0, rules = listOf(CategoryRule("chrome", priority = 100))),
+            CategoryNode("media", "影音"),
+            CategoryNode(
+                "media.video", "视频", parentId = "media", order = 0,
+                rules = listOf(
+                    CategoryRule("bilibili", fields = setOf(RuleField.TITLE), priority = 120),
+                ),
             ),
         )
         store(win(1, noon, 600_000, "chrome.exe", "哔哩哔哩 bilibili - Google Chrome")).use { store ->
-            val segments = ActivityAggregator(store, ActivitySettings(), taxonomy).segments(noon)
+            val segment = ActivityAggregator(store, ActivitySettings(), taxonomy).segments(noon).single()
 
-            assertEquals(listOf("影音", "视频"), segments.single().category)
+            assertEquals("media.video", segment.categoryId)
+            assertEquals(listOf("影音", "视频"), segment.category)
+        }
+    }
+
+    @Test
+    fun `浏览器窗口按时间重叠贴上标签页 URL，域名规则因此生效`() {
+        // 窗口 watcher 只知道 chrome 在前台；B 站这件事只有 web.tab.current 的 url 知道。
+        store(
+            win(1, noon, 600_000, "chrome.exe", "Google Chrome"),
+            tab(1, noon, 600_000, "https://www.bilibili.com/video/BV1xx411c7mD"),
+        ).use { store ->
+            val segment = ActivityAggregator(store).segments(noon).single()
+
+            assertEquals("https://www.bilibili.com/video/BV1xx411c7mD", segment.url)
+            assertEquals("media.video", segment.categoryId, "默认分类里 bilibili 域名 -> 影音/视频")
+        }
+    }
+
+    @Test
+    fun `标签页 URL 只贴给浏览器进程，不会贴到旁边的记事本上`() {
+        store(
+            win(1, noon, 600_000, "Code.exe", "Trellis - IntelliJ"),
+            tab(1, noon, 600_000, "https://www.bilibili.com/video/BV1"),
+        ).use { store ->
+            val segment = ActivityAggregator(store).segments(noon).single()
+
+            assertNull(segment.url, "非浏览器片段不该继承浏览器标签页的 URL")
+            assertEquals("work.coding", segment.categoryId)
+        }
+    }
+
+    @Test
+    fun `多条标签页重叠时取重叠最多的那条`() {
+        store(
+            win(1, noon, 600_000, "chrome.exe", "Google Chrome"),
+            tab(1, noon, 100_000, "https://github.com/x"),
+            tab(2, noon + 100_000, 500_000, "https://www.youtube.com/watch?v=1"),
+        ).use { store ->
+            val segment = ActivityAggregator(store).segments(noon).single()
+
+            assertEquals("https://www.youtube.com/watch?v=1", segment.url)
+            assertEquals("media.video", segment.categoryId)
+        }
+    }
+
+    @Test
+    fun `分类时长按层级向上汇总，直接时长和总时长分开`() {
+        store(
+            win(1, noon, 600_000, "Code.exe"), // 工作/编程
+            win(2, noon + 600_000, 300_000, "WINWORD.EXE"), // 工作/办公
+        ).use { store ->
+            val summary = ActivityAggregator(store).daySummary(noon)
+
+            val work = assertNotNull(summary.category("work"))
+            assertEquals(listOf("工作"), work.name)
+            assertEquals(900_000L, work.totalMs, "「工作」要包含编程 + 办公")
+            assertEquals(0L, work.directMs, "没有规则的直接命中落在「工作」自己身上")
+            assertEquals(1, work.depth)
+
+            val coding = assertNotNull(summary.category("work.coding"))
+            assertEquals(600_000L, coding.totalMs)
+            assertEquals(600_000L, coding.directMs, "叶子分类的 direct 和 total 相等")
+            assertEquals(listOf("工作", "编程"), coding.name)
+
+            assertEquals("work", summary.categories.first().categoryId, "按总时长倒序，一级分类「工作」最大")
         }
     }
 
     @Test
     fun `没命中任何规则就落到未分类`() {
         store(win(1, noon, 600_000, "some-unknown-tool.exe")).use { store ->
-            val segments = ActivityAggregator(store).segments(noon)
+            val summary = ActivityAggregator(store).daySummary(noon)
+            val slice = summary.categories.single()
 
-            assertEquals(ActivityTaxonomy.UNCATEGORIZED, segments.single().category)
+            assertEquals(ActivityTaxonomy.UNCATEGORIZED_ID, slice.categoryId)
+            assertEquals(listOf(ActivityTaxonomy.UNCATEGORIZED_NAME), slice.name)
+            assertEquals(ActivityTaxonomy.UNCATEGORIZED_COLOR, slice.color)
+            assertEquals(600_000L, summary.category(ActivityTaxonomy.UNCATEGORIZED_ID)?.totalMs)
         }
     }
 
     @Test
-    fun `app 排行按时长倒序，可以按分类前缀过滤`() {
+    fun `app 排行按时长倒序，可以按分类 id 连同后代过滤`() {
         store(
             win(1, noon, 300_000, "chrome.exe"),
             win(2, noon + 300_000, 600_000, "Code.exe"),
@@ -130,18 +214,31 @@ class ActivityAggregatorTest {
 
             assertEquals(listOf("Code.exe", "chrome.exe"), aggregator.appRanking(noon).map { it.app })
 
-            // 默认分类里 Code.exe 是 工作/编程、chrome.exe 是 浏览/浏览器；传一级分类要能带出二级。
-            val work = aggregator.appRanking(noon, listOf("工作"))
+            // Code.exe 是 work.coding，chrome.exe 是 browse.browser；传一级分类要能带出二级。
+            val work = aggregator.appRanking(noon, "work")
             assertEquals(listOf("Code.exe"), work.map { it.app })
             assertEquals(600_000L, work.single().durationMs)
+
+            assertTrue(aggregator.appRanking(noon, "media").isEmpty())
+        }
+    }
+
+    @Test
+    fun `explain 能说明命中了哪些规则、最后为什么选它`() {
+        ActivityStore.inMemory().use { store ->
+            val explanation = ActivityAggregator(store).explain("chrome.exe", "哔哩哔哩", null)
+
+            assertEquals("media.video", explanation.chosen.categoryId)
+            assertTrue(explanation.hits.any { it.categoryId == "browse.browser" }, "低优先级的浏览器规则也应出现在命中列表里")
+            assertEquals("media.video", explanation.hits.first().categoryId, "命中列表按排名从高到低")
         }
     }
 
     @Test
     fun `两个 bucket 同一时刻都有事件时不重复计时`() {
         val store = ActivityStore.inMemory()
-        store.upsertBucket(AwBucket("w1", "currentwindow"))
-        store.upsertBucket(AwBucket("w2", "currentwindow"))
+        store.upsertBucket(AwBucket("w1", ActivitySettings.WINDOW_TYPE))
+        store.upsertBucket(AwBucket("w2", ActivitySettings.WINDOW_TYPE))
         store.upsertEvents(
             listOf(
                 win(1, noon, 600_000, "Code.exe", bucket = "w1"),

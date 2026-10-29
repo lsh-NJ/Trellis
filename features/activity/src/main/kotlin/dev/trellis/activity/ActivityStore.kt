@@ -58,13 +58,15 @@ class ActivityStore private constructor(val connection: Connection) : AutoClosea
         try {
             val touched = connection.prepareStatement(
                 """
-                INSERT INTO raw_event(bucket, aw_id, ts_ms, dur_ms, app, title, status)
-                VALUES(?,?,?,?,?,?,?)
+                INSERT INTO raw_event(bucket, aw_id, ts_ms, dur_ms, app, title, url, status)
+                VALUES(?,?,?,?,?,?,?,?)
                 ON CONFLICT(bucket, aw_id) DO UPDATE SET
                     ts_ms = MIN(raw_event.ts_ms, excluded.ts_ms),
                     dur_ms = MAX(raw_event.dur_ms, excluded.dur_ms),
                     app = excluded.app,
                     title = excluded.title,
+                    -- url 只在浏览器 bucket 里有；window bucket 的同一行不该把已有的 url 抹成 null。
+                    url = COALESCE(excluded.url, raw_event.url),
                     status = excluded.status
                 """.trimIndent(),
             ).use { ps ->
@@ -75,7 +77,8 @@ class ActivityStore private constructor(val connection: Connection) : AutoClosea
                     ps.setLong(4, e.durMs)
                     ps.setString(5, e.app)
                     ps.setString(6, e.title)
-                    ps.setString(7, e.status)
+                    ps.setString(7, e.url)
+                    ps.setString(8, e.status)
                     ps.addBatch()
                 }
                 ps.executeBatch().count { it != Statement.EXECUTE_FAILED }
@@ -128,7 +131,7 @@ class ActivityStore private constructor(val connection: Connection) : AutoClosea
     /** 按时间升序读原始事件。`bucket` 传 null = 所有 bucket 混在一起（window + afk）。 */
     fun eventsByRange(fromMs: Long, toMs: Long, bucket: String? = null): List<RawEvent> {
         val sql = buildString {
-            append("SELECT bucket, aw_id, ts_ms, dur_ms, app, title, status FROM raw_event")
+            append("SELECT bucket, aw_id, ts_ms, dur_ms, app, title, url, status FROM raw_event")
             append(" WHERE ts_ms < ? AND ts_ms + dur_ms > ?")
             if (bucket != null) append(" AND bucket = ?")
             append(" ORDER BY ts_ms ASC")
@@ -147,7 +150,8 @@ class ActivityStore private constructor(val connection: Connection) : AutoClosea
                         durMs = rs.getLong(4),
                         app = rs.getString(5),
                         title = rs.getString(6),
-                        status = rs.getString(7),
+                        url = rs.getString(7),
+                        status = rs.getString(8),
                     )
                 }
                 out
@@ -240,13 +244,41 @@ class ActivityStore private constructor(val connection: Connection) : AutoClosea
             st.execute("PRAGMA busy_timeout = 3000")
             st.execute("PRAGMA synchronous = NORMAL")
             SCHEMA_V1.forEach { sql -> st.execute(sql) }
-            st.executeQuery("SELECT COUNT(*) FROM schema_migration").use { rs ->
-                if (rs.next() && rs.getInt(1) == 0) {
-                    st.execute(
-                        "INSERT INTO schema_migration(version, applied_at) VALUES (1, '${java.time.Instant.now()}')",
-                    )
-                }
-            }
+            migrate(st)
         }
     }
+
+    /**
+     * 逐版升级，新库和旧库走同一条路：V1 建表（不含 url），V2 给 `raw_event` 补 url。
+     *
+     * 为什么新库也不直接把 url 写进 V1 的 CREATE TABLE：那样「新建的库」和「升级来的库」
+     * 会走两条 DDL 路径，以后加第三个字段时很容易只改到其中一条。统一走迁移，只有一处事实。
+     */
+    private fun migrate(st: Statement) {
+        var version = st.executeQuery("SELECT COALESCE(MAX(version), 0) FROM schema_migration").use { rs ->
+            if (rs.next()) rs.getInt(1) else 0
+        }
+        if (version < 1) {
+            record(st, 1)
+            version = 1
+        }
+        if (version < 2) {
+            // 先查列再加：迁移中途崩溃时重跑，不能因为「列已经存在」而报错卡死启动。
+            if (!hasColumn(st, "raw_event", "url")) {
+                st.execute("ALTER TABLE raw_event ADD COLUMN url TEXT")
+            }
+            record(st, 2)
+        }
+    }
+
+    private fun record(st: Statement, version: Int) {
+        st.execute(
+            "INSERT INTO schema_migration(version, applied_at) VALUES ($version, '${java.time.Instant.now()}')",
+        )
+    }
+
+    private fun hasColumn(st: Statement, table: String, column: String): Boolean =
+        st.executeQuery("PRAGMA table_info($table)").use { rs ->
+            generateSequence { if (rs.next()) rs.getString("name") else null }.any { it == column }
+        }
 }

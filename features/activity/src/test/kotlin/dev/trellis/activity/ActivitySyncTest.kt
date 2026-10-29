@@ -128,6 +128,29 @@ class ActivitySyncTest {
         }
     }
     @Test
+    fun `浏览器 web_tab_current bucket 也会同步，url 落库`() = runTest {
+        val web = "aw-watcher-web-chrome_T"
+        val source = FakeSource(
+            bucketList = listOf(
+                AwBucket(window, "currentwindow", "H"),
+                AwBucket(web, ActivitySettings.WEB_TYPE, "H"),
+            ),
+            events = listOf(
+                RawEvent(window, awId = 1, tsMs = now - 60_000, durMs = 30_000, app = "chrome.exe", title = "Google Chrome"),
+                RawEvent(web, awId = 2, tsMs = now - 60_000, durMs = 30_000, url = "https://www.bilibili.com/video/BV1"),
+            ),
+        )
+        ActivityStore.inMemory().use { store ->
+            val report = ActivitySync(source, store, clock = { now }).syncOnce()
+
+            assertNull(report.error)
+            assertEquals(2, report.buckets)
+            assertEquals(1, store.countOf(web))
+            assertEquals("https://www.bilibili.com/video/BV1", store.eventsByRange(0, now + 1_000, web).single().url)
+        }
+    }
+
+    @Test
     fun `aw-server 没开时返回带 error 的报告而不是抛异常`() = runTest {
         ActivityStore.inMemory().use { store ->
             val source = source().apply { failing = true }

@@ -113,17 +113,19 @@ class ActivityWatchClient(
             bucket = bucket,
             // 裸 bucket 查询一定带 id；万一没有（聚合型返回），用内容算一个稳定的替代 id，
             // 保证同一批数据重复拉取时仍然是幂等的。
-            awId = awId ?: stableId(tsMs, data.str("app"), data.str("title"), data.str("status")),
+            awId = awId ?: stableId(tsMs, data.str("app"), data.str("title"), data.str("url"), data.str("status")),
             tsMs = tsMs,
             durMs = (durSec * 1000.0).roundToLong(),
             app = data.str("app"),
             title = data.str("title"),
+            // 只有 `web.tab.current` bucket 带 url；`currentwindow` 里没有这个字段，读出来就是 null。
+            url = data.str("url"),
             status = data.str("status"),
         )
     }
 
-    private fun stableId(tsMs: Long, app: String?, title: String?, status: String?): Long {
-        val h = "$tsMs|${app.orEmpty()}|${title.orEmpty()}|${status.orEmpty()}".hashCode()
+    private fun stableId(tsMs: Long, app: String?, title: String?, url: String?, status: String?): Long {
+        val h = "$tsMs|${app.orEmpty()}|${title.orEmpty()}|${url.orEmpty()}|${status.orEmpty()}".hashCode()
         return (tsMs shl 20) xor (h.toLong() and 0xFFFFFL)
     }
 

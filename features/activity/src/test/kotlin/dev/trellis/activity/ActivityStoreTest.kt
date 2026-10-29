@@ -1,7 +1,10 @@
 package dev.trellis.activity
 
+import java.nio.file.Files
+import java.sql.DriverManager
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ActivityStoreTest {
@@ -74,11 +77,64 @@ class ActivityStoreTest {
         }
     }
     @Test
-    fun `不同 bucket 的同一个 id 不会互相覆盖`() {
+    fun `url 能存能取`() {
+        val web = "aw-watcher-web-chrome_TEST"
         ActivityStore.inMemory().use { store ->
-            store.upsertEvents(listOf(RawEvent(window, awId = 1, tsMs = 0, durMs = 100, app = "a.exe")))
-            store.upsertEvents(listOf(RawEvent("aw-watcher-afk_TEST", 1, 0, 100, status = "afk")))
-            assertEquals(2, store.count())
+            store.upsertEvents(
+                listOf(RawEvent(web, awId = 1, tsMs = 0, durMs = 1_000, title = "B 站", url = "https://www.bilibili.com/video/BV1")),
+            )
+
+            val stored = store.eventsByRange(0, 10_000, web).single()
+            assertEquals("https://www.bilibili.com/video/BV1", stored.url)
+            assertEquals("B 站", stored.title)
+        }
+    }
+
+    @Test
+    fun `重复写入时没带 url 不会把已有 url 抹掉`() {
+        val web = "aw-watcher-web-chrome_TEST"
+        ActivityStore.inMemory().use { store ->
+            store.upsertEvents(listOf(RawEvent(web, awId = 1, tsMs = 0, durMs = 1_000, title = "B 站", url = "https://a.com")))
+            store.upsertEvents(listOf(RawEvent(web, awId = 1, tsMs = 0, durMs = 2_000, title = "B 站")))
+
+            val stored = store.eventsByRange(0, 10_000, web).single()
+            assertEquals("https://a.com", stored.url, "第二次没带 url，不能把第一次的抹成 null")
+            assertEquals(2_000L, stored.durMs)
+        }
+    }
+
+    @Test
+    fun `旧库没有 url 列时自动补列，旧数据不丢`() {
+        val file = Files.createTempFile("trellis-activity-legacy", ".db")
+        // 手工造一个 v1 时代的库：raw_event 没有 url 列。
+        DriverManager.getConnection("jdbc:sqlite:$file").use { conn ->
+            conn.createStatement().use { st ->
+                st.execute("CREATE TABLE schema_migration(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
+                st.execute(
+                    "CREATE TABLE aw_bucket(bucket TEXT PRIMARY KEY, type TEXT NOT NULL, hostname TEXT, " +
+                        "created_at TEXT, last_synced_ms INTEGER NOT NULL DEFAULT 0)",
+                )
+                st.execute(
+                    "CREATE TABLE raw_event(bucket TEXT NOT NULL, aw_id INTEGER NOT NULL, ts_ms INTEGER NOT NULL, " +
+                        "dur_ms INTEGER NOT NULL, app TEXT, title TEXT, status TEXT, PRIMARY KEY (bucket, aw_id))",
+                )
+                st.execute("INSERT INTO schema_migration(version, applied_at) VALUES (1, '2026-10-27T00:00:00Z')")
+                st.execute(
+                    "INSERT INTO raw_event(bucket, aw_id, ts_ms, dur_ms, app, title, status) " +
+                        "VALUES ('aw-watcher-window_TEST', 1, 0, 1000, 'code.exe', 'Trellis', NULL)",
+                )
+            }
+        }
+
+        ActivityStore.open(file).use { store ->
+            val legacy = store.eventsByRange(0, 10_000).single()
+            assertEquals("code.exe", legacy.app, "迁移不能动旧数据")
+            assertNull(legacy.url)
+
+            store.upsertEvents(
+                listOf(RawEvent("aw-watcher-web-chrome_TEST", awId = 2, tsMs = 0, durMs = 1_000, url = "https://a.com")),
+            )
+            assertEquals("https://a.com", store.eventsByRange(0, 10_000, "aw-watcher-web-chrome_TEST").single().url)
         }
     }
 }
