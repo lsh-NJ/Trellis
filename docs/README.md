@@ -24,6 +24,9 @@
 | [`research/plugin-hotplug/02-native-loaders.md`](research/plugin-hotplug/02-native-loaders.md) | 原生插件加载（PF4J / Shadow / ClassLoader、iOS 约束） | 调研证据 | 桌面/Android/iOS 原生插件方案 |
 | [`research/plugin-hotplug/03-oss-case-studies.md`](research/plugin-hotplug/03-oss-case-studies.md) | 14 个开源案例（VS Code / JetBrains / Figma / Obsidian / Chrome / Blender / Neovim / Emacs / Godot / Unity / Slack / Cloudflare / Shopify / Istio） | 调研证据 | 找成熟模式（贡献点、激活事件、卸载契约…） |
 | [`research/plugin-hotplug/04-app-update-policy.md`](research/plugin-hotplug/04-app-update-policy.md) | 应用级更新（桌面 MSIX/Sparkle、移动商店、Apple PLA、Google Play 政策） | 调研证据 | 做发布/更新/商店合规 |
+| [`research/learning.md`](research/learning.md) | 学习科学与行为设计证据简报（自主/胜任/关系、实施意向 d=0.65、外部奖励 d=−0.40…） | 调研证据（2026-10-26） | 决定奖励/连续天数/计划文案前 |
+| [`research/product.md`](research/product.md) | 产品 / 主动性 HCI / 伦理证据简报（Duolingo streak、通知疲劳、付费结构、Khanmigo 追问翻车） | 调研证据（2026-10-26） | 做主动性、推送、定价、AI 语气前 |
+| [`research/tech.md`](research/tech.md) | 技术选型证据简报（记忆框架、sqlite-vec、中文 embedding、GraphRAG、隐私与追踪、视觉、LLM 工程） | 调研证据（2026-10-26） | 选依赖、评估本地优先/隐私边界前 |
 | [`assets/icons/`](assets/icons/) | 自绘像素风图标 SVG（导航用） | 资产 | 改导航图标 |
 
 ## 阅读路径
@@ -36,6 +39,8 @@
 - **要改计划页**：`plan-page.md`（结构、数据来源、已知缺口）→ `PlanScreen.kt` → `AppRuntime.refreshPlan`。
 - **要改界面/主题/布局**：`../AGENTS.md` §3「按问题找文件」→ `examples/bento-style.md`（三层边界）→ `conversation-redesign.md`（若改会话页）。
 - **要动跨端/热更新**：`plugin-hotplug-path.md` §0 TL;DR → 对应 research 分册；别从零再调研一遍。
+- **要决定「奖励/连续天数/主动性/推送/定价」**：`research/learning.md` + `research/product.md`（证据在前，别凭直觉）。
+- **要选依赖或碰本地数据/隐私**：`research/tech.md`（记忆框架、sqlite-vec、embedding、GraphRAG 的取舍与来源）。
 - **要发布**：`research/plugin-hotplug/04-app-update-policy.md` + 主文档 §6「热更新两层」。
 
 ## 维护约定
