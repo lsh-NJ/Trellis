@@ -44,13 +44,26 @@ data class ActivitySettings(
     val minSegmentSeconds: Int = 5,
     /** 完全不计入的进程名（小写比较），例如密码管理器。 */
     val excludedApps: List<String> = emptyList(),
+    /**
+     * 哪些进程算「浏览器」。整理时用它决定要不要把 `web.tab.current` 的标签页 URL 贴到窗口片段上。
+     *
+     * 默认值在 [ActivityTaxonomy.DEFAULT_BROWSER_APPS]；写成正则片段（不区分大小写、`contains` 语义），
+     * 所以 `chrome` 能匹配 `chrome.exe`。用户装了新浏览器时需要在这里加名字，否则那个浏览器的
+     * 网页规则（[RuleField.DOMAIN]）不会生效 —— 它只会落到「浏览/浏览器」。
+     */
+    val browserApps: List<String> = ActivityTaxonomy.DEFAULT_BROWSER_APPS,
     /** 命中这些关键字的窗口标题在**输出前**被抹掉，原始库里仍然保留。 */
     val titleRedactions: List<String> = emptyList(),
     /** 给 AI 看多少。默认只给聚合数字，标题一律不出门。 */
     val aiExposure: AiExposure = AiExposure.AGGREGATES_ONLY,
 ) {
 
-    /** 需要采集的 bucket 类型。浏览器 watcher 以后加进来只需要改这里。 */
+    /**
+     * 需要采集的 bucket 类型。
+     *
+     * `web.tab.current` 是浏览器 watcher（aw-watcher-web）的 bucket，事件里带 `url`；
+     * 它和 `currentwindow` 是两条独立的流，分类时按时间重叠把 URL 贴到窗口片段上（见 ActivityAggregator）。
+     */
     val watchedTypes: Set<String> get() = WATCHED_TYPES
 
     val minSegmentMs: Long get() = minSegmentSeconds.coerceAtLeast(0) * 1000L
@@ -62,6 +75,18 @@ data class ActivitySettings(
     val retentionMs: Long get() = retentionDays.coerceAtLeast(0) * DAY_MS
 
     val excludedAppsLower: Set<String> get() = excludedApps.map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
+
+    /** 编译好的浏览器判定正则；每次访问重新编译 —— 设置是低频读的，不值得缓存一个可变列表的编译结果。 */
+    private val browserAppRegexes: List<Regex>
+        get() = browserApps.mapNotNull { pattern ->
+            if (pattern.isBlank()) null else runCatching { Regex(pattern, RegexOption.IGNORE_CASE) }.getOrNull()
+        }
+
+    /** 这个进程名是不是浏览器（用于决定要不要关联标签页 URL）。 */
+    fun isBrowserApp(app: String?): Boolean {
+        if (app.isNullOrBlank()) return false
+        return browserAppRegexes.any { it.containsMatchIn(app) }
+    }
 
     /** 以 `dayStartHour` 为界的「今天」起点。 */
     fun dayStartMs(nowMs: Long): Long {
@@ -85,7 +110,11 @@ data class ActivitySettings(
     companion object {
         const val DAY_MS: Long = 86_400_000L
 
-        val WATCHED_TYPES: Set<String> = setOf("currentwindow", "afkstatus")
+        const val WINDOW_TYPE: String = "currentwindow"
+        const val AFK_TYPE: String = "afkstatus"
+        const val WEB_TYPE: String = "web.tab.current"
+
+        val WATCHED_TYPES: Set<String> = setOf(WINDOW_TYPE, AFK_TYPE, WEB_TYPE)
 
         private val json = Json {
             prettyPrint = true

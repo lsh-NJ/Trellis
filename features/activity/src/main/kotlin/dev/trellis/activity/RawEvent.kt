@@ -19,6 +19,14 @@ data class RawEvent(
     val app: String? = null,
     /** `currentwindow` bucket 里的窗口标题。 */
     val title: String? = null,
+    /**
+     * 浏览器标签页 URL。只有 `web.tab.current` bucket 有，`currentwindow` 没有。
+     *
+     * 为什么值得单独存：窗口标题只能看出「在 B 站看视频」，URL 才能落到具体站点/分区；
+     * 分类规则里的 [RuleField.DOMAIN] 就靠它。注意它同时也是隐私上最敏感的一份
+     * （可能带搜索词、视频 id），存是本地存，给 AI 之前仍按 [AiExposure] 裁剪。
+     */
+    val url: String? = null,
     /** `afkstatus` bucket 里的状态：`afk` 或 `not-afk`。 */
     val status: String? = null,
 ) {

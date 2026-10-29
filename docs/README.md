@@ -15,6 +15,7 @@
 | [`plan-backend.md`](plan-backend.md) | 学习计划后端（事件溯源 + SQLite）：模块分工、与设计稿的差异、命令语义、测试、P3/P4 待接 | 实现记录（2026-10-26） | 改 `:features:learning-process` / 接 UI / 加 plan 工具 |
 | [`plan-page.md`](plan-page.md) | 计划页：上半一周一格、下半选中周的那一天；数据全部来自 plan 后端的 view model | 实现记录（2026-10-27） | 改计划页 / 接视图 / 讨论「周视图该显示什么」 |
 | [`focus-timer.md`](focus-timer.md) | 计时器小窗：为什么独立窗口、倒计时（有进度条）/ 正计时（无进度条）、结束记入分钟数、边界与验证 | 实现记录（2026-10-28） | 改计时器 / 讨论「计时要不要进主窗口」 |
+| [`activity.md`](activity.md) | 活动分类：AW 原始事件 → SQLite → 分层分类（大类/小类/颜色/规则优先级）→ 日汇总；标签页 URL 匹配、时间口径、已知缺口 | 实现记录（2026-10-29） | 改 `:features:activity` / 接分类 UI / 做任务与计划追溯 |
 | [`conversation-redesign.md`](conversation-redesign.md) | 会话页五层信息、三态、三动作、撤销语义 | 实现记录（2026-10-24） | 改会话页 UI / 理解「过程与结论分离」 |
 | [`roadmap.md`](roadmap.md) | 已知缺口与优先级（能力面、视觉、插件市场、端） | 活文档 | 动手前先查有没有人记过这个坑 |
 | [`eval-prompts.md`](eval-prompts.md) | 验收题库（送检用，与提示词里的示例互为镜像） | 活文档（测试配套） | 调提示词后自测、验收 AI 能力 |
@@ -38,6 +39,7 @@
 - **要改工作流清单**：`agent-workflow-ui.md`（设计取舍与状态机）→ `WorkflowTools.kt` / `AppRuntime.beginPlan` / `ChatScreen.PlanChecklist`。
 - **要改学习计划后端**：`plan-backend.md`（模块分工与语义）→ `sdk-domain/.../plan/Contract.kt` → `SqliteLearningPlanService.kt` + `PlanCommands.kt` → `LearningPlanServiceTest`。
 - **要改计划页**：`plan-page.md`（结构、数据来源、已知缺口）→ `PlanScreen.kt` → `AppRuntime.refreshPlan`。
+- **要改活动分类 / 时间汇总**：`activity.md`（规则语义、时间口径、已知缺口）→ `ActivityTaxonomy.kt` / `ActivityAggregator.kt` → `:features:activity:test`。
 - **要改界面/主题/布局**：`../AGENTS.md` §3「按问题找文件」→ `examples/bento-style.md`（三层边界）→ `conversation-redesign.md`（若改会话页）。
 - **要动跨端/热更新**：`plugin-hotplug-path.md` §0 TL;DR → 对应 research 分册；别从零再调研一遍。
 - **要决定「奖励/连续天数/主动性/推送/定价」**：`research/learning.md` + `research/product.md`（证据在前，别凭直觉）。
