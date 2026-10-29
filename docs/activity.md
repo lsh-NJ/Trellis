@@ -1,6 +1,6 @@
 # 活动分类：从 ActivityWatch 原始事件到分层分类与日汇总
 
-> 实现记录（2026-10-29）。代码在 `features/activity/`，**尚未接入桌面应用**（`app/desktop` 里目前没有任何调用方）。
+> 实现记录（2026-10-29）。内核在 `features/activity/`；桌面端入口是导航第五项「活动」（也可 `TRELLIS_TAB=activity` 直接进）。
 > 这份文档写「为什么这么定、边界在哪」；具体 API 看代码。
 
 ## 1. 一句话
@@ -117,7 +117,29 @@ Trellis 的规则：
 - `DaySummary` 同时给 `observedMs`（名义窗口）、`afkMs`、`excludedMs`、`activeMs`、`segmentCount`，先自洽再谈分类占比。
 - `appRanking(dayMs, categoryId)` 按「该分类及其子孙」过滤，不再用字符串前缀（旧 API `List<String>` 已删除）。
 
-## 7. 文件与配置
+## 7. 桌面端活动页
+
+导航第五项「活动」（`TAB_ACTIVITY = 6`，`AppScreen.NAV_TABS` 排在「对话」与「设置」之间；
+`TRELLIS_TAB=activity` 可直达）。页面在 `app/desktop/src/main/kotlin/dev/trellis/app/desktop/ActivityScreen.kt`，
+只摆数据：分类、颜色、时长都来自 `ActivityAggregator`，页面不重新匹配规则、不累计数字。
+
+进入页面时懒开库（`AppRuntime.ensureActivityEngine()`）：读 `activity/settings.json` 与 `activity/taxonomy.json`
+（缺失就用默认值落一份），打开 `activity.db`，然后在页面作用域里每 60 秒跑一次 `ActivitySync.syncOnce()`；
+离开页面协程取消，同步就停。同步失败（AW 没开、库打不开）只写 `activityMessage`，页面照常显示库里已有的数据。
+
+- **日视图**：日期导航（‹ / 日期 / › / 今天）+ 活跃 / AFK / 观察窗口 / 其他 / 片段数统计；
+  24 小时时间轴用 Canvas 按 `Segment.color` 画彩色段（AFK 留空），点击按时间距离容差命中最近片段；
+  分类树按 `totalMs` 排、子类缩进，显示「直接 X / 合计 Y」，点分类过滤下方应用榜；
+  应用排行（app + 占时最多的分类 + 时长）；
+  页面最底部「未分类」折叠块（默认收起）——未分类记录不占主视线，展开后点条目看详情。
+- **范围总览**：起止日期（Material3 DatePicker）+「最近 7 天 / 最近 30 天」，分类与应用按时长倒序；
+  数据来自 `ActivityAggregator.rangeSummary(fromMs, toMs)`（逐日累加，分类按 id 合并）。
+- **片段详情浮层**：点时间轴片段或未分类条目，显示 app、窗口标题、标签页 URL、分类色点、时间段与时长，
+  以及 `classifier.explain()` 的命中规则；没命中时提示去 `activity/taxonomy.json` 补规则。
+- **隐私分层**：列表只显示 app 名 + 分类；窗口标题、标签页 URL 只在点开详情后才出现。
+  将来接 AI 时仍要过 `aiExposure` 这一层（见 §5）。
+
+## 8. 文件与配置
 
 | 位置 | 内容 |
 |---|---|
@@ -136,7 +158,7 @@ Trellis 的规则：
 | `ActivityStore.kt` | SQLite 读写与 schema 迁移 |
 | `ActivityAggregator.kt` | 片段化、AFK/排除/去重、贴 url、分类、日汇总与排行 |
 
-## 8. 测试
+## 9. 测试
 
 ```powershell
 $env:JAVA_HOME = "$env:USERPROFILE\.jdks\jdk17"; $env:Path = "$env:JAVA_HOME\bin;$env:Path"
@@ -148,9 +170,10 @@ $env:JAVA_HOME = "$env:USERPROFILE\.jdks\jdk17"; $env:Path = "$env:JAVA_HOME\bin
 taxonomy.json 读写（缺失/坏文件留档）、store（url、COALESCE、v1 库自动迁移）、client（web/window 解析）、sync（web bucket 同步）。
 `LiveAwSmokeTest` 需要真实 aw-server，默认不跑（`TRELLIS_AW_LIVE` 环境变量控制）。
 
-## 9. 已知缺口 / 下一步
+## 10. 已知缺口 / 下一步
 
-1. **没接桌面应用**：没有同步循环、没有分类编辑界面、没有日汇总/时间轴卡片；`AppRuntime` 里目前零引用。
+1. **活动页只读**：能看日视图/范围总览/片段详情，但还没有分类编辑界面（规则仍手改 `taxonomy.json`）、
+   没有 CSV 导出、同步状态只在页头一行字。
 2. **没接任务/计划**：追溯（「这段时间对应哪个计划节点」）需要把 `Segment` 与计划后端的时间轴对上，接口还没设计。
 3. **规则只能手改 JSON**：没有 UI；`ActivityTaxonomy.validate()` 与 `classifier.problems` 是将来做编辑器的校验基础。
 4. **`titleRedactions` 还没生效**：设置里有字段，聚合时尚未应用；接 AI 前要和 `aiExposure` 一起补上。

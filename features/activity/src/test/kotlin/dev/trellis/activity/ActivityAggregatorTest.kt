@@ -264,4 +264,41 @@ class ActivityAggregatorTest {
             assertTrue(ActivityAggregator(store).appRanking(noon).isEmpty())
         }
     }
+
+    @Test
+    fun `范围汇总把多天按分类和应用加在一起`() {
+        val nextNoon = at(day.plusDays(1), 12)
+        store(
+            win(1, noon, 600_000, "Code.exe"), // 27 日：工作/编程 10 分钟
+            win(2, nextNoon, 300_000, "WINWORD.EXE"), // 28 日：工作/办公 5 分钟
+            win(3, nextNoon + 300_000, 120_000, "QQ.exe"), // 28 日：通讯/QQ 2 分钟
+        ).use { store ->
+            val range = ActivityAggregator(store).rangeSummary(noon, nextNoon)
+
+            assertEquals(2, range.days)
+            assertEquals(1_020_000L, range.activeMs)
+            assertEquals(3, range.segmentCount)
+
+            val work = assertNotNull(range.category("work"))
+            assertEquals(900_000L, work.totalMs, "跨天的「工作」要合并成一个总数")
+            assertEquals(600_000L, range.category("work.coding")?.totalMs)
+            assertEquals(300_000L, range.category("work.office")?.totalMs)
+
+            assertEquals("Code.exe", range.topApps.first().app, "应用排行按时长倒序")
+            assertEquals(600_000L, range.topApps.first().durationMs)
+        }
+    }
+
+    @Test
+    fun `结束日早于开始日时返回空范围`() {
+        val nextNoon = at(day.plusDays(1), 12)
+        ActivityStore.inMemory().use { store ->
+            val range = ActivityAggregator(store).rangeSummary(nextNoon, noon)
+
+            assertTrue(range.isEmpty)
+            assertEquals(0, range.days)
+            assertTrue(range.categories.isEmpty())
+            assertTrue(range.topApps.isEmpty())
+        }
+    }
 }
