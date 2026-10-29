@@ -18,6 +18,8 @@ dependencies {
     implementation(project(":features:learning-process"))
     // 活动采集/整理（ActivityWatch 原始数据 + 分类树 + 日/范围汇总）。
     implementation(project(":features:activity"))
+    // 目标达成规划：内置 Kotlin 插件（required，不可卸载），往对话页/首页/设置页各交一张卡。
+    implementation(project(":features:goal-planning"))
     implementation(project(":plugin-dsl"))
     implementation(project(":plugin-script"))
     implementation(compose.desktop.currentOs)

@@ -10,6 +10,7 @@ import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -69,7 +70,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.trellis.ai.tool.DeepSeekMarkup
+import dev.trellis.kernel.slot.Slots
 import dev.trellis.ui.LocalExtraColors
+import dev.trellis.ui.SlotArea
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -127,15 +130,32 @@ fun ChatScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
             }
         },
     ) {
-        ChatSessionList(runtime, Modifier.width(240.dp).fillMaxHeight())
+        val hasSessions = runtime.chatSessions.isNotEmpty()
+        if (hasSessions) {
+            ChatSessionList(runtime, Modifier.width(240.dp).fillMaxHeight())
+        }
         ChatConversation(
             runtime = runtime,
             focus = focus,
             planLine = if (planOpen) null else planLine,
             onOpenPlan = { planOpen = true },
             note = planNote,
-            modifier = Modifier.weight(1f).fillMaxHeight().padding(start = 18.dp),
+            modifier = Modifier.weight(1f).fillMaxHeight()
+                .padding(start = if (hasSessions) 18.dp else 0.dp),
         )
+        // 常驻侧条：有没有会话都在，不随滚动消失。
+        // 没插件往这儿放东西时整块不出现 —— 空槽位会白吃掉 260dp 宽度。
+        val asideContributions = runtime.kernel.extensions.contributionsAt(Slots.ChatAside)
+        if (asideContributions.isNotEmpty()) {
+            SlotArea(
+                runtime.kernel.extensions,
+                Slots.ChatAside,
+                refreshKey = runtime.tick,
+                onAction = { owner, action -> runtime.performSlotAction(owner, action) },
+                layout = runtime.layoutFor(Slots.ChatAside.id),
+                modifier = Modifier.width(260.dp).fillMaxHeight().padding(start = 14.dp),
+            )
+        }
         if (planOpen && planLine != null && planLine.plan.isNotEmpty()) {
             PlanSidebar(
                 line = planLine,
@@ -181,16 +201,7 @@ private fun ChatSessionList(runtime: AppRuntime, modifier: Modifier) {
     var pendingDelete by remember { mutableStateOf<ChatSession?>(null) }
 
     Column(modifier) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("会话", style = MaterialTheme.typography.titleSmall)
-            Spacer(Modifier.weight(1f))
-            TextButton(onClick = { runtime.newChat() }, enabled = !runtime.chatBusy) {
-                Text("新对话", style = MaterialTheme.typography.labelMedium)
-            }
-        }
+        // 标题和「新对话」都搬到了页头（ChromePageHeader）：这一栏只负责挑会话。
 
         if (runtime.chatSessions.isEmpty()) {
             Text(
@@ -214,7 +225,7 @@ private fun ChatSessionList(runtime: AppRuntime, modifier: Modifier) {
                     Text(
                         title,
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
                     )
                 }
@@ -290,7 +301,7 @@ private fun SessionRow(
             Text(
                 chatTimeLabel(session.updatedAt) + " · " + rounds + " 轮",
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         Box {
@@ -416,19 +427,18 @@ private fun ChatConversation(
         HorizontalDivider()
         Spacer(Modifier.height(8.dp))
 
+        // 没有配模型时也要留着输入框：把配置报错当成「这一页没做完」，用户会以为应用坏了。
+        // 提示缩成一张卡，路径和 JSON 收进折叠区；输入条禁用但仍然在原来的位置。
         if (!runtime.llmConfigured()) {
-            Text(
-                runtime.llmSetupHint(),
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
-            )
-            return@Column
+            LlmCallout(runtime)
+            Spacer(Modifier.height(8.dp))
         }
 
         InputBar(
             runtime = runtime,
             focus = focus,
             input = input,
+            enabled = runtime.llmConfigured(),
             onInput = { input = it },
             onSend = {
                 val text = input.trim()
@@ -451,11 +461,58 @@ private fun ChatConversation(
 
 // ---------------------------------------------------------------- 空态与气泡
 
-private val EMPTY_EXAMPLES = listOf(
-    "把这周的完成情况做成一张卡",
-    "把首页三张卡片横着排",
-    "现在装了哪些插件？",
+/** 空态的三条建议：图标 + 一句动词 + 一句可以直接发的示例。 */
+private data class ChatSuggestion(val glyph: String, val title: String, val example: String)
+
+private val CHAT_SUGGESTIONS = listOf(
+    ChatSuggestion("＋", "排一个学习计划", "我想三个月速通操作系统，每天 60 分钟"),
+    ChatSuggestion("▦", "把首页摆一摆", "把这三张卡片横着排，右边留一块"),
+    ChatSuggestion("◎", "看看装了什么", "现在装了哪些插件？"),
 )
+
+/**
+ * 「还没有模型」的提示卡。
+ *
+ * 以前这里是 `return@Column` —— 没配模型就整条输入框都不画，底下直接甩六行等宽报错，
+ * 里面是本机绝对路径和一段 JSON。用户看到的是「这个页面坏了」，而不是「还差一步配置」。
+ * 现在：标题 + 一句人话 + 折叠的技术细节，输入框留在原地（禁用），配好就能用。
+ */
+@Composable
+private fun LlmCallout(runtime: AppRuntime) {
+    var open by remember { mutableStateOf(false) }
+    Column(
+        Modifier.fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Text(
+            "还差一个模型",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            "到「设置 → 模型 API」粘贴一个 key，导入后立刻能用，不用重启。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        TextButton(
+            onClick = { open = !open },
+            contentPadding = PaddingValues(horizontal = 0.dp, vertical = 4.dp),
+        ) {
+            Text(if (open) "收起技术细节" else "技术细节", style = MaterialTheme.typography.labelMedium)
+        }
+        if (open) {
+            Text(
+                runtime.llmSetupHint(),
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
 
 /**
  * 输入框上方的「选一个」列表 —— 竖着排，一行一个选项。
@@ -525,14 +582,7 @@ private fun EmptyConversation(onPick: (String) -> Unit, modifier: Modifier) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text(
-            "还没有对话",
-            style = MaterialTheme.typography.labelSmall,
-            fontFamily = FontFamily.Monospace,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(10.dp))
-        Text("先说你要什么，再让它动手", style = MaterialTheme.typography.headlineSmall)
+        Text("先说要做什么，再让它动手", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(6.dp))
         Text(
             "它也可以被问「现在装了什么」，或者被要求改布局、改样式。",
@@ -540,17 +590,48 @@ private fun EmptyConversation(onPick: (String) -> Unit, modifier: Modifier) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(20.dp))
-        for (example in EMPTY_EXAMPLES) {
-            Row(
-                modifier = Modifier
-                    .padding(vertical = 3.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(4.dp))
-                    .clickable { onPick(example) }
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(example, style = MaterialTheme.typography.bodySmall)
+        Column(
+            modifier = Modifier.widthIn(max = 420.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            for (suggestion in CHAT_SUGGESTIONS) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
+                        .clickable { onPick(suggestion.example) }
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        modifier = Modifier.size(28.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            suggestion.glyph,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(suggestion.title, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            suggestion.example,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "→",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }
@@ -570,7 +651,7 @@ private fun UserBubble(line: ChatLine) {
                 "你 · " + clockLabel(line.atMs),
                 style = MaterialTheme.typography.labelSmall,
                 fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(line.text, style = MaterialTheme.typography.bodyLarge)
         }
@@ -730,7 +811,7 @@ private fun RoundView(
                     duration,
                     style = MaterialTheme.typography.labelSmall,
                     fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             if (running) {
@@ -787,7 +868,7 @@ private fun RoundView(
                 meta,
                 style = MaterialTheme.typography.labelSmall,
                 fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 
@@ -822,7 +903,7 @@ private fun RoundView(
                     Text(
                         "（重启后旧轮次不能撤销）",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
@@ -987,6 +1068,7 @@ private fun InputBar(
     runtime: AppRuntime,
     focus: FocusRequester,
     input: String,
+    enabled: Boolean = true,
     onInput: (String) -> Unit,
     onSend: () -> Unit,
     onRecall: () -> Unit,
@@ -1020,14 +1102,14 @@ private fun InputBar(
                             else -> false
                         }
                     },
-                placeholder = "说一句你想让它做什么",
-                enabled = true,
+                placeholder = if (enabled) "说一句你想让它做什么" else "先配置模型，配好就能开始",
+                enabled = enabled,
                 singleLine = false,
             )
             Spacer(Modifier.width(8.dp))
             ChromeButton(
                 label = if (runtime.chatBusy) "在想…" else "发送",
-                enabled = input.isNotBlank(),
+                enabled = enabled && input.isNotBlank(),
                 onClick = onSend,
             )
         }
@@ -1035,7 +1117,7 @@ private fun InputBar(
         Text(
             "Enter 发送 · Shift+Enter 换行 · ↑ 召回上一条 · Esc 停止",
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }

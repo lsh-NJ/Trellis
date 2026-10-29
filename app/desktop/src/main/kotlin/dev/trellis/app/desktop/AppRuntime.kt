@@ -38,6 +38,7 @@ import dev.trellis.domain.plan.LearningPlanService
 import dev.trellis.domain.plan.LearningPlanInfo
 import dev.trellis.domain.plan.PoolUnit
 import dev.trellis.domain.plan.WeekDay
+import dev.trellis.feature.goal.GoalPlugin
 import dev.trellis.feature.learning.LearningPlanStore
 import dev.trellis.activity.ActivityAggregator
 import dev.trellis.activity.ActivitySettings
@@ -72,6 +73,8 @@ import dev.trellis.ui.ExtraColors
 import dev.trellis.ui.SlotCell
 import dev.trellis.kernel.plugin.Plugin
 import dev.trellis.kernel.plugin.PluginManifest
+import dev.trellis.kernel.prompt.PromptSection
+import dev.trellis.kernel.prompt.PromptSections
 import dev.trellis.kernel.approval.ActionRequest
 import dev.trellis.kernel.approval.DefaultApprovalGate
 import dev.trellis.kernel.core.CapabilityId
@@ -144,6 +147,7 @@ internal val RENDERED_MOUNT_POINTS: Set<ExtensionPointId> = setOf(
     Slots.AppOverlay.id,
     Slots.ReportChart.id,
     Slots.SettingsSection.id,
+    Slots.ChatAside.id,
 )
 
 /** 一次截图：[text] 是给人看的话（存到哪、多大），[dataUrl] 是给模型看的图片。 */
@@ -1002,6 +1006,44 @@ class AppRuntime private constructor() {
      * 它不进静态前缀 —— 装一个插件就变一次。放在静态规则之后、对话历史之前，
      * 前缀缓存命中不受影响，模型看到的又永远是最新事实。
      */
+    /**
+     * 收集插件交上来的 AI 上下文片段。
+     *
+     * 三道处理，顺序不能换：
+     * 1. **按 order 排**：越靠前越是「底座事实」，后面的是补充；
+     * 2. **各自截到 budgetChars**：插件自己声明上限，比宿主猜准；
+     * 3. **失败的片段跳过而不是整轮失败**：一个插件写崩了，不该让对话发不出去。
+     *
+     * 截断要留痕（末尾标「已截断」）：模型看不到完整的块时，它说的话就会缺一块，
+     * 而用户只会觉得「它怎么忘了」。
+     */
+    private suspend fun promptSections(): List<String> {
+        val contributions = kernel.extensions.contributionsAt(PromptSections.AiContext)
+        if (contributions.isEmpty()) return emptyList()
+        val out = mutableListOf<String>()
+        for (contribution in contributions) {
+            val section = contribution.value as? PromptSection ?: continue
+            val text = try {
+                section.render()
+            } catch (error: Throwable) {
+                // 一个插件写崩了，不该让整轮对话发不出去 —— 记一行，跳过这一段。
+                addChatLine(
+                    ChatRole.Step,
+                    "插件 " + contribution.owner.value + " 的上下文片段没渲染出来：" + (error.message ?: "未知原因"),
+                )
+                continue
+            }
+            if (text.isBlank()) continue
+            val budget = section.budgetChars
+            out += if (budget > 0 && text.length > budget) {
+                text.take(budget) + "\n…（这一段超预算，已截断）"
+            } else {
+                text
+            }
+        }
+        return out
+    }
+
     private suspend fun managerState(): String = buildString {
         appendLine("内核：" + kernel.currentState)
         val live = kernel.liveCatalog()
@@ -1395,6 +1437,8 @@ class AppRuntime private constructor() {
                 state = managerState(),
                 request = text,
                 history = chatHistory.toList(),
+                // 插件交的事实块：目标契约、今天的进度、压缩过的历史摘要都从这里进。
+                sections = promptSections(),
                 onDelta = { delta ->
                     answerText += delta
                     displayText = visibleReply(answerText)
@@ -2613,6 +2657,14 @@ class AppRuntime private constructor() {
                             listOf(
                                 PlanCorePlugin(),
                                 PlanUiPlugin(runtime),
+                                // 目标达成规划：required = true，卸载会被内核拒绝。
+                                // 「每天投入」读宿主的 study.json，「今天」用本地时区算 ——
+                                // 插件在 common 里没有时区，猜一个会比不猜更糟。
+                                GoalPlugin(
+                                    dailyMinutes = { runtime.studyPrefs.dailyMinutes },
+                                    today = { java.time.LocalDate.now().toString() },
+                                    onOpenChat = { runtime.currentTab = TAB_CHAT },
+                                ),
                                 // 默认主题包也是插件：可在插件页停用，停用后回落默认配色。
                                 BentoThemePlugin(),
                             ) + extraBuiltins,

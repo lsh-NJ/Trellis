@@ -46,10 +46,18 @@ class ManagerPrompt(
         request: String,
         history: List<LlmMessage> = emptyList(),
         intent: AgentIntent = intent(request),
+        /**
+         * 插件贡献的上下文片段，已按 order 排好、已截到各自预算。
+         *
+         * 这里是**事实层**，和 `<current_state>` 同级，所以排在历史之前：
+         * 历史是「发生过什么」，这些是「现在是什么」。混进历史会被模型当成旧闻。
+         */
+        sections: List<String> = emptyList(),
     ): List<LlmMessage> {
         val out = mutableListOf<LlmMessage>()
         out += LlmMessage(LlmRole.System, base)
         if (state.isNotBlank()) out += LlmMessage(LlmRole.System, stateBlock(state))
+        if (sections.isNotEmpty()) out += LlmMessage(LlmRole.System, sectionsBlock(sections))
         out += history
         taskModule(intent)?.let { out += LlmMessage(LlmRole.System, it) }
         out += LlmMessage(LlmRole.User, userLine(request))
@@ -62,6 +70,16 @@ class ManagerPrompt(
 
         fun stateBlock(state: String): String =
             "<current_state>\n" + state.trim() + "\n</current_state>"
+
+        /**
+         * 插件片段的容器。
+         *
+         * 用 `<plugin_context>` 而不是某个业务名字：宿主这一层只认识「有插件交了上下文」，
+         * 至于是目标、预算还是打卡，写在片段自己的小标题里。宿主不该为某个插件的语义
+         * 起一个专属标签 —— 那样内核就又开始认识业务了。
+         */
+        fun sectionsBlock(sections: List<String>): String =
+            "<plugin_context>\n" + sections.joinToString("\n\n") { it.trim() } + "\n</plugin_context>"
 
         /**
          * 静态前缀 = 设计规则（[PromptBuilder.system]，已装插件传空 —— 那是动态状态）
@@ -173,7 +191,7 @@ class ManagerPrompt(
             那等于什么都没给。正确的第一步是：
             1. 要问范围（要多久做完、每天大概能花多久）就用 `ask_choices` 把范围摆成选项问，
                不要只在文字里问一句然后停下 —— 那样界面上下一步还是空的；
-            2. 能自己定就用默认拆法直接动手：先查资源（search_bilibili），再 add_tasks 或 set_plan；
+            2. 能自己定就用默认拆法直接动手：先查一轮资源看有什么，再落成待办或计划；
             3. 要用户拍板就用 `ask_choices`（例如：落成待办 / 排成计划 / 只看建议），然后停下等点；
             4. 只有用户明确说「先别建」，才停在建议上。
             `cannotDo` 只用于**真的做不到**的事（比如要解锁手机、要读别的应用的数据）；

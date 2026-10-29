@@ -75,6 +75,13 @@ class ManagerAgent(
         state: String,
         request: String,
         history: List<LlmMessage> = emptyList(),
+        /**
+         * 插件贡献的上下文片段（已按 order 排好、已截到各自预算）。
+         *
+         * 放在 respond 的入口而不是提示词构造器里：这些片段每轮都可能变，
+         * 而提示词的静态前缀必须逐字节稳定才能命中服务端的前缀缓存。
+         */
+        sections: List<String> = emptyList(),
         onDelta: suspend (String) -> Unit = {},
         onLog: (String) -> Unit = {},
     ): ManagerResult {
@@ -90,7 +97,7 @@ class ManagerAgent(
         }
         val intent = decision.intent
         val tools = router.tools(intent)
-        val messages = router.prompt(intent).messages(state, request, history, intent)
+        val messages = router.prompt(intent).messages(state, request, history, intent, sections)
 
         if (intent == AgentIntent.Chat) {
             val streamed = StringBuilder()

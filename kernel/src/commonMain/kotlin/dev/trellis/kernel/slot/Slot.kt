@@ -161,12 +161,21 @@ object Slots {
     val EmptyState: ExtensionPoint<SlotContribution> =
         point("slot.empty.state", "空状态")
 
+    /**
+     * 对话页的常驻侧条：贴在对话线程旁边、不随滚动消失的一块。
+     *
+     * 和 [EmptyState] 的区别是「有没有会话都在」：空状态只在没有内容时出现，
+     * 这条是常驻的。用它放「当前目标 / 今天的进度」这类需要一直看得见的东西。
+     */
+    val ChatAside: ExtensionPoint<SlotContribution> =
+        point("slot.chat.aside", "对话页侧条")
+
     val AppOverlay: ExtensionPoint<SlotContribution> =
         point("slot.app.overlay", "全局浮层")
 
     val all: List<ExtensionPoint<SlotContribution>> = listOf(
         HomeHeader, HomeSection, DetailAside, DetailTab, RowTrailing,
-        SettingsSection, ReportChart, EmptyState, AppOverlay,
+        SettingsSection, ReportChart, EmptyState, ChatAside, AppOverlay,
     )
 
     private fun point(id: String, label: String) =

@@ -44,9 +44,9 @@ class CapabilitySurfaceTest {
 
         val catalog = CapabilityCatalog.of(runtime.kernel.extensions, RENDERED_MOUNT_POINTS)
 
-        // 挂载点：界面渲染几个，模型就看得见几个。详情页两个、任务行尾一个还没有容器，所以是 6 不是 9。
+        // 挂载点：界面渲染几个，模型就看得见几个。详情页两个、任务行尾一个还没有容器，所以是 7 不是 10。
         assertEquals(RENDERED_MOUNT_POINTS.size, catalog.mountPoints.size)
-        assertEquals(6, catalog.mountPoints.size, "渲染点改了就要同步这里：" + catalog.mountPoints.map { it.id })
+        assertEquals(7, catalog.mountPoints.size, "渲染点改了就要同步这里：" + catalog.mountPoints.map { it.id })
 
         // 动作：三个新的编辑动作必须真的注册进内核
         val actions = catalog.actions.map { it.id }
