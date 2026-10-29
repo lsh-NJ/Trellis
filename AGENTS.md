@@ -47,7 +47,7 @@ Set-Location C:\Users\breakM\Desktop\work\Trellis
 | `TRELLIS_TAB` | 启动落在哪一页：`tasks`（默认）/ `plan` / `chat` / `plugins` / `diag` |
 | `TRELLIS_LLM_KEY` / `TRELLIS_LLM_MODEL` / `TRELLIS_LLM_ENDPOINT` | 覆盖 LLM 配置（也可写 `~/.trellis/llm.json`） |
 
-> 仓库里的 `.dev/` 是历史会话留下的几百个临时脚本，**不是**构建脚本，别当入口读。
+> 历史会话留下的 `.dev/` 临时脚本已于 2026-10-29 清理，仓库里没有 `.dev/` 目录；也别再从别处捡回这类脚本当入口。
 >
 > **多个会话可能同时在改这个仓库**：开工第一句先写清「这轮只动哪几个文件」再动手（见 §10）。靠分支解决不了这个问题——它隔离提交历史，不隔离磁盘上的文件。
 
@@ -253,7 +253,7 @@ ChatScreen ──> AppRuntime.sendChat()
 
 **加一条主题校验规则**：`app/desktop/.../ThemePacks.kt`（token 词表/对比度/派生）→ `ThemePacksTest` → 若是脚本主题，还要同步 `ScriptSandbox` 的 `trellis.theme` 解析。
 
-**跑一次界面截图**：启动应用（`TRELLIS_HOME` 指到演示目录）→ 用 DPI-aware 的 `PrintWindow` 截图；本项目历史上做过，脚本思路在 `.dev/shot2.sh`（仅供参考，不要直接依赖）。
+**跑一次界面截图**：启动应用（`TRELLIS_HOME` 指到演示目录）→ 用 DPI-aware 的 `PrintWindow` 截图（`Add-Type -AssemblyName System.Drawing` → `Bitmap` + `Graphics.GetHdc` + `PrintWindow(hwnd, hdc, 2)`；窗口最小化时先 `ShowWindow(h, 3)`）。
 
 ---
 
