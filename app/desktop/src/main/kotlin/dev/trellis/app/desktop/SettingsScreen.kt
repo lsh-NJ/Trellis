@@ -1,5 +1,6 @@
 package dev.trellis.app.desktop
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -20,6 +21,10 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,6 +50,8 @@ fun SettingsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
         Spacer(Modifier.height(12.dp))
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            item { AppearanceCard(runtime) }
+
             item { DailyBudgetCard(runtime) }
 
             item {
@@ -70,6 +77,153 @@ fun SettingsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                 Spacer(Modifier.height(10.dp))
                 DiagnosticsCard(runtime)
             }
+        }
+    }
+}
+
+/**
+ * 主题与导航。
+ *
+ * 这两样以前只能靠对话里的 agent 改（`set_theme` / `set_ui`），或者手改 `ui.json`：
+ * 用户装完主题插件，插件页明明写着 ACTIVE，界面却没变——因为它只是贡献了主题，
+ * 没有被「选中」。设置页现在给两个最常被问到的开关：主题（内置 Bento + 插件贡献的）
+ * 和导航位置；点一下走的是和 agent 同一套入口，改完立即落盘。
+ */
+@Composable
+private fun AppearanceCard(runtime: AppRuntime) {
+    val prefs = runtime.uiPrefs
+    var message by remember { mutableStateOf("") }
+
+    // builtin 永远可选；插件贡献的主题跟着插件的装载/停用来去。
+    val themes = buildList {
+        add("builtin" to "跟随配色方案")
+        addAll(runtime.themeOptions())
+    }
+    val currentKey = prefs.theme.ifBlank { "builtin" }
+    val currentKnown = themes.any { it.first == currentKey }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
+            Text("主题与导航", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "主题由插件贡献（内置 Bento 默认启用）；导航换个位置，整页的顶栏就变成左栏。改了就存，重启还在。",
+                style = MaterialTheme.typography.labelSmall,
+            )
+            Spacer(Modifier.height(10.dp))
+
+            Text(
+                "主题",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(2.dp))
+            for ((key, label) in themes) {
+                ChoiceRow(
+                    label = label,
+                    detail = if (key == "builtin") "builtin · 跟随配色方案" else key,
+                    selected = key == currentKey,
+                    onClick = {
+                        val result = runtime.applyTheme(key)
+                        message = if (result.startsWith("界面偏好已更新")) {
+                            "主题已切到「" + label + "」"
+                        } else {
+                            result
+                        }
+                    },
+                )
+            }
+            if (!currentKnown) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "当前存的主题「" + currentKey + "」已经不可用（插件停了或删了），界面回落到配色方案。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "导航",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(2.dp))
+            for ((key, label) in listOf("top" to "顶部标签栏", "left" to "左侧边栏（默认）")) {
+                ChoiceRow(
+                    label = label,
+                    detail = null,
+                    selected = prefs.nav == key,
+                    onClick = {
+                        val result = runtime.updateUiPrefs(runtime.uiPrefs.copy(nav = key))
+                        message = if (result.startsWith("界面偏好已更新")) {
+                            "导航已改成「" + label + "」"
+                        } else {
+                            result
+                        }
+                    },
+                )
+            }
+
+            if (message.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    message,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/** 单选行：一个小方块当标记，整行可点；选中的那行右侧写「当前」。 */
+@Composable
+private fun ChoiceRow(
+    label: String,
+    detail: String?,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(4.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(10.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(
+                    if (selected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.outlineVariant
+                    },
+                ),
+        )
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.bodyMedium)
+            if (!detail.isNullOrBlank()) {
+                Text(
+                    detail,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (selected) {
+            Text(
+                "当前",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
