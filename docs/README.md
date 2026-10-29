@@ -16,6 +16,7 @@
 | [`plan-page.md`](plan-page.md) | 计划页：上半一周一格、下半选中周的那一天；数据全部来自 plan 后端的 view model | 实现记录（2026-10-27） | 改计划页 / 接视图 / 讨论「周视图该显示什么」 |
 | [`focus-timer.md`](focus-timer.md) | 计时器小窗：为什么独立窗口、倒计时（有进度条）/ 正计时（无进度条）、结束记入分钟数、边界与验证 | 实现记录（2026-10-28） | 改计时器 / 讨论「计时要不要进主窗口」 |
 | [`activity.md`](activity.md) | 活动分类：AW 原始事件 → SQLite → 分层分类（大类/小类/颜色/规则优先级）→ 日汇总；标签页 URL 匹配、时间口径、已知缺口 | 实现记录（2026-10-29） | 改 `:features:activity` / 接分类 UI / 做任务与计划追溯 |
+| [`goal-plugin-handoff.md`](goal-plugin-handoff.md) | 目标达成规划插件（`:features:goal-planning`）的交接：宿主两个扩展点、11 个文件的分工、没做完的四件事（ActivityWatch 适配 / 离屏渲染 / 两条断言 / 演示）、可直接复制的提示词 | 交接记录（2026-10-29） | 接手这个插件 / 继续做 ActivityWatch 适配 / 开 PR |
 | [`conversation-redesign.md`](conversation-redesign.md) | 会话页五层信息、三态、三动作、撤销语义 | 实现记录（2026-10-24） | 改会话页 UI / 理解「过程与结论分离」 |
 | [`roadmap.md`](roadmap.md) | 已知缺口与优先级（能力面、视觉、插件市场、端） | 活文档 | 动手前先查有没有人记过这个坑 |
 | [`eval-prompts.md`](eval-prompts.md) | 验收题库（送检用，与提示词里的示例互为镜像） | 活文档（测试配套） | 调提示词后自测、验收 AI 能力 |
