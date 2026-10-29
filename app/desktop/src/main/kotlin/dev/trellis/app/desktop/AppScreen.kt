@@ -74,7 +74,9 @@ import dev.trellis.kernel.slot.Slots
 import dev.trellis.ui.LocalCardStyle
 import dev.trellis.ui.LocalExtraColors
 import dev.trellis.ui.SlotArea
+import java.time.DayOfWeek
 import java.time.LocalDate
+import java.time.temporal.TemporalAdjusters
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -475,14 +477,15 @@ private fun TasksTab(runtime: AppRuntime, modifier: Modifier) {
     }
 }
 
-/** 房主画的外壳：硬边小圆角 + 细边 + 贴纸阴影，全部跟着卡片样式走。 */
+/**
+ * 卡片外壳：硬边小圆角 + 细边 + 贴纸阴影，全部跟着卡片样式走。
+ *
+ * 只给「宿主自己画的卡」用。任务页那两张卡是插槽（SlotArea）画的壳，
+ * 里面的内容走 `framed = false`，不经过这里。
+ */
 @Composable
-private fun BentoCard(
-    kicker: String,
-    title: String,
+private fun CardShell(
     modifier: Modifier = Modifier,
-    trailing: @Composable () -> Unit = {},
-    /** false：外面已经有一层宿主卡片（插件卡槽），这里只画内容，别再套一层壳。 */
     framed: Boolean = true,
     content: @Composable ColumnScope.() -> Unit,
 ) {
@@ -493,29 +496,44 @@ private fun BentoCard(
     } else {
         MaterialTheme.colorScheme.surface
     }
-    val framedModifier = if (!framed) {
-        modifier.fillMaxWidth()
-    } else {
-        modifier
-            .fillMaxWidth()
-            .then(if (style.hardShadow) Modifier.padding(end = 4.dp, bottom = 4.dp) else Modifier)
-            .clip(shape)
-            .background(container)
-            .then(
-                if (style.border) {
-                    Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
-                } else {
-                    Modifier
-                },
-            )
-            .padding(18.dp)
+    if (!framed) {
+        Column(modifier.fillMaxWidth(), content = content)
+        return
     }
-    Column(modifier = framedModifier) {
+    val framedModifier = modifier
+        .fillMaxWidth()
+        .then(if (style.hardShadow) Modifier.padding(end = 4.dp, bottom = 4.dp) else Modifier)
+        .clip(shape)
+        .background(container)
+        .then(
+            if (style.border) {
+                Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
+            } else {
+                Modifier
+            },
+        )
+    Column(modifier = framedModifier.padding(18.dp), content = content)
+}
+
+/** 房主画的带刊头卡片：等宽小标 + 标题 + 右侧插槽。 */
+@Composable
+private fun BentoCard(
+    kicker: String,
+    title: String,
+    modifier: Modifier = Modifier,
+    trailing: @Composable () -> Unit = {},
+    /** false：外面已经有一层宿主卡片（插件卡槽），这里只画内容，别再套一层壳。 */
+    framed: Boolean = true,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    CardShell(modifier, framed = framed) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
                     kicker,
                     style = MaterialTheme.typography.labelSmall,
+                    fontFamily = AppFonts.mono,
+                    letterSpacing = 0.8.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
@@ -575,12 +593,11 @@ internal fun TaskBoard(runtime: AppRuntime, taskFocus: FocusRequester, framed: B
             var doneOpen by remember { mutableStateOf(true) }
             val done = tasks.filter { it.isDone }
 
-            var firstGroup = true
-            groups.forEach { (label, groupTasks) ->
-                if (groupTasks.isEmpty()) return@forEach
-                if (!firstGroup) Spacer(Modifier.height(6.dp))
-                firstGroup = false
-                GroupLabel(label, groupTasks.size)
+            // 编号只给真正出现的分组：空组跳过不该在编号上留下空号。
+            val visibleGroups = groups.filter { it.second.isNotEmpty() }
+            visibleGroups.forEachIndexed { index, (label, groupTasks) ->
+                if (index > 0) Spacer(Modifier.height(6.dp))
+                GroupLabel(index + 1, label, groupTasks.size)
                 groupTasks.forEach { task ->
                     RowDivider()
                     TaskRow(
@@ -593,8 +610,8 @@ internal fun TaskBoard(runtime: AppRuntime, taskFocus: FocusRequester, framed: B
             }
 
             if (done.isNotEmpty()) {
-                if (!firstGroup) Spacer(Modifier.height(6.dp))
-                GroupLabel("已完成 · " + done.size + if (doneOpen) "（收起）" else "（展开）", null) {
+                if (visibleGroups.isNotEmpty()) Spacer(Modifier.height(6.dp))
+                GroupLabel(null, "已完成 · " + done.size + if (doneOpen) "（收起）" else "（展开）", null) {
                     doneOpen = !doneOpen
                 }
                 if (doneOpen) {
@@ -656,9 +673,14 @@ private fun RowDivider() {
     )
 }
 
-/** 分组小标：等宽大写 + 条数，像样片里每个卡片的 kicker。点了能折叠的会带下划线暗示。 */
+/**
+ * 分组小标：编号 + 等宽大写 + 条数。
+ *
+ * 编号是编辑手法（01 / 02 / 03）：分组之间因此有了顺序感，
+ * 也让「这一屏有几段」在扫读时就能数出来。
+ */
 @Composable
-private fun GroupLabel(text: String, count: Int?, onClick: (() -> Unit)? = null) {
+private fun GroupLabel(index: Int?, text: String, count: Int?, onClick: (() -> Unit)? = null) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -666,11 +688,20 @@ private fun GroupLabel(text: String, count: Int?, onClick: (() -> Unit)? = null)
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (index != null) {
+            Text(
+                index.toString().padStart(2, '0'),
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = AppFonts.mono,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.width(10.dp))
+        }
         Text(
             text.uppercase(),
             style = MaterialTheme.typography.labelSmall,
             fontFamily = AppFonts.mono,
-            letterSpacing = 0.6.sp,
+            letterSpacing = 0.8.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (count != null) {
@@ -700,8 +731,36 @@ private fun GroupLabel(text: String, count: Int?, onClick: (() -> Unit)? = null)
 internal fun Header(runtime: AppRuntime, framed: Boolean = true) {
     val s = runtime.summary
     val extra = LocalExtraColors.current
+    val today = LocalDate.now()
+    val monday = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
     val open = s.total - s.done
-    BentoCard(kicker = "TODAY", title = "今日", framed = framed) {
+    CardShell(framed = framed) {
+        // 刊头就是今天：这一页只讲今天，不必再写一遍「今日盘点」。
+        // 日期前一根主色短竖标是「仪表位」——任务页的卡片壳由插槽画，
+        // 内容层没法铺满整条顶部强调线，就用这根 3dp 的色标代替。
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.width(3.dp).height(14.dp)
+                    .background(MaterialTheme.colorScheme.primary),
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                today.monthValue.toString() + " 月 " + today.dayOfMonth + " 日 · " + weekdayLabel(today),
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = AppFonts.mono,
+                letterSpacing = 1.2.sp,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                "TODAY",
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = AppFonts.mono,
+                letterSpacing = 1.2.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.height(12.dp))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Row {
@@ -747,7 +806,64 @@ internal fun Header(runtime: AppRuntime, framed: Boolean = true) {
                 )
             }
         }
+        Spacer(Modifier.height(16.dp))
+        WeekStrip(monday, today)
     }
+}
+
+/**
+ * 七格周条：今天实心、过去描边、未来浅色。
+ *
+ * 计划类应用最容易丢掉的是「时间感」—— 一个孤零零的日期数字不如一条周条直观：
+ * 你看得见今天是周三，也看得见这一周还剩几天。
+ */
+@Composable
+private fun WeekStrip(monday: LocalDate, today: LocalDate) {
+    val labels = listOf("一", "二", "三", "四", "五", "六", "日")
+    // 固定 34dp 一格、靠左排：铺满整行会变成一条巨型分段控件，把卡片重心全抢走。
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        repeat(7) { index ->
+            val date = monday.plusDays(index.toLong())
+            val isToday = date == today
+            val past = date.isBefore(today)
+            val shape = RoundedCornerShape(3.dp)
+            Box(
+                modifier = Modifier.size(width = 34.dp, height = 30.dp)
+                    .clip(shape)
+                    .background(if (isToday) MaterialTheme.colorScheme.primary else Color.Transparent)
+                    .then(
+                        if (isToday) {
+                            Modifier
+                        } else {
+                            Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
+                        },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    labels[index],
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = AppFonts.mono,
+                    fontWeight = if (isToday) FontWeight.SemiBold else FontWeight.Normal,
+                    color = when {
+                        isToday -> MaterialTheme.colorScheme.onPrimary
+                        past -> MaterialTheme.colorScheme.onSurfaceVariant
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                    },
+                )
+            }
+        }
+    }
+}
+
+private fun weekdayLabel(date: LocalDate): String = when (date.dayOfWeek.value) {
+    1 -> "周一"
+    2 -> "周二"
+    3 -> "周三"
+    4 -> "周四"
+    5 -> "周五"
+    6 -> "周六"
+    else -> "周日"
 }
 
 /** 盘面里的一个小数：等宽小标 + 等宽数值，单位紧贴数字。 */
