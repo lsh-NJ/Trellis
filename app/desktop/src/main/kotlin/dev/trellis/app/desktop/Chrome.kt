@@ -3,6 +3,10 @@ package dev.trellis.app.desktop
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,6 +22,8 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -68,15 +74,33 @@ internal fun ChromeButton(
     filled: Boolean = true,
     mono: Boolean = false,
 ) {
-    val background = if (filled) MaterialTheme.colorScheme.primary else Color.Transparent
-    val foreground = if (filled) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary
+    // 自己处理交互态：`clickable` 的涟漪在方角细边的语言里太软，
+    // 而且鼠标产品更需要「悬停就变色、按下再压一档」这种即时反馈。
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val pressed by interaction.collectIsPressedAsState()
+    val accent = MaterialTheme.colorScheme.primary
+    val background = when {
+        filled && pressed -> accent.copy(alpha = 0.82f)
+        filled && hovered -> accent.copy(alpha = 0.92f)
+        !filled && pressed -> accent.copy(alpha = 0.12f)
+        !filled && hovered -> accent.copy(alpha = 0.06f)
+        filled -> accent
+        else -> Color.Transparent
+    }
+    val foreground = if (filled) MaterialTheme.colorScheme.onPrimary else accent
     Box(
         modifier = modifier
             .defaultMinSize(minHeight = ControlHeight)
             .clip(ControlShape)
             .background(background)
             .border(1.dp, if (filled) background else controlBorder(), ControlShape)
-            .clickable(enabled = enabled, onClick = onClick)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                enabled = enabled,
+                onClick = onClick,
+            )
             .padding(horizontal = 16.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center,
     ) {
@@ -104,6 +128,11 @@ internal fun ChromeTextField(
     enabled: Boolean = true,
     singleLine: Boolean = true,
 ) {
+    // 聚焦时描边换成主色：BasicTextField 默认没有焦点提示，
+    // 多开几个窗口之后，用户会不知道键盘现在打在哪个框里。
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    val borderColor = if (focused) MaterialTheme.colorScheme.primary else controlBorder()
     BasicTextField(
         value = value,
         onValueChange = onValueChange,
@@ -111,10 +140,11 @@ internal fun ChromeTextField(
             .defaultMinSize(minHeight = ControlHeight)
             .clip(ControlShape)
             .background(MaterialTheme.colorScheme.surface)
-            .border(1.dp, controlBorder(), ControlShape)
+            .border(if (focused) 1.5.dp else 1.dp, borderColor, ControlShape)
             .padding(horizontal = 14.dp, vertical = 10.dp),
         enabled = enabled,
         singleLine = singleLine,
+        interactionSource = interaction,
         textStyle = MaterialTheme.typography.bodyMedium.merge(
             TextStyle(color = MaterialTheme.colorScheme.onSurface),
         ),
