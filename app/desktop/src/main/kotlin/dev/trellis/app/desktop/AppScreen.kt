@@ -1,5 +1,6 @@
 package dev.trellis.app.desktop
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -50,7 +51,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.Key
@@ -62,6 +66,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.trellis.domain.Task
@@ -178,41 +183,21 @@ private fun AppHeader(runtime: AppRuntime) {
             )
         }
         Spacer(Modifier.width(16.dp))
-        val s = runtime.summary
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Pill(
-                text = if (s.overdue > 0) "逾期 " + s.overdue + " 条" else "剩 " + (s.total - s.done) + " 条",
-                background = MaterialTheme.colorScheme.primaryContainer,
-                foreground = MaterialTheme.colorScheme.onPrimaryContainer,
+        // 「剩 2 条」已经写在大数字里，这里不再重复一遍 —— 刊头只留一个状态点。
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.size(6.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(MaterialTheme.colorScheme.primary),
             )
-            // 内核状态：点 + 等宽小标。点用主色，不用红绿 —— 它不是告警，只是「在跑」。
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier.size(6.dp)
-                        .clip(RoundedCornerShape(3.dp))
-                        .background(MaterialTheme.colorScheme.primary),
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    "内核 " + runtime.kernel.currentState,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontFamily = AppFonts.mono,
-                    color = muted,
-                )
-            }
+            Spacer(Modifier.width(6.dp))
+            Text(
+                "内核 " + runtime.kernel.currentState,
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = AppFonts.mono,
+                color = muted,
+            )
         }
-    }
-}
-
-/** 小圆角硬边小牌：倒计时、状态、delta 都用它。 */
-@Composable
-private fun Pill(text: String, background: Color, foreground: Color) {
-    Box(
-        modifier = Modifier.clip(RoundedCornerShape(3.dp))
-            .background(background)
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-    ) {
-        Text(text, style = MaterialTheme.typography.labelSmall, color = foreground)
     }
 }
 
@@ -555,16 +540,10 @@ internal fun TaskBoard(runtime: AppRuntime, taskFocus: FocusRequester, framed: B
         kicker = "TASKS",
         title = "待办",
         framed = framed,
-        trailing = {
-            Text(
-                tasks.count { !it.isDone }.toString() + " 条未完成",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        },
     ) {
         if (tasks.isEmpty()) {
-            Text("还没有任务，在下面加一条试试。", style = MaterialTheme.typography.bodyMedium)
+            // 空态一句话就够：数字在上面的盘面已经说了「0 条」。
+            Text("还没有任务", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(12.dp))
             SlotArea(
                 runtime.kernel.extensions,
@@ -706,116 +685,147 @@ private fun GroupLabel(text: String, count: Int?, onClick: (() -> Unit)? = null)
     }
 }
 
-/** 四个数字一条横排：等宽小标 + 大号窄体数字，这是样片最像「看板」的地方。 */
+/**
+ * 今日盘面。
+ *
+ * 上一版是四格等宽数字 + 一行「完成进度 33%」+ 一条进度条，一个横排里塞了 9 段文字，
+ * 四个数字一样大，等于没有重点。
+ *
+ * 这一版只留两个视觉重心：
+ *  - **一个巨大的待办数**：这页唯一需要立刻行动的量；
+ *  - **一个完成度圆环**：比例交给图形表达，不必再写「完成进度」四个字。
+ * 其余三个数降级成一行等宽小字，用圆点分开 —— 看得见，但不抢戏。
+ */
 @Composable
 internal fun Header(runtime: AppRuntime, framed: Boolean = true) {
     val s = runtime.summary
     val extra = LocalExtraColors.current
-    val cells = listOf(
-        Quad("待办", (s.total - s.done).toString(), "条", MaterialTheme.colorScheme.onSurface),
-        Quad("今天到期", s.dueToday.toString(), "条", MaterialTheme.colorScheme.onSurface),
-        // 「逾期」是唯一需要被追问的数字，用语义红；但 0 条逾期不该红 ——
-        // 一个红色的 0 会让人以为出了问题。
-        Quad("逾期", s.overdue.toString(), "条", if (s.overdue > 0) extra.danger else MaterialTheme.colorScheme.onSurface),
-        Quad("已投入", s.spentMinutes.toString(), "分钟", MaterialTheme.colorScheme.onSurface),
-    )
-    BentoCard(
-        kicker = "DAILY SNAPSHOT",
-        title = "今日盘点",
-        framed = framed,
-        trailing = {
-            // 完成率不再重复写一遍：下面的进度条就是同一个数，重复的小牌只会分散注意力。
-            Pill(
-                "连续 " + s.streakDays + " 天",
-                extra.data.copy(alpha = 0.12f),
-                extra.data,
-            )
-        },
-    ) {
-        // 四个数：标签在上（等宽小标、加宽字距），数字在下（大号窄体、贴底对齐小数单位）。
-        // 单位跟着数字走基线，不另起一行 —— 否则「45 分钟」会被读成两个格子。
-        Row(Modifier.fillMaxWidth()) {
-            cells.forEachIndexed { index, cell ->
-                if (index > 0) {
-                    Box(
-                        Modifier.padding(horizontal = 14.dp)
-                            .width(1.dp)
-                            .height(44.dp)
-                            .background(MaterialTheme.colorScheme.outlineVariant),
+    val open = s.total - s.done
+    BentoCard(kicker = "TODAY", title = "今日", framed = framed) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Row {
+                    Text(
+                        open.toString(),
+                        style = MaterialTheme.typography.displayLarge,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.alignByBaseline(),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "条待办",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.alignByBaseline(),
                     )
                 }
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        cell.label,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontFamily = AppFonts.mono,
-                        letterSpacing = 0.6.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Row {
-                        Text(
-                            cell.value,
-                            style = MaterialTheme.typography.displaySmall,
-                            fontWeight = FontWeight.Bold,
-                            color = cell.color,
-                            modifier = Modifier.alignByBaseline(),
-                        )
-                        Spacer(Modifier.width(5.dp))
-                        Text(
-                            cell.unit,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.alignByBaseline(),
-                        )
-                    }
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    MiniStat("今天", s.dueToday)
+                    StatDot()
+                    MiniStat("逾期", s.overdue, tint = if (s.overdue > 0) extra.danger else null)
+                    StatDot()
+                    MiniStat("投入", s.spentMinutes, unit = "分")
                 }
             }
-        }
-
-        // 完成率：标签 + 数值 + 一条 4dp 的进度条。
-        // 只画线不写标签的话，它会被读成卡片的下边框（第一版就是这样）；只写数字又看不出比例。
-        Spacer(Modifier.height(18.dp))
-        val fraction = (s.completionRate / 100f).coerceIn(0f, 1f)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "完成进度",
-                style = MaterialTheme.typography.labelSmall,
-                fontFamily = AppFonts.mono,
-                letterSpacing = 0.6.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            Spacer(Modifier.width(16.dp))
+            // 一条细线把「读数」和「仪表」分开：右侧这块是圆环的专属区，
+            // 不加这条线时，圆环孤零零地漂在卡片最右边。
+            Box(
+                Modifier.width(1.dp).height(64.dp)
+                    .background(MaterialTheme.colorScheme.outlineVariant),
             )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                s.completionRate.toString() + "%",
-                style = MaterialTheme.typography.labelSmall,
-                fontFamily = AppFonts.mono,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-        }
-        Spacer(Modifier.height(8.dp))
-        Box(
-            Modifier.fillMaxWidth().height(4.dp)
-                .clip(RoundedCornerShape(2.dp))
-                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
-        ) {
-            if (fraction > 0f) {
-                Box(
-                    Modifier.fillMaxWidth(fraction).fillMaxHeight()
-                        .background(MaterialTheme.colorScheme.primary),
+            Spacer(Modifier.width(24.dp))
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                CompletionRing(percent = s.completionRate, diameter = 76.dp)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "完成",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = AppFonts.mono,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
     }
 }
 
-private data class Quad(
-    val label: String,
-    val value: String,
-    val unit: String,
-    val color: Color,
-)
+/** 盘面里的一个小数：等宽小标 + 等宽数值，单位紧贴数字。 */
+@Composable
+private fun MiniStat(label: String, value: Int, tint: Color? = null, unit: String? = null) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            fontFamily = AppFonts.mono,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.width(5.dp))
+        Text(
+            value.toString() + (unit ?: ""),
+            style = MaterialTheme.typography.labelSmall,
+            fontFamily = AppFonts.mono,
+            fontWeight = FontWeight.SemiBold,
+            color = tint ?: MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
+@Composable
+private fun StatDot() {
+    Box(
+        Modifier.padding(horizontal = 10.dp)
+            .size(3.dp)
+            .clip(RoundedCornerShape(1.5.dp))
+            .background(MaterialTheme.colorScheme.outlineVariant),
+    )
+}
+
+/**
+ * 完成度圆环。
+ *
+ * 用 Canvas 直接画两段弧（底环 + 进度弧），不引图表库：
+ * 这一页只需要一个环，为它装一套图表依赖不划算，也画不出和卡片同样的线宽语言。
+ * 数字放在环心，比放在旁边更能说明「这个环就是它」。
+ */
+@Composable
+private fun CompletionRing(percent: Int, diameter: Dp) {
+    val fraction = (percent / 100f).coerceIn(0f, 1f)
+    val track = MaterialTheme.colorScheme.outlineVariant
+    val accent = MaterialTheme.colorScheme.primary
+    Box(Modifier.size(diameter), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize()) {
+            val stroke = 5.dp.toPx()
+            val arcSize = Size(size.width - stroke, size.height - stroke)
+            val topLeft = Offset(stroke / 2, stroke / 2)
+            drawArc(
+                color = track,
+                startAngle = 0f,
+                sweepAngle = 360f,
+                useCenter = false,
+                topLeft = topLeft,
+                size = arcSize,
+                style = Stroke(width = stroke, cap = StrokeCap.Round),
+            )
+            if (fraction > 0f) {
+                drawArc(
+                    color = accent,
+                    startAngle = -90f,
+                    sweepAngle = 360f * fraction,
+                    useCenter = false,
+                    topLeft = topLeft,
+                    size = arcSize,
+                    style = Stroke(width = stroke, cap = StrokeCap.Round),
+                )
+            }
+        }
+        Text(
+            percent.toString() + "%",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+}
 
 @Composable
 private fun TaskRow(
@@ -902,8 +912,9 @@ private fun TaskRow(
                 }
                 if (task.spentMinutes > 0) {
                     Text(
-                        "已投入 " + task.spentMinutes + " 分钟",
+                        task.spentMinutes.toString() + " 分",
                         style = MaterialTheme.typography.labelSmall,
+                        fontFamily = AppFonts.mono,
                         color = muted.copy(alpha = 0.8f),
                     )
                 }
@@ -962,27 +973,8 @@ private fun AddTaskRow(runtime: AppRuntime, focus: FocusRequester) {
     }
 
     Column(Modifier.widthIn(max = 620.dp).fillMaxWidth()) {
-        // 常驻 label + 快捷键提示：占位符不能兼当字段名（一输入就消失）。
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "新任务",
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Spacer(Modifier.weight(1f))
-            Text(
-                if (dueDate == null && parsed.date != null) {
-                    "写到的日期：" + shortDateLabel(parsed.date) + " · ENTER 添加 · ESC 清空"
-                } else {
-                    "ENTER 添加 · ESC 清空"
-                },
-                style = MaterialTheme.typography.labelSmall,
-                fontFamily = AppFonts.mono,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
-            )
-        }
-        Spacer(Modifier.height(6.dp))
-
+        // 不再写「新任务」标签和「ENTER 添加 · ESC 清空」：占位文字已经说明这是输入框，
+        // 回车添加是输入框的默认预期。少一行字，输入框就和清单贴得更近。
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             ChromeTextField(
                 value = text,
@@ -995,7 +987,7 @@ private fun AddTaskRow(runtime: AppRuntime, focus: FocusRequester) {
                         else -> false
                     }
                 },
-                placeholder = "比如：周三前把方案发出去",
+                placeholder = "写一件事…",
             )
 
             Spacer(Modifier.width(8.dp))
