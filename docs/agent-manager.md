@@ -110,7 +110,7 @@
 ```powershell
 $env:JAVA_HOME = "$env:USERPROFILE\.jdks\jdk17"
 $env:Path = "$env:JAVA_HOME\bin;$env:Path"
-cd C:\Users\breakM\Desktop\work\CreateandTrack
+cd C:\Users\breakM\Desktop\work\Trellis
 gradlew.bat --console=plain :ai:jvmTest :app:desktop:test :plugin-script:test
 gradlew.bat :app:desktop:run
 ```
