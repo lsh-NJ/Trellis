@@ -93,4 +93,90 @@ class ManagerRouterTest {
         assertFalse(router.decide("把首页的卡片横着排").ambiguous)
         assertEquals(AgentIntent.ArrangeUi, router.decide("把首页的卡片横着排").intent)
     }
+
+    /**
+     * Chat 意图手无寸铁，但模型有时会自己点名一个真实工具。
+     * `intentForTool` 是那条补救路径的入口：从工具名倒推出拥有它的意图。
+     */
+    @Test
+    fun aNamedToolCanBeTracedBackToTheIntentThatOwnsIt() {
+        val recoveryRouter = ManagerRouter(
+            catalog = CapabilityCatalog(emptyList(), emptyList()),
+            allTools = listOf(
+                tool("create_learning_plan"),
+                tool("get_diagnostics"),
+                tool("arrange_cards"),
+                tool("made_up_tool"),
+            ),
+            guidance = "",
+        )
+
+        assertEquals(AgentIntent.FindResource, recoveryRouter.intentForTool("create_learning_plan"))
+        // 多归属（五个动手意图都有 get_diagnostics）：按兜底优先级先给任务类。
+        assertEquals(AgentIntent.FindResource, recoveryRouter.intentForTool("get_diagnostics"))
+        assertEquals(AgentIntent.ArrangeUi, recoveryRouter.intentForTool("arrange_cards"))
+        // 没登记的工具按默认归属（造/改插件、管插件）算。
+        assertEquals(AgentIntent.CreatePlugin, recoveryRouter.intentForTool("made_up_tool"))
+        assertEquals(null, recoveryRouter.intentForTool("not_even_installed"))
+    }
+
+    /**
+     * P1 实验（`TRELLIS_MANAGER_STABLE_TOOLS=1`）：工具集不再按意图裁。
+     *
+     * 前提是「所有意图拿到同一套全量工具，且 Chat 也有」。少一个意图或 Chat 空手，
+     * 就退回到「判错意图 = 这轮干不了活」的老毛病。
+     */
+    @Test
+    fun theStableExperimentGivesEveryIntentTheSameFullToolset() {
+        val stable = ManagerRouter(
+            catalog = CapabilityCatalog(emptyList(), emptyList()),
+            allTools = all,
+            guidance = "",
+            stableTools = true,
+        )
+        val expected = all.map { it.name }.sorted()
+        for (intent in AgentIntent.entries) {
+            assertEquals(
+                expected,
+                stable.tools(intent).map { it.name },
+                "稳定模式下每个意图都拿到同一套全量工具（含 Chat）：$intent",
+            )
+        }
+        assertTrue(stable.stableTools)
+    }
+
+    /**
+     * 稳定模式的提示词必须是**一份**静态前缀：六个意图逐字节相同，
+     * 工作流在 `<task:general>` 里，旧的按意图任务模块不再出现。
+     */
+    @Test
+    fun theStableExperimentUsesOneStaticPrefixForEveryIntent() {
+        val stable = ManagerRouter(
+            catalog = CapabilityCatalog(emptyList(), emptyList()),
+            allTools = all,
+            guidance = "",
+            stableTools = true,
+        )
+        val bases = AgentIntent.entries.map { stable.prompt(it).base }
+        assertEquals(1, bases.toSet().size, "稳定模式下所有意图共用一份静态前缀")
+
+        val base = bases.first()
+        assertTrue("<task:general>" in base)
+        for (legacy in listOf("<task:create_plugin>", "<task:manage_plugin>", "<task:arrange_ui>", "<task:find_resource>", "<task:plan_manage>")) {
+            assertFalse(legacy in base, "静态前缀里不该再写某一类意图的模块：$legacy")
+        }
+        for (name in all.map { it.name }) {
+            assertTrue(name in toolCatalogue(base), "全量工具目录里要有 $name")
+        }
+
+        // 每一轮只带静态前缀里那一份通用工作流，末尾不再追加意图模块。
+        for (intent in AgentIntent.entries) {
+            val text = stable.prompt(intent).messages("", "你好", emptyList(), intent)
+                .joinToString("\n") { it.content }
+            assertEquals(1, Regex("<task:general>").findAll(text).count(), "工作流只该出现在静态前缀里一次：$intent")
+            for (legacy in listOf("<task:create_plugin>", "<task:find_resource>", "<task:plan_manage>")) {
+                assertFalse(legacy in text, "稳定模式这一轮不该有 $legacy")
+            }
+        }
+    }
 }

@@ -5,6 +5,7 @@ import dev.trellis.ai.LlmMessage
 import dev.trellis.ai.LlmRole
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -97,8 +98,85 @@ class ManagerPromptTest {
         // 分集要变成用户能勾的待办；清单只装这一轮的动作。
         assertTrue(module.contains("add_tasks"))
         assertTrue(module.contains("set_plan"))
+        // B 站课程排计划要全量导入：AI 只选源，不再逐条抄分集标题。
+        assertTrue(module.contains("bvid"))
         // 只读元数据这条边界要说清，否则它会承诺「帮你下载/判断讲得好不好」。
         assertTrue(module.contains("不能播放"))
         assertTrue(module.contains("下载"))
+    }
+
+    @Test
+    fun thePlanManageModulePointsAtThePlanToolsAndKeepsTheToneRule() {
+        val module = ManagerPrompt.taskModule(AgentIntent.PlanManage)!!
+        // 读状态、推进周节奏、勾节点、复盘都要有明确的工具入口，否则模型只能空谈。
+        assertTrue(module.contains("get_learning_plan"))
+        assertTrue(module.contains("plan_next_week"))
+        assertTrue(module.contains("complete_plan_node"))
+        assertTrue(module.contains("review_last_week"))
+        // 写操作必须先拿到用户同意。
+        assertTrue(module.contains("confirmed=true"))
+        // 文案约束是产品硬要求（不羞辱、不用损失框架），必须钉在提示词里。
+        assertTrue(module.contains("不羞辱"))
+        assertTrue(module.contains("落后 N 天"))
+    }
+
+    /**
+     * 工具报错时模型要「自己查」，不能把环境问题原样丢给用户。
+     * 真实事故：打包版缺 java.sql，模型只回「计划库打不开，你去计划页看一眼错误提示」。
+     */
+    @Test
+    fun theRoleTellsTheModelToDiagnoseItsOwnToolFailures() {
+        assertTrue(prompt.base.contains("<when_a_tool_fails>"))
+        assertTrue(prompt.base.contains("get_diagnostics"))
+        assertTrue(prompt.base.contains("环境问题"))
+        assertTrue(prompt.base.contains("用户修不好"))
+    }
+
+    /**
+     * P1 实验：稳定工具集模式下，静态前缀末尾多一份 `<task:general>` 通用工作流。
+     * 旧路径必须一个字节都不变（A/B 的基线）。
+     */
+    @Test
+    fun theStableExperimentAddsOneGeneralWorkflowToTheStaticPrefix() {
+        assertFalse("<task:general>" in prompt.base, "旧路径的静态前缀里不该有通用工作流")
+
+        val stable = ManagerPrompt.buildBase(catalog, emptyList(), "守则", stableTools = true)
+        assertTrue("<task:general>" in stable)
+        // 前缀仍然是静态的：两次生成逐字节一致。
+        assertEquals(stable, ManagerPrompt.buildBase(catalog, emptyList(), "守则", stableTools = true))
+        // 通用工作流必须覆盖「动手」的全部面子，否则全量工具配一份缺胳膊少腿的流程。
+        for (keyword in listOf(
+            "search_bilibili",
+            "create_learning_plan",
+            "get_learning_plan",
+            "plan_next_week",
+            "ask_choices",
+            "deploy",
+            "get_diagnostics",
+            "confirmed=true",
+        )) {
+            assertTrue(keyword in stable, "通用工作流里要提到 $keyword")
+        }
+    }
+
+    /**
+     * 稳定模式下 messages() 不再按意图追加任务模块：工作流只在静态前缀里出现一次，
+     * 否则每一项都要重算一遍「这轮是哪类意图」，缓存和旧毛病一起回来。
+     */
+    @Test
+    fun theStableExperimentDoesNotAppendAPerIntentTaskModule() {
+        val stable = ManagerPrompt(
+            ManagerPrompt.buildBase(catalog, emptyList(), "守则", stableTools = true),
+            stableTools = true,
+        )
+        val messages = stable.messages("已装插件：1 个", "把视频排成计划", emptyList(), AgentIntent.FindResource)
+        val text = messages.joinToString("\n") { it.content }
+
+        assertEquals(1, Regex("<task:general>").findAll(text).count(), "通用工作流只该来自静态前缀")
+        for (legacy in listOf("<task:create_plugin>", "<task:find_resource>", "<task:plan_manage>")) {
+            assertFalse(legacy in text, "稳定模式不该再追加 $legacy")
+        }
+        assertEquals(LlmRole.User, messages.last().role)
+        assertEquals("我想要：把视频排成计划", messages.last().content)
     }
 }

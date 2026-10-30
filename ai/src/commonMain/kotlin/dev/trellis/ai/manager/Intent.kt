@@ -27,6 +27,15 @@ enum class AgentIntent {
 
     /** 找外部学习资源（B 站视频/分集），顺带可能定一份学习计划。 */
     FindResource,
+
+    /**
+     * 管**已经有的**学习计划：看进度、排下周、勾节点、顺延、复盘、改每天投入。
+     *
+     * 和 [FindResource] 的分界是「有没有现成计划可管」：
+     * 「把视频排成学习计划」是往计划页**新建**（FindResource，工具 create_learning_plan）；
+     * 「这周没怎么看，帮我调整」「复盘一下上周」是**维护**（PlanManage，工具 get/plan_next_week/…）。
+     */
+    PlanManage,
 }
 
 interface IntentClassifier {
@@ -62,14 +71,17 @@ internal fun labelOfIntent(intent: AgentIntent): String = when (intent) {
     AgentIntent.ManagePlugin -> "管一下插件"
     AgentIntent.ArrangeUi -> "调一下界面"
     AgentIntent.FindResource -> "找学习资源"
+    AgentIntent.PlanManage -> "调学习计划"
 }
 
 /**
  * 关键词分类器。
  *
- * 顺序有讲究：**先布局、再管理、后创建**。
+ * 顺序有讲究：**先资源、再布局、再管理、再创建、最后才是计划维护**。
  * 「把这三个插件排一下」里既有「插件」也有「排」，必须判成布局；
- * 「把心情插件删了」里有「插件」和「删」，必须判成管理而不是创建。
+ * 「把心情插件删了」里有「插件」和「删」，必须判成管理而不是创建；
+ * 「统计一下我这周读了多少页」里有「这周」，但那是要一颗统计卡片，
+ * 不能因为踩中计划词就被判去管学习计划。
  */
 object KeywordIntentClassifier : IntentClassifier {
 
@@ -123,6 +135,35 @@ object KeywordIntentClassifier : IntentClassifier {
     /** 出现这些词才算「真的在说排版」，用它压掉资源词里的「排/布局」误判。 */
     private val layoutObjects = listOf("卡片", "布局", "挂载点", "横排", "竖排", "排成一行", "排成两行", "挪到", "放到")
 
+    /**
+     * 管已有学习计划时会说的话：看这周、勾完成、顺延、复盘、排期、改每天投入。
+     *
+     * 它和 [resourceWords] 有一处天然打架：「学习计划」既是资源词也是计划词。
+     * 判定顺序（见 [matchedIntents]）是**先资源后计划**，
+     * 所以「把视频排成学习计划」「帮我做个学习计划」仍然去查资源/建计划；
+     * 只有出现 [planActionWords]（复盘 / 顺延 / 调整 / 上周 / 下周 …）时，
+     * 才把「学习计划」当作「在动已有的计划」，交给 PlanManage。
+     */
+    private val planWords = listOf(
+        "计划", "复盘", "这周", "上周", "下周", "节点", "完成", "顺延", "延期", "拖延",
+        "没做完", "调整", "排期", "学习计划",
+    )
+
+    /**
+     * 只会在「维护已有一份计划」时出现的词。
+     *
+     * 用它盖过资源词：说「复盘这周学习计划」的人不是要再找一份资源，
+     * 而是在问已经排好的那份。没有这些词时，「学习计划」仍按资源处理
+     * ——「排成学习计划」的落点是新建计划（FindResource 的 create_learning_plan）。
+     *
+     * 刻意**不含**「完成」「这周」：这两个词在「完成 B 站课程」「这周想学点什么」
+     * 这类找资源的句子里也会出现，让它们盖过资源词会把用户要的课程当空气；
+     * 没有资源词时它们照样能把句子判成 PlanManage（见 [planWords]）。
+     */
+    private val planActionWords = listOf(
+        "复盘", "上周", "下周", "节点", "顺延", "延期", "拖延", "没做完", "调整", "排期",
+    )
+
     override fun classify(request: String): AgentIntent {
         val hits = matchedIntents(request)
         return hits.firstOrNull() ?: AgentIntent.Chat
@@ -166,6 +207,7 @@ object KeywordIntentClassifier : IntentClassifier {
                 labelOfIntent(AgentIntent.ArrangeUi),
                 labelOfIntent(AgentIntent.FindResource),
                 labelOfIntent(AgentIntent.ManagePlugin),
+                labelOfIntent(AgentIntent.PlanManage),
             ),
         )
     }
@@ -180,11 +222,17 @@ object KeywordIntentClassifier : IntentClassifier {
         }
         val wantsResource = resourceWords.any { it in text }
         val talksLayout = layoutObjects.any { it in text }
-        if (wantsResource && !talksLayout) add(AgentIntent.FindResource)
+        // 复盘 / 顺延 / 勾完成 … 说的是「已经在用的那份计划」：
+        // 这时「学习计划」里的资源词不该把这句话抢去查 B 站。
+        val maintainsPlan = planActionWords.any { it in text }
+        if (wantsResource && !talksLayout && !maintainsPlan) add(AgentIntent.FindResource)
         if (arrangeWords.any { it in text }) add(AgentIntent.ArrangeUi)
         if (manageWords.any { it in text }) add(AgentIntent.ManagePlugin)
-        if (wantsResource) add(AgentIntent.FindResource)
+        // 造插件的词优先于「计划维护」：「统计一下我这周读了多少页」要的是插件，
+        // 不能因为句子里有「这周」就判成管学习计划。
         if (createWords.any { it in text }) add(AgentIntent.CreatePlugin)
+        if (planWords.any { it in text }) add(AgentIntent.PlanManage)
+        if (wantsResource) add(AgentIntent.FindResource)
         return out
     }
 
