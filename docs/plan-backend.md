@@ -107,7 +107,33 @@
 
 1. **P3 agent 工具**：`design/plan-agent-tools.md` 里的工具（日视图/完成/顺延/结算…）包一层 `AgentTool`，
    接进 `AppRuntime.sendChat` 的 `allTools`，并把清单（`set_plan`）里的步骤和这里的命令对齐。
+   → **2026-10-29 已落地一部分**：`PlanAdminTools`（`get_learning_plan` / `plan_next_week` / `complete_plan_node` /
+   `move_plan_node` / `review_last_week` / `set_plan_pace`），见 §8 与 `docs/plan-rhythm-draft.md`；
+   待办（todo）类命令与「建议完成（证据核验）」仍未接。
 2. **P4 桌面接线**：`LearningPlanStore.open(<home>/learning-plan.db)` 在 `AppRuntime.create()` 里装配；
    任务页换成 `PlanUiPlugin` 的新卡片（或新增挂载点），按 `design/plan-ui-contract.md` 的 view model 渲染。
 3. **迁移与备份**：`schema_migration` 现在只写 v1；加升级脚本时保持「只加表/加列」，触发器不动。
 4. **导出**：`exportJsonl` 已有，导入（`importJsonl`）在契约里但实现返回 `E_UNSUPPORTED`，等确定冲突策略再做。
+
+## 8. 2026-10-29：周滚动 `advanceRhythm`（计划自己往前走）
+
+> 设计背景与取舍见 `docs/plan-rhythm-draft.md`；这里只记落地后的契约与不变量。
+
+- 契约新增 `fun advanceRhythm(env, planId): CommandResult<RhythmResult>`（`Contract.kt` 里新增 `RhythmResult`）。
+  一次做四件事：①结算所有「已结束但还没结账」的周（`settleWeek`，幂等）；②从待安排池给**本周 + 下一周**
+  补承诺；③为刚结账的周生成复盘（`generateReview`，幂等）；④铺本周（周日加铺下周）。
+  没有实际动作时不写库、不写事件；`paused`/`ended` 直接返回一句 note。
+- **补承诺不开新版本**：`cmdExtendCommitment` 往**当前活跃版本** INSERT 一条未来周的 `commitment`，
+  不改任何旧行。理由：`plan_unit`/`commitment` 身份按版本隔离，新开版本会换 unit id，
+  已铺天的 occurrence 还挂在旧 id 上（身份列不可 UPDATE），会出现重复铺天/完成状态丢失。
+  触发器只禁 UPDATE/DELETE，不禁 INSERT，所以这条路径与「版本不可变」不冲突。
+- `materializeWeek` 判重从「这张承诺有没有任何 occurrence」改成**单元级**：结转/顺延/拆分留下的行
+  不再让整周不铺；当天已被结转占用的分钟数算进每日预算。
+- `changeCommitment` 修掉「只复制单元、不复制其它周承诺」的缺陷：改某一周时，其它周承诺原样复制到新版本
+  （以前改一次本周会把下周从活跃版本里弄丢）。
+- 选量规则（唯一实现，`PlanAdvance.kt`）：周容量 = `dailyMinutes×7×80%`；按路线顺序、尽量不切章节；
+  最近一段过去的周完成率 < 60% 再缩 15%；每周 ≤7 个；池空不建空承诺。
+- 触发：`AppRuntime.refreshPlan()` 对所有未结束计划调一次（`origin=scheduler`），
+  应用启动/进计划页/跨天时天然覆盖；失败只跳过那一份节奏。
+- 测试：`LearningPlanRhythmTest`（4 周滚动、结转 + 铺天共存、周日预铺不重复、改承诺保留其它周、
+  选量上限 7、暂停不推进）与既有 18 个用例全绿。

@@ -138,3 +138,20 @@
    `_shots/settings-plan-5.png`（设置弹窗）。
    DB 实证：选 90 保存后 `process.weekly_capacity_minutes = 630`，`event` 新增
    `plan.capacity_changed` `{"dailyMinutes":90,"weeklyCapacityMinutes":630}`。
+
+## 10. 2026-10-29：周滚动 + 计划节奏报告（行为变化）
+
+1. **有承诺、还没铺到天的未来周重新作为周卡片显示**（灰卡 + 「待安排」胶囊，卡片文案说明「到当周、或者周日晚上会自动排到每一天」），
+   可以点开看这周承诺了哪几个单元；下方天条暂时是空的，等它变成当周/周日自动铺。
+   以前这种周整周塞进「待安排」集合，滚动排周之后会出现「排好的下周又没了」的错觉。
+2. **「待安排」集合现在只装池子单元**（没被任何一周承诺收走的那批）。未铺天周的单元不再重复收进来——
+   否则同一批单元会在灰卡和周卡里各出现一次。`AppRuntime.planPendingNodes = service.pool(planId)`。
+3. **计划页顶部新增「计划节奏」报告条**（`PlanRhythmCard`）：系统每次在 `refreshPlan()` 里推进节奏
+   （结算旧周 / 补本周下周承诺 / 生成复盘 / 铺天）后，只要有实际动作就出现一句人话 + 「知道了」；
+   没有动作时页面保持安静。数据来自 `AppRuntime.planRhythmReport`（后端 `RhythmResult`）。
+4. **AI 也有了维护计划的手**：对话里的 `PlanManage` 意图 + `PlanAdminTools`（读状态/排下周/勾节点/顺延/复盘/改每天投入），
+   见 `docs/plan-rhythm-draft.md`。计划页本身仍然只读 view model、不做四则运算。
+5. **调试用「模拟时间」横幅**（`PlanSimulatedBanner`）：开发者模式（`TRELLIS_DEV=1`）拨了应用内日期后，
+   计划页顶部出现「模拟时间 · 2026-11-02（真实 …）」横幅，带 `+1 天` / `+1 周` / `退出模拟` 快捷按钮；
+   拨动后 `AppRuntime.applySimulatedToday(...)` 会立刻 `refreshPlan()`，让结算/补周/复盘按新日期跑一遍。
+   边界与安全门槛见 `docs/time-conventions.md` §7（默认数据目录不允许，只有 `TRELLIS_HOME` 指向演示目录才生效）。

@@ -69,10 +69,18 @@ compose.desktop {
             description = "计划设定与追踪"
             vendor = "Trellis"
 
-            // jlink 默认只打包「它推断需要」的模块，java.net.http 不在里面。
-            // 不加这一行：编得过、测得过，但打出来的 exe 一点「生成」就
-            // NoClassDefFoundError: java/net/http/HttpClient。
-            modules("java.net.http")
+            // jlink 默认只打包「它推断需要」的模块：java.net.http 和 java.sql 都不在里面。
+            // 不加的后果：编得过、测得过，但打出来的 app 一点「排计划 / 打开计划页」就
+            // NoClassDefFoundError: java/sql/DriverManager（SQLite 事件库用），
+            // 或者一点「生成 / 聊天」就 NoClassDefFoundError: java/net/http/HttpClient。
+            // 教训：**JDBC 驱动是通过 java.sql 的接口加载的，jdeps 推断不出来，必须手写在这里。**
+            modules("java.net.http", "java.sql")
+
+            // 想在应用正开着的时候单独打一份、不覆盖正在运行的 bundle，可以指定输出目录：
+            //   TRELLIS_DIST_DIR=/tmp/trellis-dist ./gradlew :app:desktop:createDistributable
+            System.getenv("TRELLIS_DIST_DIR")?.takeIf { it.isNotBlank() }?.let { dir ->
+                outputBaseDir.set(file(dir))
+            }
         }
     }
 }

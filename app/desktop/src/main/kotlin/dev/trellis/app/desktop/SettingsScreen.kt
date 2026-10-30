@@ -19,7 +19,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -58,6 +60,10 @@ fun SettingsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
             item { AppearanceCard(runtime) }
 
             item { DailyBudgetCard(runtime) }
+
+            // 时间调试：只有开发者模式（TRELLIS_DEV=1）才出现。
+            // 拨「应用内今天」而不是改系统时间——跨周/结算/复盘这些逻辑才需要它。
+            if (runtime.devModeEnabled) item { DevTimeCard(runtime) }
 
             item {
                 Spacer(Modifier.height(10.dp))
@@ -345,6 +351,103 @@ private fun DiagnosticsCard(runtime: AppRuntime) {
             Spacer(Modifier.height(8.dp))
             Text(
                 (if (errors == 0) "没有未处理的问题" else errors.toString() + " 条问题记录") + " · 点这一块进去 ›",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * 开发者 · 时间调试。
+ *
+ * 程序里很多逻辑是「时间推移才发生」的（周滚动、结算、结转、复盘、逾期、跨天）。
+ * 靠改系统时钟既危险又影响别的应用，所以这里只拨**应用内今天**：
+ * 计划后端、AI 工具、计划页都从同一个时钟取日期；计时器/超时仍走真实单调时间。
+ *
+ * 安全门槛：默认数据目录不允许（模拟日期会真的写 missed / 结算事件），
+ * 要么用 `TRELLIS_HOME` 指到演示目录，要么显式 `TRELLIS_DEV_ALLOW_REAL_HOME=1`。
+ * 界面只负责拨日期；「真的会写数据」这件事在 AppRuntime.applySimulatedToday 里再拦一次。
+ */
+@Composable
+private fun DevTimeCard(runtime: AppRuntime) {
+    var draft by remember(runtime.simulatedToday) {
+        mutableStateOf(runtime.simulatedToday?.toString() ?: runtime.clock.today().toString())
+    }
+    var note by remember { mutableStateOf<String?>(null) }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
+            Text("时间调试（开发者）", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "把应用内的「今天」拨到任意日期，用来看跨天 / 跨周 / 结算 / 结转 / 复盘。" +
+                    "只影响本应用，不改系统时间；计时器和超时仍按真实时间走。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    singleLine = true,
+                    label = { Text("YYYY-MM-DD") },
+                    modifier = Modifier.weight(1f),
+                )
+                ChromeButton(
+                    label = "应用",
+                    onClick = {
+                        val date = parseSimulatedDate(draft)
+                        if (date == null) {
+                            note = "日期要写成 2026-11-02 这种格式"
+                        } else {
+                            note = null
+                            runtime.applySimulatedToday(date)
+                        }
+                    },
+                    filled = false,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ChromeButton(label = "+1 天", onClick = { runtime.jumpSimulatedDays(1) }, filled = false)
+                ChromeButton(label = "+1 周", onClick = { runtime.jumpSimulatedWeeks(1) }, filled = false)
+                if (runtime.simulatedToday != null) {
+                    TextButton(onClick = { runtime.applySimulatedToday(null) }) {
+                        Text("退出模拟", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "当前：" + (
+                    runtime.simulatedToday?.let {
+                        "模拟 " + it + "（真实 " + java.time.LocalDate.now() + "）"
+                    } ?: ("真实时间（" + runtime.clock.today() + "）")
+                    ),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            note?.let {
+                Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+            }
+            if (!runtime.devClockAllowed) {
+                Text(
+                    runtime.devClockRejectedReason ?: "当前数据目录不允许改模拟时间：换一个 TRELLIS_HOME 再试",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            Text(
+                "提醒：模拟日期下活动页、计时器仍是真实数据；拨动后计划会立刻按新日期结算/补周，数据目录请用演示副本。",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

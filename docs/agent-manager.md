@@ -26,11 +26,13 @@
 
 ## 3. 意图路由
 
-`KeywordIntentClassifier` 用确定性关键词判四类：`Chat` / `CreatePlugin` / `ManagePlugin` / `ArrangeUi`。
+`KeywordIntentClassifier` 用确定性关键词判六类：`Chat` / `CreatePlugin` / `ManagePlugin` / `ArrangeUi` / `FindResource` / `PlanManage`（2026-10-29 加）。
 
-- 顺序是 arrange > manage > create —— 「把三个插件排一下」含「插件」，「删掉心情插件」也含「插件」，必须先判布局/管理。
+- 顺序是「强资源 > arrange > manage > create > 计划维护 > 软资源兜底」—— 「把三个插件排一下」含「插件」、「删掉心情插件」也含「插件」，必须先判布局/管理；
+  「复盘这周学习计划」「这周没怎么看，帮我调整」判 `PlanManage`（管已有计划），
+  而「把视频排成学习计划」仍判 `FindResource`（新建计划，要给 `create_learning_plan`）。
 - 不额外调模型判意图：省延迟和 token，可测试，错判还有静态守则兜底。
-- 新词补在 `ai/src/commonMain/kotlin/dev/trellis/ai/manager/Intent.kt` 的 `arrangeWords` / `manageWords` / `createWords`。
+- 新词补在 `ai/src/commonMain/kotlin/dev/trellis/ai/manager/Intent.kt` 的 `arrangeWords` / `manageWords` / `createWords` / `resourceWords` / `planWords`。
 
 ## 4. 流式对话与轮次
 
@@ -38,6 +40,11 @@
 - 流里一旦出现 `"tool":`，就认为模型想动手，立刻切到工具模式真执行（`ManagerAgent` 的 `looksLikeToolCall`）；执行结果替换掉那半截裸 JSON。
 - 一轮跑在 `AppRuntime.chatScope`（不是 Composable 的 scope）—— 否则 `open_tab` 切走页面会把这轮掐死。
 - 结束信号：`▍` 光标、「还在做，这一轮没结束」、可点「停止」、以及每轮末尾的 `Status` 界标（完成 / 已停止 / 出错）。
+- **断流兜底（2026-10-29）**：`HttpRequest.timeout` 只管到响应头，SSE body 中途断掉会永远等下一行。
+  `HttpLlmClient.stream` 现在用 `ofInputStream` 自己读 + 两个哨兵：
+  ① 看门狗按 `streamIdleSeconds`（默认 60s）没有新内容就 close 流并抛 `LlmException`（界面显示「本轮出错」）；
+  ② 取消时兄弟协程 close 流，让「停止生成」真能停下（以前按钮只是把界面标成停止，后台还挂着）。
+  两个行为都有本地 SSE 服务钉住：`HttpLlmClientStreamTest`。
 
 ## 5. 工具集
 
@@ -54,6 +61,9 @@
 | `list_themes` / `set_theme` | 主题包 |
 | `search_bilibili` / `list_bilibili_parts` | 外部资源：按热度搜 B 站视频、拿分集目录 |
 | `add_tasks` | 待办：把分集/章节批量建成用户能逐条勾掉的任务（2–12 条） |
+| `create_learning_plan` | 计划：新建学习计划（B 站课程用 `bvid` 全量导入；本周+下周自动排，其余进待安排） |
+| `get_learning_plan` / `plan_next_week` / `complete_plan_node` / `move_plan_node` / `review_last_week` / `set_plan_pace` | 计划维护：读现状、推进周节奏、勾完成、顺延、复盘、改每天投入（写操作要 `confirmed=true`） |
+| `get_diagnostics` | 自己查错：计划库/活动库状态与错误、JDK 模块自检、app.log 最近日志、LLM 是否配置（只读；工具报环境类错误时先调它） |
 
 截屏/缩放/编码/Robot 全部走 `Dispatchers.IO`，不冻界面；`open_tab` 留在主线程改状态。
 
@@ -233,6 +243,9 @@ bento 样片里两个「看起来需要绘图」的部件，最后都做成了�
 
 ## 18. 一条消息的固定流程：意图 → 工具 → 提示词 → 反问 → 模型
 
+> **2026-10-30 已确认改这条门控**：方向改为「稳定工具集 + 权限分级 + 单一提示词」，
+> 设计、证据、迁移与 eval 门槛见 [`agent-harness.md`](agent-harness.md)。**P1/P3 代码落地前，本节仍是现行规则**。
+
 这一节写的是**次序**，不是建议。次序错了会怎么坏，前面每一节都是证据：
 提示词和工具一起塞 → 模型挑一个「看起来在干活」的（越界装插件）；
 意图没定就动手 → 一半的把握去改用户数据（该问没问）。
@@ -313,3 +326,46 @@ bento 样片里两个「看起来需要绘图」的部件，最后都做成了�
 create_learning_plan」，`set_plan` 只用于标动作。
 
 
+
+### 18.3 学习计划管理员（PlanManage，2026-10-29）
+
+「让计划自己推进」的 AI 侧：`FindResource` 负责**新建**计划（`create_learning_plan`），
+`PlanManage` 负责**维护已经有的那份**。分界与设计见 [`plan-rhythm-draft.md`](plan-rhythm-draft.md)。
+
+- **意图**：`planWords`（计划/复盘/这周/上周/下周/节点/完成/顺延/延期/拖延/没做完/调整/排期/学习计划）；
+  `planActionWords`（复盘/上周/下周/节点/顺延/延期/拖延/没做完/调整/排期）会盖过资源词，
+  所以「复盘这周学习计划」判 PlanManage；「把视频排成学习计划」「速通/学会」仍判 FindResource。
+- **工具**（`app/desktop/.../PlanAdminTools.kt`，6 只，全部走 `LearningPlanService`）：
+  - `get_learning_plan`：当前计划状态、本周/今天节点（带 occurrenceId）、待安排数量、上周复盘、carryPending；
+  - `plan_next_week`：调后端 `advanceRhythm`（结算旧周 / 补本周下周承诺 / 复盘 / 铺天，幂等）；
+  - `complete_plan_node` / `move_plan_node` / `set_plan_pace`：写操作，必须 `confirmed=true`；
+  - `review_last_week`：生成/读取上一周复盘。
+- **系统节奏不经过模型**：`AppRuntime.refreshPlan()` 对每个未结束计划调一次 `advanceRhythm`
+  （`origin=scheduler`），计划页显示「计划节奏」报告条；模型只在用户问起时读/改。
+- **钉住的测试**：`IntentToolsTest`（意图边界 + 每种意图手里的工具）、
+  `PlanAdminToolsTest`（读/勾/顺延/推进）、`LearningPlanRhythmTest`（4 周滚动，后端）。
+
+### 18.4 工具报错要自己查（DiagnosticsTools，2026-10-29）
+
+真实事故：打包版 `.app` 的 jlink 运行时漏了 `java.sql`，计划库打不开，界面上只有一行
+`计划库打不开：java/sql/DriverManager`；模型也只能回「你去计划页看一眼错误提示，修好跟我说」。
+用户修不好这种问题，等于这一轮什么都没解决。
+
+所以补了两层：
+
+1. **错误带原因**：`AppRuntime.learningPlan()` 不再丢弃异常，把 `类型：message` 存进
+   `planDbError`；`PlanTools` / `PlanAdminTools` 在库打不开时把它原样交给模型，并提示先查诊断。
+   `LinkageError` / `java/sql` 还会附一句「运行环境缺 JDK 模块，打包版要重新打包」。
+2. **`get_diagnostics` 工具**（`app/desktop/.../DiagnosticsTools.kt`）：只读，返回
+   home / Java 版本 / 计划库与活动库路径和打开状态 / **JDK 模块自检**
+   （`java.sql.DriverManager`、`java.net.http.HttpClient`、`javax.imageio.ImageIO`、`javax.net.ssl.SSLContext`）/
+   LLM 是否配置 / app.log 最近 20 行。五个会动手的意图都登记了它
+   （`ManagerRouter.TOOL_INTENTS`）；静态提示词加了 `<when_a_tool_fails>`，
+   要求模型先分清「用户填错」和「环境问题」，环境问题先查诊断，再决定重试/绕开/让用户做具体动作。
+3. 打开成功也往 `app.log` 留一行 `计划库已打开：<路径>`，下次排查能确认库到底有没有打开过。
+
+**打包侧的根因**在 `app/desktop/build.gradle.kts` 的 `nativeDistributions.modules(...)`：
+jlink 默认只带推断出来的模块，`java.net.http`、`java.sql` 必须手写；JDBC 驱动经 `java.sql`
+接口加载，jdeps 推断不出来，打包时最容易漏。产物验证：`Trellis.app/Contents/runtime/Contents/Home/release`
+的 `MODULES=` 里要能看到 `java.sql`。想在不覆盖运行中 bundle 的情况下打一份验证：
+`TRELLIS_DIST_DIR=/tmp/trellis-dist ./gradlew :app:desktop:createDistributable`。

@@ -491,6 +491,8 @@ internal class SqliteLearningPlanService(
 
     override fun scheduleWeek(env: CommandEnvelope, week: String) = cmdScheduleWeek(env, week)
 
+    override fun advanceRhythm(env: CommandEnvelope, planId: String) = advanceRhythmInternal(env, planId)
+
     override fun settleWeek(env: CommandEnvelope, planId: String, week: String, today: String) =
         cmdSettleWeek(env, planId, week, today)
 

@@ -1,4 +1,4 @@
-﻿package dev.trellis.app.desktop
+package dev.trellis.app.desktop
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -81,7 +81,9 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             item { PlanHeader(runtime) }
+            if (runtime.isSimulatingTime) item { PlanSimulatedBanner(runtime) }
             if (runtime.planStartsInPast) item { PlanStaleBanner(runtime) }
+            if (runtime.planRhythmHasNews) item { PlanRhythmCard(runtime) }
 
             if (runtime.planTitle == null) {
                 item { PlanEmpty(runtime) }
@@ -180,6 +182,49 @@ private fun PlanStaleBanner(runtime: AppRuntime) {
     }
 }
 
+/**
+ * 「计划节奏」报告：系统刚替用户推进了一步（结算旧周 / 补下周承诺 / 铺天 / 生成复盘）。
+ *
+ * 这是状态触发的主动汇报，不是模型说话：只陈述做了什么、还剩什么，用户点「知道了」就收起。
+ * 下一次真的又有动作时才会再出现；没有动作时页面保持安静。
+ */
+@Composable
+private fun PlanRhythmCard(runtime: AppRuntime) {
+    val report = runtime.planRhythmReport ?: return
+    PlanCard {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "计划节奏",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { runtime.dismissPlanRhythmReport() }) {
+                    Text("知道了", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+            Text(
+                report.note.ifBlank { "计划在轨道上。" },
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            val extras = buildList {
+                if (report.reviewedWeeks.isNotEmpty()) {
+                    add("周复盘已生成：" + report.reviewedWeeks.joinToString("、") + "（可在对话里让 AI 讲一遍）")
+                }
+                if (report.poolRemaining > 0) add("待安排还剩 " + report.poolRemaining + " 个")
+            }
+            extras.forEach { line ->
+                Text(
+                    line,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun PlanHeader(runtime: AppRuntime) {
     Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.fillMaxWidth()) {
@@ -207,6 +252,45 @@ private fun PlanHeader(runtime: AppRuntime) {
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+/**
+ * 「模拟时间」徽章。
+ *
+ * 开发者模式拨了日期后必须让人一眼看见，否则截图、演示、真实使用都会分不清
+ * 页面上的「今天」到底是哪天。顺带把最常用的两个跳转按钮放在这里：
+ * +1 天（看日切/逾期）、+1 周（看结算/结转/周日预铺）。
+ */
+@Composable
+private fun PlanSimulatedBanner(runtime: AppRuntime) {
+    val simulated = runtime.simulatedToday ?: return
+    PlanCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    "模拟时间 · " + simulated,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    "真实时间 " + java.time.LocalDate.now() +
+                        "；计划相关的结算、补周、复盘、铺天都按模拟日期走。这只是调试工具，不要在上面决定真实计划。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            if (runtime.devClockAllowed) {
+                ChromeButton(label = "+1 天", onClick = { runtime.jumpSimulatedDays(1) })
+                Spacer(Modifier.width(6.dp))
+                ChromeButton(label = "+1 周", onClick = { runtime.jumpSimulatedWeeks(1) })
+                Spacer(Modifier.width(6.dp))
+                TextButton(onClick = { runtime.applySimulatedToday(null) }) {
+                    Text("退出模拟", style = MaterialTheme.typography.labelMedium)
+                }
+            }
         }
     }
 }
@@ -310,7 +394,7 @@ private fun WeekStrip(runtime: AppRuntime) {
                 }
             },
         ) {
-            items(runtime.planWeekCards.filter { it.scheduled }, key = { it.week }) { card ->
+            items(runtime.planWeekCards, key = { it.week }) { card ->
                 WeekCard(card, selected = !runtime.planPendingSelected && card.week == runtime.planSelectedWeek) {
                     runtime.selectPlanWeek(card.week)
                 }

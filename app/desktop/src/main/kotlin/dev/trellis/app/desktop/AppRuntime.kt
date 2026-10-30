@@ -37,6 +37,7 @@ import dev.trellis.domain.plan.UnitDraft
 import dev.trellis.domain.plan.LearningPlanService
 import dev.trellis.domain.plan.LearningPlanInfo
 import dev.trellis.domain.plan.PoolUnit
+import dev.trellis.domain.plan.RhythmResult
 import dev.trellis.domain.plan.WeekDay
 import dev.trellis.feature.learning.LearningPlanStore
 import dev.trellis.activity.ActivityAggregator
@@ -88,6 +89,7 @@ import dev.trellis.kernel.spi.Platform
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import javax.imageio.ImageIO
 import kotlinx.coroutines.CancellationException
@@ -238,6 +240,68 @@ class AppRuntime private constructor() {
 
     lateinit var home: File
         private set
+
+    /**
+     * 应用唯一时间源（规范见 `docs/time-conventions.md`）。
+     *
+     * 业务时间（今天 / 本周 / 事件时间戳）只能从这里取；计时器/超时仍走单调时间。
+     * 默认是真实时钟；开发者模式下可以拨「应用内今天」（见 [applySimulatedToday]）。
+     */
+    lateinit var clock: DebugTrellisClock
+        private set
+
+    /** 当前模拟日期；null = 真实时间。界面用它显示「模拟时间」徽章。 */
+    var simulatedToday by mutableStateOf<LocalDate?>(null)
+        private set
+
+    /** 开发者模式（`TRELLIS_DEV=1`）：设置页显示调试区。 */
+    internal var devModeEnabled: Boolean = false
+        private set
+
+    /** 当前数据目录是否允许改模拟时间（默认目录不允许，防止模拟日期污染真实数据）。 */
+    internal var devClockAllowed: Boolean = false
+        private set
+
+    /** 请求了模拟但被拒绝的原因；给日志和设置页显示。 */
+    internal var devClockRejectedReason: String? = null
+        private set
+
+    private lateinit var devClockStore: DevClockStore
+
+    /**
+     * 是否正在用模拟时间。计划页/对话页顶部要显示徽章——不允许静默生效。
+     */
+    val isSimulatingTime: Boolean get() = simulatedToday != null
+
+    /**
+     * 开发者模式：把「应用内今天」拨到指定日期；传 null 回真实时间。
+     *
+     * 真的会写计划数据（结算旧周、补承诺、生成复盘），所以默认数据目录被拒绝；
+     * 允许的前提是 `TRELLIS_HOME` 指向非默认目录，或显式 `TRELLIS_DEV_ALLOW_REAL_HOME=1`。
+     */
+    fun applySimulatedToday(date: LocalDate?) {
+        if (!devClockAllowed) {
+            planMessage = devClockRejectedReason ?: "当前数据目录不允许模拟时间（换 TRELLIS_HOME 再试）"
+            return
+        }
+        clock.setSimulatedDate(date)
+        simulatedToday = date
+        devClockStore.save(date)
+        appendAppLog(if (date != null) "调试：模拟时间 → $date" else "调试：退出模拟时间（回真实时间）")
+        // 拨完时间要立刻让计划自己走一遍：结算/补承诺/铺天/复盘都在 refreshPlan 里触发。
+        refreshPlan()
+        tick++
+    }
+
+    fun jumpSimulatedDays(days: Long) {
+        val base = simulatedToday ?: clock.today()
+        applySimulatedToday(base.plusDays(days))
+    }
+
+    fun jumpSimulatedWeeks(weeks: Long) {
+        val base = simulatedToday ?: clock.today()
+        applySimulatedToday(base.plusWeeks(weeks))
+    }
 
     /**
      * 测试用：把模型换成假的。
@@ -518,6 +582,16 @@ class AppRuntime private constructor() {
     /** 正在跑一轮（流式回答或工具循环）；界面据此禁用输入。 */
     var chatBusy by mutableStateOf(false)
         private set
+
+    /**
+     * 上一轮留给下一轮的意图：它问完问题、等用户点选项时（`ask_choices`）记下；
+     * 或者那一轮动手中途失败时记下，方便用户说「再试一次」时沿用同一套工具。
+     *
+     * 真实事故：AI 问「每天能投入多少分钟」，用户点「每天 60 分钟」——
+     * 这句没有任何意图关键词，重新分类成 Chat（零工具），模型想调
+     * `create_learning_plan` 却调不到，只能回「我这边没有那只工具」。
+     */
+    private var pendingManagerIntent: AgentIntent? = null
 
     /**
      * 当前在哪一页。
@@ -997,6 +1071,41 @@ class AppRuntime private constructor() {
     fun latestPlanLine(): ChatLine? = chat.lastOrNull { it.role == ChatRole.Plan && it.plan.isNotEmpty() }
 
     /**
+     * 一轮结束时收尾清单。
+     *
+     * 真实事故：模型想调一个当前意图没有的工具（「每天 60 分钟」被判成 Chat），
+     * 清单上第 2 步一直停在「正在执行」，右侧写着「本轮没有改动」—— 用户看到的是
+     * 一个永远推进不了的任务。这里把结论同步给清单：
+     * - 成功：还没打勾的当前步按完成收尾（它确实做完了，只是没来得及调 step_done）；
+     * - 失败/停止：当前步标失败，并记下完成时间（界面据此收起/换文案）。
+     */
+    private fun settlePlanAfterRound(ok: Boolean) {
+        val id = activePlanId ?: return
+        val at = chat.indexOfFirst { it.id == id }
+        if (at < 0) return
+        val line = chat[at]
+        if (line.plan.isEmpty() || line.planFinishedMs != 0L) return
+        val running = line.plan.indexOfFirst { it.state == PlanStepState.Running }
+        val now = System.currentTimeMillis()
+        val plan = if (running < 0) {
+            line.plan
+        } else {
+            line.plan.mapIndexed { index, step ->
+                if (index != running) {
+                    step
+                } else {
+                    step.copy(
+                        state = if (ok) PlanStepState.Done else PlanStepState.Failed,
+                        note = if (ok) "本轮结束" else "这一轮没走完",
+                        ms = if (step.startedMs > 0) now - step.startedMs else 0L,
+                    )
+                }
+            }
+        }
+        chat[at] = line.copy(plan = plan, planFinishedMs = now)
+    }
+
+    /**
      * 当前状态块：给管理员看「这台机器上现在是什么样」。
      *
      * 它不进静态前缀 —— 装一个插件就变一次。放在静态规则之后、对话历史之前，
@@ -1332,6 +1441,10 @@ class AppRuntime private constructor() {
         }
 
         val llm = llmOverride ?: HttpLlmClient(config)
+        // 上一轮「等你点选项 / 等你重试」留下的意图：这一轮如果是没有意图关键词的短句
+        // （「每天 60 分钟」「再试一次」），沿用它的工具和提示词，别退回零工具的聊天。
+        val forcedIntent = pendingManagerIntent
+        pendingManagerIntent = null
         chatBusy = true
         activePlanId = null
         chatChoices = emptyList()
@@ -1366,13 +1479,32 @@ class AppRuntime private constructor() {
             val taskTools = TaskTools(this)
             // 计划页是三只手之外的第四个去处：`set_plan` 只是这一轮的动作清单，
             // 真正的周/单元要 createProcess → saveDraft → acceptDraft 才写得进去。
-            val planTools = PlanTools({ learningPlan() }, { refreshPlan() }, { studyPrefs.weeklyMinutes })
+            val planTools = PlanTools(
+                { learningPlan() },
+                { refreshPlan() },
+                { studyPrefs.weeklyMinutes },
+                planDbError = { planDbError },
+                clock = clock,
+            )
+            // 计划的「维护」是另一套手：读现状、排下周、勾节点、顺延、复盘、改每天投入。
+            // 没有它，AI 只能建计划，用户还是得自己去计划页点。
+            val planAdminTools = PlanAdminTools(
+                { learningPlan() },
+                { refreshPlan() },
+                dbError = { planDbError },
+                clock = clock,
+            )
+            // 眼睛之外再给一只「看内部状态」的手：工具报错时自己查日志/模块/库状态，
+            // 而不是让用户去看一眼错误提示（用户修不好 java/sql/DriverManager 这种问题）。
+            val diagnosticsTools = DiagnosticsTools { diagnosticsReport() }
             val allTools = tools.all + screenTools.all + layoutTools.all + styleTools.all +
-                workflowTools.all + bilibiliTools.all + taskTools.all + planTools.all
+                workflowTools.all + bilibiliTools.all + taskTools.all + planTools.all +
+                planAdminTools.all + diagnosticsTools.all
             val guidance = tools.guidance + "\n\n" + screenTools.guidance +
                 "\n\n" + layoutTools.guidance + "\n\n" + styleTools.guidance +
                 "\n\n" + workflowTools.guidance + "\n\n" + bilibiliTools.guidance +
-                "\n\n" + taskTools.guidance + "\n\n" + planTools.guidance
+                "\n\n" + taskTools.guidance + "\n\n" + planTools.guidance +
+                "\n\n" + planAdminTools.guidance + "\n\n" + diagnosticsTools.guidance
 
             // 意图 → 工具 → 提示词，一次定完：每条工具的目录只出现在它该出现的那一版
             // 提示词里。以前是把整套工具和整段前缀一股脑塞进去，模型总会挑一个
@@ -1395,6 +1527,7 @@ class AppRuntime private constructor() {
                 state = managerState(),
                 request = text,
                 history = chatHistory.toList(),
+                forcedIntent = forcedIntent,
                 onDelta = { delta ->
                     answerText += delta
                     displayText = visibleReply(answerText)
@@ -1416,10 +1549,23 @@ class AppRuntime private constructor() {
             }
             renderAnswer()
 
+            // 清单不能一直挂在「进行中」：这一轮结束（成功/没做成）都要收尾。
+            settlePlanAfterRound(result.ok)
+
             // 意图有歧义时不往下走，把「可能的意思」摆成按钮让用户点。
             // 这是流程里的「先问清楚」：问完再选工具、再拼提示词、再发模型。
             if (result.choices.isNotEmpty()) {
                 chatChoices = result.choices.map { ChatChoice(it, it) }
+            }
+
+            // 给下一轮留「承接上一轮」的信号：
+            // - 模型用 ask_choices 问了用户（不是意图歧义）→ 用户下一句多半是在回答，沿用本意图；
+            // - 动手中途失败 → 用户说「再试一次」时沿用同一套工具，而不是退回零工具的聊天。
+            pendingManagerIntent = when {
+                result.clarified -> null
+                result.choices.isNotEmpty() && result.intent != AgentIntent.Chat -> result.intent
+                !result.ok && result.intent != AgentIntent.Chat -> result.intent
+                else -> null
             }
 
             if (result.ok) {
@@ -1440,6 +1586,7 @@ class AppRuntime private constructor() {
         } catch (cancel: CancellationException) {
             // 用户点了「停止」、或程序正在退出：半截回答留在原地，补一行说明就收。
             // 不重抛 —— 重抛会让 job 以取消收场，界面反而看不出「这一轮到底停没停」。
+            settlePlanAfterRound(ok = false)
             addChatLine(ChatRole.Status, "—— 已停止")
         } catch (t: Throwable) {
             val reason = t.message ?: (t::class.simpleName ?: "未知错误")
@@ -1449,6 +1596,7 @@ class AppRuntime private constructor() {
             } else {
                 addChatLine(ChatRole.Step, "出错了：" + reason)
             }
+            settlePlanAfterRound(ok = false)
             addChatLine(ChatRole.Status, "—— 本轮出错，停在上面那行")
         } finally {
             persistChat()
@@ -1822,14 +1970,141 @@ class AppRuntime private constructor() {
     var planMessage by mutableStateOf<String?>(null)
         private set
 
+    /**
+     * 计划库打不开的**具体原因**（比 [planMessage] 短、给工具/诊断用）。
+     *
+     * 工具报的是它，AI 才能看到 `NoClassDefFoundError: java/sql/DriverManager` 这种细节，
+     * 而不是只对用户说「打不开，你去修」。
+     */
+    internal var planDbError by mutableStateOf<String?>(null)
+        private set
+
+    /**
+     * 最近一次节奏推进（当前聚焦的那个计划）：结算/补承诺/铺天各做了什么。
+     *
+     * 系统自动跑的，不经过模型；页面用它显示「上周完成 X/Y · 本周已排 N 个」这类报告，
+     * 也可以在什么都没发生时保持安静（note 为空就当没有）。
+     */
+    internal var planRhythmReport by mutableStateOf<RhythmResult?>(null)
+        private set
+
+    /** 这次节奏推进里有没有值得说一声的动作；什么都没有就不打扰（保持页面安静）。 */
+    internal val planRhythmHasNews: Boolean
+        get() = planRhythmReport?.let { report ->
+            report.settledWeeks.isNotEmpty() || report.reviewedWeeks.isNotEmpty() ||
+                report.appendedWeeks.isNotEmpty() || report.scheduledWeeks.isNotEmpty() ||
+                report.missed > 0 || report.carried > 0
+        } == true
+
+    fun dismissPlanRhythmReport() {
+        planRhythmReport = null
+    }
+
     private fun learningPlan(): LearningPlanService? {
         learningPlanService?.let { return it }
         val file = File(home, "plans/plan.db")
-        return runCatching { LearningPlanStore.open(file.toPath()) }
-            .onFailure { planMessage = "计划库打不开：" + (it.message ?: "未知原因") }
+        return runCatching {
+            // clock/zone 必须和页面、AI 工具同源：否则会出现「页面显示 W46、后端按 W44 结算」。
+            LearningPlanStore.open(
+                file.toPath(),
+                clock = { clock.nowMs() },
+                zone = clock.zone,
+            )
+        }
+            .onFailure { error ->
+                planDbError = describeFailure(error)
+                planMessage = "计划库打不开：$planDbError"
+                appendAppLog("计划库打开失败：" + error.stackTraceToString())
+            }
             .getOrNull()
-            ?.also { learningPlanService = it }
+            ?.also {
+                learningPlanService = it
+                planDbError = null
+                // 成功也留一行：诊断时能确认「库到底有没有打开过」，不然只能靠猜。
+                appendAppLog("计划库已打开：" + file.absolutePath)
+            }
     }
+
+    /**
+     * 把异常翻译成「人和模型都能看懂、能拿来判断下一步」的一句话。
+     *
+     * 不能只留 `java/sql/DriverManager` 这种类名：用户不知道那是什么，
+     * AI 也得靠它判断到底是打包缺模块、文件坏了还是权限问题。
+     */
+    private fun describeFailure(error: Throwable): String = buildString {
+        append(error::class.simpleName ?: "错误")
+        error.message?.takeIf { it.isNotBlank() }?.let { append("：").append(it) }
+        val text = (error::class.simpleName ?: "") + (error.message ?: "")
+        if (error is LinkageError || text.contains("java/sql") || text.contains("DriverManager")) {
+            append("（运行环境缺少 JDK 模块，最常见的是打包时漏了 java.sql；")
+            append("开发模式用 ./gradlew :app:desktop:run 不受影响，打包版需要重新打包）")
+        }
+    }
+
+    /** 追加到 `<home>/app.log`；日志本身失败不能影响主流程。 */
+    private fun appendAppLog(line: String) {
+        runCatching {
+            File(home, "app.log").appendText(
+                "[" + java.time.Instant.now() + "] " + line + "\n",
+                Charsets.UTF_8,
+            )
+        }
+    }
+
+    /**
+     * 给 AI 的诊断报告（`get_diagnostics` 工具读它）。
+     *
+     * 为什么这不是「给用户看的错误页」而是给模型看的：用户修不好 `java/sql/DriverManager`
+     * 这种问题，AI 必须能自己看到「计划库为什么打不开 / 运行时缺哪个模块 / 最近日志」，
+     * 再决定是重试、绕开，还是给出一个用户真能执行的修复动作。
+     */
+    internal fun diagnosticsReport(): String = buildString {
+        appendLine("【Trellis 诊断】")
+        appendLine("home：" + home.absolutePath)
+        appendLine("Java：" + System.getProperty("java.version") + "（" + System.getProperty("java.vendor") + "）")
+        appendLine("OS：" + System.getProperty("os.name") + " " + System.getProperty("os.version"))
+
+        val planDb = File(home, "plans/plan.db")
+        append("计划库：" + planDb.absolutePath + "（")
+        append(if (planDb.isFile) "存在，" + planDb.length() + " 字节" else "不存在")
+        appendLine("）")
+        // 调一次 learningPlan()：没打开过会在这里重试，顺便刷新 planDbError。
+        val planService = learningPlan()
+        appendLine(
+            "计划库状态：" + if (planService != null) "可打开" else "打不开" +
+                (planDbError?.let { " —— $it" } ?: ""),
+        )
+        planDbError?.let { appendLine("计划库错误：" + it) }
+
+        // JDBC / 网络 / 图像这些是「打包版最容易漏」的模块，逐个点名，别让模型猜。
+        appendLine("JDK 模块自检：")
+        listOf(
+            "java.sql.DriverManager" to "java.sql（计划库/活动库的 SQLite 驱动）",
+            "java.net.http.HttpClient" to "java.net.http（LLM / B 站请求）",
+            "javax.imageio.ImageIO" to "java.desktop（截图）",
+            "javax.net.ssl.SSLContext" to "java.base / java.net（HTTPS）",
+        ).forEach { (className, label) ->
+            // 用系统类加载器：这些类是 JDK 平台模块里的，不能挂在 StringBuilder 的类加载器上判断。
+            val available = runCatching { Class.forName(className, false, ClassLoader.getSystemClassLoader()) }
+            appendLine("  - " + label + "：" + if (available.isSuccess) "可用" else "缺失 ← 就是它")
+        }
+
+        appendLine("LLM 配置：" + if (LlmConfigLoader.load(home) != null) "已配置" else "未配置（对话不会调模型）")
+
+        val activityDb = File(home, "activity/activity.db")
+        appendLine("活动库：" + activityDb.absolutePath + "（" + if (activityDb.isFile) "存在" else "还没建" + "）")
+
+        val logFile = File(home, "app.log")
+        if (logFile.isFile) {
+            val tail = runCatching {
+                logFile.readLines(Charsets.UTF_8).filter { it.isNotBlank() }.takeLast(20)
+            }.getOrDefault(emptyList())
+            appendLine("app.log 最近 " + tail.size + " 行：")
+            tail.forEach { appendLine("  | " + it.take(300)) }
+        } else {
+            appendLine("app.log：还没有（没有错误发生过）")
+        }
+    }.trimEnd()
 
     /**
      * 待办板要的节点：所有计划各算一遍。
@@ -1839,7 +2114,7 @@ class AppRuntime private constructor() {
      * 单个计划读失败只让那一组缺失，不影响别的计划。
      */
     private fun collectTodoPlanNodes(service: LearningPlanService): List<PlanNodeGroup> = runCatching {
-        val today = java.time.LocalDate.now().toString()
+        val today = clock.today().toString()
         planNodeGroups(
             plans = planAll,
             today = today,
@@ -1852,6 +2127,9 @@ class AppRuntime private constructor() {
         val service = learningPlan() ?: return
         runCatching {
             planAll = service.plans()
+            // 先让计划自己往前滚（结算旧周 / 补下周承诺 / 铺天），再取待办与页面数据：
+            // 否则今天新铺出来的节点要等下一次刷新才出现在待办板上。
+            val rhythmReports = advancePlanRhythm(service)
             todoPlanNodes = collectTodoPlanNodes(service)
             planCategories = planCategoryStore.load()
             val planId = planFocusId?.takeIf { id -> planAll.any { it.id == id } }
@@ -1865,29 +2143,19 @@ class AppRuntime private constructor() {
                 planDays = emptyList()
                 planDayView = null
                 planPool = emptyList()
+                planRhythmReport = null
                 planMessage = null
                 return
             }
+            planRhythmReport = rhythmReports[planId]
             val state = service.planState(planId)
             planDailyMinutes = state.dailyMinutes
 
-            // 到期的周才铺天：这周变成当周、或周日提前铺下周；铺过的不重复。
-            scheduleDueWeeks(service, planId, state.week)
-
             val map = service.map(planId)
             planTitle = map.planTitle.ifBlank { state.title }
-            val unscheduledUnits = mutableListOf<PoolUnit>()
             planWeekCards = map.weeks.mapIndexed { index, week ->
                 val view = service.week(planId, week.week)
                 val units = view.commitment.units
-                // 没铺到天的周不进周卡片：整周的单元收进「待安排」集合，卡片只留一张。
-                if (!view.scheduled) {
-                    units.forEach { unit ->
-                        unscheduledUnits.add(
-                            PoolUnit(unit.id, unit.title, unit.chapter, unit.estimateMinutes),
-                        )
-                    }
-                }
                 // 卡片第二行要「这一周在讲什么」：单元里出现最多的章节名，比承诺标签更具体。
                 val chapter = units.groupingBy { it.chapter }.eachCount().maxByOrNull { it.value }?.key
                     ?: view.commitment.label
@@ -1904,12 +2172,16 @@ class AppRuntime private constructor() {
                 )
             }
             planPool = service.pool(planId)
-            planPendingNodes = (unscheduledUnits + planPool).distinctBy { it.id }
+            // 只把「还没被任何一周承诺收走」的单元摊进待安排：
+            // 有承诺、只是还没铺到天的周现在是正常的「第 N 周」卡片，不再算进待安排，
+            // 否则同一批单元会在灰卡和周卡里各出现一次。
+            planPendingNodes = planPool
             if (planPendingSelected && planPendingNodes.isEmpty()) planPendingSelected = false
-            val scheduledWeeks = planWeekCards.filter { it.scheduled }.map { it.week }
-            val week = planSelectedWeek?.takeIf { w -> scheduledWeeks.contains(w) }
-                ?: state.week.takeIf { w -> scheduledWeeks.contains(w) }
-                ?: scheduledWeeks.firstOrNull()
+            // 选中的周可以是任何一张周卡：未来周还没铺天也能点开看它承诺了哪几个单元。
+            val selectableWeeks = planWeekCards.map { it.week }
+            val week = planSelectedWeek?.takeIf { w -> selectableWeeks.contains(w) }
+                ?: state.week.takeIf { w -> selectableWeeks.contains(w) }
+                ?: selectableWeeks.firstOrNull()
             planSelectedWeek = week
             if (week != null) {
                 val weekView = service.week(planId, week)
@@ -1927,28 +2199,27 @@ class AppRuntime private constructor() {
     }
 
     /**
-     * 自动铺天：只铺「这周」和「周日时的下周」，别的周保持灰色待安排。
+     * 计划自己的节奏：对每个未结束的计划跑一次 `advanceRhythm`。
      *
-     * 这一步是内核自己的节奏（origin = scheduler），不经过模型；命令幂等，重复调不会重排。
+     * 一次包含：结算已经结束的周、从「待安排」池里给本周/下周补承诺、生成周复盘、把周铺到天。
+     * 这是系统自己的节奏（origin = scheduler），不经过模型；命令幂等，没有实际动作时后端不写库。
+     * 单个计划失败只丢那一份节奏，不打断页面；下一次刷新还会再试。
+     *
+     * @return planId → 这次的推进结果（失败的为 null），页面挑当前聚焦的那个显示。
      */
-    private fun scheduleDueWeeks(service: LearningPlanService, planId: String, currentWeek: String) {
-        val todayIsWeekEnd = java.time.LocalDate.now().dayOfWeek == java.time.DayOfWeek.SUNDAY
-        val targets = buildList {
-            add(currentWeek)
-            if (todayIsWeekEnd) nextIsoWeek(currentWeek)?.let { add(it) }
-        }
-        targets.forEach { week ->
-            val view = runCatching { service.week(planId, week) }.getOrNull() ?: return@forEach
-            if (view.scheduled || view.commitment.units.isEmpty()) return@forEach
+    private fun advancePlanRhythm(service: LearningPlanService): Map<String, RhythmResult> {
+        val reports = mutableMapOf<String, RhythmResult>()
+        planAll.filter { it.status != "ended" }.forEach { info ->
             val command = CommandEnvelope(
                 commandId = "cmd_" + java.util.UUID.randomUUID().toString().replace("-", ""),
                 actor = Actor.SYSTEM,
-                planId = planId,
+                planId = info.id,
                 origin = "scheduler",
             )
-            // 静默：铺天失败不打断页面，下一次刷新还会再试。
-            runCatching { service.scheduleWeek(command, week) }
+            runCatching { service.advanceRhythm(command, info.id) }
+                .getOrNull()?.value?.let { reports[info.id] = it }
         }
+        return reports
     }
 
     /** "2026-W44" → 那一周的周一。 */
@@ -1960,19 +2231,8 @@ class AppRuntime private constructor() {
             .with(java.time.DayOfWeek.MONDAY)
     }.getOrNull()
 
-    private fun isoWeekOf(date: java.time.LocalDate): String = "%04d-W%02d".format(
-        date.get(java.time.temporal.IsoFields.WEEK_BASED_YEAR),
-        date.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR),
-    )
-
-    /** 今天所在的 ISO 周，比如 "2026-W44"。 */
-    private fun currentIsoWeek(): String = isoWeekOf(java.time.LocalDate.now())
-
-    /** 2026-W44 → 2026-W45（跨年按 ISO 周算：1 月 4 日一定在第 1 周）。 */
-    private fun nextIsoWeek(week: String): String? {
-        val monday = isoWeekMonday(week) ?: return null
-        return isoWeekOf(monday.plusWeeks(1))
-    }
+    /** 今天所在的 ISO 周，比如 "2026-W44"（走注入时钟，开发者模式拨日期后跟着变）。 */
+    private fun currentIsoWeek(): String = clock.isoWeek()
 
     fun selectPlan(planId: String?) {
         planFocusId = planId
@@ -2162,8 +2422,8 @@ class AppRuntime private constructor() {
     suspend fun refresh() {
         goal = planService.plans().firstOrNull()
         tasks = planService.tasks()
-        val now = System.currentTimeMillis()
-        summary = planService.summary(now, endOfTodayMs(now))
+        val now = clock.nowMs()
+        summary = planService.summary(now, endOfTodayMs(now, clock.zone))
         pluginInfos = kernel.plugins()
         // 从**已安装目录**（不是运行列表）填缓存  停用的插件也要能显示名字
         for (manifest in kernel.catalog()) manifestCache[manifest.id] = manifest
@@ -2600,6 +2860,13 @@ class AppRuntime private constructor() {
             extraBuiltins: List<Plugin> = emptyList(),
         ): AppRuntime {
             val runtime = AppRuntime()
+            // 时间源先定：内核、计划后端、AI 工具都从同一个钟取时间（规范见 docs/time-conventions.md）。
+            val clockSetup = createTrellisClock(home)
+            runtime.clock = clockSetup.clock
+            runtime.devModeEnabled = clockSetup.devMode
+            runtime.devClockAllowed = clockSetup.allowed
+            runtime.devClockRejectedReason = clockSetup.rejectedReason
+            runtime.devClockStore = DevClockStore(home)
             val storeFile = File(home, "store.json")
             val pluginsDir = File(home, "plugins").apply { mkdirs() }
 
@@ -2639,6 +2906,15 @@ class AppRuntime private constructor() {
             runtime.storeFile = storeFile
             runtime.pluginsDir = pluginsDir
             runtime.home = home
+            // 模拟时间必须让人看见：启动日志 + 页面徽章，不允许静默生效。
+            runtime.simulatedToday = clockSetup.clock.simulatedDate()
+            if (runtime.simulatedToday != null) {
+                runtime.appendAppLog(
+                    "模拟时间：" + runtime.simulatedToday + "（真实 " + LocalDate.now() + "）" +
+                        "；数据目录 " + home.absolutePath,
+                )
+            }
+            clockSetup.rejectedReason?.let { runtime.appendAppLog("调试时钟未启用：$it") }
             runtime.layoutStore = LayoutStore(home)
             runtime.cardLayout = runtime.layoutStore.load()
             runtime.uiPrefsStore = UiPrefsStore(home)
@@ -2698,10 +2974,9 @@ private fun initialTab(): Int = when (System.getenv("TRELLIS_TAB")?.trim()?.lowe
 
 /**
  * 「今天」的边界由**界面层**给出，领域层不该猜时区  这是 PlanService.summary 的约定。
- * 这里用 JVM 的系统时区算，Android 上换成平台 API 即可。
+ * 用注入时钟的 zone（开发者模式拨日期后，边界也跟着模拟日期走）。
  */
-private fun endOfTodayMs(nowMs: Long): Long {
-    val zone = ZoneId.systemDefault()
+private fun endOfTodayMs(nowMs: Long, zone: ZoneId): Long {
     return Instant.ofEpochMilli(nowMs)
         .atZone(zone)
         .toLocalDate()
