@@ -70,8 +70,8 @@ class ScreenTools(private val runtime: AppRuntime) {
     private inner class OpenTab : AgentTool {
         override val name: String = "open_tab"
         override val description: String =
-            "切到某一页：任务 / 对话 / 插件 / 诊断。切完再用 describe_screen 看那一页有什么。"
-        override val parameters: String = "tab：页码名字，任务 / 对话 / 插件 / 诊断。"
+            "切到某一页：任务 / 计划 / 知识库 / 对话 / 活动 / 设置。切完再用 describe_screen 看那一页有什么。"
+        override val parameters: String = "tab：页码名字，任务 / 计划 / 知识库 / 对话 / 活动 / 设置。"
         override suspend fun call(arguments: JsonObject): ToolResult {
             val tab = arguments["tab"]?.jsonPrimitive?.contentOrNull
                 ?: return ToolResult("open_tab 需要 tab", isError = true)

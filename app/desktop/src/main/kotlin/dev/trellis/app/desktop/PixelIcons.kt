@@ -18,7 +18,7 @@ import androidx.compose.ui.unit.dp
  * 这里只用 [Canvas] 画实心色块，不依赖任何图片资源，所以三端/暗色/任意主题色都能跟随；
  * 同一份形状也导出成了 SVG（`docs/assets/icons/`）方便以后做宣传图或别的端复用。
  */
-internal enum class ChromeIcon { Tasks, Plan, Chat, Activity, Plugins, Diagnostics, Settings, Logo, Check }
+internal enum class ChromeIcon { Tasks, Plan, Knowledge, Chat, Activity, Plugins, Diagnostics, Settings, Logo, Check }
 
 @Composable
 internal fun ChromeIconGlyph(icon: ChromeIcon, tint: Color, modifier: Modifier = Modifier.size(16.dp)) {
@@ -86,6 +86,15 @@ internal fun ChromeIconGlyph(icon: ChromeIcon, tint: Color, modifier: Modifier =
                 block(5.4f, 3f, 1.6f, 1.6f)
                 block(1f, 5.4f, 1.6f, 1.6f)
                 block(3.2f, 5.4f, 3.8f, 1.6f)
+            }
+
+            // 知识库：三个节点连成一张小图（上面两个、下面一个），「概念」不是孤岛。
+            ChromeIcon.Knowledge -> {
+                block(1f, 1f, 2f, 2f)
+                block(5f, 1f, 2f, 2f)
+                block(3f, 4f, 2f, 2f)
+                block(3f, 2f, 2f, 1f)
+                block(3f, 3f, 2f, 1f)
             }
 
             // 品牌：一个像素化的 T。

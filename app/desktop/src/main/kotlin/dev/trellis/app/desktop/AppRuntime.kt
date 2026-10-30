@@ -139,6 +139,13 @@ internal const val TAB_SETTINGS = 5
  */
 internal const val TAB_ACTIVITY = 6
 
+/**
+ * 知识库页：本地 Markdown 笔记（`<home>/knowledge/notes/` 下每个 `.md` 一篇）。
+ *
+ * 序号同样往后放而不是插进中间，理由见 [TAB_ACTIVITY]。
+ */
+internal const val TAB_KNOWLEDGE = 7
+
 internal val RENDERED_MOUNT_POINTS: Set<ExtensionPointId> = setOf(
     Slots.HomeHeader.id,
     Slots.HomeSection.id,
@@ -322,6 +329,17 @@ class AppRuntime private constructor() {
 
     /** 这份配置从哪来：环境变量 / llm.json / 未配置。 */
     fun llmSource(): String = LlmConfigLoader.source(home)
+
+    /**
+     * 一次性小调用用的客户端（知识库抽概念这类后台整理）。
+     *
+     * 没配模型返回 null：调用方直接跳过，不要弹错误——「没配 key」不是错误，
+     * 只是这个增强功能暂时不生效（用户仍可手动标概念）。
+     */
+    internal fun llmClientOrNull(): LlmClient? {
+        val config = LlmConfigLoader.load(home) ?: return null
+        return llmOverride ?: HttpLlmClient(config)
+    }
 
     /** 一次导入的结果：失败时 message 是能照着改的一句话。 */
     data class LlmImportOutcome(val ok: Boolean, val message: String)
@@ -601,6 +619,9 @@ class AppRuntime private constructor() {
      */
     var currentTab by mutableStateOf(initialTab())
 
+    /** 知识库上次打开的笔记 id；切页回来接着看同一篇（只记在内存，不进配置）。 */
+    var knowledgeNoteId by mutableStateOf<String?>(null)
+
     private var nextChatLineId = 1L
 
     /**
@@ -619,6 +640,9 @@ class AppRuntime private constructor() {
         private set
 
     private lateinit var chatStore: ChatStore
+
+    /** 知识库笔记：文件是真相，以后加的索引只是从这些文件重建的投影。 */
+    internal lateinit var knowledgeStore: KnowledgeStore
 
     /** 发给模型的历史（只有正式对话，不含过程）；上限 20 条，防止越聊越贵。 */
     private val chatHistory = mutableListOf<LlmMessage>()
@@ -1184,6 +1208,14 @@ class AppRuntime private constructor() {
                 }
             }
 
+            TAB_KNOWLEDGE -> {
+                val noteList = if (this@AppRuntime::knowledgeStore.isInitialized) knowledgeStore.list() else emptyList()
+                appendLine("知识库：" + noteList.size + " 篇笔记")
+                noteList.take(8).forEach { note ->
+                    appendLine("- " + displayTitle(note.title) + "（" + note.chars + " 字符）")
+                }
+            }
+
             TAB_ACTIVITY -> {
                 val summary = activityDay(System.currentTimeMillis())
                 if (summary == null) {
@@ -1247,6 +1279,7 @@ class AppRuntime private constructor() {
         TAB_PLAN -> "计划"
         TAB_CHAT -> "对话"
         TAB_ACTIVITY -> "活动"
+        TAB_KNOWLEDGE -> "知识库"
         TAB_PLUGINS -> "插件"
         TAB_SETTINGS -> "设置"
         else -> "诊断"
@@ -1264,10 +1297,11 @@ class AppRuntime private constructor() {
             "计划", "plan", "plans" -> TAB_PLAN
             "对话", "chat" -> TAB_CHAT
             "活动", "activity", "activities" -> TAB_ACTIVITY
+            "知识库", "知识", "knowledge", "kb" -> TAB_KNOWLEDGE
             "插件", "plugins", "plugin" -> TAB_PLUGINS
             "诊断", "diag", "diagnostics" -> TAB_DIAG
             "设置", "settings", "setting" -> TAB_SETTINGS
-            else -> return "没有这一页：" + tab + "。只有 任务 / 计划 / 对话 / 活动 / 插件 / 诊断 / 设置。"
+            else -> return "没有这一页：" + tab + "。只有 任务 / 计划 / 对话 / 活动 / 知识库 / 插件 / 诊断 / 设置。"
         }
         currentTab = target
         return "切到了「" + tabName(target) + "」页。"
@@ -2932,6 +2966,7 @@ class AppRuntime private constructor() {
             runtime.pluginStyleStore = PluginStyleStore(home)
             runtime.pluginCardStyles = runtime.pluginStyleStore.load()
             runtime.chatStore = ChatStore(home)
+            runtime.knowledgeStore = KnowledgeStore(home, runtime.clock)
             runtime.loadChatSessions()
             // 聊天器的默认行为就是「接着上次说」：启动时把最近一段接回去，
             // 而不是每次都从空白开始、让人以为记录丢了。
@@ -2959,13 +2994,14 @@ class AppRuntime private constructor() {
 }
 
 /**
- * 启动时落在哪一页。默认任务页；`TRELLIS_TAB=plan|chat|plugins|diag|settings` 可用于演示/截图，
+ * 启动时落在哪一页。默认任务页；`TRELLIS_TAB=plan|chat|knowledge|plugins|diag|settings` 可用于演示/截图，
  * 省得每次手动点导航（也省得用鼠标自动化去点 —— 那个把窗口点最小化过）。
  */
 private fun initialTab(): Int = when (System.getenv("TRELLIS_TAB")?.trim()?.lowercase()) {
     "plan" -> TAB_PLAN
     "chat" -> TAB_CHAT
     "activity" -> TAB_ACTIVITY
+    "knowledge", "kb" -> TAB_KNOWLEDGE
     "plugins" -> TAB_PLUGINS
     "diag" -> TAB_DIAG
     "settings" -> TAB_SETTINGS

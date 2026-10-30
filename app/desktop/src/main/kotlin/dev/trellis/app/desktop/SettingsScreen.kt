@@ -42,7 +42,7 @@ import dev.trellis.ui.SlotArea
  * 「设置页分组」这个挂载点（`slot.settings.section`）就是给它们的。
  *
  * 插件管理和诊断也收在这里：两者都不常用（插件交给对话里的 agent 装、停、删），
- * 各占一个导航位不值当，所以导航只剩 任务 / 计划 / 对话 / 设置 四条。
+ * 各占一个导航位不值当，所以导航是 任务 / 计划 / 知识库 / 对话 / 活动 / 设置 六条。
  */
 @Composable
 fun SettingsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
