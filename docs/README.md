@@ -11,11 +11,13 @@
 | [`../README.md`](../README.md) | 项目简介、构建命令、插件/权限/存储速览、14 条铁律 | 活文档 | 第一次接触项目 |
 | [`kernel-design.md`](kernel-design.md) | 内核完整设计：分层、模块边界、抽象定义、9 个挂载点、启动序列、失败隔离、快照回滚、错误码、契约测试、里程碑、反模式 | **机制参考**（v0.1 Draft；部分章节未实现/已偏离，文首有现状提示，冲突时以代码为准） | 改内核 / 需要确认不变量 / 判断某个设计该不该做 |
 | [`agent-manager.md`](agent-manager.md) | AI 管理员：分层提示词（缓存友好）、意图路由、工具链、界面即插件、岗位色、点阵与表格、会话不露协议壳、多步任务清单、B 站学习资源工具 | 活文档 | 改 AI 层、加工具、排查「AI 为什么不做/做错」 |
+| [`agent-harness.md`](agent-harness.md) | **Agent Harness 重构方案**：为什么撤销「按消息意图裁工具」、成熟 harness 的稳定工具集 + 权限分级模式、目标架构（工具风险表 / 审批 / 单一提示词）、A/B 迁移与 eval 门槛（方向已定，P1 待开工） | **方案（Draft v0.2，已拍板方向）**（2026-10-30） | 讨论意图路由、工具越界/死胡同、审批与写操作边界之前；P1 实验开工前 |
 | [`agent-workflow-ui.md`](agent-workflow-ui.md) | Agent 工作流清单的**设计说明**：放哪、数据模型、工具契约、状态机、视觉规格、明确不做什么、已知缺口 | 实现记录（2026-10-26） | 改清单 UI / 讨论 `set_plan` 语义 / 加步骤状态 |
 | [`plan-backend.md`](plan-backend.md) | 学习计划后端（事件溯源 + SQLite）：模块分工、与设计稿的差异、命令语义、测试、P3/P4 待接 | 实现记录（2026-10-26） | 改 `:features:learning-process` / 接 UI / 加 plan 工具 |
 | [`plan-page.md`](plan-page.md) | 计划页：上半一周一格、下半选中周的那一天；数据全部来自 plan 后端的 view model | 实现记录（2026-10-27） | 改计划页 / 接视图 / 讨论「周视图该显示什么」 |
 | [`focus-timer.md`](focus-timer.md) | 计时器小窗：为什么独立窗口、倒计时（有进度条）/ 正计时（无进度条）、结束记入分钟数、边界与验证 | 实现记录（2026-10-28） | 改计时器 / 讨论「计时要不要进主窗口」 |
 | [`activity.md`](activity.md) | 活动分类：AW 原始事件 → SQLite → 分层分类（大类/小类/颜色/规则优先级）→ 日汇总；标签页 URL 匹配、时间口径、已知缺口 | 实现记录（2026-10-29） | 改 `:features:activity` / 接分类 UI / 做任务与计划追溯 |
+| [`time-conventions.md`](time-conventions.md) | **时间与时钟规范**：墙钟/单调钟、唯一时间源 `TrellisClock`、ISO 周与时区、后端注入契约、开发者跳日期、时间逻辑的测试要求、存量迁移批次与自检清单 | **规范（要遵守）**（2026-10-29） | 任何涉及「今天/本周/跨周/时长/超时」的改动之前；新同学进计划/活动/计时器相关代码前 |
 | [`conversation-redesign.md`](conversation-redesign.md) | 会话页五层信息、三态、三动作、撤销语义 | 实现记录（2026-10-24） | 改会话页 UI / 理解「过程与结论分离」 |
 | [`roadmap.md`](roadmap.md) | 已知缺口与优先级（能力面、视觉、插件市场、端） | 活文档 | 动手前先查有没有人记过这个坑 |
 | [`eval-prompts.md`](eval-prompts.md) | 验收题库（送检用，与提示词里的示例互为镜像） | 活文档（测试配套） | 调提示词后自测、验收 AI 能力 |
@@ -30,16 +32,21 @@
 | [`research/tech.md`](research/tech.md) | 技术选型证据简报（记忆框架、sqlite-vec、中文 embedding、GraphRAG、隐私与追踪、视觉、LLM 工程） | 调研证据（2026-10-26） | 选依赖、评估本地优先/隐私边界前 |
 | [`assets/icons/`](assets/icons/) | 自绘像素风图标 SVG（导航用） | 资产 | 改导航图标 |
 | [pluginization-plan-2026-10-29.md](pluginization-plan-2026-10-29.md) | 革新插件化计划草记：AGENT 如何核验与定完成标准、学习终端与知识体系图、目标转能力地图 | 构想草记（2026-10-29，未整理） | 讨论产品方向 / 知识体系时 |
+| [plan-rhythm-draft.md](plan-rhythm-draft.md) | 「计划自己推进」（插件化计划第 1 条）的讨论稿：现状解剖（路线只排一部分、第 3 周断流、结算/复盘死代码、核验只有手动勾）、周滚动节奏引擎、完成核验分级、Agent 计划工具、分阶段落地 | 讨论稿（2026-10-29，未定稿） | 讨论「让计划自己推进」/ 接计划工具 / 做周滚动与核验前 |
+| [knowledge-base-draft.md](knowledge-base-draft.md) | 「学习终端 + 知识库」（插件化计划第 2 条）的讨论稿：点亮 = 笔记里出现过的概念、文件为真相/索引可重建、内置 Markdown 编辑器 + 外部导入、不做掌握度与全局图、与计划解耦；已落地导航第三项「知识库」+ Markdown 编辑器 + 概念抽取/点亮/追溯/搜索 | 讨论稿（2026-10-29）；P0 已落地（2026-10-30） | 讨论知识库 / 做笔记与概念索引前 |
 
 ## 阅读路径
 
 - **第一次来，只想跑起来**：`../AGENTS.md` §1 → `../README.md` 构建与测试 → 跑 `:app:desktop:run`。
 - **要改内核**：`kernel-design.md` §0（怎么用这份文档）→ §2 词汇表 → §3 模块边界 → §4 抽象 → §9 挂载点 → 再动代码；配合 `kernel/src/commonTest/.../api/*` 理解契约。
-- **要改 AI 层**：`agent-manager.md` 全文 → `ai/.../manager/ManagerPrompt.kt` 与 `ManagerAgent.kt` → `eval-prompts.md` 自测。
+- **要改 AI 层**：`agent-manager.md` 全文 → `ai/.../manager/ManagerPrompt.kt` 与 `ManagerAgent.kt` → `eval-prompts.md` 自测；要动工具注入/审批边界，先读 `agent-harness.md`（方向已定，P1 待开工）。
 - **要改工作流清单**：`agent-workflow-ui.md`（设计取舍与状态机）→ `WorkflowTools.kt` / `AppRuntime.beginPlan` / `ChatScreen.PlanChecklist`。
 - **要改学习计划后端**：`plan-backend.md`（模块分工与语义）→ `sdk-domain/.../plan/Contract.kt` → `SqliteLearningPlanService.kt` + `PlanCommands.kt` → `LearningPlanServiceTest`。
 - **要改计划页**：`plan-page.md`（结构、数据来源、已知缺口）→ `PlanScreen.kt` → `AppRuntime.refreshPlan`。
+- **要让计划自己推进 / 接计划工具**：`plan-rhythm-draft.md`（背景与分阶段方案）→ `plan-backend.md` §8（`advanceRhythm` 契约）→ `PlanAdvance.kt` / `AppRuntime.refreshPlan` / `PlanAdminTools.kt`。
+- **要讨论知识库 / 做笔记与概念索引**：`knowledge-base-draft.md`（口径、数据模型、P0/P1/P2）。
 - **要改活动分类 / 时间汇总**：`activity.md`（规则语义、时间口径、已知缺口）→ `ActivityTaxonomy.kt` / `ActivityAggregator.kt` → `:features:activity:test`。
+- **要碰「今天/本周/跨周/时长/超时」**：`time-conventions.md`（规范，先读 §0 和 §8）→ 计划链路看 `LearningPlanRhythmTest` → 要调试时间推移看 §7（开发者跳日期）。
 - **要改界面/主题/布局**：`../AGENTS.md` §3「按问题找文件」→ `examples/bento-style.md`（三层边界）→ `conversation-redesign.md`（若改会话页）。
 - **要动跨端/热更新**：`plugin-hotplug-path.md` §0 TL;DR → 对应 research 分册；别从零再调研一遍。
 - **要决定「奖励/连续天数/主动性/推送/定价」**：`research/learning.md` + `research/product.md`（证据在前，别凭直觉）。
