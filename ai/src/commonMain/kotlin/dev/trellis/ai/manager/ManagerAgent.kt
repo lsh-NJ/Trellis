@@ -25,6 +25,14 @@ data class ManagerResult(
     val ok: Boolean = true,
     /** 有歧义时摆给用户的选项（点了就等于把那句话发出去）。 */
     val choices: List<String> = emptyList(),
+    /**
+     * 这次是「意图有歧义、先反问」的结果（**不是**模型调 `ask_choices` 问出来的）。
+     *
+     * 两者的选项来源不同：歧义选项是意图名（点了会重新分类），模型问的对象是任务参数
+     * （「每天几分钟」「落成待办/排成计划」），下一句必须**沿用上一轮的意图和工具**。
+     * AppRuntime 靠这个标记决定要不要把意图留给下一轮。
+     */
+    val clarified: Boolean = false,
 )
 
 /**
@@ -38,6 +46,10 @@ data class ManagerResult(
  *
  * 它自己不持有会话状态：历史由调用方保存并传进来，[ManagerPrompt] 负责把
  * 「静态前缀 / 动态状态 / 历史 / 任务模块」按顺序拼好 —— 这样前缀缓存才稳。
+ *
+ * 稳定工具集实验（P1）打开时，每轮都拿到全量工具，「聊天」只是流式优先：
+ * 它若在聊天里点名工具，直接切工具循环，不再按工具名换意图
+ * （换意图那条补丁是意图门控时代的兜底，P3 随旧路径一起删）。
  */
 class ManagerAgent(
     private val llm: LlmClient,
@@ -77,19 +89,39 @@ class ManagerAgent(
         history: List<LlmMessage> = emptyList(),
         onDelta: suspend (String) -> Unit = {},
         onLog: (String) -> Unit = {},
+        /**
+         * 上一轮留下的意图（它问完问题、等用户点选项的那一轮）。
+         *
+         * 用户点的选项往往是「每天 60 分钟」这种**没有意图关键词的短句**，
+         * 重新分类会落到 Chat（零工具），于是模型想调 `create_learning_plan` 却调不到。
+         * 这里只在「这句话自己判成 Chat、又不像寒暄」时沿用上一轮意图；
+         * 用户换了话题（句子有新意图关键词）时照常重新分类。
+         */
+        forcedIntent: AgentIntent? = null,
     ): ManagerResult {
         // ① 意图（单选）② 歧义就停下先问 ③ 选工具 ④ 按这轮的意图拼提示词 ⑤ 发模型
-        val decision = router.decide(request)
+        var decision = router.decide(request)
+        if (forcedIntent != null && decision.intent == AgentIntent.Chat && !decision.ambiguous &&
+            request.trim().length <= 30
+        ) {
+            onLog("判断：这是在接着上一轮说，继续按「" + labelOf(forcedIntent) + "」处理")
+            decision = IntentDecision(forcedIntent)
+        }
         if (decision.ambiguous) {
             onLog("判断：这句话有歧义，先问清楚")
             return ManagerResult(
                 intent = decision.intent,
                 text = decision.question,
                 choices = decision.choices,
+                clarified = true,
             )
         }
         val intent = decision.intent
         val tools = router.tools(intent)
+        if (router.stableTools) {
+            // 实验开关的状态要在过程里看得见：跑 A/B 时不用去翻环境变量。
+            onLog("工具集：稳定全量（" + STABLE_TOOLS_ENV + "=1），" + tools.size + " 只")
+        }
         val messages = router.prompt(intent).messages(state, request, history, intent)
 
         if (intent == AgentIntent.Chat) {
@@ -111,23 +143,47 @@ class ManagerAgent(
             // 工具调用 JSON（"我先截个图" 后面跟 {"tool": ...}）。这不是它在瞎说，
             // 是它想动手：转给工具循环真去干，别让这句话停在界面上没下文。
             if (looksLikeToolCall(text)) {
-                onLog("判断：它想动手，切到工具模式")
+                // 关键：Chat 意图手里一只工具都没有。如果它点名要的工具有明确的归属意图
+                // （比如 create_learning_plan 属于「找学习资源」），就**换到那条路**再跑，
+                // 而不是拿空工具箱让它连撞几次「没有这个工具」。
+                // 真实事故：用户点选项「每天 60 分钟」被判成 Chat，模型想建计划却调不到，
+                // 最后回一句「我这边工具里没有建学习计划的那只」。
+                val wanted = wantedToolName(text)
+                // 稳定工具集实验里 Chat 本来就带着全量工具，不存在「手里没工具」的问题：
+                // 不按工具名换意图（那正是 P3 要删掉的补丁），直接在同一轮里跑。
+                val fallback = if (router.stableTools) {
+                    null
+                } else {
+                    wanted?.let { router.intentForTool(it) }?.takeIf { it != intent }
+                }
+                val runIntent = fallback ?: intent
+                val runTools = if (fallback != null) router.tools(fallback) else tools
+                val runMessages = if (fallback != null) {
+                    router.prompt(fallback).messages(state, request, history, fallback)
+                } else {
+                    messages
+                }
+                if (fallback != null) {
+                    onLog("判断：它想用 " + wanted + "，那是「" + labelOf(fallback) + "」的工具；换到那条路继续")
+                } else {
+                    onLog("判断：它想动手，切到工具模式")
+                }
                 val run = try {
                     ToolAgent(
                         llm = llm,
-                        tools = tools,
+                        tools = runTools,
                         maxSteps = maxSteps,
-                        beforeFinishing = { beforeFinishing(intent) },
-                    ).run(messages, onLog)
+                        beforeFinishing = { beforeFinishing(runIntent) },
+                    ).run(runMessages, onLog)
                 } catch (cancel: kotlinx.coroutines.CancellationException) {
                     throw cancel
                 } catch (t: Throwable) {
                     val reason = t.message ?: (t::class.simpleName ?: "未知错误")
                     onLog("出错了：" + reason)
-                    return ManagerResult(intent, "模型没回上来：" + reason, ok = false)
+                    return ManagerResult(runIntent, "模型没回上来：" + reason, ok = false)
                 }
                 return ManagerResult(
-                    intent = intent,
+                    intent = runIntent,
                     text = unwrapReply(run.message),
                     transcript = run.transcript,
                     refused = run.refused,
@@ -207,11 +263,27 @@ class ManagerAgent(
     private fun looksLikeToolCall(text: String): Boolean =
         DeepSeekMarkup.contains(text) || Regex("\"tool\"\\s*:").containsMatchIn(text)
 
+    /**
+     * 模型这句话里想调用的工具名（JSON 协议或 DSML 方言都认）。
+     *
+     * 用途只有一个：Chat 意图下手无寸铁，但模型往往会「自己想起来」某个真实工具；
+     * 拿到工具名就能找到它真正的归属意图，换到那条路去执行。
+     */
+    private fun wantedToolName(text: String): String? =
+        DeepSeekMarkup.firstInvocation(text)?.name
+            ?: toolNameInJson.find(text)?.groupValues?.get(1)
+
     private fun labelOf(intent: AgentIntent): String = when (intent) {
         AgentIntent.Chat -> "手"
         AgentIntent.CreatePlugin -> "插件（造或改）"
         AgentIntent.ManagePlugin -> "已装插件"
         AgentIntent.ArrangeUi -> "布局"
         AgentIntent.FindResource -> "学习资源"
+        AgentIntent.PlanManage -> "学习计划"
+    }
+
+    private companion object {
+        /** `{"tool": "create_learning_plan", ...}` 里的工具名。 */
+        val toolNameInJson = Regex("\"tool\"\\s*:\\s*\"([a-z_]+)\"")
     }
 }

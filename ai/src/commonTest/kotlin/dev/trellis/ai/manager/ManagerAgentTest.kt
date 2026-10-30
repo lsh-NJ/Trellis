@@ -140,4 +140,147 @@ class ManagerAgentTest {
         assertEquals(AgentIntent.CreatePlugin, result.intent)
         assertTrue(result.text.isNotBlank())
     }
+
+    /**
+     * 真实事故：AI 问「每天能投入多少分钟」，用户点选项「每天 60 分钟」——
+     * 这句没有意图关键词，重新分类成 Chat（零工具），模型想调 `create_learning_plan`
+     * 却调不到，只能回「我这边没有那只工具」。
+     *
+     * 修复：上一轮用 `ask_choices` 问了用户就记下意图，下一句短回答沿用；这里用
+     * `forcedIntent` 模拟那条路径，断言工具真的被执行。
+     */
+    @Test
+    fun aFollowUpAnswerKeepsTheIntentThatAskedTheQuestion() = kotlinx.coroutines.test.runTest {
+        var called = 0
+        val createPlan = object : AgentTool {
+            override val name: String = "create_learning_plan"
+            override val description: String = "建学习计划"
+            override val parameters: String = "计划参数"
+            override suspend fun call(arguments: JsonObject): ToolResult {
+                called += 1
+                return ToolResult("计划建好了")
+            }
+        }
+        val llm = ScriptedLlm(
+            mutableListOf(
+                "{\"tool\":\"create_learning_plan\",\"arguments\":{}}",
+                "{\"done\":true,\"message\":\"按每天 60 分钟排好了\"}",
+            ),
+        )
+        val agent = ManagerAgent(llm, prompt(), tools = listOf(createPlan))
+
+        val result = agent.respond(
+            state = "",
+            request = "每天 60 分钟",
+            forcedIntent = AgentIntent.FindResource,
+        )
+
+        assertEquals(AgentIntent.FindResource, result.intent, "短回答要沿用上一轮意图，不能退回零工具的聊天")
+        assertEquals(1, called, "工具必须真的被执行：" + result.transcript.joinToString("\n"))
+        assertTrue(result.ok, result.transcript.joinToString("\n"))
+    }
+
+    /**
+     * 兜底：即使没有 `forcedIntent`（比如用户换了会话、或意图没被记下），
+     * 模型自己点名了一个真实工具时，也要换到拥有它的意图再跑，
+     * 而不是拿空工具箱连续报「没有这个工具」。
+     */
+    @Test
+    fun aChatThatReachesForARealToolGetsReroutedToThatToolsIntent() = kotlinx.coroutines.test.runTest {
+        var called = 0
+        val createPlan = object : AgentTool {
+            override val name: String = "create_learning_plan"
+            override val description: String = "建学习计划"
+            override val parameters: String = "计划参数"
+            override suspend fun call(arguments: JsonObject): ToolResult {
+                called += 1
+                return ToolResult("计划建好了")
+            }
+        }
+        val llm = ScriptedLlm(
+            mutableListOf(
+                // ① Chat 流式回显：模型自己点名了真实工具，触发换路。
+                "我先把它排成计划 {\"tool\":\"create_learning_plan\",\"arguments\":{}}",
+                // ② 换到 FindResource 后，ToolAgent 重新发请求，模型应当真的调工具。
+                "{\"tool\":\"create_learning_plan\",\"arguments\":{}}",
+                // ③ 收尾。
+                "{\"done\":true,\"message\":\"排好了\"}",
+            ),
+        )
+        val agent = ManagerAgent(llm, prompt(), tools = listOf(createPlan))
+        val logs = mutableListOf<String>()
+
+        val result = agent.respond(
+            state = "",
+            request = "每天 60 分钟",
+            onLog = { logs += it },
+        )
+
+        assertEquals(AgentIntent.FindResource, result.intent, "要换到工具真正的归属意图")
+        assertEquals(1, called, result.transcript.joinToString("\n"))
+        assertTrue(
+            logs.any { it.contains("换到那条路") },
+            "过程里要说清为什么换路：" + logs.joinToString("\n"),
+        )
+    }
+
+    /** 「先问清楚」是意图歧义；模型自己调 ask_choices 问用户是另一回事，下一轮要承接。 */
+    @Test
+    fun anAmbiguousIntentIsMarkedAsClarificationNotAsAQuestionAboutArguments() =
+        kotlinx.coroutines.test.runTest {
+            val agent = ManagerAgent(FakeLlm("不会用到"), prompt(), tools = emptyList())
+            val result = agent.respond(state = "", request = "帮我弄一下")
+
+            assertTrue(result.clarified)
+            assertTrue(result.choices.isNotEmpty())
+        }
+
+    /**
+     * P1 实验（`TRELLIS_MANAGER_STABLE_TOOLS=1`）：Chat 本身就带着全量工具，
+     * 模型在聊天里点名工具时**不换意图**，直接在同一轮跑工具循环。
+     *
+     * 旧路径靠「工具名 → 意图」兜底，是因为 Chat 手里空着；实验路径把那只手直接给出去，
+     * 兜底也就不需要了（P3 连同换意图补丁一起删）。
+     */
+    @Test
+    fun theStableExperimentRunsNamedToolsFromChatWithoutSwitchingIntent() =
+        kotlinx.coroutines.test.runTest {
+            var called = 0
+            val createPlan = object : AgentTool {
+                override val name: String = "create_learning_plan"
+                override val description: String = "建学习计划"
+                override val parameters: String = "计划参数"
+                override suspend fun call(arguments: JsonObject): ToolResult {
+                    called += 1
+                    return ToolResult("计划建好了")
+                }
+            }
+            val llm = ScriptedLlm(
+                mutableListOf(
+                    // ① Chat 流式回显：它决定动手。
+                    "我来排 {\"tool\":\"create_learning_plan\",\"arguments\":{}}",
+                    // ② 同一轮工具循环里真的调工具。
+                    "{\"tool\":\"create_learning_plan\",\"arguments\":{}}",
+                    // ③ 收尾。
+                    "{\"done\":true,\"message\":\"排好了\"}",
+                ),
+            )
+            val router = ManagerRouter(prompt(), listOf(createPlan), stableTools = true)
+            val agent = ManagerAgent(llm, router)
+            val logs = mutableListOf<String>()
+
+            val result = agent.respond(state = "", request = "每天 60 分钟", onLog = { logs += it })
+
+            assertEquals(AgentIntent.Chat, result.intent, "稳定模式不按工具名换意图")
+            assertEquals(1, called, result.transcript.joinToString("\n"))
+            assertTrue(result.ok, result.transcript.joinToString("\n"))
+            assertTrue(
+                logs.any { it.contains("稳定全量") },
+                "过程里要能看出实验开关开着：" + logs.joinToString("\n"),
+            )
+            assertFalse(
+                logs.any { it.contains("换到那条路") },
+                "稳定模式下不该再走换意图补丁：" + logs.joinToString("\n"),
+            )
+        }
 }
