@@ -211,7 +211,7 @@ $env:JAVA_HOME = "$env:USERPROFILE\.jdks\jdk17"; $env:Path = "$env:JAVA_HOME\bin
 1. **内核不认识领域。** `verifyKernelPurity` 在构建时挡住 `TaskStore` 这类东西（扫代码、跳过注释）。
 2. **失败必须隔离。** 一个插件崩溃、一个 manifest 写坏，都不影响其他插件。
 3. **禁止 `runCatching` 包插件调用。** 用 `guard { }`，它区分「超时」与「协程被取消」。
-4. **时间必须走 `ctx.clock`。** 禁止 `System.currentTimeMillis()`。
+4. **时间只有一个来源。** 业务时间走注入的时钟（内核/插件 `ctx.clock`，app 层 `TrellisClock`，计划后端 `LearningPlanStore.open(clock, zone)`）；生产代码禁止直接 `LocalDate.now()` / `Instant.now()` / `System.currentTimeMillis()` 取业务时间，时长/超时用单调时间。细则见 `docs/time-conventions.md`。
 5. **贡献点的注销由内核强制完成。** 插件怎么写都不影响「卸载无残留」。
 6. **报错要能指导修改。** 未知挂载点要列出全部可用值；能力要同时给标题和机器可读 id  Agent 只拿得到报错文本。
 7. **接口拆分时旧方法当场删。** 留着的死代码只会在半年后变成一次莫名其妙的编译错误。

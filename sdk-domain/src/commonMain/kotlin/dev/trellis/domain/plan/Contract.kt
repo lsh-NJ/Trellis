@@ -114,5 +114,36 @@ data class TodoRef(val todoId: String)
 @Serializable
 data class SettleResult(val week: String, val missedCount: Int, val carriedCount: Int, val pendingCarry: Int)
 
+/**
+ * 一次「计划自己往前滚」的结果。
+ *
+ * 节奏引擎每次被叫醒（应用启动、进计划页、跨天）都会对活跃计划跑一遍：
+ * 结算已经结束的周 → 生成复盘 → 从待安排池里给「本周 / 下周」补承诺 → 把承诺铺到天。
+ * 没有实际动作时返回全空列表 + 一句 [note]，不写库、不写事件。
+ */
+@Serializable
+data class RhythmResult(
+    val planId: String,
+    /** 跑这一次时所在的 ISO 周。 */
+    val week: String,
+    /** 这次结了哪几周的账（missed / 结转已经落库）。 */
+    val settledWeeks: List<String> = emptyList(),
+    /** 这次生成了哪几周的复盘。 */
+    val reviewedWeeks: List<String> = emptyList(),
+    /** 这次从池子里补了哪几周的承诺。 */
+    val appendedWeeks: List<String> = emptyList(),
+    /** 这次补承诺一共用了几个单元。 */
+    val appendedUnits: Int = 0,
+    /** 这次真正铺到天的周。 */
+    val scheduledWeeks: List<String> = emptyList(),
+    val missed: Int = 0,
+    val carried: Int = 0,
+    val carryPending: Int = 0,
+    /** 跑完之后池子里还剩几个单元。 */
+    val poolRemaining: Int = 0,
+    /** 一句人话，给计划页 / 日志用（「上周完成 3/5，这周补了 4 个单元」）。 */
+    val note: String = "",
+)
+
 @Serializable
 data class ReviewRef(val planId: String, val week: String, val reviewId: String)

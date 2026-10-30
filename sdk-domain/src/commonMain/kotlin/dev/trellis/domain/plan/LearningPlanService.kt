@@ -123,6 +123,19 @@ interface LearningPlanService {
 
     fun generateReview(env: CommandEnvelope, planId: String, week: String, today: String): CommandResult<ReviewRef>
 
+    /**
+     * 让计划自己往前滚一格（系统节奏，幂等）。
+     *
+     * 一次做四件事：①给「本周 / 下周」补承诺（从待安排池里取，已存在就跳过）；
+     * ②结算所有已经结束却还没结账的周（missed、最多结转 2 个）；
+     * ③为刚结账的周生成复盘；④把本周（周日额外加下周）铺到天。
+     *
+     * 只做「已经该发生」的事：没有实际动作时不写库、不写事件，返回空结果 + 一句 note。
+     * 触发时机由调用方决定（应用启动、进计划页、跨天），不是定时器；失败只返回错误，
+     * 不影响页面其它数据。
+     */
+    fun advanceRhythm(env: CommandEnvelope, planId: String): CommandResult<RhythmResult>
+
     // ---------------- 迁移 ----------------
 
     fun exportJsonl(planId: String): String

@@ -284,7 +284,13 @@ internal fun SqliteLearningPlanService.planDailyMinutes(planId: String): Int? =
         }
     }
 
-/** 把某周承诺铺成日任务：从今天开始，按「每天投入分钟数」往一天里塞，塞满换下一天。 */
+/**
+ * 把某周承诺铺成日任务：从今天开始，按「每天投入分钟数」往一天里塞，塞满换下一天。
+ *
+ * 幂等靠「单元级」判断而不是「这张承诺有没有任何行」：结转 / 顺延 / 拆分都会在同一张
+ * 承诺下留下行，以前那种「有一条就整周不铺」的判重会把整周剩下的单元吞掉。
+ * 已经排过的单元跳过；当天已经被占用的分钟数（典型来源：上周结转过来的两步）算进预算。
+ */
 internal fun SqliteLearningPlanService.materializeWeek(planId: String, versionId: String, week: String): Int {
     val commitmentId = connection.prepareStatement(
         "SELECT id FROM commitment WHERE plan_version_id = ? AND week = ?",
@@ -293,10 +299,6 @@ internal fun SqliteLearningPlanService.materializeWeek(planId: String, versionId
         ps.setString(2, week)
         ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
     } ?: return 0
-    if (connection.prepareStatement(
-            "SELECT 1 FROM occurrence WHERE commitment_id = ? LIMIT 1",
-        ).use { ps -> ps.setString(1, commitmentId); ps.executeQuery().use { it.next() } }
-    ) return 0
 
     val units = connection.prepareStatement(
         "SELECT u.id, u.title, u.estimate_minutes, u.min_version_minutes FROM commitment_unit cu " +
@@ -310,17 +312,39 @@ internal fun SqliteLearningPlanService.materializeWeek(planId: String, versionId
         }
     }
     if (units.isEmpty()) return 0
+
+    // 已经在这个承诺下落过地的单元：planned/done/missed/skipped 都算「处理过」。
+    // superseded 不算——顺延/拆分时旧行被 superseded，但同一 unit 会有一条新的 planned 行。
+    val placed = connection.prepareStatement(
+        "SELECT DISTINCT unit_id FROM occurrence WHERE commitment_id = ? AND unit_id IS NOT NULL " +
+            "AND status IN ('planned','done','missed','skipped')",
+    ).use { ps ->
+        ps.setString(1, commitmentId)
+        ps.executeQuery().use { rs ->
+            buildSet { while (rs.next()) add(rs.getString(1)) }
+        }
+    }
+
     val weekStart = PlanTime.weekStart(week)
     val today = today()
     var day = if (today in weekStart..weekStart.plusDays(6)) today else weekStart
     val dailyBudget = planDailyMinutes(planId)
-    var usedToday = 0
+    // 当天已被这张承诺占用的分钟数（结转行最常落在这天），从预算里先扣掉。
+    var usedToday = connection.prepareStatement(
+        "SELECT COALESCE(SUM(estimate_minutes), 0) FROM occurrence WHERE commitment_id = ? AND day = ? " +
+            "AND status IN ('planned','done')",
+    ).use { ps ->
+        ps.setString(1, commitmentId)
+        ps.setString(2, day.toString())
+        ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+    }
     var created = 0
     fun nextDay() {
         if (day < weekStart.plusDays(6)) day = day.plusDays(1)
         usedToday = 0
     }
     units.forEach { (unitId, minutes, _) ->
+        if (unitId in placed) return@forEach
         // 设了「每天投入」就按容量打包：当天再放会超预算就换下一天；单个单元本身超预算就独占一天。
         // 没设过投入时间时保持老规矩：一天只排一个。
         if (dailyBudget == null) {
@@ -435,6 +459,48 @@ internal fun SqliteLearningPlanService.cmdChangeCommitment(
             }
         }
         val mapped = unitIds.map { mapping[it] ?: return@write fail(ErrorCode.E_NOT_FOUND, "这个单元不在当前版本里。") }
+
+        // 把目标周之外的承诺原样复制到新版本。
+        // 以前只复制单元、只插目标周一条承诺：改一次本周，下周的承诺就从活跃版本里消失，
+        // 计划页的下周卡片会突然回到「待安排」，滚动推进直接断掉。
+        val otherCommitments = connection.prepareStatement(
+            "SELECT id, week FROM commitment WHERE plan_version_id = ? AND week <> ? ORDER BY week",
+        ).use { ps ->
+            ps.setString(1, versionId)
+            ps.setString(2, week)
+            ps.executeQuery().use { rs ->
+                buildList { while (rs.next()) add(rs.getString(1) to rs.getString(2)) }
+            }
+        }
+        otherCommitments.forEach { (oldCommitmentId, otherWeek) ->
+            val newCommitmentId = Ids.next("cm_")
+            connection.prepareStatement(
+                "INSERT INTO commitment(id,plan_version_id,week,created_at) VALUES(?,?,?,?)",
+            ).use { ps ->
+                ps.setString(1, newCommitmentId); ps.setString(2, newVersion)
+                ps.setString(3, otherWeek); ps.setString(4, nowIso()); ps.executeUpdate()
+            }
+            connection.prepareStatement(
+                "SELECT unit_id FROM commitment_unit WHERE commitment_id = ? ORDER BY sort_order",
+            ).use { ps ->
+                ps.setString(1, oldCommitmentId)
+                ps.executeQuery().use { rs ->
+                    var order = 0
+                    while (rs.next()) {
+                        val mappedUnit = mapping[rs.getString(1)] ?: continue
+                        connection.prepareStatement(
+                            "INSERT INTO commitment_unit(commitment_id,unit_id,sort_order) VALUES(?,?,?)",
+                        ).use { ins ->
+                            ins.setString(1, newCommitmentId)
+                            ins.setString(2, mappedUnit)
+                            ins.setInt(3, order++)
+                            ins.executeUpdate()
+                        }
+                    }
+                }
+            }
+        }
+
         val commitmentId = Ids.next("cm_")
         connection.prepareStatement(
             "INSERT INTO commitment(id,plan_version_id,week,created_at) VALUES(?,?,?,?)",
@@ -1078,11 +1144,14 @@ internal fun SqliteLearningPlanService.cmdScheduleTodo(
 /**
  * 只负责铺天，不改承诺。触发时机由调用方决定（这周变成当周、或周日提前铺下周）：
  * 重复调用不会重新排，也不会动已完成的行。
+ *
+ * 返回这次真铺出来的 occurrence 数；0 = 已经排过（或这周没承诺）。**没有新行就不写事件**，
+ * 因为节奏引擎每次启动都会调一遍，零动作也写审计会把 event 表刷满。
  */
-internal fun SqliteLearningPlanService.cmdScheduleWeek(
+internal fun SqliteLearningPlanService.cmdScheduleWeekCount(
     env: CommandEnvelope,
     week: String,
-): CommandResult<Unit> = write(env) {
+): CommandResult<Int> = write(env) {
     val planId = env.planId ?: return@write fail(ErrorCode.E_INVALID, "要指定是哪个计划。")
     if (!PlanTime.isWeekFormat(week)) {
         return@write fail(ErrorCode.E_INVALID, "周要写成 ISO 周（例：2026-W44）。")
@@ -1091,20 +1160,146 @@ internal fun SqliteLearningPlanService.cmdScheduleWeek(
     val versionId = currentVersion(planId)
         ?: return@write fail(ErrorCode.E_STATE, "这个计划还没有生效的版本。")
     val created = materializeWeek(planId, versionId, week)
-    appendEvent(
-        type = "week.scheduled",
-        entity = "plan",
-        entityId = planId,
-        planId = planId,
-        payload = eventJson(
-            "week" to JsonPrimitive(week),
-            "occurrences" to JsonPrimitive(created),
-        ),
-        actor = env.actor,
-        commandId = env.commandId,
-    )
+    if (created > 0) {
+        appendEvent(
+            type = "week.scheduled",
+            entity = "plan",
+            entityId = planId,
+            planId = planId,
+            payload = eventJson(
+                "week" to JsonPrimitive(week),
+                "occurrences" to JsonPrimitive(created),
+            ),
+            actor = env.actor,
+            commandId = env.commandId,
+        )
+    }
     ok(
-        Unit,
+        created,
         warnings = if (created == 0) listOf("这周已经排过了，没有重复排。") else emptyList(),
     )
 }
+
+internal fun SqliteLearningPlanService.cmdScheduleWeek(
+    env: CommandEnvelope,
+    week: String,
+): CommandResult<Unit> {
+    val result = cmdScheduleWeekCount(env, week)
+    return if (result.ok) {
+        ok(Unit, warnings = result.warnings)
+    } else {
+        CommandResult<Unit>(ok = false, error = result.error)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 周节奏：给活跃版本追加一条未来周的承诺（滚动的核心）
+// ---------------------------------------------------------------------------
+
+/**
+ * 在不新开版本的前提下，给当前活跃版本追加一条「某周」的承诺，单元从待安排池里来。
+ *
+ * 为什么不开新版本：`plan_unit` / `commitment` 的身份是按版本隔离的，新开一版会换掉 unit id，
+ * 已经铺过天的 occurrence 还挂在旧 unit id 上（身份列不可 UPDATE），计划页的「已完成」状态
+ * 和周卡片就会对不上。追加一条未来周的承诺不改任何旧行，是所有滚动排周里最安全的写法。
+ *
+ * 幂等：(版本, 周) 已有承诺时返回 0 + warning；单元必须属于当前版本、且还没被任何一周收走。
+ * 返回这次真正加进去的单元数。
+ */
+internal fun SqliteLearningPlanService.cmdExtendCommitment(
+    env: CommandEnvelope,
+    planId: String,
+    week: String,
+    unitIds: List<String>,
+    reason: String,
+): CommandResult<Int> {
+    if (!PlanTime.isWeekFormat(week)) {
+        return fail(ErrorCode.E_INVALID, "周要写成 ISO 周（例：2026-W44）。")
+    }
+    if (unitIds.isEmpty()) return fail(ErrorCode.E_INVALID, "这一周至少放一个单元，不然就变成放假了。")
+    return write(env) {
+        if (planStatus(planId) == null) return@write fail(ErrorCode.E_NOT_FOUND, "找不到这个计划。")
+        if (planStatus(planId) == "ended") return@write fail(ErrorCode.E_STATE, "这个计划已经结束了，不能再加周。")
+        val versionId = currentVersion(planId)
+            ?: return@write fail(ErrorCode.E_STATE, "这个计划还没有生效的版本。")
+        if (commitmentExists(versionId, week)) {
+            return@write ok(0, warnings = listOf("$week 已经有承诺了，没有重复加。"))
+        }
+        val committed = committedUnitIds(versionId)
+        val ordered = mutableListOf<Pair<Int, String>>()
+        unitIds.distinct().forEach { unitId ->
+            val row = unitRow(unitId) ?: return@write fail(ErrorCode.E_NOT_FOUND, "找不到单元「$unitId」。")
+            if (row.versionId != versionId) return@write fail(ErrorCode.E_INVALID, "「${row.title}」不在当前版本里。")
+            if (unitId in committed) return@write fail(ErrorCode.E_INVALID, "「${row.title}」已经排在别的周了。")
+            ordered += unitSortOrder(unitId) to unitId
+        }
+        val commitmentId = Ids.next("cm_")
+        connection.prepareStatement(
+            "INSERT INTO commitment(id,plan_version_id,week,created_at) VALUES(?,?,?,?)",
+        ).use { ps ->
+            ps.setString(1, commitmentId)
+            ps.setString(2, versionId)
+            ps.setString(3, week)
+            ps.setString(4, nowIso())
+            ps.executeUpdate()
+        }
+        ordered.sortedBy { it.first }.forEachIndexed { index, (_, unitId) ->
+            connection.prepareStatement(
+                "INSERT INTO commitment_unit(commitment_id,unit_id,sort_order) VALUES(?,?,?)",
+            ).use { ps ->
+                ps.setString(1, commitmentId)
+                ps.setString(2, unitId)
+                ps.setInt(3, index)
+                ps.executeUpdate()
+            }
+        }
+        appendEvent(
+            type = "plan.commitment_extended",
+            entity = "plan",
+            entityId = planId,
+            planId = planId,
+            payload = eventJson(
+                "week" to JsonPrimitive(week),
+                "unitIds" to JsonPrimitive(ordered.joinToString(",") { it.second }),
+                "reason" to JsonPrimitive(reason),
+            ),
+            actor = env.actor,
+            commandId = env.commandId,
+        )
+        ok(ordered.size)
+    }
+}
+
+/** 当前版本里已经挂到某一周承诺上的单元 id。 */
+internal fun SqliteLearningPlanService.committedUnitIds(versionId: String): Set<String> =
+    connection.prepareStatement(
+        "SELECT cu.unit_id FROM commitment_unit cu JOIN commitment c ON c.id = cu.commitment_id " +
+            "WHERE c.plan_version_id = ?",
+    ).use { ps ->
+        ps.setString(1, versionId)
+        ps.executeQuery().use { rs -> buildSet { while (rs.next()) add(rs.getString(1)) } }
+    }
+
+/** 当前版本里所有周承诺的周（升序）。 */
+internal fun SqliteLearningPlanService.commitmentWeeksOfVersion(versionId: String): List<String> =
+    connection.prepareStatement(
+        "SELECT week FROM commitment WHERE plan_version_id = ? ORDER BY week",
+    ).use { ps ->
+        ps.setString(1, versionId)
+        ps.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } }
+    }
+
+internal fun SqliteLearningPlanService.commitmentExists(versionId: String, week: String): Boolean =
+    connection.prepareStatement(
+        "SELECT 1 FROM commitment WHERE plan_version_id = ? AND week = ? LIMIT 1",
+    ).use { ps ->
+        ps.setString(1, versionId)
+        ps.setString(2, week)
+        ps.executeQuery().use { it.next() }
+    }
+
+internal fun SqliteLearningPlanService.unitSortOrder(unitId: String): Int =
+    connection.prepareStatement("SELECT sort_order FROM plan_unit WHERE id = ?").use { ps ->
+        ps.setString(1, unitId)
+        ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+    }
