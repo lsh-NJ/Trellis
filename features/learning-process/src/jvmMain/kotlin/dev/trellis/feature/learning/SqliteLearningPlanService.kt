@@ -474,6 +474,10 @@ internal class SqliteLearningPlanService(
     override fun scheduleUnit(env: CommandEnvelope, commitmentId: String, unitId: String, day: String) =
         cmdScheduleUnit(env, commitmentId, unitId, day)
 
+    override fun placeUnit(
+        env: CommandEnvelope, planId: String, week: String, unitId: String, day: String,
+    ) = cmdPlaceUnit(env, planId, week, unitId, day)
+
     override fun moveOccurrence(env: CommandEnvelope, occurrenceId: String, toDay: String, reason: String?) =
         cmdMoveOccurrence(env, occurrenceId, toDay, reason)
 

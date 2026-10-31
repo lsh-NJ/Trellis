@@ -293,8 +293,11 @@ class LearningPlanServiceTest {
         assertEquals(1, svc.today(planId, "2026-10-26").occurrences.size)
         assertEquals(2, svc.today(planId, "2026-10-27").occurrences.size)
 
+        // 日视图现在按路线索引排序，10-27 第一条是刚拆出来的 10 分钟片段；
+        // 这里要挑原来 20 分钟那一步来验「拆分总量必须相等」。
+        val twentyMinute = svc.today(planId, "2026-10-27").occurrences.first { it.minutes == 20 }
         val wrongTotal = svc.splitOccurrence(
-            env(planId), svc.today(planId, "2026-10-27").occurrences.first().id,
+            env(planId), twentyMinute.id,
             listOf(SplitPart("2026-10-27", 5), SplitPart("2026-10-28", 5)),
         )
         assertFalse(wrongTotal.ok)
