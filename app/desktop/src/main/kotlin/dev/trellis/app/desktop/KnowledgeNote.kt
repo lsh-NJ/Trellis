@@ -423,3 +423,71 @@ internal fun formatNoteMarkdown(note: KnowledgeNote, zone: ZoneId): String = bui
         append(note.body)
     }
 }
+
+// ---- 导出：给别的工具 / 人看的干净 Markdown（约定见 `docs/knowledge-base-draft.md` §12） ----
+
+private val exportHeadingPattern = Regex("^(#{1,6})\\s+(.+)$")
+
+/**
+ * 导出正文：frontmatter 不带出去，AI 标记还原成普通文字，标题作为一级标题补在最上面。
+ *
+ * 正文已经用同名标题开头（例如 `# **RAG** 检索增强`）时不再重复加标题；
+ * 其它情况（标题只存在 frontmatter、正文从段落或二级标题开始）才补 `# 标题`。
+ */
+internal fun exportNoteMarkdown(note: KnowledgeNote): String {
+    val cleanBody = cleanAiMarkersForExport(note.body)
+    val title = displayTitle(note.title)
+    val firstHeading = cleanBody.lineSequence()
+        .map { it.trim() }
+        .firstOrNull { it.isNotEmpty() }
+        ?.let { exportHeadingPattern.matchEntire(it) }
+        ?.let { stripInlineMarkdown(it.groupValues[2]) }
+    return buildString {
+        if (firstHeading != title) {
+            append("# ").append(title).append("\n\n")
+        }
+        append(cleanBody.trimEnd())
+        append('\n')
+    }
+}
+
+/**
+ * 把编辑器的 AI 标记还原成普通 Markdown 文字。
+ *
+ * - `{{…}}` → 去掉花括号，只留里面的内容；
+ * - `:::ai` / `:::` 围栏行删掉，块里的内容按原样保留；
+ * - fenced code（```）里一字不动——用户贴的代码里出现 `{{` 不该被改。
+ */
+internal fun cleanAiMarkersForExport(body: String): String {
+    val lines = body.replace("\r\n", "\n").split('\n')
+    val output = ArrayList<String>(lines.size)
+    var inCode = false
+    var inAiBlock = false
+    for (line in lines) {
+        val trimmed = line.trim()
+        if (inCode) {
+            if (trimmed.startsWith("```")) inCode = false
+            output += line
+            continue
+        }
+        if (trimmed.startsWith("```")) {
+            inCode = true
+            output += line
+            continue
+        }
+        if (inAiBlock) {
+            if (trimmed == AI_BLOCK_END) {
+                inAiBlock = false
+                continue
+            }
+            output += line
+            continue
+        }
+        if (trimmed == AI_BLOCK_START) {
+            inAiBlock = true
+            continue
+        }
+        output += line.replace(AI_INLINE_OPEN, "").replace(AI_INLINE_CLOSE, "")
+    }
+    return output.joinToString("\n")
+}

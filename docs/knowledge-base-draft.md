@@ -2,8 +2,8 @@
 
 > 对应 [pluginization-plan-2026-10-29.md](pluginization-plan-2026-10-29.md) 第 2 条「学习终端与知识体系」。
 > 第 1 条「计划自己推进」的讨论稿是 [plan-rhythm-draft.md](plan-rhythm-draft.md)，两篇**解耦**，互不前置。
-> 状态：讨论稿（2026-10-29）；P0 已落地（2026-10-30 两批 + 2026-10-31 第三至五批，见 §10）：
-> 笔记 + Markdown 编辑器（行内编辑/行外预览，§12）+ 概念抽取/点亮/熄灭/追溯/搜索 + 空位补全与 AI 内容标记（§11）。
+> 状态：讨论稿（2026-10-29）；P0 已落地（2026-10-30 两批 + 2026-10-31 第三至六批，见 §10）：
+> 笔记 + Markdown 编辑器（行内编辑/行外预览，§12）+ 概念抽取/点亮/熄灭/追溯/搜索 + 空位补全与 AI 内容标记（§11）+ 导出当前笔记为独立 Markdown。
 > 未做：导入外部 Markdown、别名/合并、sdk-domain 契约与 `:features:knowledge` 拆模块（§9 记录了取舍）。
 
 ## 0. 一句话
@@ -148,6 +148,12 @@
 
 **已知缺口**：编辑区无撤销/重做快捷键；手动删掉的概念，在同一篇笔记下次内容变化触发重抽时可能被 AI 再加回（`extractedBodies` 只防同内容重复抽取）；概念「定位」是选中片段，不是高亮滚动；窗口很窄时（< ~700dp）左侧笔记列 + 目录会挤掉编辑区，需要手动收起目录；AI 补全会改正文——用户正在打字时（保存后 2.5s 内）才同步回编辑缓冲，否则只落盘不覆盖编辑区（见 `applyExtracted` 的注释）。
 
+**已落地（2026-10-31，P0 第六批：导出 Markdown）**
+
+- 页头「导出」chip（`KnowledgeScreen.kt`）：把当前笔记（含还没落盘的编辑缓冲）导出成独立 `.md`。导出文件不带 frontmatter；`{{…}}` 去掉花括号、`:::ai` / `:::` 围栏行删掉（块里的内容保留）、fenced code 里一字不动；正文第一个非空行已经是同名标题时不再重复加 `# 标题`。
+- 纯函数在 `KnowledgeNote.kt`：`exportNoteMarkdown`（拼标题 + 清洗正文）、`cleanAiMarkersForExport`（逐行还原 AI 标记）；落盘与文件名在 `MarkdownExport.kt`：`markdownExportFileName`（清掉 `/:*?"<>|` 等非法字符、空标题用「无标题笔记」）、`chooseMarkdownExportFile`（AWT `FileDialog` 系统保存面板，没写扩展名自动补 `.md`）、`writeMarkdownExport`（UTF-8，无 BOM）。用户取消不报错；失败在页头消息区显示「导出失败：…」。
+- 测试：`MarkdownExportTest`（8 个用例：标题只出现一次 / 去 frontmatter / `{{…}}` 还原 / `:::ai` 围栏去掉 / 代码块原样 / 文件名清理 / 正文保持 Markdown）。
+
 ## 11. AI 补全与 AI 内容标记（2026-10-31 定稿）
 
 三种标记都写在正文里、明文可见、可编辑、可删除；渲染只在预览层发生，**不把大引号字符写进正文**（普通 `“ ”` 照常渲染，两者在颜色/字号上就能区分）。
@@ -182,6 +188,7 @@
 | 菜单 | 页头「菜单」chip：动作在前、按键在后、按键按平台显示；点空白处关闭 | `MarkdownEditor.kt` |
 | 本篇概念 | 右栏当前笔记的 chips：点开概念详情、× 熄灭、输入框回车添加 | `KnowledgePanels.kt` |
 | 全局概念 | 左栏「概念」tab：所有概念与来源；点进详情看「来源」和「常一起出现」 | `KnowledgePanels.kt` |
+| 导出 | 页头「导出」chip：把当前笔记存成独立 `.md`（去 frontmatter、`{{…}}` 还原成文字、`:::ai` 围栏去掉；正文已有同名标题就不重复加标题）；选位置用系统原生保存面板 | `KnowledgeScreen.kt` / `MarkdownExport.kt` / `KnowledgeNote.kt` |
 
 几条约定：
 
