@@ -58,6 +58,11 @@ private class RuntimeHolder {
     var runtime: AppRuntime? = null
 }
 
+/** 数据根目录：和 AppRuntime 同一套解析（TRELLIS_HOME 优先），日志也落在同一个根下。 */
+private fun trellisHomeDir(): java.io.File =
+    System.getenv("TRELLIS_HOME")?.takeIf { it.isNotBlank() }?.let { java.io.File(it) }
+        ?: java.io.File(System.getProperty("user.home"), ".trellis")
+
 /**
  * 闪退日志。
  *
@@ -66,7 +71,7 @@ private class RuntimeHolder {
  * 出问题时至少有个地方能看。
  */
 private fun installCrashLog() {
-    val logFile = java.io.File(System.getProperty("user.home"), ".trellis/app.log")
+    val logFile = java.io.File(trellisHomeDir(), "app.log")
     Thread.setDefaultUncaughtExceptionHandler { _, t ->
         runCatching {
             logFile.parentFile?.mkdirs()
@@ -84,6 +89,8 @@ private fun installCrashLog() {
 
 fun main() {
     installCrashLog()
+    // 只在 TRELLIS_DEV=1 时启动；卡死时自动把线程栈写进 app.log。
+    UiWatchdog.startIfEnabled(trellisHomeDir())
     val holder = RuntimeHolder()
 
     application {

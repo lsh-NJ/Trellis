@@ -2071,6 +2071,14 @@ class AppRuntime private constructor() {
         private set
 
     /**
+     * 逾期投影：本周已经过期还没做的节点（按路线顺序）+ 更早周欠下的单元。
+     *
+     * 只读，由 `overdue` 查询现算；计划页「待处理」卡片靠它渲染，不在这里做推荐。
+     */
+    var planOverdue by mutableStateOf<OverdueView?>(null)
+        private set
+
+    /**
      * 计划设置弹窗是否打开。
      *
      * 这是「计划自己的属性」，不是全局设置：同一台机器上不同计划可以是不一样的每天投入，
@@ -2276,6 +2284,7 @@ class AppRuntime private constructor() {
             val rhythmReports = advancePlanRhythm(service)
             todoPlanNodes = collectTodoPlanNodes(service)
             planCategories = planCategoryStore.load()
+            val today = clock.today().toString()
             val planId = planFocusId?.takeIf { id -> planAll.any { it.id == id } }
                 ?: service.activePlanId()
                 ?: planAll.firstOrNull()?.id
@@ -2288,12 +2297,14 @@ class AppRuntime private constructor() {
                 planDayView = null
                 planPool = emptyList()
                 planRhythmReport = null
+                planOverdue = null
                 planMessage = null
                 return
             }
             planRhythmReport = rhythmReports[planId]
             val state = service.planState(planId)
             planDailyMinutes = state.dailyMinutes
+            planOverdue = runCatching { service.overdue(planId, today) }.getOrNull()
 
             val map = service.map(planId)
             planTitle = map.planTitle.ifBlank { state.title }
@@ -2496,6 +2507,113 @@ class AppRuntime private constructor() {
         refreshPlan()
         tick++
     }
+
+    // ---------------- 逾期项的三种手动处理（计划页「待处理」卡片） ----------------
+
+    /**
+     * 逾期项：挪到今天补做。
+     *
+     * 不检查今天还剩多少分钟——这是用户明确点的「今天做掉」，容量由人判断；
+     * 真做不完时还能再顺延或跳过。
+     */
+    fun planDoToday(occurrenceId: String) {
+        planMoveOccurrence(occurrenceId, clock.today().toString(), "今天补做")
+    }
+
+    /** 逾期项：往后顺延一天；已经到周日就提示等周结算，不硬塞到下周。 */
+    fun planDeferOneDay(occurrenceId: String) {
+        val overdue = planOverdue
+        val weekEnd = overdue?.let { isoWeekMonday(it.week) }?.plusDays(6)
+        val today = clock.today()
+        val sourceDay = overdue?.thisWeek?.firstOrNull { it.occurrenceId == occurrenceId }?.day
+            ?.let { day -> runCatching { LocalDate.parse(day) }.getOrNull() }
+        val target = maxOf(today.plusDays(1), sourceDay?.plusDays(1) ?: today.plusDays(1))
+        if (weekEnd == null || target > weekEnd) {
+            planMessage = "这周已经排到周日了，顺延不过去；可以先做掉，或者等周结算把它放进欠账池。"
+            return
+        }
+        planMoveOccurrence(occurrenceId, target.toString(), "顺延一天")
+    }
+
+    /** 逾期项：今天先跳过。只标这一天不做，不释放本周承诺；周结算时会按事实处理。 */
+    fun planSkipToday(occurrenceId: String) {
+        val service = learningPlan() ?: return
+        val planId = learningPlanId ?: return
+        val result = runCatching {
+            service.skipOccurrence(planAdjustCommand(planId), occurrenceId, "今天先跳过")
+        }.getOrElse {
+            planMessage = "这次没跳过：" + (it.message ?: "未知原因")
+            null
+        }
+        if (result != null && !result.ok) planMessage = result.error?.message
+        refreshPlan()
+        tick++
+    }
+
+    /**
+     * 今天能多补多少：先记下用户答复的加时，再把本周逾期、且今天装得下的项补进来。
+     *
+     * 只补「今天容量 = 每天投入 + 加时 - 今天已排」以内的，按路线顺序；
+     * 装不下的留在原处，等用户再顺延/跳过，或交给下一步的协商重排。
+     */
+    fun planCatchUpToday(extraMinutes: Int) {
+        val service = learningPlan() ?: return
+        val planId = learningPlanId ?: return
+        val overdue = planOverdue ?: return
+        val clean = extraMinutes.coerceIn(0, MAX_CATCH_UP_MINUTES)
+        // 偏好先落盘：下次计划检查问「今天能多投入多少」时，默认值就是它。
+        val prefs = studyPrefs.copy(catchUpMinutes = clean).normalized()
+        studyPrefs = prefs
+        if (::studyPrefsStore.isInitialized) studyPrefsStore.save(prefs)
+        val today = clock.today().toString()
+        val plannedToday = runCatching { service.today(planId, today) }
+            .getOrNull()?.occurrences?.sumOf { it.minutes } ?: 0
+        var remaining = (planDailyMinutes ?: overdue.dailyMinutes ?: DEFAULT_DAILY_MINUTES) +
+            clean - plannedToday
+        var moved = 0
+        overdue.thisWeek.forEach { item ->
+            if (item.minutes <= remaining) {
+                val result = runCatching {
+                    service.moveOccurrence(planAdjustCommand(planId), item.occurrenceId, today, "今天补做")
+                }.getOrNull()
+                if (result?.ok == true) {
+                    remaining -= item.minutes
+                    moved++
+                }
+            }
+        }
+        val leftover = overdue.thisWeek.size - moved
+        planMessage = when {
+            moved == 0 && leftover > 0 ->
+                "今天没有余量了：把每天投入或加时调大，或者把这几条顺延/跳过。"
+            leftover > 0 -> "今天补了 " + moved + " 项（记下加时 " + clean + " 分钟），还剩 " + leftover + " 项放不下。"
+            moved > 0 -> "今天补了 " + moved + " 项，本周逾期的都排上了（加时 " + clean + " 分钟）。"
+            else -> "这周没有逾期的项。"
+        }
+        refreshPlan()
+        tick++
+    }
+
+    private fun planMoveOccurrence(occurrenceId: String, toDay: String, reason: String) {
+        val service = learningPlan() ?: return
+        val planId = learningPlanId ?: return
+        val result = runCatching {
+            service.moveOccurrence(planAdjustCommand(planId), occurrenceId, toDay, reason)
+        }.getOrElse {
+            planMessage = "没挪成：" + (it.message ?: "未知原因")
+            null
+        }
+        if (result != null && !result.ok) planMessage = result.error?.message
+        refreshPlan()
+        tick++
+    }
+
+    private fun planAdjustCommand(planId: String): CommandEnvelope = CommandEnvelope(
+        commandId = "cmd_" + java.util.UUID.randomUUID().toString().replace("-", ""),
+        actor = Actor.USER,
+        planId = planId,
+        origin = "ui.plan.adjust",
+    )
 
     /** 这份计划的第一周早于本周：说明周次写错了（模型曾把 ISO 周写成去年）。 */
     val planStartsInPast: Boolean
