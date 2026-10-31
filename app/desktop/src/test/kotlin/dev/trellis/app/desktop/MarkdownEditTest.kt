@@ -7,7 +7,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 /**
- * Markdown 编辑变换的测试：工具栏按钮和快捷键都靠这几个纯函数。
+ * Markdown 编辑变换的测试：斜杠命令和快捷键都靠这几个纯函数。
  *
  * 重点钉两类事故：选区边界把字吃掉、光标位置在变换后飞到别处。
  */
@@ -121,5 +121,46 @@ class MarkdownEditTest {
     fun enterInMiddleOfLineIsNotIntercepted() {
         assertNull(continueMarkdownList(collapsed("abc", 1)))
         assertNull(continueMarkdownList(TextFieldValue("plain", TextRange(5))))
+    }
+
+    @Test
+    fun horizontalRuleGetsItsOwnLine() {
+        val afterText = insertHorizontalRule("上一段", TextRange(3))
+        assertEquals("上一段\n---", afterText.text)
+        assertEquals(7, afterText.selection.min)
+
+        val atStart = insertHorizontalRule("下一段", TextRange(0))
+        assertEquals("---\n下一段", atStart.text)
+        assertEquals(3, atStart.selection.min)
+    }
+
+    @Test
+    fun horizontalRuleDoesNotDoubleTheNewline() {
+        val result = insertHorizontalRule("a\n", TextRange(2))
+        assertEquals("a\n---", result.text)
+    }
+
+    @Test
+    fun taskListAppliesAndTogglesOff() {
+        val on = toggleTaskList("a\nb", TextRange(0, 3))
+        assertEquals("- [ ] a\n- [ ] b", on.text)
+
+        val off = toggleTaskList("- [ ] a\n- [x] b", TextRange(0, 15))
+        assertEquals("a\nb", off.text)
+    }
+
+    @Test
+    fun clearHeadingStripsOneToSixHashes() {
+        assertEquals("标题", clearHeading("## 标题", TextRange(0, 4)).text)
+        assertEquals("正文", clearHeading("###### 正文", TextRange(0, 4)).text)
+        assertEquals("没有标题", clearHeading("没有标题", TextRange(0, 4)).text)
+    }
+
+    @Test
+    fun imageWrapsSelectionWithAltText() {
+        val result = insertMarkdownImage("架构图", TextRange(0, 3))
+        assertEquals("![架构图](url)", result.text)
+        assertEquals(7, result.selection.min)
+        assertEquals(10, result.selection.max)
     }
 }

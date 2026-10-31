@@ -85,6 +85,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     var definitionStatus by remember(selectedConcept) { mutableStateOf("") }
     var revealRange by remember { mutableStateOf<TextRange?>(null) }
     var revealToken by remember { mutableStateOf(0) }
+    var shortcutsOpen by remember { mutableStateOf(false) }
     var pendingReveal by remember { mutableStateOf<PendingReveal?>(null) }
     var extracting by remember { mutableStateOf(false) }
     // 记「哪个正文已经整理过」：避免同一次编辑里反复调模型（页面重进时不需要持久化）。
@@ -238,6 +239,12 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         selectedId = runtime.knowledgeNoteId?.takeIf { store.exists(it) } ?: notes.firstOrNull()?.id
     }
 
+    // 预览态没有输入框，焦点会掉到「没有接收者」——Ctrl/Cmd+S、Ctrl/Cmd+/ 就收不到了。
+    // 切到预览时把焦点交给页面根；切回编辑时编辑器会自己抢回来。
+    LaunchedEffect(preview) {
+        if (preview) pageFocus.requestFocus()
+    }
+
     // 切换选中：从文件载入。读不到（被外部删了）就退到下一篇。
     LaunchedEffect(selectedId) {
         val id = selectedId
@@ -361,7 +368,16 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
             .focusable()
             .onPreviewKeyEvent { event ->
                 val command = event.isCtrlPressed || event.isMetaPressed
-                if (event.type == KeyEventType.KeyDown && command) {
+                if (event.type != KeyEventType.KeyDown) {
+                    false
+                } else if (command && event.key == Key.Slash) {
+                    // 快捷键清单挂在页面上：预览态没有输入框，按键本来也只会走到这里。
+                    shortcutsOpen = !shortcutsOpen
+                    true
+                } else if (event.key == Key.Escape && shortcutsOpen) {
+                    shortcutsOpen = false
+                    true
+                } else if (command) {
                     when (event.key) {
                         Key.S -> {
                             persistNow(); message = "已保存"; true
@@ -511,6 +527,8 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                             onTogglePreview = { preview = !preview },
                             statusText = status,
                             modifier = Modifier.weight(1f),
+                            shortcutsOpen = shortcutsOpen,
+                            onToggleShortcuts = { shortcutsOpen = !shortcutsOpen },
                             reveal = revealRange,
                             revealToken = revealToken,
                         )
