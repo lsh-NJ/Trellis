@@ -247,8 +247,9 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     }
 
     // 进页面：接回上次那篇（AppRuntime 记着），没有就选最近更新的。
+    // 焦点请求要等布局跑完，否则焦点节点还没挂上（见 MarkdownEditor.requestFocusWhenReady）。
     LaunchedEffect(Unit) {
-        pageFocus.requestFocus()
+        pageFocus.requestFocusWhenReady()
         selectedId = runtime.knowledgeNoteId?.takeIf { store.exists(it) } ?: notes.firstOrNull()?.id
     }
 

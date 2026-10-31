@@ -27,6 +27,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -87,8 +88,10 @@ internal fun MarkdownEditor(
     }
 
     // 打开/切换笔记就把焦点交给编辑区：进来就能打字，快捷键也不用先点一下。
-    LaunchedEffect(noteId) {
-        if (noteId.isNotEmpty()) focus.requestFocus()
+    // 预览态没有 BasicTextField，focusRequester 没挂上，不能请求焦点。
+    LaunchedEffect(noteId, preview) {
+        if (noteId.isEmpty() || preview) return@LaunchedEffect
+        focus.requestFocusWhenReady()
     }
 
     // 概念详情点「定位」：选中命中处并把焦点交回编辑区（预览态没有光标，切回编辑再选）。
@@ -99,7 +102,7 @@ internal fun MarkdownEditor(
         val start = requested.start.coerceIn(0, body.length)
         val end = requested.end.coerceIn(start, body.length)
         field = TextFieldValue(body, selection = TextRange(start, end))
-        focus.requestFocus()
+        focus.requestFocusWhenReady()
     }
 
     fun apply(result: MarkdownEditResult) {
@@ -258,6 +261,28 @@ private fun MarkdownPreview(
             )
         }
     }
+}
+
+/**
+ * 安全地请求焦点：焦点节点要等这一帧布局跑完才挂得上，而 LaunchedEffect 在首帧布局之前
+ * 就可能执行；这时直接 `requestFocus()` 会抛 `FocusRequester is not initialized`，
+ * 异常没人接会把整个组合取消掉——窗口还在，但界面不再响应（表现为卡死，只能重启）。
+ *
+ * 所以先等一帧，失败再等一帧重试，最多三次；仍然失败就安静放弃：焦点不是功能必需，
+ * 不能让它把页面弄崩。调用点：进编辑区自动聚焦、概念「定位」后把焦点交回正文。
+ */
+internal suspend fun FocusRequester.requestFocusWhenReady(): Boolean {
+    repeat(3) {
+        withFrameNanos { }
+        val focused = try {
+            requestFocus()
+            true
+        } catch (notReady: IllegalStateException) {
+            false
+        }
+        if (focused) return true
+    }
+    return false
 }
 
 /** 工具栏的小按钮：比 [ChromeButton] 矮一档，一行放得下十几个。 */
