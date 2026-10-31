@@ -84,6 +84,9 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
             if (runtime.isSimulatingTime) item { PlanSimulatedBanner(runtime) }
             if (runtime.planStartsInPast) item { PlanStaleBanner(runtime) }
             if (runtime.planRhythmHasNews) item { PlanRhythmCard(runtime) }
+            if (runtime.planOverdue?.let { it.thisWeek.isNotEmpty() || it.backlog.isNotEmpty() } == true) {
+                item { PlanOverdueCard(runtime) }
+            }
 
             if (runtime.planTitle == null) {
                 item { PlanEmpty(runtime) }
@@ -178,6 +181,94 @@ private fun PlanStaleBanner(runtime: AppRuntime) {
             }
             Spacer(Modifier.width(12.dp))
             ChromeButton(label = "挪到本周", onClick = { runtime.repairPastPlan() })
+        }
+    }
+}
+
+/**
+ * 「待处理」：本周到期没做完的项 + 更早欠下的单元。
+ *
+ * 只做 occurrence 级的轻量动作（今天做 / 顺延一天 / 跳过）和一排加时按钮。
+ * 「这周先不排」没有放上来：活跃版本的承诺单元不可删改（schema 触发器拦着），
+ * 移出承诺要开新版本，等 AI 协商重排那条路一起做。
+ */
+@Composable
+private fun PlanOverdueCard(runtime: AppRuntime) {
+    val overdue = runtime.planOverdue ?: return
+    PlanCard {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "待处理",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "今天到周日还剩约 " + overdue.remainingMinutes + " 分钟",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (overdue.thisWeek.isNotEmpty()) {
+                Text(
+                    "本周有 " + overdue.thisWeek.size + " 项到期没做完",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                overdue.thisWeek.forEach { item ->
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(item.title, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            item.chapter.ifBlank { "第 " + (item.sortOrder + 1) + " 节" } +
+                                " · " + item.minutes + " 分钟 · 原定 " + item.day.takeLast(5),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            TextButton(onClick = { runtime.planDoToday(item.occurrenceId) }) {
+                                Text("今天做", style = MaterialTheme.typography.labelMedium)
+                            }
+                            TextButton(onClick = { runtime.planDeferOneDay(item.occurrenceId) }) {
+                                Text("顺延一天", style = MaterialTheme.typography.labelMedium)
+                            }
+                            TextButton(onClick = { runtime.planSkipToday(item.occurrenceId) }) {
+                                Text("跳过", style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+                    }
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        "今天能多投入？",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    listOf(0, 30, 60, 90).forEach { minutes ->
+                        TextButton(onClick = { runtime.planCatchUpToday(minutes) }) {
+                            Text(
+                                if (minutes == 0) "不加时" else "+" + minutes + " 分钟",
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
+                    }
+                }
+            }
+            if (overdue.backlog.isNotEmpty()) {
+                Text(
+                    "更早欠下的 " + overdue.backlog.size + " 项（容量够时会自动收进本周/下一周，也可以让 AI 重排）",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                overdue.backlog.take(5).forEach { unit ->
+                    Text(
+                        "· " + unit.title + " · " + unit.estimateMinutes + " 分钟",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
         }
     }
 }

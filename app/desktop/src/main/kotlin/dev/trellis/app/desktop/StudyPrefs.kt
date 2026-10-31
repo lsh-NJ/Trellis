@@ -19,10 +19,20 @@ import kotlinx.serialization.json.put
  */
 data class StudyPrefs(
     val dailyMinutes: Int = DEFAULT_DAILY_MINUTES,
+    /**
+     * 用户上次答复的「今天能多投入多少分钟」（0 = 不加班）。
+     *
+     * 计划检查问过一次就记住，下次推荐容量默认带上它；用户在对话里拒绝一次，
+     * 下次就不再把加时当成默认值。它只影响「今天补做多少」的建议，不改每天投入。
+     */
+    val catchUpMinutes: Int = 0,
 ) {
     /** 收进合法区间。越界的输入不报错，界面按钮和 agent 都靠这一处夹取。 */
     fun normalized(): StudyPrefs =
-        copy(dailyMinutes = dailyMinutes.coerceIn(MIN_DAILY_MINUTES, MAX_DAILY_MINUTES))
+        copy(
+            dailyMinutes = dailyMinutes.coerceIn(MIN_DAILY_MINUTES, MAX_DAILY_MINUTES),
+            catchUpMinutes = catchUpMinutes.coerceIn(0, MAX_CATCH_UP_MINUTES),
+        )
 
     /**
      * 写进学习计划 `process.weekly_capacity_minutes` 的值：一天 × 7。
@@ -39,6 +49,7 @@ data class StudyPrefs(
 internal const val DEFAULT_DAILY_MINUTES: Int = 60
 internal const val MIN_DAILY_MINUTES: Int = 15
 internal const val MAX_DAILY_MINUTES: Int = 240
+internal const val MAX_CATCH_UP_MINUTES: Int = 120
 
 /** 落盘在宿主目录的 `study.json`；坏文件当没改过，不阻断启动。 */
 internal class StudyPrefsStore(home: File) {
@@ -52,6 +63,7 @@ internal class StudyPrefsStore(home: File) {
             ?: return StudyPrefs()
         return StudyPrefs(
             dailyMinutes = obj["dailyMinutes"]?.jsonPrimitive?.intOrNull ?: DEFAULT_DAILY_MINUTES,
+            catchUpMinutes = obj["catchUpMinutes"]?.jsonPrimitive?.intOrNull ?: 0,
         ).normalized()
     }
 
@@ -60,7 +72,10 @@ internal class StudyPrefsStore(home: File) {
         runCatching {
             file.parentFile?.mkdirs()
             file.writeText(
-                buildJsonObject { put("dailyMinutes", clean.dailyMinutes) }.toString(),
+                buildJsonObject {
+                    put("dailyMinutes", clean.dailyMinutes)
+                    if (clean.catchUpMinutes > 0) put("catchUpMinutes", clean.catchUpMinutes)
+                }.toString(),
                 Charsets.UTF_8,
             )
         }
