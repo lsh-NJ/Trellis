@@ -47,10 +47,12 @@ class GoalTools(
         "用户说的是自己的长期目标（考研 / 求职 / 学一门手艺）时走 goal_plan，不要只回一段安慰的话。",
         "1. 第一次只调 action=start，statement 放**用户原话**，一个字都不要润色：" +
             "他说「想考研」就写「想考研」，写成「备考 211 计算机」会让后面所有判断失去锚点。",
-        "2. 工具会回「这一轮问」两个字段。把这两个原样问用户，一轮最多两个；" +
-            "用户说不知道就调 action=skip，不要换个说法再问一遍同一个点。",
-        "3. 信息够了（或问满三轮）调 action=draft 出计划；把今天几条、共多少分钟念给用户，" +
-            "他说行再 action=confirm。没确认之前不要说「已经开始了」。",
+        "2. **不要在对话里逐条问目标信息**：右侧卡片会自己问，用户点选项就写进契约。" +
+            "你只要说一句「右边卡片上点一下就能答」，最多重复一次；用户接着说的话用 action=answer 收下。",
+        "3. 用户答完（或问满三轮）再由他点卡片上的「出计划」；" +
+            "你也可以 action=draft，但还有字段没问完时工具会拒绝 —— 不要绕过它硬塞。" +
+            "出完**照抄工具回的**「今天 N 条 · M 分钟」，不要自己换算、也不要承诺「按 X 分钟排满」——" +
+            "计划是按可执行的条目拼出来的，不是把时长填满。他说行再 action=confirm，没确认之前不要说「已经开始了」。",
         "4. 目标只有方向、还没定死时，不要替他挑学校或公司 —— 计划里已经排了一条「查 N 所」的决策任务，" +
             "那是他自己的事。",
         "5. 改目标用 action=answer 改具体字段（不要用 start 覆盖整份契约），复盘结束用 action=review_done。",
@@ -124,8 +126,21 @@ class GoalTools(
                 }
 
                 "draft" -> {
+                    // 还有字段没问完就不许出计划：之前模型一上来就 draft+confirm，
+                    // 结果卡片上是一份按全局 15 分钟排出来的「考研计划」，
+                    // 而对话里还在问「每天能投入多久」—— 两边说的不是同一件事。
+                    val pending = GoalEngine.questions(target.mirror())
+                    if (pending.isNotEmpty()) {
+                        return ToolResult(
+                            "还有 " + pending.size + " 个字段没问完（" +
+                                pending.joinToString("、") { it.label } +
+                                "）。这些由右侧卡片负责，等用户在卡片上答完再调 draft，" +
+                                "不要替他跳过采集。",
+                            isError = true,
+                        )
+                    }
                     val minutes = arguments.int("dailyMinutes") ?: dailyMinutes()
-                    target.update { GoalEngine.toDraft(it, today(), minutes.coerceIn(5, 240)) }
+                    target.update { GoalEngine.toDraft(it, today(), minutes) }
                 }
 
                 "confirm" -> target.update { GoalEngine.confirm(it) }
@@ -178,9 +193,9 @@ class GoalTools(
 
         val asking = GoalEngine.questions(mirror)
         if (asking.isNotEmpty()) {
-            append("\n[这一轮问] ")
+            append("\n[卡片正在问] ")
             append(asking.joinToString("、") { it.label + "（" + it.name + "）" })
-            append("。一次只问这两个，用户答完再调 answer。")
+            append("。这些由右侧卡片展示给用户，你不用在对话里重复问；用户直接说出来时用 action=answer 收下。")
         } else if (mirror.phase == GoalPhase.COLLECTING) {
             append("\n[下一步] 信息够了或已经问满 ")
             append(Confidence.MAX_ROUNDS)

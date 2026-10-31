@@ -33,6 +33,7 @@ class IntentToolsTest {
         tool("search_bilibili"),
         tool("add_tasks"),
         tool("set_plan"),
+        tool("goal_plan"),
     )
 
     private fun names(intent: AgentIntent) = toolsForIntent(intent, all).map { it.name }
@@ -67,7 +68,8 @@ class IntentToolsTest {
 
     @Test
     fun chatHasNoHandsAtAll() {
-        assertEquals(emptyList(), names(AgentIntent.Chat))
+        // 聊天只留一只写目标的工具，其余一律不给（见 toolsForIntent 的注释）。
+        assertEquals(listOf("goal_plan"), names(AgentIntent.Chat))
     }
 
     @Test

@@ -94,6 +94,34 @@ class GoalToolsTest {
         runtime.shutdown()
     }
 
+    /**
+     * 采集还没完成时不许出计划。
+     *
+     * 实测事故：模型第一轮就把 start → draft → confirm 全跑完，
+     * 卡片上出现一份按全局 15 分钟排的「考研计划」，对话里却还在问「每天能投入多久」。
+     * 两边各说各的，用户看到的就是「对话和右边的规划完全不相干」。
+     */
+    @Test
+    fun draftingIsRefusedWhileQuestionsRemain() = runTest {
+        val runtime = AppRuntime.create(tempHome())
+        val tool = GoalTools(
+            service = { runtime.goalPlugin?.serviceOrNull() },
+            dailyMinutes = { 15 },
+            today = { today },
+            nowMs = { 0L },
+        ).all.single()
+
+        tool.call(step("start", "statement" to "我想考研", "kind" to "academic"))
+        val refused = tool.call(step("draft"))
+
+        assertTrue(refused.isError, "还有字段没问完就出计划，必须被拒绝")
+        assertTrue(refused.content.contains("右侧卡片"), "要指向真正的答题位置：" + refused.content)
+        assertEquals(GoalPhase.COLLECTING, runtime.goalPlugin?.serviceOrNull()?.mirror()?.phase)
+        assertEquals(null, runtime.goalPlugin?.serviceOrNull()?.mirror()?.dayPlan(today), "拒绝之后不该留下任何日计划")
+
+        runtime.shutdown()
+    }
+
     @Test
     fun aWrongFieldNameComesWithTheFullList() = runTest {
         val runtime = AppRuntime.create(tempHome())

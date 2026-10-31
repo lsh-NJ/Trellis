@@ -90,9 +90,10 @@ private val TOOL_INTENTS: Map<String, Set<AgentIntent>> = mapOf(
     "add_tasks" to setOf(AgentIntent.FindResource),
     // 计划页：用户点「排成学习计划」时要真的写进计划库，不是只写这一轮的动作清单
     "create_learning_plan" to setOf(AgentIntent.FindResource),
-    // 长期目标：只在「找资源 / 排学习」这一类里出现。聊天意图按设计不给任何工具，
-    // 所以「我想考研」这种话必须被判成 FindResource 才走得到这里（见 Intent.kt 的 resourceWords）。
-    "goal_plan" to setOf(AgentIntent.FindResource),
+    // 长期目标：聊天也要给。用户的「我想考研」「每天 10 小时」都判不成别的意图，
+    // 不给这只工具，对话里就没法把目标记下来 —— 这正是用户实测反馈的那一句
+    // 「这一轮我手里没有建计划的工具」。
+    "goal_plan" to setOf(AgentIntent.FindResource, AgentIntent.Chat),
 
     // 清单：多步活都要，聊天不要
     "set_plan" to setOf(AgentIntent.CreatePlugin, AgentIntent.ManagePlugin, AgentIntent.ArrangeUi, AgentIntent.FindResource),
@@ -106,7 +107,11 @@ private val DEFAULT_INTENTS: Set<AgentIntent> = setOf(AgentIntent.CreatePlugin, 
 
 /** 按意图选工具（单选）：不在归属表里的工具按 [DEFAULT_INTENTS] 处理。 */
 internal fun toolsForIntent(intent: AgentIntent, all: List<AgentTool>): List<AgentTool> {
-    if (intent == AgentIntent.Chat) return emptyList()
+    // 以前这里有一句 `if (intent == Chat) return emptyList()`：聊天一律不给工具。
+    // 那条规则在「目标靠对话建立」之后站不住了 —— 用户在对话里说「我想考研」「每天 10 小时」，
+    // 这些句子判不出意图、只能判成聊天，于是模型手里什么都没有，只能回一句
+    // 「这一轮我手里没有工具」。现在改成按归属表放行：只有**明确登记给聊天**的工具才出现，
+    // 目前只有 goal_plan 一只（它只写用户自己的目标契约，不改宿主、不碰外部世界）。
     return all.filter { tool ->
         (TOOL_INTENTS[tool.name] ?: DEFAULT_INTENTS).contains(intent)
     }

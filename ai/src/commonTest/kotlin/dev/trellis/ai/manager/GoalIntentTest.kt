@@ -27,16 +27,19 @@ class GoalIntentTest {
     }
 
     @Test
-    fun theGoalToolIsOnlyHandedToThePlanningIntent() {
-        val tools = listOf(FakeTool("goal_plan"), FakeTool("search_bilibili"))
+    fun theGoalToolIsHandedToChatTooButNothingElseIs() {
+        val tools = listOf(FakeTool("goal_plan"), FakeTool("search_bilibili"), FakeTool("deploy"))
 
         assertTrue(
             toolsForIntent(AgentIntent.FindResource, tools).any { it.name == "goal_plan" },
             "找资源/排计划这条路上必须带 goal_plan，否则模型没法把目标写进去",
         )
-        assertTrue(
-            toolsForIntent(AgentIntent.Chat, tools).isEmpty(),
-            "聊天不给工具，这是设计约束，不是漏配",
+        // 聊天也要这一只：用户说「每天 10 小时」时判不出别的意图，
+        // 手里没有它就只能在对话里回一句「我没有工具」（实测就是这么撞上的）。
+        assertEquals(
+            listOf("goal_plan"),
+            toolsForIntent(AgentIntent.Chat, tools).map { it.name },
+            "聊天只该多出写目标这一只，不能连删插件、搜视频的也带进去",
         )
         assertTrue(
             toolsForIntent(AgentIntent.ArrangeUi, tools).none { it.name == "goal_plan" },

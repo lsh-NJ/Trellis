@@ -337,6 +337,40 @@ class GoalRulesTest {
         assertEquals(nextDay, second.mirror.lastPushedDate)
     }
 
+    // ---------------------------------------------------------------- 8 排期用谁的时间
+
+    @Test
+    fun thePlanUsesTheGoalsOwnDailyBudgetNotTheGlobalSetting() {
+        fun contractWith(value: String): GoalContract = GoalEngine.start(
+            GoalMirror(), "我想考研", GoalKind.ACADEMIC, Clarity.VAGUE, today, 0L,
+        ).contract.let { c ->
+            c.copy(profile = c.profile + (FieldKey.DAILY_MINUTES to Field(value, FieldState.CONFIRMED)))
+        }
+
+        // 全局设置是 15 分钟，但用户自己答了 4 小时 —— 排期听用户的。
+        assertEquals(240, GoalEngine.budgetOf(contractWith("4 小时以上"), 15))
+        assertEquals(90, GoalEngine.budgetOf(contractWith("90 分钟"), 15))
+        assertEquals(120, GoalEngine.budgetOf(contractWith("两小时"), 15))
+        assertEquals(180, GoalEngine.budgetOf(contractWith("三小时"), 15))
+        // 没答过才用全局值兜底。
+        assertEquals(15, GoalEngine.budgetOf(contractWith(""), 15))
+
+        val planned = GoalEngine.toDraft(
+            fillAll(academicVague()).let { m ->
+                m.copy(contract = m.contract.copy(
+                    profile = m.contract.profile + (FieldKey.DAILY_MINUTES to Field("4 小时以上", FieldState.CONFIRMED)),
+                ))
+            },
+            today,
+            15,
+        )
+        val total = planned.dayPlan(today)!!.totalMinutes
+        assertTrue(
+            total > 15 * 1.2,
+            "全局是 15 分钟、目标是 4 小时，排出来不该还是十几分钟：" + total,
+        )
+    }
+
     // ---------------------------------------------------------------- 7 实际投入
 
     @Test

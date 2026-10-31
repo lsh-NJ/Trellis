@@ -112,15 +112,49 @@ object GoalEngine {
      * 只生成两天，不做 30 天预排。预排看起来很有诚意，但第三天开始就是猜的，
      * 而用户会把它当成承诺。
      */
+    /**
+     * 今天该排多少分钟：**先看这份目标自己的答案**，再看宿主的全局设置。
+     *
+     * 之前只用全局的「每天预计投入」：用户明明答了「4 小时以上」，卡片却按全局的
+     * 15 分钟排出三件 5 分钟的事 —— 对话里说的和右边排的完全是两个计划。
+     * 全局值是给「还没说要投入多少」的新目标做兜底用的，不该盖过用户自己的回答。
+     *
+     * 解析是纯文本映射，认得三种写法：`90 分钟` / `2 小时` / `4 小时以上`；
+     * 认不出来就退回兜底值 —— 猜一个比用兜底值更糟。
+     */
+    fun budgetOf(contract: GoalContract, fallback: Int): Int {
+        val base = if (fallback <= 0) 60 else fallback
+        val raw = contract.field(FieldKey.DAILY_MINUTES).value
+        if (raw.isBlank()) return base
+        val text = raw.replace(" ", "")
+        Regex("""(\d+(?:\.\d+)?)小时""").find(text)?.groupValues?.get(1)?.toDoubleOrNull()
+            ?.let { return (it * 60).toInt().coerceIn(MIN_BUDGET, MAX_BUDGET) }
+        Regex("""(\d+)分钟""").find(text)?.groupValues?.get(1)?.toIntOrNull()
+            ?.let { return it.coerceIn(MIN_BUDGET, MAX_BUDGET) }
+        return when {
+            text.contains("半小时") -> 30
+            text.contains("四小时") -> 240
+            text.contains("三小时") -> 180
+            text.contains("两小时") -> 120
+            text.contains("一小时") -> 60
+            else -> base
+        }
+    }
+
+    /** 一天的下限/上限：5 分钟是一条「能勾掉」的最小单位，12 小时已经超过正常可用时间。 */
+    private const val MIN_BUDGET = 5
+    private const val MAX_BUDGET = 720
+
     fun toDraft(mirror: GoalMirror, today: String, dailyMinutes: Int): GoalMirror {
         // 未知分叉在排期前补齐：planFor 只有拿到 unknownDecisions 才会排决策任务。
         // 不补这一步，「用规划消解不确定性」就只是一句设计说明，永远跑不到。
         val contract = withInferredDecisions(mirror.contract)
+        val budget = budgetOf(contract, dailyMinutes)
         val milestone = mirror.milestone ?: GoalPlanner.defaultMilestone(contract)
         val tomorrow = IsoDate.plusDays(today, 1) ?: today
         val days = mirror.days.toMutableMap()
-        days[today] = GoalPlanner.planFor(contract, today, dailyMinutes, milestone, dayIndex = 0)
-        days[tomorrow] = GoalPlanner.planFor(contract, tomorrow, dailyMinutes, milestone, dayIndex = 1)
+        days[today] = GoalPlanner.planFor(contract, today, budget, milestone, dayIndex = 0)
+        days[tomorrow] = GoalPlanner.planFor(contract, tomorrow, budget, milestone, dayIndex = 1)
         return GoalStateMachine.move(mirror.copy(milestone = milestone, contract = contract), GoalPhase.DRAFT)
             .getOrElse { mirror.copy(milestone = milestone, contract = contract) }
             .copy(days = days, settledThrough = today, cycleStartedOn = today)
@@ -189,7 +223,8 @@ object GoalEngine {
             days[tomorrow] = GoalPlanner.planFor(
                 mirror.contract,
                 tomorrow,
-                dailyMinutes,
+                // 补排也要用这份目标自己的投入，否则「按 4 小时排的今天」第二天变回全局的 15 分钟。
+                budgetOf(mirror.contract, dailyMinutes),
                 milestone,
                 dayIndex = days.size,
             )

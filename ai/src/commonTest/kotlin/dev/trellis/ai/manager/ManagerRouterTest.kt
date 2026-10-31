@@ -28,6 +28,8 @@ class ManagerRouterTest {
         tool("search_bilibili", "搜 B 站视频"),
         tool("arrange_cards", "摆卡片"),
         tool("list_plugins", "列插件"),
+        // 唯一登记给「聊天」的工具：它只写用户自己的目标契约。
+        tool("goal_plan", "记录用户自己的长期目标"),
     )
 
     private val router = ManagerRouter(
@@ -61,9 +63,20 @@ class ManagerRouterTest {
         assertFalse("search_bilibili" in create)
     }
 
+    /**
+     * 聊天只拿「写用户自己目标」那一只。
+     *
+     * 以前这里是「纯聊天不该拿到任何工具」，那条规则在目标功能上线后站不住了：
+     * 「我想考研」「每天 10 小时」这类句子判不出别的意图，不给工具就等于没法记录。
+     * 现在的边界是：聊天可以拿 goal_plan，但绝不拿能改宿主或外部世界的工具。
+     */
     @Test
-    fun chatGetsNoToolCatalogueAtAll() {
-        assertTrue(router.tools(AgentIntent.Chat).isEmpty(), "纯聊天不该拿到任何工具")
+    fun chatOnlyGetsTheToolThatWritesTheUsersOwnGoal() {
+        assertEquals(
+            listOf("goal_plan"),
+            router.tools(AgentIntent.Chat).map { it.name },
+            "聊天只该拿到写目标的那一只工具",
+        )
 
         val chat = toolCatalogue(router.prompt(AgentIntent.Chat).base)
         assertTrue(chat.isNotBlank(), "空清单也要有 <tools> 段，模型才知道这一轮没有手")
