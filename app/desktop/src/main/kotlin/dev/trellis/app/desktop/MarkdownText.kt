@@ -255,7 +255,8 @@ internal fun parseMarkdown(source: String): List<MdBlock> {
 
 private fun indentDepth(prefix: String): Int = (prefix.length / 2).coerceIn(0, 3)
 
-private val inlinePattern = Regex(
+/** 行内语法的唯一清单：渲染（本文件）与块编辑器行内 WYSIWYG（MarkdownInlineEdit.kt）共用。 */
+internal val inlinePattern = Regex(
     // 用命名分组：加一条语法不会让所有 `groups[i]` 集体错位。
     // 强调符号必须贴着文字：`a * b * c` 里的星号是普通字符，不是斜体
     // （CommonMark 的「强调不能以空白开头/结尾」规则，简化版）。
