@@ -78,6 +78,26 @@ class StudyPrefsTest {
     }
 
     @Test
+    fun catchUpMinutesRoundTripAndClamp() {
+        val home = tempHome()
+        val store = StudyPrefsStore(home)
+        store.save(StudyPrefs(dailyMinutes = 60, catchUpMinutes = 45))
+        assertEquals(45, store.load().catchUpMinutes)
+
+        assertEquals(0, StudyPrefs(catchUpMinutes = -30).normalized().catchUpMinutes)
+        assertEquals(MAX_CATCH_UP_MINUTES, StudyPrefs(catchUpMinutes = 999).normalized().catchUpMinutes)
+    }
+
+    @Test
+    fun oldStudyJsonWithoutCatchUpStillLoads() {
+        val home = tempHome()
+        File(home, "study.json").writeText("{\"dailyMinutes\": 75}", Charsets.UTF_8)
+        val prefs = StudyPrefsStore(home).load()
+        assertEquals(75, prefs.dailyMinutes)
+        assertEquals(0, prefs.catchUpMinutes)
+    }
+
+    @Test
     fun storedValueIsNormalizedOnTheWayIn() {
         val home = tempHome()
         File(home, "study.json").writeText("{\"dailyMinutes\": -30}", Charsets.UTF_8)
