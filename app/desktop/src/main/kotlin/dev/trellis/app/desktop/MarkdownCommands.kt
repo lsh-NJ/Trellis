@@ -269,9 +269,37 @@ internal fun insideCodeFence(text: String, cursor: Int): Boolean {
 internal data class MarkdownKeyBinding(
     val key: Key,
     val shift: Boolean,
+    /** 平台无关写法（`Ctrl/Cmd+B`）；显示前过一次 [platformShortcutLabel]。 */
     val label: String,
     val commandId: String,
 )
+
+/** 当前是不是 macOS：快捷键说明按平台换符号（⌘ / ⇧ / ⌥）。 */
+internal val shortcutUsesMacSymbols: Boolean =
+    System.getProperty("os.name").orEmpty().lowercase().contains("mac")
+
+/**
+ * 把清单里的 `Ctrl/Cmd+Shift+X` 换成当前平台的写法：
+ * macOS 是 `⇧⌘X`，其它平台是 `Ctrl+Shift+X`。
+ *
+ * [mac] 参数只给测试用，生产调用不用传。
+ */
+internal fun platformShortcutLabel(raw: String, mac: Boolean = shortcutUsesMacSymbols): String {
+    if (!mac) return raw.replace("Ctrl/Cmd", "Ctrl")
+    val parts = raw.split("+").map { it.trim() }.filter { it.isNotEmpty() }
+    return buildString {
+        // macOS 惯例：修饰键按 ⇧⌥⌘ 的顺序、字母放最后。
+        if (parts.any { it == "Shift" }) append('⇧')
+        if (parts.any { it == "Alt" }) append('⌥')
+        if (parts.any { it == "Ctrl/Cmd" || it == "Ctrl" || it == "Cmd" }) append('⌘')
+        for (part in parts) {
+            when (part) {
+                "Shift", "Alt", "Ctrl/Cmd", "Ctrl", "Cmd" -> Unit
+                else -> append(part)
+            }
+        }
+    }
+}
 
 internal val markdownKeyBindings: List<MarkdownKeyBinding> = listOf(
     MarkdownKeyBinding(Key.B, false, "Ctrl/Cmd+B", "bold"),
@@ -293,25 +321,29 @@ internal val markdownKeyBindings: List<MarkdownKeyBinding> = listOf(
 internal fun markdownBindingFor(key: Key, shift: Boolean): MarkdownKeyBinding? =
     markdownKeyBindings.firstOrNull { it.key == key && it.shift == shift }
 
-/** 「快捷键清单」里的一行；[owned] 为 false 的是页面级快捷键（不在编辑器里分发）。 */
-internal data class ShortcutHint(val keys: String, val action: String, val owned: Boolean = true)
+/**
+ * 「菜单」里的一行：动作在前、按键在后（人先找「我要做什么」，再顺便记快捷键）。
+ *
+ * [owned] 为 false 的是页面级快捷键（不在编辑器里分发）。
+ */
+internal data class ShortcutHint(
+    val action: String,
+    val keys: String,
+    val owned: Boolean = true,
+)
 
-/** 编辑器自己处理的按键，和页面级快捷键一起显示在一张清单里。 */
+/** 编辑器自己处理的按键，和页面级快捷键一起显示在一张清单里（名称叫「菜单」）。 */
 internal val markdownShortcutHints: List<ShortcutHint> = buildList {
     for (binding in markdownKeyBindings) {
         val command = markdownCommand(binding.commandId) ?: continue
-        add(ShortcutHint(binding.label, command.label))
+        add(ShortcutHint(action = command.label, keys = platformShortcutLabel(binding.label)))
     }
-    add(
-        ShortcutHint(
-            "Ctrl/Cmd+S · Ctrl/Cmd+N · Ctrl/Cmd+E",
-            "保存 · 新建笔记 · 编辑/预览切换（页面级）",
-            owned = false,
-        ),
-    )
-    add(ShortcutHint("Ctrl/Cmd+/", "打开/关闭这份清单（页面级）", owned = false))
-    add(ShortcutHint("/", "打开命令菜单（行首或空格后，代码块里不触发）"))
-    add(ShortcutHint("↑ ↓ · 回车", "在命令菜单里选择"))
-    add(ShortcutHint("回车", "自动续写列表/引用，空项回车退出"))
-    add(ShortcutHint("Esc", "关掉命令菜单或这份清单"))
+    add(ShortcutHint(action = "保存", keys = platformShortcutLabel("Ctrl/Cmd+S"), owned = false))
+    add(ShortcutHint(action = "新建笔记", keys = platformShortcutLabel("Ctrl/Cmd+N"), owned = false))
+    add(ShortcutHint(action = "编辑 / 预览切换", keys = platformShortcutLabel("Ctrl/Cmd+E"), owned = false))
+    add(ShortcutHint(action = "打开 / 关闭这份菜单", keys = platformShortcutLabel("Ctrl/Cmd+/"), owned = false))
+    add(ShortcutHint(action = "在光标处打开命令菜单", keys = "/"))
+    add(ShortcutHint(action = "在命令菜单里选择", keys = "↑ ↓ · 回车"))
+    add(ShortcutHint(action = "自动续写列表 / 引用", keys = "回车"))
+    add(ShortcutHint(action = "关掉命令菜单或这份菜单", keys = "Esc"))
 }
