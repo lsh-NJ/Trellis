@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -298,17 +299,26 @@ internal fun NoteConceptPanel(
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
             )
         } else {
-            FlowRow(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+            // 概念多的时候只占一段固定高度、内部滚动，别把下面的目录挤没；
+            // 添加概念输入框留在滚动区外，始终可见。
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 164.dp)
+                    .verticalScroll(rememberScrollState()),
             ) {
-                for (name in concepts) {
-                    ConceptChip(
-                        name = name,
-                        onOpen = { onOpenConcept(name) },
-                        onRemove = { onRemoveConcept(name) },
-                    )
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    for (name in concepts) {
+                        ConceptChip(
+                            name = name,
+                            onOpen = { onOpenConcept(name) },
+                            onRemove = { onRemoveConcept(name) },
+                        )
+                    }
                 }
             }
         }
