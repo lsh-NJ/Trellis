@@ -237,15 +237,11 @@ private fun ActivityHeader(
     onSync: () -> Unit,
 ) {
     Column {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("活动", style = MaterialTheme.typography.titleLarge)
-                Text(
-                    "ActivityWatch 记下的原始活动，按分类整理后追溯时间花在哪。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 ChromeButton(
                     label = "日视图",

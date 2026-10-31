@@ -112,7 +112,6 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                item { PlanHeader(runtime) }
                 if (runtime.isSimulatingTime) item { PlanSimulatedBanner(runtime) }
                 if (runtime.planStartsInPast) item { PlanStaleBanner(runtime) }
                 if (runtime.planRhythmHasNews) item { PlanRhythmCard(runtime) }
@@ -267,48 +266,6 @@ private fun PlanRhythmCard(runtime: AppRuntime) {
     }
 }
 
-@Composable
-private fun PlanHeader(runtime: AppRuntime) {
-    Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(
-                "计划",
-                style = MaterialTheme.typography.headlineLarge,
-                color = MaterialTheme.colorScheme.onBackground,
-            )
-            Text(
-                runtime.planTitle?.let { it + " · 一周一格，点开看那一天" } ?: "还没有计划",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        if (runtime.planTitle != null) {
-            TextButton(onClick = { runtime.togglePlanRearrange() }) {
-                Text(
-                    when {
-                        runtime.planRearrangeOpen -> "收起重排"
-                        runtime.planRearrangeCount > 0 -> "重排 · " + runtime.planRearrangeCount
-                        else -> "重排"
-                    },
-                    style = MaterialTheme.typography.labelLarge,
-                )
-            }
-            Spacer(Modifier.width(4.dp))
-            TextButton(onClick = { runtime.openPlanSettings() }) {
-                Text("计划设置", style = MaterialTheme.typography.labelLarge)
-            }
-            Spacer(Modifier.width(8.dp))
-        }
-        if (runtime.planWeekCards.isNotEmpty()) {
-            Text(
-                runtime.planWeekCards.size.toString() + " 周",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
 /**
  * 「模拟时间」徽章。
  *
@@ -417,7 +374,7 @@ private fun PlanEmpty(runtime: AppRuntime) {
     }
 }
 
-/** 上半：总视图，一周一格，横向滚。 */
+/** 上半：总视图，一周一格，横向滚。计划级动作（重排 / 设置 / 周数）收在这一行的右端。 */
 @Composable
 private fun WeekStrip(runtime: AppRuntime) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -432,6 +389,26 @@ private fun WeekStrip(runtime: AppRuntime) {
             Spacer(Modifier.weight(1f))
             runtime.planMessage?.let {
                 Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                Spacer(Modifier.width(8.dp))
+            }
+            Text(
+                runtime.planWeekCards.size.toString() + " 周",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TextButton(onClick = { runtime.togglePlanRearrange() }) {
+                Text(
+                    when {
+                        runtime.planRearrangeOpen -> "收起重排"
+                        runtime.planRearrangeCount > 0 -> "重排 · " + runtime.planRearrangeCount
+                        else -> "重排"
+                    },
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            }
+            Spacer(Modifier.width(4.dp))
+            TextButton(onClick = { runtime.openPlanSettings() }) {
+                Text("计划设置", style = MaterialTheme.typography.labelLarge)
             }
         }
         val state = rememberLazyListState()

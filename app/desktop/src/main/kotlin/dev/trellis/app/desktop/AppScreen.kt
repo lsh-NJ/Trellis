@@ -111,10 +111,6 @@ fun AppScreen(runtime: AppRuntime) {
                         // 非 flush 页仍由这层列撑满（TabContent 在里面按 weight 分）。
                         .then(if (flushPage) Modifier else Modifier.weight(1f)),
                 ) {
-                    AppHeader(runtime)
-
-                    Spacer(Modifier.height(12.dp))
-
                     // 审批条长在最上面：它是「规则要动手了」的唯一信号。
                     // 藏进弹窗或者标签页里，用户就会以为什么都没发生。
                     AskDialogs(runtime)
@@ -146,52 +142,6 @@ fun AppScreen(runtime: AppRuntime) {
                 layout = runtime.layoutFor(Slots.AppOverlay.id),
             )
         }
-    }
-}
-
-@Composable
-private fun AppHeader(runtime: AppRuntime) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        // 品牌块：样片里的 logo 是一块实心色 + 一个字，这里用主色方块 + 「T」。
-        Box(
-            modifier = Modifier.size(30.dp)
-                .clip(RoundedCornerShape(3.dp))
-                .background(MaterialTheme.colorScheme.primary),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                "T",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onPrimary,
-            )
-        }
-        Spacer(Modifier.width(10.dp))
-        Column {
-            Text(
-                "TRELLIS · 任务台",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                runtime.goal?.title ?: "还没有计划",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-            )
-        }
-        Spacer(Modifier.weight(1f))
-        val s = runtime.summary
-        Pill(
-            text = if (s.overdue > 0) "逾期 " + s.overdue + " 条" else "剩 " + (s.total - s.done) + " 条",
-            background = MaterialTheme.colorScheme.primaryContainer,
-            foreground = MaterialTheme.colorScheme.onPrimaryContainer,
-        )
-        Spacer(Modifier.width(10.dp))
-        Text(
-            "内核 " + runtime.kernel.currentState,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 
