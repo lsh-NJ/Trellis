@@ -111,6 +111,8 @@ fun ChatScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
         if (fresh) planOpen = true
     }
 
+    // 右栏是否占位决定对话区要不要留右边距（不留时正文直接贴到窗口右边界）。
+    val planSidebarVisible = planOpen && planLine != null && planLine.plan.isNotEmpty()
     Row(
         modifier = modifier.onPreviewKeyEvent { event ->
             when {
@@ -127,16 +129,21 @@ fun ChatScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
             }
         },
     ) {
-        ChatSessionList(runtime, Modifier.width(240.dp).fillMaxHeight())
+        // 会话列表与知识库页的笔记/概念列表共用 ListSidebar（样式、宽度、拖拽都一致）。
+        ChatSessionList(runtime)
+        ListSidebarSplitter()
         ChatConversation(
             runtime = runtime,
             focus = focus,
             planLine = if (planOpen) null else planLine,
             onOpenPlan = { planOpen = true },
             note = planNote,
-            modifier = Modifier.weight(1f).fillMaxHeight().padding(start = 18.dp),
+            modifier = Modifier.weight(1f).fillMaxHeight().padding(
+                start = 18.dp,
+                end = if (planSidebarVisible) 0.dp else 20.dp,
+            ),
         )
-        if (planOpen && planLine != null && planLine.plan.isNotEmpty()) {
+        if (planSidebarVisible) {
             PlanSidebar(
                 line = planLine,
                 running = runtime.chatBusy,
@@ -177,37 +184,50 @@ fun ChatScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
 // ---------------------------------------------------------------- 会话列表
 
 @Composable
-private fun ChatSessionList(runtime: AppRuntime, modifier: Modifier) {
+private fun ChatSessionList(runtime: AppRuntime) {
     var pendingDelete by remember { mutableStateOf<ChatSession?>(null) }
+    var query by remember { mutableStateOf("") }
 
-    Column(modifier) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("会话", style = MaterialTheme.typography.titleSmall)
-            Spacer(Modifier.weight(1f))
-            TextButton(onClick = { runtime.newChat() }, enabled = !runtime.chatBusy) {
-                Text("新对话", style = MaterialTheme.typography.labelMedium)
-            }
+    // 与知识库页左栏同一套骨架（ListSidebar）；搜索也是两边都有。
+    val filtered = if (query.isBlank()) {
+        runtime.chatSessions
+    } else {
+        runtime.chatSessions.filter {
+            it.title.ifBlank { "新对话" }.contains(query.trim(), ignoreCase = true)
         }
+    }
 
-        if (runtime.chatSessions.isEmpty()) {
+    ListSidebar(
+        title = "会话",
+        count = filtered.size,
+        actionLabel = "新对话",
+        onAction = { runtime.newChat() },
+        actionEnabled = !runtime.chatBusy,
+    ) {
+        ChromeTextField(
+            value = query,
+            onValueChange = { query = it },
+            placeholder = "搜索会话",
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(8.dp))
+
+        if (filtered.isEmpty()) {
             Text(
-                "还没有对话 —— 在下面输入一句话开始",
+                if (query.isBlank()) "还没有对话 —— 在下面输入一句话开始" else "没有匹配的会话",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 6.dp),
             )
         }
 
-        val grouped = runtime.chatSessions.groupBy { session ->
+        val grouped = filtered.groupBy { session ->
             when (chatTimeLabel(session.updatedAt)) {
                 "昨天" -> "昨天"
                 else -> if (isToday(session.updatedAt)) "今天" else "更早"
             }
         }
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             for (title in listOf("今天", "昨天", "更早")) {
                 val sessions = grouped[title] ?: continue
                 item(key = "group-" + title) {
@@ -266,24 +286,18 @@ private fun SessionRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(46.dp)
             .hoverable(interaction, enabled = enabled)
-            .clip(RoundedCornerShape(4.dp))
-            .background(
-                if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
-                else MaterialTheme.colorScheme.surface,
-            )
+            .listRowSurface(selected, hovered)
             .clickable(enabled = enabled, onClick = onOpen),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (selected) {
-            Box(Modifier.width(2.dp).fillMaxHeight().background(MaterialTheme.colorScheme.primary))
-        }
+        ListRowSelectionBar(selected)
         Spacer(Modifier.width(8.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 session.title.ifBlank { "新对话" },
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
