@@ -10,6 +10,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -122,6 +123,17 @@ fun main() {
                 size = initialWindowSize(),
             ),
         ) {
+            // 主窗口重新获得焦点 = 用户可能刚回到椅子前：触发一次计划检查。
+            // 监听器挂在 AWT 窗口上：焦点事件不经过 Compose 的 composition。
+            DisposableEffect(window) {
+                val listener = object : java.awt.event.WindowAdapter() {
+                    override fun windowGainedFocus(e: java.awt.event.WindowEvent?) {
+                        holder.runtime?.onWindowFocused()
+                    }
+                }
+                window.addWindowFocusListener(listener)
+                onDispose { window.removeWindowFocusListener(listener) }
+            }
             App(holder)
         }
     }

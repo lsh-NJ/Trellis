@@ -132,13 +132,19 @@ class LearningPlanRhythmTest {
         assertEquals(4, w46.days.sumOf { it.items.size }, "W46 = 2 个本单元 + 2 个结转")
         assertEquals(4, w46.days.flatMap { it.items }.map { it.occurrenceId }.distinct().size)
 
-        // 再往后：没承诺也没池子，只结算、报告「路线走完」，不建空承诺。
+        // 再往后：W46 错过的两个先结转进 W47，另两个回未安排桶，被补进 W48。
+        // 引擎不再停住，池子排空时说明「路线走完」。
         moveClockTo("2026-11-16T09:00")
         val third = svc.advanceRhythm(scheduler(planId), planId)
         assertTrue(third.ok, third.error?.message)
-        assertEquals(emptyList<String>(), third.value!!.appendedWeeks)
-        assertEquals(emptyList<String>(), third.value!!.scheduledWeeks)
-        assertTrue(third.value!!.note.contains("路线里的单元已经全部排进周计划"), third.value!!.note)
+        val rolled3 = third.value!!
+        assertEquals(listOf("2026-W48"), rolled3.appendedWeeks)
+        assertEquals(2, rolled3.appendedUnits, "W46 错过 4 个里，2 个结转进 W47、2 个回池补进 W48")
+        assertEquals(listOf("2026-W47"), rolled3.scheduledWeeks)
+        assertEquals(4, rolled3.missed)
+        assertEquals(2, rolled3.carried)
+        assertEquals(2, rolled3.carryPending)
+        assertTrue(rolled3.note.contains("路线里的单元已经全部排进周计划"), rolled3.note)
     }
 
     @Test
@@ -267,10 +273,14 @@ class LearningPlanRhythmTest {
         val rolled = result.value!!
         assertEquals(listOf("2026-W44"), rolled.settledWeeks)
         assertEquals(listOf("2026-W46"), rolled.appendedWeeks)
+        assertEquals(5, rolled.appendedUnits, "漏掉的两周没让计划停住：5 个单元一起补进本周（5×20 分钟放得下）")
         assertEquals(listOf("2026-W46"), rolled.scheduledWeeks)
+        assertEquals(2, rolled.missed)
+        assertEquals(2, rolled.carried, "隔了两周，结转也要落进本周，不能落进已经过去的 W45")
+        assertEquals(0, rolled.carryPending)
         assertEquals(0, rolled.poolRemaining)
-        assertEquals(3, svc.week(planId, "2026-W46").commitment.units.size)
-        assertEquals(3, svc.week(planId, "2026-W46").days.sumOf { it.items.size })
+        assertEquals(5, svc.week(planId, "2026-W46").commitment.units.size)
+        assertEquals(5, svc.week(planId, "2026-W46").days.sumOf { it.items.size })
         assertEquals("ready", svc.review(planId, "2026-W44").state)
     }
 

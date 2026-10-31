@@ -119,13 +119,68 @@ data class LearningPlanInfo(
     val status: String,
 )
 
-/** 还没被任何一周承诺收进去的单元：计划页上「待安排」的池子。 */
+/**
+ * 还没被「本周及以后」的承诺收进去的单元：计划页上「待安排」的池子。
+ *
+ * 包含两类：从没排过的单元，以及过去周没完成、又没被以后任何一周重新收走的单元——
+ * 后者就是「放弃 = 放回未安排桶」的去处，计划节点不会因为错过一周就从路线上消失。
+ */
 @Serializable
 data class PoolUnit(
     val id: String,
     val title: String,
     val chapter: String,
     val estimateMinutes: Int,
+)
+
+/**
+ * 本周内已经过了日子、还没做的一条排期。
+ *
+ * [sortOrder] 是所属单元在路线里的顺序。重排必须按它来，不能按日期或创建时间：
+ * 日视图是按 `created_at` 排的，和路线顺序无关；前置节点没完成时，后面的节点不许越过它。
+ */
+@Serializable
+data class OverdueOccurrence(
+    val occurrenceId: String,
+    val unitId: String,
+    val title: String,
+    val chapter: String,
+    val minutes: Int,
+    val day: String,
+    val sortOrder: Int,
+)
+
+/**
+ * 过去周没完成、也没被本周/以后任何一周收走的单元（欠账）。
+ *
+ * 它们已经回到 [PoolUnit] 那个桶；这里额外带上「最早在哪一周错过」和路线顺序，
+ * 供聊天里的重排建议按拓扑序取靠前的节点。
+ */
+@Serializable
+data class BacklogUnit(
+    val unitId: String,
+    val title: String,
+    val chapter: String,
+    val estimateMinutes: Int,
+    val sortOrder: Int,
+    val missedInWeek: String,
+)
+
+/**
+ * 计划当前欠的节点：本周隔日逾期 + 隔周欠账 + 本周还剩多少容量。
+ *
+ * 只做事实投影，不给建议：先读到这里的数据，重排方案由上层（聊天协商）决定后发命令。
+ */
+@Serializable
+data class OverdueView(
+    val planId: String,
+    val today: String,
+    val week: String,
+    val dailyMinutes: Int,
+    val remainingDays: Int,
+    val remainingMinutes: Int,
+    val thisWeek: List<OverdueOccurrence> = emptyList(),
+    val backlog: List<BacklogUnit> = emptyList(),
 )
 
 @Serializable

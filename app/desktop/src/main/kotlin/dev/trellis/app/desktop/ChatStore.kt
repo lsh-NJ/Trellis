@@ -92,6 +92,8 @@ internal class ChatStore(home: File) {
             createdAt = root["createdAt"]?.jsonPrimitive?.long ?: 0L,
             updatedAt = root["updatedAt"]?.jsonPrimitive?.long ?: 0L,
             lines = lines,
+            // 旧文件没有这个字段：默认已读。升级后不该凭空冒出一排红点。
+            unread = root["unread"]?.jsonPrimitive?.booleanOrNull == true,
         )
     }.getOrNull()
 
@@ -100,6 +102,8 @@ internal class ChatStore(home: File) {
         put("title", session.title)
         put("createdAt", session.createdAt)
         put("updatedAt", session.updatedAt)
+        // 只写 true：已读是默认值，不往每份会话里塞一个 false。
+        if (session.unread) put("unread", true)
         putJsonArray("lines") {
             session.lines.forEach { line ->
                 add(

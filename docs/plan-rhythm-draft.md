@@ -48,8 +48,19 @@ P4（Agent 计划管理员）已落地：
 - `ManagerPrompt` 新增 `<task:plan_manage>`；find_resource 第 4 步同步成 bvid 全量导入。
 - 已接线进 `AppRuntime.sendChat`（allTools + guidance）；ai 82 tests / 桌面 5 tests 全绿。
 
+P6（逾期处理：把「没做完」变成可协商的事实，2026-10-31）已落地：
+
+- 后端新增 `LearningPlanService.overdue(planId, today)`：本周「应该做但没做」的节点按**路线顺序**
+  （`plan_unit.sort_order`，不是创建时间）列出，同时给出今天到周日还剩多少分钟（扣掉已排的）；
+  过去周没完成的单元回到「待安排池」（`pool` 语义扩展），并在 `overdue.backlog` 里带 `missedInWeek`。
+- 「放弃」不再是删除：从本周承诺移除 → 单元回待安排池，欠账以后还能再排；容量不足时从路线尾部先撤。
+- 修掉 §6 的短课程死路：池语义把「过去周没做完」也算进来，短课程跨周后会被自动补进本周承诺。
+- 打开应用/重新获得窗口焦点时做一次**计划检查**：有本周隔日或欠账就写一条确定性摘要到全局
+  「计划检查」会话，`unread=true`；导航「对话」与会话行显示红点；打开会话即已读；同一天最多一次。
+- 不做：独立定时器、按日自动顺延 / 全自动重排（理由见 §2.4）。
+
 **未做（后续阶段）**：P2 剩余（「让 AI 安排」按钮、复盘卡片入口）、P3 建议完成（session 证据 + done_kind）、
-P5 插件证据提供者 + 自动完成 + replan。
+P5 插件证据提供者 + 自动完成 + replan、P6 的聊天里 AI 协商重排与计划页「待处理」区。
 
 ---
 
@@ -187,12 +198,29 @@ advanceRhythm(env, planId, today) -> RhythmResult
   滚动排周之后，下周会经常处于这个状态，应该单独显示成「第 N 周 · 已排 X 个单元 · 下周一开始」，
   否则用户会以为排好的下周又没了。
 
-### 2.4 日层（每天）：保留打包器，补「顺延」这一个动作
+### 2.4 日层（每天）：保留打包器；「没做完」走逾期投影 + 协商重排
 
-- `materializeWeek` 保留（按 dailyMinutes 打包）；修掉「结转行导致整周不铺」的判重。
-- 新增日节奏（第二期）：跨天首次打开时，把昨天还 `planned` 的节点顺延（`moveOccurrence`，actor=SYSTEM）：
-  最多顺延 2 个到当天，超出的移到本周空位；本周满了就留给周结算。
-- 不做日层加量（遵守现有设计），也不自动缩短/拆分——这两个会改承诺的语义，交给用户或 AI 提议。
+- `materializeWeek` 保留（按 dailyMinutes 打包）；修掉「结转行导致整周不铺」的判重（已做）。
+- 不做日层加量，也**不做「跨天自动把昨天没做完的挪到今天」**：全自动顺延会变成债务复利和催债感
+  （2026-10-30 讨论结论，改成聊天里协商）。日层只做「事实投影」：
+  `LearningPlanService.overdue(planId, today)` 返回
+  - `thisWeek`：本周已排、日期早于今天、仍 `planned` 的节点（按 `plan_unit.sort_order`，附带 unitId / sortOrder）；
+  - `backlog`：过去周承诺过、没完成、也没被本周/以后收走的单元（带 `missedInWeek`）；
+  - `dailyMinutes` / `remainingDays` / `remainingMinutes`：今天到周日的剩余容量。
+  这是只读投影，不写事件；计划页或 AI 拿它做建议，真正改动仍走命令。
+- 「放弃」= 从当前周承诺移除、单元放回**未安排桶**（`pool`），不是删除、也不是永久结案；
+  容量不足时按路线顺序**从尾部撤回**，前面的先修节点不动；前置没完成时，后面的节点不排到更早日期。
+  （当前 `plan_unit.sort_order` 已是路线线性序；真正的 `depends_on` 依赖图留到需要时再加。）
+- 跨周改动只在「承诺层」做（`changeCommitment` / `extendCommitment`），不该写历史周。
+- 触发方式：不新增定时器。`AppRuntime.refreshPlan()`（启动、进计划页、各操作后）顺带跑
+  `advanceRhythm`；主窗口重新获得焦点时再触发一次**计划检查**（`onWindowFocused`，带互斥和
+  「今天已发过」的持久标记，同一天最多一条），覆盖「整夜开着」的情况。
+- 计划检查的主动消息：只建一个全局「计划检查」会话（`PLAN_CHECK_SESSION_ID = "plan-check"`），
+  有本周隔日或欠账才发；内容是确定性摘要（哪些天落下哪些、欠账最多列 5 个、今天到周日还剩多少分钟、
+  「补做/顺延/少排一点/这周先放过」）；带轻量未读标记（会话行 + 导航「对话」红点），打开即已读。
+  不自动跳页、不打断正在跑的轮次、没有模型也能发。
+- 下一步（未做）：用户在对话里回复后，AI 先读真实数据 → 总结 → 给两套方案（`ask_choices`）→
+  变更预览 → 用户确认后执行（写操作 `confirmed=true`）→ 结果 + 撤销；AI 不自己数数。
 
 ### 2.5 核验层（推进门槛）：完成标准 + 证据分级
 
@@ -252,8 +280,8 @@ advanceRhythm(env, planId, today) -> RhythmResult
 
 | 级别 | 触发 | 动作 | 现状 |
 |---|---|---|---|
-| 日级 | 昨天没做完、今天超载 | 顺延 / 拆分 / 缩短 / 跳过 | 后端有，UI 缺（先给计划页节点行加入口） |
-| 周级 | 周界、完成率低 | 结算 missed、结转 ≤2、下周减量、复盘 | 后端有（无人调），节奏引擎接上 |
+| 日级 | 昨天没做完、今天超载 | 逾期投影（`overdue`）/ 顺延 / 拆分 / 缩短 / 跳过 | 后端有（投影与命令齐了；计划页入口与 AI 协商未做） |
+| 周级 | 周界、完成率低 | 结算 missed、结转 ≤2、欠账回池、下周减量、复盘 | 后端有，节奏引擎已接；短课程死路已修 |
 | 目标级 | 用户换资源/改目标/加内容 | 结束旧计划或新版本替换路线 + supersede 旧 planned occurrence | **缺命令**：加 `replan`，原子完成「归档旧版 → 旧 occurrence supersede → 建新版 → 重新铺天」；第一期可先用「结束旧计划 + 新建计划」的保守路径 |
 
 ---
@@ -311,6 +339,35 @@ advanceRhythm(env, planId, today) -> RhythmResult
 也上报不了「某节点已完成」。要打通的最小缺口不是再截图，而是：
 **occurrence 级动作/事件 + 一个证据提供者扩展点 + 一个能读活动/session 的查询工具**。
 
+### P6 逾期与协商式重排（2026-10-31）— **后端 + 主动检查已落地，AI 协商下一步**
+
+已改：
+
+- `sdk-domain/src/commonMain/kotlin/dev/trellis/domain/plan/Views.kt`：新增 `OverdueOccurrence` /
+  `BacklogUnit` / `OverdueView`；`LearningPlanService.overdue(planId, today)` 新查询。
+- `features/learning-process/.../PlanOverdue.kt`（新）：本周隔日按 `plan_unit.sort_order` 排序、
+  剩余容量按今天到周日逐日扣已排分钟；过去周欠账（missed、没有「本周及以后」承诺、没有 done/planned 行）。
+- `pool` / `poolRows` 语义扩成「过去周没完成也算未安排」；`cmdExtendCommitment` 允许把欠账补进未来周
+  （只拦「本周及以后」的重复承诺）；`PlanRhythm.cmdSettleWeek` 的结转目标周改成
+  `maxOf(下一周, 本周)`（久不打开时不再塞进已过去的周），missed 按路线顺序取、自动插行最多 2 条。
+- `app/desktop`：`PlanCheckStore`（`plan-check.json` 记录最后检查日）、`AppRuntime.onWindowFocused` /
+  `maybePostPlanCheck`（Mutex 防重复）、全局「计划检查」会话、`ChatSession.unread` 持久化、
+  导航与会话行红点、`Main.kt` 主窗口焦点监听。
+
+测试：
+
+- `features/learning-process/src/jvmTest/.../LearningPlanOverdueTest.kt` 3 个用例
+  （逾期排序 + 剩余容量、欠账回池、短课程跨周不死路）；
+- `LearningPlanRhythmTest` 更新长时间缺席 / 周滚动结转数字；
+- `PlanCheckStoreTest` 4 个、`ChatStoreTest` 未读回合 1 个、
+  `PlanCheckRuntimeTest` 端到端 1 个（上一周排满没做完 → 打开应用出未读摘要 → 同一天不重复 → 已读）。
+
+未做：聊天里的 AI 协商重排（总结/方案/预览/确认/撤销）；计划页「待处理」区与顺延/放弃按钮；
+真正的依赖图（`depends_on`）；`repairPastPlan` 的旧计划搬迁已有 key 去重兜底（不复制历史/欠账）。
+
+验收：上一周排满没做完 → 打开应用 → 对话页出现未读的「计划检查」摘要，会话行与导航有红点；
+同一天不重复发；打开会话红点消失；短课程跨周后本周有安排。
+
 ---
 
 ## 4. 明确不做（第一期）
@@ -334,7 +391,7 @@ advanceRhythm(env, planId, today) -> RhythmResult
 
 ---
 
-## 6. 调试时间时发现的一件事（2026-10-29，待修）
+## 6. 调试时间时发现的一件事（2026-10-29，已修 2026-10-31）
 
 用开发者跳日期（`TRELLIS_TODAY=2026-11-02`，演示数据副本）把计划拨过一周，暴露了一个边角：
 
@@ -343,9 +400,14 @@ advanceRhythm(env, planId, today) -> RhythmResult
   于是这 7 个单元既没被结转、也没被重排，计划停在原地（只有 `carryPending` 提示）。
 - 这是「全量路线 + 每周滚动」的组合必然碰到的边界：路线短到一周装得下时，滚动没有下一周作为容器。
 
-修法候选（下一轮做）：`settleWeek` 结转时如果目标周没有承诺，用这 2 个结转单元**新建**一份该周承诺
-（走 `cmdExtendCommitment`，不开新版本）；或者 `advanceRhythm` 在结算后检查 `carry.pending` 并补承诺。
-两种都要补测试：短路线跨周后，下一次打开应用应能看到本周重新出现节点，而不是永远 pending。
+**2026-10-31 已修**：
+
+- `pool` / `poolRows` 把「过去周承诺过、没完成、也没被本周/以后收走」的单元也算池子（`cmdExtendCommitment`
+  只拦本周及以后的重复承诺，同一 unit 可以再补进未来周）；
+- `PlanRhythm.cmdSettleWeek` 的结转目标周取 `maxOf(下一周, 本周)`，长时间没打开也不会把结转塞进已过去的周；
+- `advanceRhythm` 顺序不变：先补本周承诺、再结算；短课程场景在 W45 打开时，7 个单元先被补进 W45 承诺，
+  再结算 W44（missed×7、carried=7 且不重复插 occurrence、carryPending=0），W45 正常铺天；
+- 回归测试：`LearningPlanOverdueTest.aShortCourseThatFilledOneWeekKeepsGoingNextWeek`。
 
 > 这条也说明调试系统本身的价值：以前这个边界只能等真实跨周才能撞上。
 

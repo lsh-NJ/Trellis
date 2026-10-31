@@ -223,17 +223,35 @@ internal fun SqliteLearningPlanService.weekCompletion(
     return completed to committed
 }
 
-/** 待安排池：当前版本里没被任何周承诺收走的单元，按路线顺序。 */
+/**
+ * 待安排池：没被「本周及以后」的承诺收走的单元，按路线顺序。
+ *
+ * 和 `SqliteLearningPlanService.pool` 同一语义：过去周没做完、又没被以后收走的单元也在这里，
+ * 所以短课程（7 个单元全排进一周）跨周后不会卡死，下一周还能从欠账里补承诺。
+ */
 internal fun SqliteLearningPlanService.poolRows(planId: String): List<PoolRow> {
     val versionId = currentVersion(planId) ?: return emptyList()
     return connection.prepareStatement(
         "SELECT u.id, u.estimate_minutes, u.chapter, u.sort_order FROM plan_unit u " +
-            "WHERE u.plan_version_id = ? AND u.id NOT IN (" +
+            "WHERE u.plan_version_id = ? " +
+            "AND u.id NOT IN (" +
             "SELECT cu.unit_id FROM commitment_unit cu JOIN commitment c ON c.id = cu.commitment_id " +
-            "WHERE c.plan_version_id = ?) ORDER BY u.sort_order",
+            "WHERE c.plan_version_id = ? AND c.week >= ?) " +
+            "AND NOT EXISTS (" +
+            "SELECT 1 FROM occurrence o JOIN commitment c2 ON c2.id = o.commitment_id " +
+            "WHERE c2.plan_version_id = ? AND o.unit_id = u.id AND o.status = 'done') " +
+            "AND NOT EXISTS (" +
+            "SELECT 1 FROM occurrence o2 JOIN commitment c3 ON c3.id = o2.commitment_id " +
+            "WHERE c3.plan_version_id = ? AND c3.week >= ? AND o2.unit_id = u.id " +
+            "AND o2.status = 'planned') " +
+            "ORDER BY u.sort_order",
     ).use { ps ->
         ps.setString(1, versionId)
         ps.setString(2, versionId)
+        ps.setString(3, currentWeek())
+        ps.setString(4, versionId)
+        ps.setString(5, versionId)
+        ps.setString(6, currentWeek())
         ps.executeQuery().use { rs ->
             buildList {
                 while (rs.next()) {

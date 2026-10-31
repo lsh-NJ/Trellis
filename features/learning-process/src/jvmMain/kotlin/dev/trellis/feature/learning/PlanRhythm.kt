@@ -55,8 +55,9 @@ internal fun SqliteLearningPlanService.cmdSettleWeek(
         connection.prepareStatement(
             "SELECT o.id FROM occurrence o JOIN commitment c ON c.id = o.commitment_id " +
                 "JOIN plan_version pv ON pv.id = c.plan_version_id " +
+                "LEFT JOIN plan_unit u ON u.id = o.unit_id " +
                 "WHERE pv.plan_id = ? AND c.week = ? AND o.status = 'planned' AND o.day < ? " +
-                "ORDER BY o.day, o.created_at",
+                "ORDER BY u.sort_order, o.day, o.created_at",
         ).use { ps ->
             ps.setString(1, planId)
             ps.setString(2, week)
@@ -85,43 +86,73 @@ internal fun SqliteLearningPlanService.cmdSettleWeek(
         }
 
         val next = PlanTime.nextWeek(week)
+        // 结算可能晚于下一周才跑（长时间没开应用）：结转要落进「下一周，或本周」，
+        // 不能落进已经过去的周，否则承诺查不到、全变成欠账。
+        val carryWeek = maxOf(next, currentWeek())
         val nextVersion = currentVersion(planId)
         val nextCommitment = nextVersion?.let { version ->
             connection.prepareStatement("SELECT id FROM commitment WHERE plan_version_id = ? AND week = ?").use { ps ->
                 ps.setString(1, version)
-                ps.setString(2, next)
+                ps.setString(2, carryWeek)
                 ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
             }
         }
         var carried = 0
+        var inserted = 0
         var pending = 0
-        val nextStart = PlanTime.weekStart(next)
+        val nextStart = PlanTime.weekStart(carryWeek)
         val targetDay = maxOf(nextStart, todayDate).toString()
         missed.forEach { row ->
             val unitId = row.unitId
-            if (carried >= 2 || nextCommitment == null || unitId == null) {
+            if (nextCommitment == null || unitId == null) {
                 pending++
                 appendEvent(
                     type = "carry.pending",
                     entity = "occurrence",
                     entityId = row.id,
                     planId = planId,
-                    payload = eventJson("week" to JsonPrimitive(week), "toWeek" to JsonPrimitive(next)),
+                    payload = eventJson("week" to JsonPrimitive(week), "toWeek" to JsonPrimitive(carryWeek)),
                     actor = dev.trellis.domain.plan.Actor.SYSTEM,
                     commandId = null,
                 )
+                return@forEach
+            }
+            // 单元已经被下一周的承诺收走（节奏引擎先补承诺、再结算），
+            // 下一周的周计划里已经有它，不用再插一条 occurrence。
+            val inNextCommitment = connection.prepareStatement(
+                "SELECT 1 FROM commitment_unit WHERE commitment_id = ? AND unit_id = ? LIMIT 1",
+            ).use { ps ->
+                ps.setString(1, nextCommitment)
+                ps.setString(2, unitId)
+                ps.executeQuery().use { it.next() }
+            }
+            if (inNextCommitment) {
+                carried++
                 return@forEach
             }
             val duplicate = connection.prepareStatement(
                 "SELECT 1 FROM occurrence o JOIN commitment c ON c.id = o.commitment_id " +
                     "WHERE c.week = ? AND o.unit_id = ? AND o.status IN ('planned','done') LIMIT 1",
             ).use { ps ->
-                ps.setString(1, next)
+                ps.setString(1, carryWeek)
                 ps.setString(2, unitId)
                 ps.executeQuery().use { it.next() }
             }
             if (duplicate) {
+                carried++
+                return@forEach
+            }
+            if (inserted >= 2) {
                 pending++
+                appendEvent(
+                    type = "carry.pending",
+                    entity = "occurrence",
+                    entityId = row.id,
+                    planId = planId,
+                    payload = eventJson("week" to JsonPrimitive(week), "toWeek" to JsonPrimitive(carryWeek)),
+                    actor = dev.trellis.domain.plan.Actor.SYSTEM,
+                    commandId = null,
+                )
                 return@forEach
             }
             val newId = insertOccurrence(
@@ -133,6 +164,7 @@ internal fun SqliteLearningPlanService.cmdSettleWeek(
                 mode = row.mode,
                 carriedFrom = row.id,
             )
+            inserted++
             carried++
             appendEvent(
                 type = "occurrence.carried",
@@ -142,7 +174,7 @@ internal fun SqliteLearningPlanService.cmdSettleWeek(
                 payload = eventJson(
                     "from" to JsonPrimitive(row.id),
                     "fromWeek" to JsonPrimitive(week),
-                    "toWeek" to JsonPrimitive(next),
+                    "toWeek" to JsonPrimitive(carryWeek),
                     "day" to JsonPrimitive(targetDay),
                 ),
                 actor = dev.trellis.domain.plan.Actor.SYSTEM,
