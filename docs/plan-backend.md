@@ -20,13 +20,13 @@
 |---|---|
 | `sdk-domain/.../plan/Contract.kt` | 命令信封、错误码、`CommandResult`、`PlanDiff`、`UndoInfo`、各种 Ref |
 | `sdk-domain/.../plan/Views.kt` | 所有视图 DTO（日/周/地图/复盘/待办/计划状态） |
-| `sdk-domain/.../plan/LearningPlanService.kt` | 查询 7 个 + 命令 20 个（接口即契约，UI 只依赖它） |
+| `sdk-domain/.../plan/LearningPlanService.kt` | 查询 7 个 + 命令 21 个（接口即契约，UI 只依赖它） |
 | `features/learning-process/.../PlanSchema.kt` | 内嵌 DDL（逐条执行）+ 触发器/视图/`user_version` |
 | `.../PlanDatabase.kt` | 连接、PRAGMA（`foreign_keys`、WAL、busy_timeout）、建表、`schema_migration` |
 | `.../Ids.kt` | Crockford base32 ULID（`t_` 前缀） |
 | `.../PlanTime.kt` | 周/日标签、周起止、ISO 时间（时区由构造参数注入） |
 | `.../SqliteLearningPlanService.kt` | 命令外壳（事务/幂等/冲突/撤销注册）+ 行映射 |
-| `.../PlanCommands.kt` | 20 个命令的实现 |
+| `.../PlanCommands.kt` | 21 个命令的实现 |
 | `.../PlanQueries.kt` | 7 个视图的组装（headline 文案也在这里） |
 | `.../PlanRhythm.kt` | `settleWeek`（错过 + 结转）、`generateReview`（固化数字）、`exportJsonl` |
 | `.../LearningPlanStore.kt` | 对外唯一入口：`open(file)` / `inMemory()` |
@@ -52,7 +52,10 @@
 - **结转**：`settleWeek` 幂等（重复调用返回历史数字）；错过标 `missed`，最多结转 2 个到下周，剩下记 `carry.pending`。
 - **复盘**：`generateReview` 只读事件、写一条 `review.generated` 快照；之后数字不再变（幂等，二次调用返回原 `reviewId`）。
 - **as-of**：`asOfCompletedCount(planId, week, maxSeq)` 只看 `seq <= maxSeq` 的事件，给「回放/时间线」用。
-- **日层无加量命令**：加量只能改周承诺（`changeCommitment`），日视图只做完成/顺延/拆分/缩短/跳过。
+- **日层加量只有一个口子：`placeUnit`（2026-10-31）**：把「没排进本周及以后承诺」的单元直接排到某天——
+  校验 day 属于 week、week ≥ 本周、unit 属当前版本、不在本周及以后承诺、没有 planned occurrence；
+  目标周已有承诺就追加 `commitment_unit`（`sort_order = MAX+1`），没有就建承诺，然后 `insertOccurrence`。
+  其余加量仍走周承诺（`changeCommitment`），日视图本身只做完成/顺延/拆分/缩短/跳过。
 - **错误文案**：一律「没改成 + 原因 + 下一步」，不要把 SQL 错误直接抛给用户。
 
 ## 5. 测试
@@ -76,6 +79,8 @@
   - **没设过**：保持老规矩「一天只排一个单元」——不猜容量，免得把没设置的计划塞成一天两三个。
 - 测试：`LearningPlanServiceTest.daysArePackedUpToTheDailyBudget`
   （20+25 同一天、30 顺到第二天、35 顺到第三天）。
+- 拖拽重排：`LearningPlanPlaceUnitTest` 6 个用例（池单元排到某天、往下一周承诺追加、重复排拒绝、
+  周/日不匹配与过去周校验、再铺天不重复、日视图按路线索引排序）。
 - `PlanTools.create_learning_plan` 新增 `dailyMinutes`（15–240）：写进 `process` 的同时，
   把「第一次只排本周 + 下一周，其余留待安排」这条也写进工具提示与校验。
 

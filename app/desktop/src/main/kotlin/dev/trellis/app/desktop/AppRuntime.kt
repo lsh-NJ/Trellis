@@ -2079,6 +2079,32 @@ class AppRuntime private constructor() {
         private set
 
     /**
+     * 拖拽重排的侧栏是否展开。
+     *
+     * 两种打开方式：点标题旁的「重排」按钮；或者直接拖起某天里的一个节点（拖起来就把侧栏摊开，
+     * 让用户能同时看到「还有哪些欠账」）。拖拽本身的状态在 `PlanRearrange.kt` 里。
+     */
+    var planRearrangeOpen by mutableStateOf(false)
+        private set
+
+    /**
+     * 重排侧栏最近一次操作的提示（成功/失败）。
+     *
+     * 单独一个字段而不是复用 [planMessage]：这条提示要在 `refreshPlan()` 之后还看得见，
+     * 而 planMessage 每次刷新都会清掉。开合侧栏时清空。
+     */
+    var planRearrangeHint by mutableStateOf<String?>(null)
+        private set
+
+    /** [planRearrangeHint] 是不是错误（UI 用它决定颜色）。 */
+    var planRearrangeHintIsError by mutableStateOf(false)
+        private set
+
+    /** 侧栏里可拖的节点数：本周逾期 + 更早欠账。 */
+    val planRearrangeCount: Int
+        get() = planOverdue?.let { it.thisWeek.size + it.backlog.size } ?: 0
+
+    /**
      * 计划设置弹窗是否打开。
      *
      * 这是「计划自己的属性」，不是全局设置：同一台机器上不同计划可以是不一样的每天投入，
@@ -2550,6 +2576,83 @@ class AppRuntime private constructor() {
         tick++
     }
 
+    // ---------------- 拖拽重排（侧栏 → 日期） ----------------
+
+    fun togglePlanRearrange() {
+        planRearrangeOpen = !planRearrangeOpen
+        planRearrangeHint = null
+    }
+
+    fun openPlanRearrange() {
+        planRearrangeOpen = true
+    }
+
+    fun closePlanRearrange() {
+        planRearrangeOpen = false
+        planRearrangeHint = null
+    }
+
+    private fun planRearrangeReport(text: String, isError: Boolean) {
+        planRearrangeHint = text
+        planRearrangeHintIsError = isError
+    }
+
+    /** 重排后的目标日：过去的日期不给放，返回 null 并给一句人话。 */
+    private fun planRearrangeTarget(day: String): String? {
+        val today = clock.today()
+        val target = runCatching { LocalDate.parse(day) }.getOrNull()
+        if (target == null) {
+            planMessage = "日期看不懂：$day"
+            return null
+        }
+        if (target < today) {
+            planMessage = "过去的日期不能重排；从今天开始往后放。"
+            return null
+        }
+        return day
+    }
+
+    /** 拖一条「已排到某天」的节点到另一天（同周内）。 */
+    fun planDragOccurrenceToDay(occurrenceId: String, day: String) {
+        val service = learningPlan() ?: return
+        val planId = learningPlanId ?: return
+        val target = planRearrangeTarget(day) ?: return
+        val targetWeek = isoWeekOf(LocalDate.parse(target))
+        val currentWeek = planSelectedWeek
+        if (currentWeek != null && currentWeek != targetWeek) {
+            planRearrangeReport("一次只在同一周里挪；要跨周先把节点放到待安排池。", isError = true)
+            return
+        }
+        val result = runCatching {
+            service.moveOccurrence(planAdjustCommand(planId), occurrenceId, target, "拖拽重排")
+        }.getOrNull()
+        refreshPlan()
+        tick++
+        if (result?.ok == true) {
+            planRearrangeReport("已挪到 " + target.takeLast(5) + "。", isError = false)
+        } else {
+            planRearrangeReport(result?.error?.message ?: "这次没挪成。", isError = true)
+        }
+    }
+
+    /** 拖一条「待安排池」里的欠账节点到某天：后端会把单元追加进目标周承诺再铺天。 */
+    fun planPlaceUnitToDay(unitId: String, day: String) {
+        val service = learningPlan() ?: return
+        val planId = learningPlanId ?: return
+        val target = planRearrangeTarget(day) ?: return
+        val week = isoWeekOf(LocalDate.parse(target))
+        val result = runCatching {
+            service.placeUnit(planAdjustCommand(planId), planId, week, unitId, target)
+        }.getOrNull()
+        refreshPlan()
+        tick++
+        if (result?.ok == true) {
+            planRearrangeReport("已放到 " + target.takeLast(5) + "。", isError = false)
+        } else {
+            planRearrangeReport(result?.error?.message ?: "这次没放上。", isError = true)
+        }
+    }
+
     /**
      * 今天能多补多少：先记下用户答复的加时，再把本周逾期、且今天装得下的项补进来。
      *
@@ -2594,9 +2697,9 @@ class AppRuntime private constructor() {
         tick++
     }
 
-    private fun planMoveOccurrence(occurrenceId: String, toDay: String, reason: String) {
-        val service = learningPlan() ?: return
-        val planId = learningPlanId ?: return
+    private fun planMoveOccurrence(occurrenceId: String, toDay: String, reason: String): Boolean {
+        val service = learningPlan() ?: return false
+        val planId = learningPlanId ?: return false
         val result = runCatching {
             service.moveOccurrence(planAdjustCommand(planId), occurrenceId, toDay, reason)
         }.getOrElse {
@@ -2606,6 +2709,7 @@ class AppRuntime private constructor() {
         if (result != null && !result.ok) planMessage = result.error?.message
         refreshPlan()
         tick++
+        return result?.ok == true
     }
 
     private fun planAdjustCommand(planId: String): CommandEnvelope = CommandEnvelope(
