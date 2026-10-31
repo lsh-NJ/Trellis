@@ -460,22 +460,14 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
             },
     ) {
         Column(Modifier.fillMaxSize()) {
-            // 页头固定：左边说明，右边三个小开关（编辑/预览、目录、菜单）。
+            // 页头固定：只留视图开关（编辑/预览、目录、菜单）；页面标题由左侧导航承担，这里不再重复。
             // 标题和正文一起滚，所以这些按钮不能跟着正文跑。
             // 页面本身已经贴边（AppScreen 对 flush 页不再套 20dp），页头自己留 20dp。
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 20.dp),
                 verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.End,
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text("知识库", style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        "写下来就点亮：共 " + notes.size + " 篇笔记 · " + concepts.size +
-                            " 个概念。保存后 AI 会整理概念，点概念能追回原笔记。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
                 if (!showConcepts) {
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),

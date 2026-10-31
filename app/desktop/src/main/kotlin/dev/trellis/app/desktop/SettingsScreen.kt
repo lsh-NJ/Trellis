@@ -50,10 +50,6 @@ fun SettingsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     var llmNote by remember { mutableStateOf<String?>(null) }
 
     Column(modifier) {
-        Text("设置", style = MaterialTheme.typography.titleLarge)
-        Text("改了就存，重启还在", style = MaterialTheme.typography.labelSmall)
-        Spacer(Modifier.height(12.dp))
-
         LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             item { ModelCard(runtime, llmNote) { llmOpen = true } }
 
