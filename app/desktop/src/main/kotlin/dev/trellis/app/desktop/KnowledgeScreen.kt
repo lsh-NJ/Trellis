@@ -136,6 +136,28 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         runtime.knowledgeNoteId = id
     }
 
+    /**
+     * 导出当前笔记为独立 Markdown 文件（去掉 frontmatter 与 AI 标记）。
+     *
+     * 用编辑缓冲而不是文件里的旧内容：自动保存有 600ms 延迟，导出时看到什么就导出什么。
+     */
+    fun exportCurrentNote() {
+        val base = loaded ?: return
+        val snapshot = base.copy(title = title, body = body)
+        val target = try {
+            chooseMarkdownExportFile(markdownExportFileName(snapshot.title))
+        } catch (error: Throwable) {
+            message = "导出失败：打不开保存面板（" + (error.message ?: "未知错误") + "）"
+            return
+        } ?: return
+        try {
+            writeMarkdownExport(snapshot, target)
+            message = "已导出 Markdown：" + target.name
+        } catch (error: Throwable) {
+            message = "导出失败：" + (error.message ?: "写不进 " + target.absolutePath)
+        }
+    }
+
     /** 概念改动写回；正文没变，所以不动 revision，也不触发重新载入。 */
     fun applyConcepts(next: List<String>) {
         val note = loaded ?: return
@@ -419,7 +441,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     val messageIsProblem = message?.let {
         it.startsWith("保存失败") || it.startsWith("删除失败") ||
             it.startsWith("AI 整理失败") || it.startsWith("AI 补全失败") ||
-            it.startsWith("AI 没配置")
+            it.startsWith("AI 没配置") || it.startsWith("导出失败")
     } == true
 
     Box(
@@ -482,6 +504,11 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                             label = "目录",
                             active = MarkdownSidebarState.visible,
                             onClick = { MarkdownSidebarState.visible = !MarkdownSidebarState.visible },
+                        )
+                        EditorChip(
+                            label = "导出",
+                            active = false,
+                            onClick = { exportCurrentNote() },
                         )
                         EditorChip(
                             label = "菜单",
