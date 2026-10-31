@@ -9,6 +9,7 @@ import dev.trellis.domain.plan.LearningPlanService
 import dev.trellis.domain.plan.PlanStateView
 import dev.trellis.domain.plan.LearningPlanInfo
 import dev.trellis.domain.plan.OpenNode
+import dev.trellis.domain.plan.OverdueView
 import dev.trellis.domain.plan.PoolUnit
 import dev.trellis.domain.plan.UndoInfo
 import dev.trellis.domain.plan.UndoView
@@ -388,16 +389,37 @@ internal class SqliteLearningPlanService(
 
     override fun openNodes(planId: String, untilDay: String): List<OpenNode> = openNodesOf(planId, untilDay)
 
+    override fun overdue(planId: String, today: String): OverdueView = overdueOf(planId, today)
+
+    /**
+     * 待安排：没被「本周及以后」的承诺收走的单元。
+     *
+     * 与旧语义的区别：过去周没做完的单元也算在这里（用户定的「放弃 = 放回未安排桶」）。
+     * 已经有一个 `done` occurrence 的单元不算欠账，不再回到池里。
+     */
     override fun pool(planId: String): List<PoolUnit> {
         val versionId = currentVersion(planId) ?: return emptyList()
         return connection.prepareStatement(
             "SELECT u.id, u.title, u.chapter, u.estimate_minutes FROM plan_unit u " +
-                "WHERE u.plan_version_id = ? AND u.id NOT IN (" +
+                "WHERE u.plan_version_id = ? " +
+                "AND u.id NOT IN (" +
                 "SELECT cu.unit_id FROM commitment_unit cu JOIN commitment c ON c.id = cu.commitment_id " +
-                "WHERE c.plan_version_id = ?) ORDER BY u.sort_order",
+                "WHERE c.plan_version_id = ? AND c.week >= ?) " +
+                "AND NOT EXISTS (" +
+                "SELECT 1 FROM occurrence o JOIN commitment c2 ON c2.id = o.commitment_id " +
+                "WHERE c2.plan_version_id = ? AND o.unit_id = u.id AND o.status = 'done') " +
+                "AND NOT EXISTS (" +
+                "SELECT 1 FROM occurrence o2 JOIN commitment c3 ON c3.id = o2.commitment_id " +
+                "WHERE c3.plan_version_id = ? AND c3.week >= ? AND o2.unit_id = u.id " +
+                "AND o2.status = 'planned') " +
+                "ORDER BY u.sort_order",
         ).use { ps ->
             ps.setString(1, versionId)
             ps.setString(2, versionId)
+            ps.setString(3, currentWeek())
+            ps.setString(4, versionId)
+            ps.setString(5, versionId)
+            ps.setString(6, currentWeek())
             ps.executeQuery().use { rs ->
                 buildList {
                     while (rs.next()) add(PoolUnit(rs.getString(1), rs.getString(2), rs.getString(3), rs.getInt(4)))

@@ -293,6 +293,14 @@ private fun SessionRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
             )
         }
+        // 主动消息没看的会话行标一个点（与导航「对话」的红点同源）。
+        if (session.unread) {
+            Box(
+                Modifier.size(6.dp)
+                    .background(MaterialTheme.colorScheme.error, CircleShape),
+            )
+            Spacer(Modifier.width(6.dp))
+        }
         Box {
             if (hovered || menuOpen) {
                 Box(

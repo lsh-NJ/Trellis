@@ -1203,7 +1203,9 @@ internal fun SqliteLearningPlanService.cmdScheduleWeek(
  * 已经铺过天的 occurrence 还挂在旧 unit id 上（身份列不可 UPDATE），计划页的「已完成」状态
  * 和周卡片就会对不上。追加一条未来周的承诺不改任何旧行，是所有滚动排周里最安全的写法。
  *
- * 幂等：(版本, 周) 已有承诺时返回 0 + warning；单元必须属于当前版本、且还没被任何一周收走。
+ * 幂等：(版本, 周) 已有承诺时返回 0 + warning；单元必须属于当前版本、且没被「本周及以后」
+ * 的某周收走。过去周没做完的单元允许重新补进未来周——「放弃 = 放回未安排桶」之后，
+ * 欠账还要能再被排进计划，不能因为它在过去某周的承诺里就永远排不动。
  * 返回这次真正加进去的单元数。
  */
 internal fun SqliteLearningPlanService.cmdExtendCommitment(
@@ -1225,7 +1227,7 @@ internal fun SqliteLearningPlanService.cmdExtendCommitment(
         if (commitmentExists(versionId, week)) {
             return@write ok(0, warnings = listOf("$week 已经有承诺了，没有重复加。"))
         }
-        val committed = committedUnitIds(versionId)
+        val committed = committedUnitIds(versionId, currentWeek())
         val ordered = mutableListOf<Pair<Int, String>>()
         unitIds.distinct().forEach { unitId ->
             val row = unitRow(unitId) ?: return@write fail(ErrorCode.E_NOT_FOUND, "找不到单元「$unitId」。")
@@ -1270,13 +1272,14 @@ internal fun SqliteLearningPlanService.cmdExtendCommitment(
     }
 }
 
-/** 当前版本里已经挂到某一周承诺上的单元 id。 */
-internal fun SqliteLearningPlanService.committedUnitIds(versionId: String): Set<String> =
+/** 当前版本里已经挂到 [fromWeek]（含）以后某周承诺上的单元 id。 */
+internal fun SqliteLearningPlanService.committedUnitIds(versionId: String, fromWeek: String): Set<String> =
     connection.prepareStatement(
         "SELECT cu.unit_id FROM commitment_unit cu JOIN commitment c ON c.id = cu.commitment_id " +
-            "WHERE c.plan_version_id = ?",
+            "WHERE c.plan_version_id = ? AND c.week >= ?",
     ).use { ps ->
         ps.setString(1, versionId)
+        ps.setString(2, fromWeek)
         ps.executeQuery().use { rs -> buildSet { while (rs.next()) add(rs.getString(1)) } }
     }
 

@@ -35,8 +35,16 @@ interface LearningPlanService {
     /** 所有计划（不分活跃/归档）；计划页左栏「全部计划」用。 */
     fun plans(): List<LearningPlanInfo>
 
-    /** 还没被任何一周承诺收进去的单元（节点池）；空列表 = 全排完了。 */
+    /** 还没被「本周及以后」的承诺收进去的单元（节点池）；过去周没做完的节点也会回到这里。 */
     fun pool(planId: String): List<PoolUnit>
+
+    /**
+     * 计划当前欠的节点：本周过了日子还没做的排期 + 过去周没完成、也没被以后收走的单元，
+     * 外加本周从今天到周日的剩余容量。
+     *
+     * 只读事实；重排怎么做由上层协商后发命令，查询本身不写库、不猜方案。
+     */
+    fun overdue(planId: String, today: String): OverdueView
 
     /**
      * 今天到期和之前逾期、还没做完的计划节点，按天升序。

@@ -90,4 +90,18 @@ class ChatStoreTest {
     fun anEmptyHomeIsAnEmptyList() {
         assertTrue(ChatStore(tempHome()).list().isEmpty())
     }
+
+    @Test
+    fun theUnreadMarkSurvivesAReloadAndOldFilesDefaultToRead() {
+        val home = tempHome()
+        ChatStore(home).save(session("plan-check", "计划检查", 1_000L).copy(unread = true))
+        assertTrue(ChatStore(home).read("plan-check")!!.unread, "主动消息的未读应该能落盘")
+
+        // 旧会话文件没有 unread 字段：默认已读。升级后不该凭空冒出一排红点。
+        File(File(home, "chat"), "chat-legacy.json").writeText(
+            """{"id":"chat-legacy","title":"旧的","createdAt":1,"updatedAt":2,"lines":[]}""",
+            Charsets.UTF_8,
+        )
+        assertEquals(false, ChatStore(home).read("chat-legacy")!!.unread)
+    }
 }

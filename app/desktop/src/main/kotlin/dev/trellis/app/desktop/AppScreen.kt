@@ -344,7 +344,16 @@ private fun NavRailItem(runtime: AppRuntime, icon: ChromeIcon, label: String, ta
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        ChromeIconGlyph(icon, content, Modifier.size(16.dp))
+        Box {
+            ChromeIconGlyph(icon, content, Modifier.size(16.dp))
+            // 只有「对话」有主动消息红点：计划检查把话留在了那段会话里。
+            if (tab == TAB_CHAT && runtime.hasUnreadChat) {
+                Box(
+                    Modifier.align(Alignment.TopEnd).size(6.dp)
+                        .background(MaterialTheme.colorScheme.error, androidx.compose.foundation.shape.CircleShape),
+                )
+            }
+        }
         Text(label, style = MaterialTheme.typography.labelSmall, color = content)
     }
 }
