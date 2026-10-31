@@ -36,6 +36,7 @@ import dev.trellis.domain.plan.DayView
 import dev.trellis.domain.plan.UnitDraft
 import dev.trellis.domain.plan.LearningPlanService
 import dev.trellis.domain.plan.LearningPlanInfo
+import dev.trellis.domain.plan.OverdueView
 import dev.trellis.domain.plan.PoolUnit
 import dev.trellis.domain.plan.RhythmResult
 import dev.trellis.domain.plan.WeekDay
@@ -642,6 +643,17 @@ class AppRuntime private constructor() {
 
     private lateinit var chatStore: ChatStore
 
+    /** 「计划检查」主动消息的「今天已经发过」标记（`<home>/plan-check.json`）。 */
+    private lateinit var planCheckStore: PlanCheckStore
+
+    /** 会话列表里有没有没看过的主动消息：导航「对话」和对应会话行据此显示红点。 */
+    val hasUnreadChat: Boolean get() = chatSessions.any { it.unread }
+
+    private var planCheckJob: Job? = null
+
+    /** 计划检查串行化：启动那一次和焦点触发可能同时到，别把同一条消息发两遍。 */
+    private val planCheckMutex = Mutex()
+
     /** 知识库笔记：文件是真相，以后加的索引只是从这些文件重建的投影。 */
     internal lateinit var knowledgeStore: KnowledgeStore
 
@@ -781,6 +793,8 @@ class AppRuntime private constructor() {
                     line.text,
                 )
             }
+        // 打开即已读：用户人就在这段里，红点不该还留着。
+        markChatRead(session.id)
     }
 
     fun deleteChat(id: String) {
@@ -796,6 +810,99 @@ class AppRuntime private constructor() {
         chatSessions += chatStore.list()
     }
 
+    /** 打开/正在看这段会话：清掉未读并落盘（只改这一段，不重排列表）。 */
+    fun markChatRead(id: String) {
+        val index = chatSessions.indexOfFirst { it.id == id }
+        if (index < 0 || !chatSessions[index].unread) return
+        val session = chatSessions[index].copy(unread = false)
+        chatSessions[index] = session
+        chatStore.save(session)
+    }
+
+    /**
+     * 主窗口重新获得焦点：检查一次计划，需要时往「计划检查」会话里留一条主动消息。
+     *
+     * 触发是**状态事件**不是定时器：应用启动、从别的窗口切回来都会走这里；
+     * 每天最多一次（[PlanCheckStore]），没逾期就什么都不发。重活在后端查询，
+     * 这里不调模型——文案是确定的，免得「AI 提醒」变成又一段需要读的长篇。
+     */
+    fun onWindowFocused() {
+        if (planCheckJob?.isActive == true) return
+        planCheckJob = chatScope.launch {
+            runCatching { maybePostPlanCheck() }
+                .onFailure { appendAppLog("计划检查失败：" + it) }
+        }
+    }
+
+    /**
+     * 计划检查：读后端事实 → 需要时往全局「计划检查」会话追加一条普通 Assistant 行。
+     *
+     * 只提示、不动数据：真正的重排/补做仍由用户回话后走工具与确认。
+     * 不自动切页、不打断正在跑的一轮（`chatBusy` 时直接跳过，焦点下次再来）。
+     */
+    internal suspend fun maybePostPlanCheck() {
+        planCheckMutex.withLock { postPlanCheckIfDue() }
+    }
+
+    private suspend fun postPlanCheckIfDue() {
+        if (chatBusy) return
+        if (!::planCheckStore.isInitialized) return
+        val today = clock.today().toString()
+        if (planCheckStore.lastDay() == today) return
+        val service = learningPlan() ?: return
+        val planId = service.activePlanId() ?: return
+        val view = service.overdue(planId, today)
+        if (view.thisWeek.isEmpty() && view.backlog.isEmpty()) return
+        val planTitle = service.plans().firstOrNull { it.id == planId }?.title ?: "学习计划"
+        val now = clock.nowMs()
+        val existing = chatStore.read(PLAN_CHECK_SESSION_ID)
+        val lines = (existing?.lines ?: emptyList()) + ChatLine(
+            id = (existing?.lines?.maxOfOrNull { it.id } ?: 0L) + 1,
+            role = ChatRole.Assistant,
+            text = buildPlanCheckText(planTitle, view),
+            atMs = now,
+        )
+        chatStore.save(
+            ChatSession(
+                id = PLAN_CHECK_SESSION_ID,
+                title = PLAN_CHECK_TITLE,
+                createdAt = existing?.createdAt ?: now,
+                updatedAt = now,
+                lines = lines,
+                unread = true,
+            ),
+        )
+        planCheckStore.save(today)
+        loadChatSessions()
+        appendAppLog(
+            "计划检查：$today 留下主动消息（本周隔日 ${view.thisWeek.size} 项，欠账 ${view.backlog.size} 项）",
+        )
+    }
+
+    /** 计划检查的确定性文案：不靠模型数数，也和工具循环无关，用户回什么都行。 */
+    private fun buildPlanCheckText(planTitle: String, view: OverdueView): String {
+        val out = StringBuilder()
+        out.append("🔔 计划检查「").append(planTitle).append("」\n")
+        if (view.thisWeek.isNotEmpty()) {
+            out.append("\n本周有 ").append(view.thisWeek.size).append(" 个排期没做完：")
+            view.thisWeek.groupBy { it.day }.forEach { (day, items) ->
+                out.append("\n- ").append(day.removePrefix(view.week.substring(0, 4) + "-"))
+                    .append("：")
+                    .append(items.joinToString("、") { it.title })
+            }
+            out.append("\n")
+        }
+        if (view.backlog.isNotEmpty()) {
+            out.append("\n还有 ").append(view.backlog.size).append(" 个在未安排桶里：")
+            out.append(view.backlog.take(5).joinToString("、") { it.title })
+            if (view.backlog.size > 5) out.append(" 等")
+            out.append("\n")
+        }
+        out.append("\n今天到周日还剩约 ").append(view.remainingMinutes).append(" 分钟。")
+        out.append("\n想怎么处理？回我就行：补做、顺延、少排一点，或者这周先放过。")
+        return out.toString()
+    }
+
     /**
      * 把当前这一段落盘。
      *
@@ -804,13 +911,15 @@ class AppRuntime private constructor() {
      */
     private fun persistChat() {
         if (!::chatStore.isInitialized || chat.isEmpty()) return
-        val now = System.currentTimeMillis()
+        val now = clock.nowMs()
         val id = currentChatId ?: ("chat-" + now)
         currentChatId = id
-        val title = chat.firstOrNull { it.role == ChatRole.User }
-            ?.text?.trim()?.take(24)?.takeIf { it.isNotBlank() } ?: "新对话"
-        val createdAt = chatStore.read(id)?.createdAt ?: now
-        chatStore.save(ChatSession(id, title, createdAt, now, chat.toList()))
+        val existing = chatStore.read(id)
+        // 全局「计划检查」会话是一段常驻的检查线程：标题不跟着用户回的那句话改。
+        val title = existing?.title?.takeIf { it == PLAN_CHECK_TITLE }
+            ?: chat.firstOrNull { it.role == ChatRole.User }
+                ?.text?.trim()?.take(24)?.takeIf { it.isNotBlank() } ?: "新对话"
+        chatStore.save(ChatSession(id, title, existing?.createdAt ?: now, now, chat.toList()))
         loadChatSessions()
     }
 
@@ -2416,20 +2525,27 @@ class AppRuntime private constructor() {
             requireNotNull(monday) { "算不出本周的周一" }
             val units = mutableListOf<UnitDraft>()
             val grouped = mutableListOf<List<Int>>()
+            // 同一个单元可能因为「欠账回池 -> 又被本周收走」出现在多张周卡里（旧计划尤其明显）。
+            // 搬计划时按 (章节, 标题, 时长) 去重，只认第一次出现：重排不是复制历史。
+            val seenUnits = mutableMapOf<String, Int>()
             cards.forEach { card ->
                 val weekUnits = service.week(planId, card.week).commitment.units
                 if (weekUnits.isEmpty()) return@forEach
-                val indexes = weekUnits.map { unit ->
+                val indexes = weekUnits.mapNotNull { unit ->
+                    val key = unit.chapter + "\u0000" + unit.title + "\u0000" + unit.estimateMinutes
+                    if (seenUnits.containsKey(key)) return@mapNotNull null
                     units += UnitDraft(
                         chapter = unit.chapter,
                         title = unit.title,
                         estimateMinutes = unit.estimateMinutes.coerceIn(10, 45),
                     )
+                    seenUnits[key] = units.lastIndex
                     units.lastIndex
                 }
-                grouped += indexes
+                if (indexes.isNotEmpty()) grouped += indexes
             }
             require(units.isNotEmpty()) { "这份计划里没有可搬的单元" }
+            require(grouped.isNotEmpty()) { "这份计划里没有排进任何一周的单元" }
             val commitments = grouped.mapIndexed { index, unitIndexes ->
                 CommitmentDraft(week = isoWeekOf(monday.plusWeeks(index.toLong())), unitIndexes = unitIndexes)
             }
@@ -3006,11 +3122,13 @@ class AppRuntime private constructor() {
             runtime.pluginStyleStore = PluginStyleStore(home)
             runtime.pluginCardStyles = runtime.pluginStyleStore.load()
             runtime.chatStore = ChatStore(home)
+            runtime.planCheckStore = PlanCheckStore(home)
             runtime.knowledgeStore = KnowledgeStore(home, runtime.clock)
             runtime.loadChatSessions()
             // 聊天器的默认行为就是「接着上次说」：启动时把最近一段接回去，
             // 而不是每次都从空白开始、让人以为记录丢了。
             runtime.chatSessions.firstOrNull()?.let { runtime.openChat(it.id) }
+            runtime.onWindowFocused()
             runtime.wireApprovalDialog()
 
             if (plan.plans().isEmpty()) plan.createPlan("我的第一个计划")

@@ -70,6 +70,11 @@ data class ChatChoice(val label: String, val text: String)
  * 一段会话。对话记录按会话存盘，关掉程序再打开还能接着聊。
  *
  * [title] 取第一句用户发言（截断）；[updatedAt] 用来排序和显示「最近说过话」。
+ *
+ * [unread] 只表示「这段里有用户还没看过的主动消息」——目前唯一的来源是
+ * 计划检查（见 `PlanCheckStore` / `AppRuntime.maybePostPlanCheck`）。
+ * 用户自己发起的一轮不算未读：那时他人就在对话页。打开会话即清掉；
+ * 旧会话文件没有这个字段，按已读处理（不要一升级就满屏红点）。
  */
 data class ChatSession(
     val id: String,
@@ -77,4 +82,5 @@ data class ChatSession(
     val createdAt: Long,
     val updatedAt: Long,
     val lines: List<ChatLine>,
+    val unread: Boolean = false,
 )
