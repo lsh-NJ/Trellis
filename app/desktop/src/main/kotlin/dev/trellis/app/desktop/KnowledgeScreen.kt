@@ -2,6 +2,8 @@ package dev.trellis.app.desktop
 
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -86,6 +89,9 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     var revealRange by remember { mutableStateOf<TextRange?>(null) }
     var revealToken by remember { mutableStateOf(0) }
     var shortcutsOpen by remember { mutableStateOf(false) }
+    // 布局：左右两栏都能收起（宽度不记忆，每次进页面先都展开；目录宽度例外，见 MarkdownSidebarState）。
+    var leftCollapsed by remember { mutableStateOf(false) }
+    var collapsedOutline by remember { mutableStateOf(emptySet<Int>()) }
     var pendingReveal by remember { mutableStateOf<PendingReveal?>(null) }
     var extracting by remember { mutableStateOf(false) }
     // 记「哪个正文已经整理过」：避免同一次编辑里反复调模型（页面重进时不需要持久化）。
@@ -97,6 +103,12 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     }
     val searchHits = remember(notes, query, loaded) {
         if (query.isBlank()) null else store.search(query)
+    }
+    val outlineItems = remember(body) { parseOutline(body) }
+
+    /** 目录「全部收起」要收的节点：所有带子标题的标题 offset。 */
+    fun parentOffsets(items: List<OutlineItem>): List<Int> = items.flatMap { item ->
+        if (item.children.isEmpty()) emptyList() else listOf(item.offset) + parentOffsets(item.children)
     }
 
     /** 只写文件、不动界面状态；返回是否成功。离开组合时用它兜底。 */
@@ -409,7 +421,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
             it.startsWith("AI 没配置")
     } == true
 
-    Column(
+    Box(
         modifier = modifier
             .fillMaxSize()
             .focusRequester(pageFocus)
@@ -419,7 +431,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                 if (event.type != KeyEventType.KeyDown) {
                     false
                 } else if (command && event.key == Key.Slash) {
-                    // 快捷键清单挂在页面上：预览态没有输入框，按键本来也只会走到这里。
+                    // 菜单挂在页面上：预览态没有输入框，按键本来也只会走到这里。
                     shortcutsOpen = !shortcutsOpen
                     true
                 } else if (event.key == Key.Escape && shortcutsOpen) {
@@ -446,93 +458,147 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                 }
             },
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("知识库", style = MaterialTheme.typography.titleLarge)
-                Text(
-                    "写下来就点亮：共 " + notes.size + " 篇笔记 · " + concepts.size +
-                        " 个概念。保存后 AI 会整理概念，点概念能追回原笔记。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            ChromeButton(label = "新建笔记", onClick = { createNote() }, filled = true)
-        }
-
-        if (message != null) {
-            Spacer(Modifier.height(6.dp))
-            Text(
-                message!!,
-                style = MaterialTheme.typography.labelSmall,
-                color = if (messageIsProblem) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        if (notes.isEmpty() && concepts.isEmpty()) {
-            KnowledgeEmptyState(onCreate = { createNote() })
-        } else {
-            Row(Modifier.weight(1f).fillMaxWidth()) {
-                Column(Modifier.width(264.dp).fillMaxHeight()) {
-                    ChromeTextField(
-                        value = query,
-                        onValueChange = { query = it },
-                        placeholder = "搜索标题和正文",
-                        modifier = Modifier.fillMaxWidth(),
+        Column(Modifier.fillMaxSize()) {
+            // 页头固定：左边说明，右边三个小开关（编辑/预览、目录、菜单）。
+            // 标题和正文一起滚，所以这些按钮不能跟着正文跑。
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("知识库", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        "写下来就点亮：共 " + notes.size + " 篇笔记 · " + concepts.size +
+                            " 个概念。保存后 AI 会整理概念，点概念能追回原笔记。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        KnowledgePaneTab(
-                            label = "笔记",
-                            selected = !showConcepts,
-                            onClick = { showConcepts = false },
+                }
+                if (!showConcepts) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        EditorChip(
+                            label = if (preview) "编辑" else "预览",
+                            active = preview,
+                            onClick = { preview = !preview },
                         )
-                        KnowledgePaneTab(
-                            label = "概念",
-                            selected = showConcepts,
-                            onClick = { showConcepts = true },
+                        EditorChip(
+                            label = "目录",
+                            active = MarkdownSidebarState.visible,
+                            onClick = { MarkdownSidebarState.visible = !MarkdownSidebarState.visible },
                         )
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    val hits = searchHits
-                    if (hits != null) {
-                        KnowledgeSearchResults(
-                            hits = hits,
-                            selectedNoteId = selectedId,
-                            selectedConceptName = selectedConcept,
-                            zone = clock.zone,
-                            onOpenNote = { selectNote(it) },
-                            onOpenConcept = { openConcept(it) },
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                    } else if (showConcepts) {
-                        ConceptListPanel(
-                            concepts = concepts,
-                            selectedName = selectedConcept,
-                            zone = clock.zone,
-                            emptyHint = "还没有概念。保存笔记后 AI 会自动整理，也可以在笔记里手动添加。",
-                            onSelect = { openConcept(it) },
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                    } else {
-                        NoteListPanel(
-                            notes = filteredNotes,
-                            selectedId = selectedId,
-                            zone = clock.zone,
-                            emptyHint = "没有匹配的笔记",
-                            onSelect = { selectNote(it) },
-                            onDelete = { deleteTarget = it },
-                            modifier = Modifier.fillMaxSize(),
+                        EditorChip(
+                            label = "菜单",
+                            active = shortcutsOpen,
+                            onClick = { shortcutsOpen = !shortcutsOpen },
                         )
                     }
                 }
-                Spacer(Modifier.width(16.dp))
-                Column(Modifier.weight(1f).fillMaxHeight()) {
+            }
+
+            if (message != null) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    message!!,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (messageIsProblem) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            if (notes.isEmpty() && concepts.isEmpty()) {
+                KnowledgeEmptyState(onCreate = { createNote() })
+            } else {
+                Row(Modifier.weight(1f).fillMaxWidth()) {
+                    // 左栏：笔记列表 / 全局概念索引。可以收成一条窄边。
+                    if (leftCollapsed) {
+                        Column(
+                            Modifier.fillMaxHeight().width(36.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            Spacer(Modifier.height(2.dp))
+                            EditorChip(
+                                label = "›",
+                                active = false,
+                                onClick = { leftCollapsed = false },
+                            )
+                        }
+                    } else {
+                        Column(Modifier.width(264.dp).fillMaxHeight()) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                // 弱化成描边按钮：黑底大按钮太压页面，新建是常用但不必最重。
+                                ChromeButton(
+                                    label = "新建笔记",
+                                    onClick = { createNote() },
+                                    filled = false,
+                                )
+                                Spacer(Modifier.weight(1f))
+                                EditorChip(
+                                    label = "‹",
+                                    active = false,
+                                    onClick = { leftCollapsed = true },
+                                )
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            ChromeTextField(
+                                value = query,
+                                onValueChange = { query = it },
+                                placeholder = "搜索标题和正文",
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                KnowledgePaneTab(
+                                    label = "笔记",
+                                    selected = !showConcepts,
+                                    onClick = { showConcepts = false },
+                                )
+                                KnowledgePaneTab(
+                                    label = "概念",
+                                    selected = showConcepts,
+                                    onClick = { showConcepts = true },
+                                )
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            val hits = searchHits
+                            if (hits != null) {
+                                KnowledgeSearchResults(
+                                    hits = hits,
+                                    selectedNoteId = selectedId,
+                                    selectedConceptName = selectedConcept,
+                                    zone = clock.zone,
+                                    onOpenNote = { selectNote(it) },
+                                    onOpenConcept = { openConcept(it) },
+                                    modifier = Modifier.fillMaxSize(),
+                                )
+                            } else if (showConcepts) {
+                                ConceptListPanel(
+                                    concepts = concepts,
+                                    selectedName = selectedConcept,
+                                    zone = clock.zone,
+                                    emptyHint = "还没有概念。保存笔记后 AI 会自动整理，也可以在笔记里手动添加。",
+                                    onSelect = { openConcept(it) },
+                                    modifier = Modifier.fillMaxSize(),
+                                )
+                            } else {
+                                NoteListPanel(
+                                    notes = filteredNotes,
+                                    selectedId = selectedId,
+                                    zone = clock.zone,
+                                    emptyHint = "没有匹配的笔记",
+                                    onSelect = { selectNote(it) },
+                                    onDelete = { deleteTarget = it },
+                                    modifier = Modifier.fillMaxSize(),
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.width(16.dp))
+                    // 主区：概念详情，或者「标题 + 正文」一整块可滚动内容。
                     if (showConcepts) {
                         ConceptDetailPanel(
                             detail = conceptDetail,
@@ -545,53 +611,120 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                             },
                             onLocate = { locateMention(it) },
                             onOpenRelated = { openConcept(it) },
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
                         )
                     } else {
-                        NoteTitleField(
-                            title = title,
-                            loaded = loaded != null,
-                            onTitleChange = {
-                                title = it
-                                revision++
-                            },
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        NoteConceptChips(
-                            concepts = loaded?.concepts.orEmpty(),
-                            onOpenConcept = { openConcept(it) },
-                            onRemoveConcept = { removeConcept(it) },
-                            onAddConcept = { addConcept(it) },
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        MarkdownEditor(
-                            noteId = selectedId.orEmpty(),
-                            body = body,
-                            onBodyChange = {
-                                body = it
-                                revision++
-                            },
-                            preview = preview,
-                            onTogglePreview = { preview = !preview },
-                            statusText = status,
-                            modifier = Modifier.weight(1f),
-                            shortcutsOpen = shortcutsOpen,
-                            onToggleShortcuts = { shortcutsOpen = !shortcutsOpen },
-                            reveal = revealRange,
-                            revealToken = revealToken,
-                            conceptNames = concepts.map { it.name },
-                            onDeleteAiLine = { line ->
-                                val next = removeAiBlockLine(body, line)
-                                if (next != null) {
-                                    body = next
-                                    revision++
-                                    message = "已删掉一处 AI 内容"
+                        Column(Modifier.weight(1f).fillMaxHeight()) {
+                            // 标题和正文共用一条滚动轴（需求：标题跟着正文走）。
+                            // 块编辑器自己不再滚动，高度随内容长；滚动交给这里。
+                            Box(Modifier.weight(1f).fillMaxWidth()) {
+                                Column(
+                                    Modifier
+                                        .fillMaxSize()
+                                        .verticalScroll(rememberScrollState()),
+                                ) {
+                                    NoteTitleField(
+                                        title = title,
+                                        loaded = loaded != null,
+                                        onTitleChange = {
+                                            title = it
+                                            revision++
+                                        },
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                    MarkdownEditor(
+                                        noteId = selectedId.orEmpty(),
+                                        body = body,
+                                        onBodyChange = {
+                                            body = it
+                                            revision++
+                                        },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        preview = preview,
+                                        reveal = revealRange,
+                                        revealToken = revealToken,
+                                        conceptNames = concepts.map { it.name },
+                                        onDeleteAiLine = { line ->
+                                            val next = removeAiBlockLine(body, line)
+                                            if (next != null) {
+                                                body = next
+                                                revision++
+                                                message = "已删掉一处 AI 内容"
+                                            }
+                                        },
+                                    )
+                                    Spacer(Modifier.height(20.dp))
                                 }
-                            },
-                        )
+                            }
+                            // 底部状态条固定，不跟着正文滚走。
+                            Row(
+                                Modifier.fillMaxWidth().padding(top = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    if (loaded == null) "还没有选中笔记" else body.length.toString() + " 字符",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                )
+                                Spacer(Modifier.weight(1f))
+                                Text(
+                                    status,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (messageIsProblem) {
+                                        MaterialTheme.colorScheme.error
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                    },
+                                )
+                            }
+                        }
+                        // 右栏：本篇概念 + 目录。目录宽度可拖（OutlineSplitter 在面板外留了口子），
+                        // 这里先按 MarkdownSidebarState.width 显示，隐藏/展开走页头「目录」。
+                        if (MarkdownSidebarState.visible) {
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.width(MarkdownSidebarState.width).fillMaxHeight()) {
+                                NoteConceptPanel(
+                                    concepts = loaded?.concepts.orEmpty(),
+                                    onOpenConcept = { openConcept(it) },
+                                    onRemoveConcept = { removeConcept(it) },
+                                    onAddConcept = { addConcept(it) },
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                HorizontalDivider(
+                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                                )
+                                MarkdownOutlinePanel(
+                                    roots = outlineItems,
+                                    collapsed = collapsedOutline,
+                                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                                    onToggle = { item ->
+                                        collapsedOutline = if (item.offset in collapsedOutline) {
+                                            collapsedOutline - item.offset
+                                        } else {
+                                            collapsedOutline + item.offset
+                                        }
+                                    },
+                                    onCollapseAll = {
+                                        collapsedOutline = parentOffsets(outlineItems).toSet()
+                                    },
+                                    onExpandAll = { collapsedOutline = emptySet() },
+                                    onJump = { item ->
+                                        // 跳转复用「定位」管线：设 pendingReveal，等编辑器选中并滚动过去。
+                                        val id = selectedId
+                                        if (id != null) {
+                                            pendingReveal = PendingReveal(id, item.offset, item.offset)
+                                        }
+                                    },
+                                    onHide = { MarkdownSidebarState.visible = false },
+                                )
+                            }
+                        }
                     }
                 }
             }
+        }
+        if (shortcutsOpen) {
+            MarkdownMenuOverlay(onClose = { shortcutsOpen = false })
         }
     }
 

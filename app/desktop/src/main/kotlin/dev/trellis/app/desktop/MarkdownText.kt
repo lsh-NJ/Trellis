@@ -32,6 +32,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -56,6 +57,8 @@ internal sealed interface MdBlock {
     data class Bullet(val text: String, val depth: Int, val checked: Boolean? = null) : MdBlock
     data class Numbered(val number: String, val text: String, val depth: Int) : MdBlock
     data class Code(val language: String, val code: String) : MdBlock
+    /** `$$ … $$` 公式块：不解析里面的 Markdown，按公式样式排版。 */
+    data class Math(val code: String) : MdBlock
     data class Quote(val text: String) : MdBlock
     data class Table(val header: List<String>, val rows: List<List<String>>) : MdBlock
     /** AI 写的块级内容（`:::ai` … `:::`）：预览渲染成绿色大引号，每行可点 × 删除。 */
@@ -136,6 +139,32 @@ internal fun parseMarkdown(source: String): List<MdBlock> {
             inCode = true
             codeLanguage = line.trim().removePrefix("```").trim()
             index++
+            continue
+        }
+
+        // `$$` 公式块：单独成块。单行 `$$E=mc^2$$` 一次闭合，否则收到行尾带 `$$` 的那一行。
+        if (line.trimStart().startsWith("$$")) {
+            flushParagraph()
+            val trimmed = line.trim()
+            if (trimmed.length > 4 && trimmed.endsWith("$$") && !trimmed.removePrefix("$$").trimStart().startsWith("$$")) {
+                blocks += MdBlock.Math(trimmed.removePrefix("$$").removeSuffix("$$").trim())
+                index++
+                continue
+            }
+            val math = StringBuilder(line.trimStart().removePrefix("$$").trim())
+            index++
+            while (index < lines.size) {
+                val next = lines[index].trimEnd()
+                if (next.trim().endsWith("$$")) {
+                    val tail = next.trim().removeSuffix("$$").trim()
+                    if (tail.isNotEmpty()) math.append(' ').append(tail)
+                    index++
+                    break
+                }
+                math.append('\n').append(next)
+                index++
+            }
+            blocks += MdBlock.Math(math.toString().trim())
             continue
         }
 
@@ -236,7 +265,8 @@ private val inlinePattern = Regex(
         "|\\*(?<italic>(?!\\s).+?(?<!\\s))\\*" +                 // *斜体*
         "|!\\[(?<imageAlt>.*?)]\\((?<imageUrl>.+?)\\)" +         // ![图片](url)
         "|\\[(?<linkLabel>.+?)]\\((?<linkUrl>.+?)\\)" +          // [文字](链接)
-        "|~~(?<strike>(?!\\s).+?(?<!\\s))~~",                    // ~~删除线~~
+        "|~~(?<strike>(?!\\s).+?(?<!\\s))~~" +                   // ~~删除线~~
+        "|\\$(?!\$)(?<math>(?!\\s)[^$\\n]+?(?<!\\s))\\$(?!\$)", // $行内公式$
 )
 
 /** 行内 AI 内容（`{{…}}`）在原文里的位置；[end] 是闭括号之后的偏移。 */
@@ -268,9 +298,17 @@ internal val MarkdownAiGreen: Color = Color(0xFF4F6A12)
 /** AI 内容的大引号字号：正文约 15–16sp，这里按约定放大到约 2 倍（一定比普通引号大）。 */
 private val AiQuoteFontSize = 26.sp
 
-/** 概念命中的绿色强调样式。 */
+/**
+ * 概念命中的样式：浅绿下划线，而不是把整段字染成绿色。
+ *
+ * Compose 的 [SpanStyle] 没有独立的下划线颜色，下划线会跟随文字颜色，
+ * 所以这里用「浅一档的绿 + 下划线」：远看是划线在标记概念，近看字也不刺眼。
+ */
 private fun conceptStyle(conceptGreen: Color): SpanStyle =
-    SpanStyle(color = conceptGreen, fontWeight = FontWeight.Medium)
+    SpanStyle(
+        color = conceptGreen.copy(alpha = 0.62f),
+        textDecoration = TextDecoration.Underline,
+    )
 
 /**
  * 在一段文本的 [from, to) 区间里应用行内样式与概念高亮。
@@ -314,6 +352,7 @@ private fun AnnotatedString.Builder.appendStyledRange(
         val linkLabel = groups["linkLabel"]
         val linkUrl = groups["linkUrl"]
         val strike = groups["strike"]
+        val math = groups["math"]
         when {
             boldItalic != null -> withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontStyle = FontStyle.Italic)) {
                 appendPlain(from + boldItalic.range.first, from + boldItalic.range.last + 1)
@@ -342,6 +381,11 @@ private fun AnnotatedString.Builder.appendStyledRange(
             }
             strike != null -> withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) {
                 appendPlain(from + strike.range.first, from + strike.range.last + 1)
+            }
+            math != null -> withStyle(
+                SpanStyle(fontFamily = FontFamily.Monospace, fontStyle = FontStyle.Italic),
+            ) {
+                appendPlain(from + math.range.first, from + math.range.last + 1)
             }
         }
         cursor = matchEnd
@@ -462,6 +506,25 @@ internal fun MarkdownText(
                             block.code,
                             style = MaterialTheme.typography.bodySmall,
                             fontFamily = FontFamily.Monospace,
+                        )
+                    }
+                    is MdBlock.Math -> Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .background(
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                                RoundedCornerShape(6.dp),
+                            )
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            block.code,
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontFamily = FontFamily.Monospace,
+                            fontStyle = FontStyle.Italic,
+                            textAlign = TextAlign.Center,
+                            color = MaterialTheme.colorScheme.onSurface,
                         )
                     }
                     is MdBlock.Quote -> Row(

@@ -110,8 +110,27 @@ class MarkdownCommandsTest {
     fun theShortcutSheetListsEveryBinding() {
         val listed = markdownShortcutHints.map { it.keys }.toSet()
         for (binding in markdownKeyBindings) {
-            assertTrue(listed.contains(binding.label), "清单里少了 " + binding.label)
+            val keys = platformShortcutLabel(binding.label)
+            assertTrue(listed.contains(keys), "清单里少了 " + keys)
         }
+    }
+
+    @Test
+    fun platformShortcutLabelsFollowTheHostConventions() {
+        assertEquals("Ctrl+B", platformShortcutLabel("Ctrl/Cmd+B", mac = false))
+        assertEquals("Ctrl+Shift+X", platformShortcutLabel("Ctrl/Cmd+Shift+X", mac = false))
+        assertEquals("⌘B", platformShortcutLabel("Ctrl/Cmd+B", mac = true))
+        assertEquals("⇧⌘X", platformShortcutLabel("Ctrl/Cmd+Shift+X", mac = true))
+    }
+
+    @Test
+    fun shortcutHintsReadActionFirstThenKeys() {
+        // 菜单的每一行都是「动作 → 按键」：动作不能为空，按键不能为空。
+        for (hint in markdownShortcutHints) {
+            assertTrue(hint.action.isNotBlank(), "菜单行缺动作：" + hint.keys)
+            assertTrue(hint.keys.isNotBlank(), "菜单行缺按键：" + hint.action)
+        }
+        assertEquals(1, markdownShortcutHints.count { it.action == "保存" })
     }
 
     @Test

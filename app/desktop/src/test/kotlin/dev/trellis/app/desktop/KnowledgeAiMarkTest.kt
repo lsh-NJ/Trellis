@@ -1,5 +1,6 @@
 package dev.trellis.app.desktop
 
+import androidx.compose.ui.text.style.TextDecoration
 import dev.trellis.ai.LlmRole
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -223,7 +224,8 @@ class KnowledgeAiMarkTest {
     @Test
     fun conceptsAreHighlightedWithWordBoundary() {
         val highlighted = inlineMarkdown("先说 RAG，再提 GraphRAG。", listOf("RAG"))
-        val ranges = highlighted.spanStyles.filter { it.item.color == MarkdownAiGreen }
+        // 概念高亮现在是「浅绿 + 下划线」（Compose 没有独立的下划线颜色），按下划线认。
+        val ranges = highlighted.spanStyles.filter { it.item.textDecoration == TextDecoration.Underline }
         assertEquals(1, ranges.size)
         assertEquals("RAG", highlighted.text.substring(ranges[0].start, ranges[0].end))
     }

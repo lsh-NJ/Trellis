@@ -5,6 +5,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -216,6 +218,108 @@ internal fun NoteConceptChips(
             modifier = Modifier
                 .width(150.dp)
                 .padding(horizontal = 6.dp, vertical = 4.dp)
+                .onPreviewKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyDown &&
+                        (event.key == Key.Enter || event.key == Key.NumPadEnter)
+                    ) {
+                        submit()
+                        true
+                    } else {
+                        false
+                    }
+                },
+            textStyle = MaterialTheme.typography.labelMedium.merge(
+                TextStyle(color = MaterialTheme.colorScheme.onSurface),
+            ),
+            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+            decorationBox = { inner ->
+                Box {
+                    if (input.isEmpty()) {
+                        Text(
+                            "添加概念，回车确认",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        )
+                    }
+                    inner()
+                }
+            },
+        )
+    }
+}
+
+/**
+ * 右栏的「本篇概念」：当前这篇笔记点亮的词，竖着放。
+ *
+ * 和左栏的「概念」tab 分工：左栏是全局概念索引（所有笔记）；这里是这篇笔记自己
+ * 涉及的概念，点开看详情、× 熄灭（只从这篇笔记删引用）、下面输入框手动补。
+ * 用 [FlowRow] 自动换行，窄侧栏也放得下。
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun NoteConceptPanel(
+    concepts: List<String>,
+    onOpenConcept: (String) -> Unit,
+    onRemoveConcept: (String) -> Unit,
+    onAddConcept: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var input by remember { mutableStateOf("") }
+
+    fun submit() {
+        val name = normalizeConceptName(input)
+        input = ""
+        if (name.isNotEmpty()) onAddConcept(name)
+    }
+
+    Column(modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 8.dp, top = 4.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "本篇概念",
+                style = MaterialTheme.typography.labelLarge,
+                fontFamily = AppFonts.mono,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                concepts.size.toString(),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (concepts.isEmpty()) {
+            Text(
+                "这篇还没有概念。保存后 AI 会整理，也可以在下面加。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
+            )
+        } else {
+            FlowRow(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                for (name in concepts) {
+                    ConceptChip(
+                        name = name,
+                        onOpen = { onOpenConcept(name) },
+                        onRemove = { onRemoveConcept(name) },
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        BasicTextField(
+            value = input,
+            onValueChange = { input = it },
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp)
                 .onPreviewKeyEvent { event ->
                     if (event.type == KeyEventType.KeyDown &&
                         (event.key == Key.Enter || event.key == Key.NumPadEnter)

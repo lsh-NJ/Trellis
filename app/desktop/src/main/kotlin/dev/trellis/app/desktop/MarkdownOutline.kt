@@ -271,7 +271,9 @@ private fun OutlineRowView(
             }
         }
         Text(
-            row.item.text,
+            // 目录里也要把 `**加粗**` 这类行内标记渲染掉：标题本来就是 Markdown，
+            // 目录是它的投影，不该再显示原始符号。
+            inlineMarkdown(row.item.text),
             style = when (row.item.level) {
                 1 -> MaterialTheme.typography.bodyMedium
                 2 -> MaterialTheme.typography.bodySmall

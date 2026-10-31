@@ -81,8 +81,35 @@ internal val noteFileExtension: String = ".md"
 /** 笔记 id 就是文件名；限制字符集，避免路径穿越。 */
 internal val noteIdPattern: Regex = Regex("^[A-Za-z0-9_-]{1,80}$")
 
+/**
+ * 去掉标题里的行内 Markdown 标记（`**加粗**`、`` `代码` ``、`[文字](url)` 等）。
+ *
+ * 标题是纯文本：笔记列表、目录、搜索、删除确认里都直接显示它。文件里可以写
+ * `# **RAG** 检索增强`，显示给人看的时候不该带着一串星号。只做「看起来一样」的
+ * 轻量清洗，不碰代码块/表格这类块级语法。
+ */
+private val inlineMarkdownCleanup: List<Pair<Regex, (MatchResult) -> String>> = listOf(
+    Regex("!\\[([^\\]]*)]\\([^)]*\\)") to { m: MatchResult -> m.groupValues[1] },
+    Regex("\\[([^\\]]*)]\\([^)]*\\)") to { m: MatchResult -> m.groupValues[1] },
+    Regex("`+([^`]*)`+") to { m: MatchResult -> m.groupValues[1] },
+    Regex("\\*\\*\\*(.+?)\\*\\*\\*") to { m: MatchResult -> m.groupValues[1] },
+    Regex("\\*\\*(.+?)\\*\\*") to { m: MatchResult -> m.groupValues[1] },
+    Regex("__(.+?)__") to { m: MatchResult -> m.groupValues[1] },
+    Regex("~~(.+?)~~") to { m: MatchResult -> m.groupValues[1] },
+    Regex("\\*(?!\\s)(.+?)(?<!\\s)\\*") to { m: MatchResult -> m.groupValues[1] },
+    Regex("_(?!\\s)(.+?)(?<!\\s)_") to { m: MatchResult -> m.groupValues[1] },
+)
+
+internal fun stripInlineMarkdown(text: String): String {
+    var result = text
+    for ((pattern, replace) in inlineMarkdownCleanup) {
+        result = pattern.replace(result, replace)
+    }
+    return result.replace(Regex("\\s+"), " ").trim()
+}
+
 /** 标题为空时列表/编辑器上显示的占位名。 */
-internal fun displayTitle(title: String): String = title.trim().ifBlank { "无标题笔记" }
+internal fun displayTitle(title: String): String = stripInlineMarkdown(title).ifBlank { "无标题笔记" }
 
 private val knownFrontMatterKeys = setOf("title", "created", "updated", "concepts")
 private val isoFormatter = DateTimeFormatter.ISO_OFFSET_DATE_TIME
@@ -164,6 +191,7 @@ internal fun parseNoteMarkdown(id: String, raw: String, zone: ZoneId, fallbackMs
     val title = fields["title"]?.takeIf { it.isNotBlank() }
         ?: body.lineSequence().map { it.trim() }.firstOrNull { headingPattern.matches(it) }
             ?.let { headingPattern.matchEntire(it)?.groupValues?.get(1)?.trim() }
+            ?.let(::stripInlineMarkdown)
         ?: ""
     val created = parseTimestamp(fields["created"]) ?: fallbackMs
     val updated = parseTimestamp(fields["updated"]) ?: created

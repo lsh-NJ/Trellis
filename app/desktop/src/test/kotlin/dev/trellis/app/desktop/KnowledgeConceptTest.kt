@@ -229,6 +229,26 @@ class KnowledgeConceptTest {
     }
 
     @Test
+    fun displayTitleDropsInlineMarkdownButKeepsTheWords() {
+        assertEquals("RAG 检索增强", displayTitle("**RAG** 检索增强"))
+        assertEquals("向量检索", displayTitle("`向量检索`"))
+        assertEquals("参考 文档 里的做法", displayTitle("参考 [文档](https://example.com) 里的做法"))
+        assertEquals("无标题笔记", displayTitle(""))
+        assertEquals("旧的 新的", stripInlineMarkdown("~~旧的~~ *新的*"))
+    }
+
+    @Test
+    fun headingWithoutFrontmatterTitleIsStrippedWhenUsedAsFallback() {
+        val note = parseNoteMarkdown(
+            id = "n_demo",
+            raw = "# **检索增强** 生成\n\n正文",
+            zone = zone,
+            fallbackMs = nowMs,
+        )
+        assertEquals("检索增强 生成", note.title)
+    }
+
+    @Test
     fun extractionPromptCarriesNoteBodyAndExistingConcepts() {
         val messages = buildConceptExtractionMessages("检索笔记", "BM25 与向量检索", listOf("RRF"))
         assertEquals(2, messages.size)
