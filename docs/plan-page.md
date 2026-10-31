@@ -175,4 +175,31 @@
    「今天能不能多投入一些时间？」——够就今天补做、不顺延；不够就按路线往后几天推，
    可以每天多补一点，**优先在本周内消化**；加时偏好记进 `study.json` 供以后调整。
    AI 先读 `overdue` 真数据再问，不自己数数；聊天侧实现下一步做。
-4. 手动入口 v1 只到「点按钮」，拖拽排程与跨周承诺层调整都未做（`docs/plan-rhythm-draft.md` §2.4）。
+4. 手动入口 v1 只到「点按钮」；同日稍后改成拖拽（见 §12），「待处理」卡片已删。
+
+## 12. 2026-10-31：「待处理」卡片改成拖拽重排（侧栏 → 日期）
+
+用户反馈「点按钮」不符合手动排计划的直觉：要能把节点直接拖到想排的那一天。
+
+- **入口**：计划标题旁「重排 · N」（N = 本周逾期 + 更早欠账）；直接拖起某天列表里的节点时侧栏自动滑开。
+- **侧栏三组**（`PlanRearrange.kt` 的 `PlanRearrangeDrawer`）：本周到期没做（`planOverdue.thisWeek`，
+  拖 = `moveOccurrence`）、更早欠下（`planOverdue.backlog`，拖 = `placeUnit`）、
+  待安排（`planPool`，拖 = `placeUnit`）。
+- **落点**：七个日期格（`DayChip`）或「当天安排」整块（= 当前选中的那天）；hover 的日期格放大 + 高亮，
+  今天以前的日期变淡、不接收。
+- **跨周**：一次只在同一周里挪——拖到别周的格提示「要跨周先把节点放到待安排池」；
+  欠账/待安排的节点拖到下一周某天则走 `placeUnit`：往那一周的承诺里增量追加一条，再铺 occurrence。
+- **排序**：当天列表按路线索引（`plan_unit.sort_order`）排，不按创建/拖动先后；同一 unit 拆分的
+  occurrence 用 `created_at` 兜底。SQL 在 `PlanQueries.plannedOccurrences` / `dayItems`：
+  `ORDER BY COALESCE(pu.sort_order, 2147483647), d.created_at`。
+- **动效**：侧栏 `AnimatedVisibility`（滑入/淡入）；打开时内容整块让开 296dp（否则日期格被抽屉盖住，
+  拖不过去）；拖起的 ghost 跟手（阴影 + 轻微放大）；列表行 `animateItem()`；落手结果提示留在侧栏底部
+  （成功绿、失败红）。日期格 hover 用 `animateColorAsState` + `animateFloatAsState`。
+- **提示字段**：`AppRuntime.planRearrangeHint` / `planRearrangeHintIsError`——不能复用 `planMessage`，
+  因为每次 `refreshPlan()` 都会清空它；侧栏开合时清掉提示。
+- 旧的 `PlanOverdueCard`（今天做/顺延一天/跳过 + 加时 chips）已删除；`planDoToday` / `planDeferOneDay` /
+  `planSkipToday` / `planCatchUpToday` 仍留在 `AppRuntime`（AI 协商重排会复用同一批命令），
+  `study.json` 的 `catchUpMinutes` 仍作为加时偏好保留。
+- 验收：`PlanRearrangeRuntimeTest` 4 个用例（路线排序、逾期拖到某天、待安排池拖入、过去/跨周拒绝）+
+  `LearningPlanPlaceUnitTest` 6 个后端用例；`features:learning-process:jvmTest` 34 个、
+  `:app:desktop:test` 276 个全绿。

@@ -1,5 +1,15 @@
 package dev.trellis.app.desktop
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -11,6 +21,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -30,12 +41,22 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -72,33 +93,51 @@ internal data class PlanWeekCard(
 internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     // 进页面才开库：不进计划页的人不该为 SQLite 付启动时间。
     LaunchedEffect(Unit) { runtime.refreshPlan() }
+    val dragController = remember { PlanDragController() }
+    // 抽屉打开时把内容整块让开：日期格（尤其周五～周日）不能被抽屉盖住，否则拖不过去。
+    val panelWidth by animateDpAsState(
+        targetValue = if (runtime.planRearrangeOpen) 296.dp else 0.dp,
+        animationSpec = tween(durationMillis = 220),
+        label = "rearrange-panel-width",
+    )
 
-    Row(modifier = modifier) {
-        PlanList(runtime, Modifier.width(232.dp).fillMaxHeight())
-        Spacer(Modifier.width(20.dp))
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            item { PlanHeader(runtime) }
-            if (runtime.isSimulatingTime) item { PlanSimulatedBanner(runtime) }
-            if (runtime.planStartsInPast) item { PlanStaleBanner(runtime) }
-            if (runtime.planRhythmHasNews) item { PlanRhythmCard(runtime) }
-            if (runtime.planOverdue?.let { it.thisWeek.isNotEmpty() || it.backlog.isNotEmpty() } == true) {
-                item { PlanOverdueCard(runtime) }
-            }
+    var rootOrigin by remember { mutableStateOf(Offset.Zero) }
+    Box(
+        modifier = modifier.onGloballyPositioned { coordinates -> rootOrigin = coordinates.positionInRoot() },
+    ) {
+        Row(Modifier.fillMaxSize().padding(end = panelWidth)) {
+            PlanList(runtime, Modifier.width(232.dp).fillMaxHeight())
+            Spacer(Modifier.width(20.dp))
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                item { PlanHeader(runtime) }
+                if (runtime.isSimulatingTime) item { PlanSimulatedBanner(runtime) }
+                if (runtime.planStartsInPast) item { PlanStaleBanner(runtime) }
+                if (runtime.planRhythmHasNews) item { PlanRhythmCard(runtime) }
 
-            if (runtime.planTitle == null) {
-                item { PlanEmpty(runtime) }
-            } else {
-                item { WeekStrip(runtime) }
-                if (runtime.planPendingSelected) {
-                    item { PendingDetail(runtime) }
+                if (runtime.planTitle == null) {
+                    item { PlanEmpty(runtime) }
                 } else {
-                    item { WeekDetail(runtime) }
+                    item { WeekStrip(runtime) }
+                    if (runtime.planPendingSelected) {
+                        item { PendingDetail(runtime) }
+                    } else {
+                        item { WeekDetail(runtime, dragController) }
+                    }
                 }
             }
         }
+        AnimatedVisibility(
+            visible = runtime.planRearrangeOpen,
+            enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+            exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
+            modifier = Modifier.align(Alignment.CenterEnd),
+        ) {
+            PlanRearrangeDrawer(runtime, dragController)
+        }
+        PlanDragGhost(dragController, rootOrigin)
     }
     if (runtime.planSettingsOpen) PlanSettingsDialog(runtime)
 }
@@ -186,94 +225,6 @@ private fun PlanStaleBanner(runtime: AppRuntime) {
 }
 
 /**
- * 「待处理」：本周到期没做完的项 + 更早欠下的单元。
- *
- * 只做 occurrence 级的轻量动作（今天做 / 顺延一天 / 跳过）和一排加时按钮。
- * 「这周先不排」没有放上来：活跃版本的承诺单元不可删改（schema 触发器拦着），
- * 移出承诺要开新版本，等 AI 协商重排那条路一起做。
- */
-@Composable
-private fun PlanOverdueCard(runtime: AppRuntime) {
-    val overdue = runtime.planOverdue ?: return
-    PlanCard {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "待处理",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.weight(1f))
-                Text(
-                    "今天到周日还剩约 " + overdue.remainingMinutes + " 分钟",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (overdue.thisWeek.isNotEmpty()) {
-                Text(
-                    "本周有 " + overdue.thisWeek.size + " 项到期没做完",
-                    style = MaterialTheme.typography.titleSmall,
-                )
-                overdue.thisWeek.forEach { item ->
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(item.title, style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            item.chapter.ifBlank { "第 " + (item.sortOrder + 1) + " 节" } +
-                                " · " + item.minutes + " 分钟 · 原定 " + item.day.takeLast(5),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            TextButton(onClick = { runtime.planDoToday(item.occurrenceId) }) {
-                                Text("今天做", style = MaterialTheme.typography.labelMedium)
-                            }
-                            TextButton(onClick = { runtime.planDeferOneDay(item.occurrenceId) }) {
-                                Text("顺延一天", style = MaterialTheme.typography.labelMedium)
-                            }
-                            TextButton(onClick = { runtime.planSkipToday(item.occurrenceId) }) {
-                                Text("跳过", style = MaterialTheme.typography.labelMedium)
-                            }
-                        }
-                    }
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Text(
-                        "今天能多投入？",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    listOf(0, 30, 60, 90).forEach { minutes ->
-                        TextButton(onClick = { runtime.planCatchUpToday(minutes) }) {
-                            Text(
-                                if (minutes == 0) "不加时" else "+" + minutes + " 分钟",
-                                style = MaterialTheme.typography.labelMedium,
-                            )
-                        }
-                    }
-                }
-            }
-            if (overdue.backlog.isNotEmpty()) {
-                Text(
-                    "更早欠下的 " + overdue.backlog.size + " 项（容量够时会自动收进本周/下一周，也可以让 AI 重排）",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                overdue.backlog.take(5).forEach { unit ->
-                    Text(
-                        "· " + unit.title + " · " + unit.estimateMinutes + " 分钟",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            }
-        }
-    }
-}
-
-/**
  * 「计划节奏」报告：系统刚替用户推进了一步（结算旧周 / 补下周承诺 / 铺天 / 生成复盘）。
  *
  * 这是状态触发的主动汇报，不是模型说话：只陈述做了什么、还剩什么，用户点「知道了」就收起。
@@ -332,6 +283,17 @@ private fun PlanHeader(runtime: AppRuntime) {
             )
         }
         if (runtime.planTitle != null) {
+            TextButton(onClick = { runtime.togglePlanRearrange() }) {
+                Text(
+                    when {
+                        runtime.planRearrangeOpen -> "收起重排"
+                        runtime.planRearrangeCount > 0 -> "重排 · " + runtime.planRearrangeCount
+                        else -> "重排"
+                    },
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            }
+            Spacer(Modifier.width(4.dp))
             TextButton(onClick = { runtime.openPlanSettings() }) {
                 Text("计划设置", style = MaterialTheme.typography.labelLarge)
             }
@@ -761,22 +723,40 @@ private fun WeekStateChip(state: String) {
 
 /** 下半：选中周里的选中一天，按待办的样子排。 */
 @Composable
-private fun WeekDetail(runtime: AppRuntime) {
+private fun WeekDetail(runtime: AppRuntime, controller: PlanDragController) {
     PlanCard {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            DayStrip(runtime)
-            DayBody(runtime)
+            DayStrip(runtime, controller)
+            // 整个「当天安排」也是一块落点：拖到列表里 = 放到当前选中的那天。
+            val today = runtime.clock.today().toString()
+            val selectedDay = runtime.planSelectedDay
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .onGloballyPositioned { coordinates ->
+                        if (selectedDay != null && selectedDay >= today) {
+                            controller.registerList(selectedDay, coordinates.boundsInRoot())
+                        } else {
+                            controller.unregisterList()
+                        }
+                    },
+            ) {
+                DayBody(runtime, controller)
+            }
         }
     }
 }
 
 @Composable
-private fun DayStrip(runtime: AppRuntime) {
+private fun DayStrip(runtime: AppRuntime, controller: PlanDragController) {
+    val today = runtime.clock.today().toString()
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
         runtime.planDays.forEach { day ->
             DayChip(
                 day = day,
                 selected = day.day == runtime.planSelectedDay,
+                controller = controller,
+                droppable = day.day >= today,
                 modifier = Modifier.weight(1f),
                 onClick = { runtime.selectPlanDay(day.day) },
             )
@@ -788,14 +768,31 @@ private fun DayStrip(runtime: AppRuntime) {
 private fun DayChip(
     day: WeekDay,
     selected: Boolean,
+    controller: PlanDragController,
+    droppable: Boolean,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
     val shape = RoundedCornerShape(6.dp)
-    val background = if (selected) {
-        MaterialTheme.colorScheme.primaryContainer
-    } else {
-        MaterialTheme.colorScheme.surface
+    var bounds by remember { mutableStateOf(Rect.Zero) }
+    val hovering = controller.payload != null && droppable && bounds.contains(controller.pointer)
+    val scale by animateFloatAsState(
+        targetValue = if (hovering) 1.06f else 1f,
+        animationSpec = spring(stiffness = 900f),
+        label = "day-chip-scale",
+    )
+    val borderColor by animateColorAsState(
+        targetValue = if (hovering || selected) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.outlineVariant
+        },
+        label = "day-chip-border",
+    )
+    val background = when {
+        hovering -> MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+        selected -> MaterialTheme.colorScheme.primaryContainer
+        else -> MaterialTheme.colorScheme.surface
     }
     val foreground = if (selected) {
         MaterialTheme.colorScheme.onPrimaryContainer
@@ -804,9 +801,18 @@ private fun DayChip(
     }
     Column(
         modifier = modifier
+            .onGloballyPositioned { coordinates ->
+                bounds = coordinates.boundsInRoot()
+                if (droppable) controller.registerDay(day.day, bounds)
+            }
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .alpha(if (controller.payload != null && !droppable) 0.45f else 1f)
             .clip(shape)
             .background(background)
-            .border(1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant, shape)
+            .border(1.dp, borderColor, shape)
             .clickable(onClick = onClick)
             .padding(vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -835,7 +841,7 @@ private fun DayChip(
 }
 
 @Composable
-private fun DayBody(runtime: AppRuntime) {
+private fun DayBody(runtime: AppRuntime, controller: PlanDragController) {
     val unscheduled = runtime.planWeekCards
         .firstOrNull { it.week == runtime.planSelectedWeek }
         ?.scheduled == false
@@ -869,7 +875,7 @@ private fun DayBody(runtime: AppRuntime) {
             )
         }
         view.occurrences.forEach { occurrence ->
-            OccurrenceRow(occurrence) { runtime.completePlanOccurrence(occurrence.id) }
+            OccurrenceRow(runtime, controller, occurrence) { runtime.completePlanOccurrence(occurrence.id) }
         }
         if (view.completed.isNotEmpty()) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -915,11 +921,29 @@ private fun DayBody(runtime: AppRuntime) {
 }
 
 @Composable
-private fun OccurrenceRow(occurrence: DayOccurrence, onComplete: () -> Unit) {
+private fun OccurrenceRow(
+    runtime: AppRuntime,
+    controller: PlanDragController,
+    occurrence: DayOccurrence,
+    onComplete: () -> Unit,
+) {
     val shape = RoundedCornerShape(6.dp)
+    val payload = PlanDragPayload.Occurrence(occurrence.id, occurrence.title, occurrence.minutes)
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .planDragSource(
+                payload = payload,
+                controller = controller,
+                onDragStart = { runtime.openPlanRearrange() },
+                onDrop = { dropped, day ->
+                    if (dropped is PlanDragPayload.Occurrence) {
+                        runtime.planDragOccurrenceToDay(dropped.occurrenceId, day)
+                    }
+                    runtime.selectPlanDay(day)
+                },
+            )
+            .graphicsLayer { alpha = if (controller.payload == payload) 0.35f else 1f }
             .clip(shape)
             .border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
             .padding(horizontal = 12.dp, vertical = 10.dp),

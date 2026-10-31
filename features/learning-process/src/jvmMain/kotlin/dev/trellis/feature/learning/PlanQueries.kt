@@ -70,7 +70,11 @@ private fun SqliteLearningPlanService.plannedOccurrences(planId: String, day: St
     connection.prepareStatement(
         "SELECT d.id, d.unit_title, d.chapter, d.estimate_minutes, d.mode, d.status, d.min_version_minutes, " +
             "d.moved_from, d.carried_from, d.todo_title FROM v_occurrence_detail d " +
-            "WHERE d.plan_id = ? AND d.day = ? AND d.status = 'planned' ORDER BY d.created_at",
+            "LEFT JOIN plan_unit pu ON pu.id = d.unit_id " +
+            "WHERE d.plan_id = ? AND d.day = ? AND d.status = 'planned' " +
+            // 排期顺序 = 路线顺序（plan_unit.sort_order），同一天里靠前的单元先出现；
+            // 待办没有 sort_order，用 created_at 兜底放到最后。
+            "ORDER BY COALESCE(pu.sort_order, 2147483647), d.created_at",
     ).use { ps ->
         ps.setString(1, planId)
         ps.setString(2, day)
@@ -273,8 +277,10 @@ internal fun SqliteLearningPlanService.openNodesOf(planId: String, untilDay: Str
 private fun SqliteLearningPlanService.dayItems(planId: String, day: String): List<WeekDayItem> =
     connection.prepareStatement(
         "SELECT d.id, COALESCE(d.unit_title, d.todo_title), d.status, d.estimate_minutes, d.carried_from " +
-            "FROM v_occurrence_detail d WHERE d.plan_id = ? AND d.day = ? AND d.status <> 'superseded' " +
-            "ORDER BY d.created_at",
+            "FROM v_occurrence_detail d LEFT JOIN plan_unit pu ON pu.id = d.unit_id " +
+            "WHERE d.plan_id = ? AND d.day = ? AND d.status <> 'superseded' " +
+            // 同上：天条里的顺序也按路线顺序，保证「索引靠前的节点排在当天前面」。
+            "ORDER BY COALESCE(pu.sort_order, 2147483647), d.created_at",
     ).use { ps ->
         ps.setString(1, planId)
         ps.setString(2, day)

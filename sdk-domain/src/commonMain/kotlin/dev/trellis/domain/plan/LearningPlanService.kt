@@ -88,6 +88,21 @@ interface LearningPlanService {
 
     fun scheduleUnit(env: CommandEnvelope, commitmentId: String, unitId: String, day: String): CommandResult<OccurrenceRef>
 
+    /**
+     * 把「待安排池」里的单元直接放进某一周的某一天（拖拽重排用）。
+     *
+     * 与 [scheduleUnit] 不同：拖出来的欠账单元不在任何「本周及以后」的承诺里，这里先把单元
+     * 追加进目标周的承诺（INSERT 新行，不改旧行），再铺一条 occurrence；目标周还没有承诺时
+     * 顺手建一条。只接受本周及以后的日期。
+     */
+    fun placeUnit(
+        env: CommandEnvelope,
+        planId: String,
+        week: String,
+        unitId: String,
+        day: String,
+    ): CommandResult<OccurrenceRef>
+
     fun moveOccurrence(env: CommandEnvelope, occurrenceId: String, toDay: String, reason: String? = null): CommandResult<OccurrenceRef>
 
     fun splitOccurrence(env: CommandEnvelope, occurrenceId: String, parts: List<SplitPart>): CommandResult<List<OccurrenceRef>>
