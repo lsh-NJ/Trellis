@@ -2,6 +2,7 @@ package dev.trellis.app.desktop
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,18 +16,18 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
@@ -35,9 +36,10 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.trellis.ui.LocalExtraColors
 
 /**
- * 会话与预览里的 Markdown 渲染。
+ * 会话里的 Markdown 渲染。
  *
  * agent 的回答天然带结构（小标题、清单、代码块、表格），以前用 [Text] 原样输出，
  * 用户看到的是满屏 `**加粗**` 和 `- 列表`。这里只做「轻量 Markdown」：
@@ -56,6 +58,8 @@ internal sealed interface MdBlock {
     data class Code(val language: String, val code: String) : MdBlock
     data class Quote(val text: String) : MdBlock
     data class Table(val header: List<String>, val rows: List<List<String>>) : MdBlock
+    /** AI 写的块级内容（`:::ai` … `:::`）：预览渲染成绿色大引号，每行可点 × 删除。 */
+    data class AiBlock(val items: List<String>) : MdBlock
     data object Rule : MdBlock
 }
 
@@ -71,6 +75,7 @@ private val rulePattern = Regex("^([-*_])(?:\\s*\\1){2,}$")
 
 /** 任务清单项：`[ ] 待办` / `[x] 已办`。 */
 private val taskPattern = Regex("^\\[([ xX])]\\s+(.*)$")
+
 
 /** 把整段 Markdown 切成块；行内样式留给 [inlineMarkdown]。 */
 internal fun parseMarkdown(source: String): List<MdBlock> {
@@ -134,16 +139,26 @@ internal fun parseMarkdown(source: String): List<MdBlock> {
             continue
         }
 
-        if (line.isBlank()) {
+        // AI 写的块：`:::ai` 到 `:::` 之间的行原样收进来，不按 Markdown 再拆一遍。
+        if (line.trim() == AI_BLOCK_START) {
             flushParagraph()
+            val items = mutableListOf<String>()
             index++
+            while (index < lines.size) {
+                val next = lines[index].trimEnd()
+                if (next.trim() == AI_BLOCK_END) {
+                    index++
+                    break
+                }
+                items += next.trim().removePrefix("- ").removePrefix("* ").trim()
+                index++
+            }
+            blocks += MdBlock.AiBlock(items.filter { it.isNotEmpty() })
             continue
         }
 
-        // 分割线要排在列表前面：`- - -` 也能被列表正则认出来，先判横线才不会被吃成一项。
-        if (rulePattern.matches(line.trim())) {
+        if (line.isBlank()) {
             flushParagraph()
-            blocks += MdBlock.Rule
             index++
             continue
         }
@@ -152,6 +167,14 @@ internal fun parseMarkdown(source: String): List<MdBlock> {
         if (heading != null) {
             flushParagraph()
             blocks += MdBlock.Heading(heading.groupValues[1].length, heading.groupValues[2].trim())
+            index++
+            continue
+        }
+
+        // 分割线要排在列表前面：`- - -` 也能被列表正则认出来，先判横线才不会被吃成一项。
+        if (rulePattern.matches(line.trim())) {
+            flushParagraph()
+            blocks += MdBlock.Rule
             index++
             continue
         }
@@ -203,13 +226,10 @@ internal fun parseMarkdown(source: String): List<MdBlock> {
 
 private fun indentDepth(prefix: String): Int = (prefix.length / 2).coerceIn(0, 3)
 
-/**
- * 行内样式。用命名分组而不是下标：加一条语法不会再让所有 `groups[i]` 集体错位。
- *
- * 强调符号必须贴着文字：`a * b * c` 里的星号是普通字符，不是斜体
- * （CommonMark 的「强调不能以空白开头/结尾」规则，简化版）。
- */
 private val inlinePattern = Regex(
+    // 用命名分组：加一条语法不会让所有 `groups[i]` 集体错位。
+    // 强调符号必须贴着文字：`a * b * c` 里的星号是普通字符，不是斜体
+    // （CommonMark 的「强调不能以空白开头/结尾」规则，简化版）。
     "\\*\\*\\*(?<bolditalic>(?!\\s).+?(?<!\\s))\\*\\*\\*" +      // ***粗斜体***
         "|\\*\\*(?<bold>(?!\\s).+?(?<!\\s))\\*\\*" +             // **粗体**
         "|`(?<code>[^`]+?)`" +                                  // `行内代码`
@@ -219,14 +239,71 @@ private val inlinePattern = Regex(
         "|~~(?<strike>(?!\\s).+?(?<!\\s))~~",                    // ~~删除线~~
 )
 
-/** 行内样式：粗体/粗斜体/斜体/行内代码/链接/图片/删除线；认不出的原样保留。 */
-internal fun inlineMarkdown(text: String): AnnotatedString = buildAnnotatedString {
+/** 行内 AI 内容（`{{…}}`）在原文里的位置；[end] 是闭括号之后的偏移。 */
+internal data class AiInlineSpan(val start: Int, val end: Int, val content: String)
+
+/** 找出一段文本里所有 `{{…}}`；未闭合的 `{{` 当普通字符，不吞内容。 */
+internal fun aiInlineSpans(text: String): List<AiInlineSpan> {
+    val spans = mutableListOf<AiInlineSpan>()
     var cursor = 0
-    fun appendPlain(from: Int, to: Int) {
-        if (to > from) append(text.substring(from, to))
+    while (cursor < text.length) {
+        val open = text.indexOf(AI_INLINE_OPEN, cursor)
+        if (open < 0) break
+        val close = text.indexOf(AI_INLINE_CLOSE, open + AI_INLINE_OPEN.length)
+        if (close < 0) break
+        val content = text.substring(open + AI_INLINE_OPEN.length, close)
+        if (content.isNotBlank()) {
+            spans += AiInlineSpan(open, close + AI_INLINE_CLOSE.length, content)
+            cursor = close + AI_INLINE_CLOSE.length
+        } else {
+            cursor = open + AI_INLINE_OPEN.length
+        }
     }
-    for (match in inlinePattern.findAll(text)) {
-        appendPlain(cursor, match.range.first)
+    return spans
+}
+
+/** 预览用的 AI 绿色；和 `ExtraColors.accentText` 的默认值一致，调用时会被主题覆盖。 */
+internal val MarkdownAiGreen: Color = Color(0xFF4F6A12)
+
+/** AI 内容的大引号字号：正文约 15–16sp，这里按约定放大到约 2 倍（一定比普通引号大）。 */
+private val AiQuoteFontSize = 26.sp
+
+/** 概念命中的绿色强调样式。 */
+private fun conceptStyle(conceptGreen: Color): SpanStyle =
+    SpanStyle(color = conceptGreen, fontWeight = FontWeight.Medium)
+
+/**
+ * 在一段文本的 [from, to) 区间里应用行内样式与概念高亮。
+ *
+ * [conceptHits] 用整段文本的绝对偏移，所以这里切区间时命中样式不会错位。
+ */
+private fun AnnotatedString.Builder.appendStyledRange(
+    text: String,
+    from: Int,
+    to: Int,
+    conceptHits: List<ConceptHit>,
+    conceptGreen: Color,
+) {
+    if (to <= from) return
+    var cursor = from
+    fun appendPlain(a: Int, b: Int) {
+        if (b <= a) return
+        var position = a
+        for (hit in conceptHits) {
+            if (hit.last < position || hit.first >= b) continue
+            val start = maxOf(hit.first, position)
+            val end = minOf(hit.last + 1, b)
+            if (start > position) append(text.substring(position, start))
+            withStyle(conceptStyle(conceptGreen)) { append(text.substring(start, end)) }
+            position = end
+        }
+        if (b > position) append(text.substring(position, b))
+    }
+    val segment = text.substring(from, to)
+    for (match in inlinePattern.findAll(segment)) {
+        val matchStart = from + match.range.first
+        val matchEnd = from + match.range.last + 1
+        appendPlain(cursor, matchStart)
         val groups = match.groups
         val boldItalic = groups["bolditalic"]
         val bold = groups["bold"]
@@ -239,11 +316,17 @@ internal fun inlineMarkdown(text: String): AnnotatedString = buildAnnotatedStrin
         val strike = groups["strike"]
         when {
             boldItalic != null -> withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontStyle = FontStyle.Italic)) {
-                append(boldItalic.value)
+                appendPlain(from + boldItalic.range.first, from + boldItalic.range.last + 1)
             }
-            bold != null -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(bold.value) }
-            code != null -> withStyle(SpanStyle(fontFamily = FontFamily.Monospace)) { append(code.value) }
-            italic != null -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(italic.value) }
+            bold != null -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                appendPlain(from + bold.range.first, from + bold.range.last + 1)
+            }
+            code != null -> withStyle(SpanStyle(fontFamily = FontFamily.Monospace)) {
+                appendPlain(from + code.range.first, from + code.range.last + 1)
+            }
+            italic != null -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
+                appendPlain(from + italic.range.first, from + italic.range.last + 1)
+            }
             imageAlt != null && imageUrl != null -> {
                 // 不联网取图（笔记是本地文本，聊天也可能在离线环境）；把说明和地址读出来就够用。
                 withStyle(SpanStyle(color = ColorLink, fontWeight = FontWeight.Medium)) {
@@ -252,34 +335,73 @@ internal fun inlineMarkdown(text: String): AnnotatedString = buildAnnotatedStrin
                 append(" (" + imageUrl.value + ")")
             }
             linkLabel != null && linkUrl != null -> {
-                withStyle(SpanStyle(color = ColorLink, fontWeight = FontWeight.Medium)) { append(linkLabel.value) }
+                withStyle(SpanStyle(color = ColorLink, fontWeight = FontWeight.Medium)) {
+                    appendPlain(from + linkLabel.range.first, from + linkLabel.range.last + 1)
+                }
                 append(" (" + linkUrl.value + ")")
             }
-            strike != null -> withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) { append(strike.value) }
+            strike != null -> withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) {
+                appendPlain(from + strike.range.first, from + strike.range.last + 1)
+            }
         }
-        cursor = match.range.last + 1
+        cursor = matchEnd
     }
-    appendPlain(cursor, text.length)
+    appendPlain(cursor, to)
+}
+
+/**
+ * 行内渲染：Markdown 行内样式 + 概念绿色高亮 + AI 内容的大绿引号（`{{…}}`）。
+ *
+ * 默认参数（聊天页用的那套）不改变旧行为：没有概念、没有 `{{…}}` 时输出与以前一致。
+ */
+internal fun inlineMarkdown(
+    text: String,
+    conceptNames: List<String> = emptyList(),
+    aiGreen: Color = MarkdownAiGreen,
+    conceptGreen: Color = MarkdownAiGreen,
+): AnnotatedString = buildAnnotatedString {
+    val hits = conceptHits(text, conceptNames)
+    var cursor = 0
+    for (span in aiInlineSpans(text)) {
+        appendStyledRange(text, cursor, span.start, hits, conceptGreen)
+        withStyle(SpanStyle(color = aiGreen, fontWeight = FontWeight.Bold, fontSize = AiQuoteFontSize)) {
+            append("\u201C")
+        }
+        appendStyledRange(
+            text,
+            span.start + AI_INLINE_OPEN.length,
+            span.end - AI_INLINE_CLOSE.length,
+            hits,
+            conceptGreen,
+        )
+        withStyle(SpanStyle(color = aiGreen, fontWeight = FontWeight.Bold, fontSize = AiQuoteFontSize)) {
+            append("\u201D")
+        }
+        cursor = span.end
+    }
+    appendStyledRange(text, cursor, text.length, hits, conceptGreen)
 }
 
 /** 链接颜色在这里硬编码会绕开主题；用「主色文本」的近似值，暗色下也读得清。 */
-private val ColorLink = androidx.compose.ui.graphics.Color(0xFF2E5AAC)
+private val ColorLink = Color(0xFF2E5AAC)
 
-/**
- * 渲染一段 Markdown。
- *
- * [onBlockLayout] 给预览的目录跳转用：每块报告自己的 root 坐标 y（px）。
- * 传 null 时完全不装这个 Modifier，聊天消息那边零额外开销。
- */
 @Composable
 internal fun MarkdownText(
     text: String,
     modifier: Modifier = Modifier,
-    bodyStyle: TextStyle? = null,
+    bodyStyle: androidx.compose.ui.text.TextStyle? = null,
+    conceptNames: List<String> = emptyList(),
+    onDeleteAiBlockLine: ((String) -> Unit)? = null,
+    /**
+     * 预览的目录跳转用：每块报告自己在窗口里的 y（px）。
+     * 传 null 时完全不装这个 Modifier，聊天消息那边零额外开销。
+     */
     onBlockLayout: ((index: Int, y: Float) -> Unit)? = null,
 ) {
     val paragraphStyle = bodyStyle ?: MaterialTheme.typography.bodyLarge
-    val blocks = parseMarkdown(text)
+    val extra = LocalExtraColors.current
+    val aiGreen = extra.accentText
+    val blocks = remember(text) { parseMarkdown(text) }
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         blocks.forEachIndexed { index, block ->
             val measured = if (onBlockLayout == null) {
@@ -290,68 +412,152 @@ internal fun MarkdownText(
                 }
             }
             Box(measured) {
-                MarkdownBlock(block, paragraphStyle)
+                when (block) {
+                    is MdBlock.Paragraph -> Text(
+                        inlineMarkdown(block.text, conceptNames, aiGreen, aiGreen),
+                        style = paragraphStyle,
+                    )
+                    is MdBlock.Heading -> Text(
+                        inlineMarkdown(block.text, conceptNames, aiGreen, aiGreen),
+                        style = markdownHeadingStyle(block.level, paragraphStyle),
+                        modifier = Modifier.padding(top = headingTopSpacing(block.level)),
+                    )
+                    is MdBlock.Bullet -> if (block.checked != null) {
+                        MarkdownTaskRow(
+                            depth = block.depth,
+                            checked = block.checked,
+                            text = block.text,
+                            bodyStyle = paragraphStyle,
+                            conceptNames = conceptNames,
+                            aiGreen = aiGreen,
+                        )
+                    } else {
+                        MarkdownBullet(
+                            block.depth,
+                            "•",
+                            block.text,
+                            paragraphStyle,
+                            conceptNames,
+                            aiGreen,
+                        )
+                    }
+                    is MdBlock.Numbered -> MarkdownBullet(
+                        block.depth,
+                        block.number + ".",
+                        block.text,
+                        paragraphStyle,
+                        conceptNames,
+                        aiGreen,
+                    )
+                    is MdBlock.Code -> Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .background(
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                                RoundedCornerShape(6.dp),
+                            )
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                    ) {
+                        Text(
+                            block.code,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                    }
+                    is MdBlock.Quote -> Row(
+                        Modifier.height(IntrinsicSize.Min),
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        Box(
+                            Modifier
+                                .width(2.dp)
+                                .fillMaxHeight()
+                                .background(MaterialTheme.colorScheme.outlineVariant),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            inlineMarkdown(block.text, conceptNames, aiGreen, aiGreen),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    is MdBlock.Table -> MarkdownTable(block, conceptNames, aiGreen)
+                    is MdBlock.AiBlock -> AiBlockView(
+                        items = block.items,
+                        bodyStyle = paragraphStyle,
+                        aiGreen = aiGreen,
+                        containerColor = extra.successContainer,
+                        conceptNames = conceptNames,
+                        onDeleteLine = onDeleteAiBlockLine,
+                    )
+                    MdBlock.Rule -> androidx.compose.material3.HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 6.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                        thickness = 1.dp,
+                    )
+                }
             }
         }
     }
 }
 
+/**
+ * AI 写的块：一对左上/右下的大绿引号框住内容，和正文里普通的“引号”在颜色、字号上都不同；
+ * 每条内容右边一个 ×，由调用方决定删掉后怎么写回正文。
+ */
 @Composable
-private fun MarkdownBlock(block: MdBlock, paragraphStyle: TextStyle) {
-    when (block) {
-        is MdBlock.Paragraph -> Text(
-            inlineMarkdown(block.text),
-            style = paragraphStyle,
+private fun AiBlockView(
+    items: List<String>,
+    bodyStyle: androidx.compose.ui.text.TextStyle,
+    aiGreen: Color,
+    containerColor: Color,
+    conceptNames: List<String>,
+    onDeleteLine: ((String) -> Unit)?,
+) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(containerColor.copy(alpha = 0.35f))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Text(
+            "\u201C",
+            style = bodyStyle.copy(fontSize = 34.sp, lineHeight = 34.sp, fontWeight = FontWeight.Bold),
+            color = aiGreen,
+            modifier = Modifier.align(Alignment.TopStart),
         )
-        is MdBlock.Heading -> Text(
-            inlineMarkdown(block.text),
-            style = markdownHeadingStyle(block.level, paragraphStyle),
-            modifier = Modifier.padding(top = headingTopSpacing(block.level)),
+        Text(
+            "\u201D",
+            style = bodyStyle.copy(fontSize = 34.sp, lineHeight = 34.sp, fontWeight = FontWeight.Bold),
+            color = aiGreen,
+            modifier = Modifier.align(Alignment.BottomEnd),
         )
-        is MdBlock.Bullet -> if (block.checked != null) {
-            MarkdownTaskRow(block.depth, block.checked, block.text, paragraphStyle)
-        } else {
-            MarkdownBullet(block.depth, "•", block.text, paragraphStyle)
-        }
-        is MdBlock.Numbered -> MarkdownBullet(block.depth, block.number + ".", block.text, paragraphStyle)
-        is MdBlock.Code -> Box(
-            Modifier
-                .fillMaxWidth()
-                .background(
-                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                    RoundedCornerShape(6.dp),
-                )
-                .padding(horizontal = 10.dp, vertical = 8.dp),
+        Column(
+            Modifier.padding(start = 26.dp, end = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Text(
-                block.code,
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
-            )
+            Text("AI 补充", style = MaterialTheme.typography.labelSmall, color = aiGreen)
+            for (item in items) {
+                Row(verticalAlignment = Alignment.Top) {
+                    Text(
+                        inlineMarkdown(item, conceptNames, aiGreen, aiGreen),
+                        style = bodyStyle,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (onDeleteLine != null) {
+                        Text(
+                            "×",
+                            style = bodyStyle,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .padding(start = 6.dp)
+                                .clickable { onDeleteLine(item) },
+                        )
+                    }
+                }
+            }
         }
-        is MdBlock.Quote -> Row(
-            Modifier.height(IntrinsicSize.Min),
-            verticalAlignment = Alignment.Top,
-        ) {
-            Box(
-                Modifier
-                    .width(2.dp)
-                    .fillMaxHeight()
-                    .background(MaterialTheme.colorScheme.outlineVariant),
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                inlineMarkdown(block.text),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        is MdBlock.Table -> MarkdownTable(block)
-        MdBlock.Rule -> HorizontalDivider(
-            modifier = Modifier.padding(vertical = 6.dp),
-            color = MaterialTheme.colorScheme.outlineVariant,
-            thickness = 1.dp,
-        )
     }
 }
 
@@ -369,7 +575,7 @@ private fun MarkdownBlock(block: MdBlock, paragraphStyle: TextStyle) {
  * 系数乘在传入的正文样式上，所以主题的整体缩放（`ChromeStyle.scale`）和用户字号偏好
  * （`UiPrefs.fontScale`）都会自动跟着走，不用在这里再算一遍。
  */
-internal fun markdownHeadingStyle(level: Int, base: TextStyle): TextStyle {
+internal fun markdownHeadingStyle(level: Int, base: androidx.compose.ui.text.TextStyle): androidx.compose.ui.text.TextStyle {
     // TextUnit.Unspecified 的 value 是 NaN：没有字号时退回 16sp（和 bodyLarge 一致）。
     val rawSize = base.fontSize.value
     val baseSize = if (rawSize.isNaN() || rawSize <= 0f) 16.sp else rawSize.sp
@@ -398,7 +604,8 @@ private fun headingTopSpacing(level: Int) = when (level) {
 }
 
 @Composable
-private fun MarkdownTable(table: MdBlock.Table) {    // 列数取表头与数据行里最多的那个；超过 6 列就不再收（聊天里再宽也读不了）。
+private fun MarkdownTable(table: MdBlock.Table, conceptNames: List<String>, aiGreen: Color) {
+    // 列数取表头与数据行里最多的那个；超过 6 列就不再收（聊天里再宽也读不了）。
     val columns = maxOf(
         table.header.size,
         table.rows.maxOfOrNull { row -> row.size } ?: 0,
@@ -406,18 +613,18 @@ private fun MarkdownTable(table: MdBlock.Table) {    // 列数取表头与数据
     fun cells(row: List<String>): List<String> = List(columns) { column -> row.getOrElse(column) { "" } }
 
     Column(Modifier.fillMaxWidth().padding(top = 2.dp)) {
-        MarkdownTableRow(cells(table.header), header = true)
-        for (row in table.rows) MarkdownTableRow(cells(row), header = false)
+        MarkdownTableRow(cells(table.header), header = true, conceptNames, aiGreen)
+        for (row in table.rows) MarkdownTableRow(cells(row), header = false, conceptNames, aiGreen)
     }
 }
 
 @Composable
-private fun MarkdownTableRow(cells: List<String>, header: Boolean) {
+private fun MarkdownTableRow(cells: List<String>, header: Boolean, conceptNames: List<String>, aiGreen: Color) {
     Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
         for (cell in cells) {
             Box(Modifier.weight(1f)) {
                 Text(
-                    inlineMarkdown(cell),
+                    inlineMarkdown(cell, conceptNames, aiGreen, aiGreen),
                     style = if (header) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
                     fontWeight = if (header) FontWeight.Bold else FontWeight.Normal,
                     color = if (header) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
@@ -425,7 +632,7 @@ private fun MarkdownTableRow(cells: List<String>, header: Boolean) {
             }
         }
     }
-    HorizontalDivider(
+    androidx.compose.material3.HorizontalDivider(
         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
         thickness = 1.dp,
     )
@@ -436,7 +643,9 @@ private fun MarkdownBullet(
     depth: Int,
     marker: String,
     text: String,
-    bodyStyle: TextStyle,
+    bodyStyle: androidx.compose.ui.text.TextStyle,
+    conceptNames: List<String>,
+    aiGreen: Color,
 ) {
     Row(Modifier.padding(start = (depth * 14).dp)) {
         Text(
@@ -446,7 +655,7 @@ private fun MarkdownBullet(
             modifier = Modifier.width(18.dp),
         )
         Text(
-            inlineMarkdown(text),
+            inlineMarkdown(text, conceptNames, aiGreen, aiGreen),
             style = bodyStyle,
         )
     }
@@ -463,7 +672,9 @@ private fun MarkdownTaskRow(
     depth: Int,
     checked: Boolean,
     text: String,
-    bodyStyle: TextStyle,
+    bodyStyle: androidx.compose.ui.text.TextStyle,
+    conceptNames: List<String>,
+    aiGreen: Color,
 ) {
     Row(
         modifier = Modifier.padding(start = (depth * 14).dp),
@@ -484,7 +695,11 @@ private fun MarkdownTaskRow(
                     shape = RoundedCornerShape(3.dp),
                 )
                 .background(
-                    if (checked) MaterialTheme.colorScheme.primary else androidx.compose.ui.graphics.Color.Transparent,
+                    if (checked) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        Color.Transparent
+                    },
                 ),
             contentAlignment = Alignment.Center,
         ) {
@@ -498,7 +713,7 @@ private fun MarkdownTaskRow(
         }
         Spacer(Modifier.width(7.dp))
         Text(
-            inlineMarkdown(text),
+            inlineMarkdown(text, conceptNames, aiGreen, aiGreen),
             style = bodyStyle,
             color = if (checked) {
                 MaterialTheme.colorScheme.onSurfaceVariant

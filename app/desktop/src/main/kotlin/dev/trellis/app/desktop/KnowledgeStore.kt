@@ -77,7 +77,7 @@ internal class KnowledgeStore(private val home: File, private val clock: Trellis
                     entry.updatedAt = note.updatedAt
                 }
                 entry.noteIds.add(note.id)
-                entry.mentions += occurrences(note.body, name)
+                entry.mentions += conceptOccurrences(note.body, name)
             }
         }
         return acc.values
@@ -106,9 +106,9 @@ internal class KnowledgeStore(private val home: File, private val clock: Trellis
 
         var totalMentions = 0
         val mentions = members.sortedByDescending { it.updatedAt }.map { note ->
-            val count = occurrences(note.body, display)
+            val count = conceptOccurrences(note.body, display)
             totalMentions += count
-            val start = if (count > 0) note.body.indexOfFirstHit(display) else -1
+            val start = if (count > 0) conceptFirstHit(note.body, display) else -1
             val end = if (start >= 0) start + display.length else -1
             ConceptMention(
                 noteId = note.id,
@@ -209,45 +209,6 @@ internal class KnowledgeStore(private val home: File, private val clock: Trellis
         return "n_" + stamp + "_" + suffix
     }
 }
-
-/** 正文里 [name] 出现的次数（大小写不敏感）。 */
-private fun occurrences(text: String, name: String): Int {
-    if (name.isEmpty()) return 0
-    var index = findHit(text, name, 0)
-    var count = 0
-    while (index >= 0) {
-        count++
-        index = findHit(text, name, index + name.length)
-    }
-    return count
-}
-
-private fun String.indexOfFirstHit(name: String): Int = findHit(this, name, 0)
-
-/**
- * 找下一处命中。拉丁字母/数字打头或收尾的概念要求词边界，
- * 否则 RAG 会命中 GraphRAG、BM25x 会命中 BM25——概念越短越容易误伤。
- */
-private fun findHit(text: String, name: String, from: Int): Int {
-    if (name.isEmpty() || from > text.length) return -1
-    var index = text.indexOf(name, from, ignoreCase = true)
-    while (index >= 0 && !matchesAt(text, index, name)) {
-        index = text.indexOf(name, index + 1, ignoreCase = true)
-    }
-    return index
-}
-
-private fun matchesAt(text: String, index: Int, name: String): Boolean {
-    val before = if (index > 0) text[index - 1] else ' '
-    val afterIndex = index + name.length
-    val after = if (afterIndex < text.length) text[afterIndex] else ' '
-    val leftOk = !name[0].isAsciiWord() || !before.isAsciiWord()
-    val rightOk = !name[name.length - 1].isAsciiWord() || !after.isAsciiWord()
-    return leftOk && rightOk
-}
-
-private fun Char.isAsciiWord(): Boolean =
-    this in 'a'..'z' || this in 'A'..'Z' || this in '0'..'9'
 
 /** 命中处所在的那一行（太长就截命中附近），给概念详情里的「来源片段」用。 */
 private fun snippetAround(body: String, start: Int, end: Int): String {

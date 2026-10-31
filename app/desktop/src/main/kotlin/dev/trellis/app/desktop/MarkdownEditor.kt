@@ -34,6 +34,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -91,6 +92,10 @@ internal fun MarkdownEditor(
     reveal: TextRange? = null,
     /** 每次点「定位」+1：同一个范围再点一次也能重新选中（range 相同时靠它触发）。 */
     revealToken: Int = 0,
+    /** 预览里要绿色高亮的概念名（和知识库概念表一致）。 */
+    conceptNames: List<String> = emptyList(),
+    /** 预览里点 AI 内容（`:::ai` 块）某一行的 ×：把那一行从正文里删掉。 */
+    onDeleteAiLine: ((String) -> Unit)? = null,
 ) {
     // 每篇笔记一个编辑缓冲；切笔记时重置。光标/选区留在内部，页面只关心文本。
     var field by remember(noteId) { mutableStateOf(TextFieldValue(body)) }
@@ -118,8 +123,10 @@ internal fun MarkdownEditor(
     }
 
     // 打开/切换笔记就把焦点交给编辑区：进来就能打字，快捷键也不用先点一下。
-    LaunchedEffect(noteId) {
-        if (noteId.isNotEmpty()) focus.requestFocus()
+    // 预览态没有 BasicTextField，focusRequester 没挂上，不能请求焦点。
+    LaunchedEffect(noteId, preview) {
+        if (noteId.isEmpty() || preview) return@LaunchedEffect
+        focus.requestFocusWhenReady()
     }
 
     // 概念详情点「定位」：选中命中处并把焦点交回编辑区（预览态没有光标，切回编辑再选）。
@@ -130,7 +137,7 @@ internal fun MarkdownEditor(
         val start = requested.start.coerceIn(0, body.length)
         val end = requested.end.coerceIn(start, body.length)
         field = TextFieldValue(body, selection = TextRange(start, end))
-        focus.requestFocus()
+        focus.requestFocusWhenReady()
     }
 
     fun apply(result: MarkdownEditResult) {
@@ -238,7 +245,7 @@ internal fun MarkdownEditor(
                     .background(MaterialTheme.colorScheme.surface),
             ) {
                 if (preview) {
-                    MarkdownPreview(body, previewScroll, blockOffsets)
+                    MarkdownPreview(body, previewScroll, blockOffsets, conceptNames, onDeleteAiLine)
                 } else {
                     BasicTextField(
                         value = field,
@@ -399,6 +406,8 @@ private fun MarkdownPreview(
     body: String,
     scroll: androidx.compose.foundation.ScrollState,
     blockOffsets: MutableMap<Int, Int>,
+    conceptNames: List<String>,
+    onDeleteAiLine: ((String) -> Unit)?,
 ) {
     if (body.isBlank()) {
         Box(Modifier.fillMaxSize().padding(20.dp)) {
@@ -422,6 +431,8 @@ private fun MarkdownPreview(
                 MarkdownText(
                     body,
                     bodyStyle = MaterialTheme.typography.bodyLarge,
+                    conceptNames = conceptNames,
+                    onDeleteAiBlockLine = onDeleteAiLine,
                     onBlockLayout = { index, y ->
                         // 记录时把当前滚动量加回去，得到「内容坐标」，滚动多少都不会失效。
                         blockOffsets[index] = (scroll.value + (y - boxTop)).toInt()
@@ -430,6 +441,28 @@ private fun MarkdownPreview(
             }
         }
     }
+}
+
+/**
+ * 安全地请求焦点：焦点节点要等这一帧布局跑完才挂得上，而 LaunchedEffect 在首帧布局之前
+ * 就可能执行；这时直接 `requestFocus()` 会抛 `FocusRequester is not initialized`，
+ * 异常没人接会把整个组合取消掉——窗口还在，但界面不再响应（表现为卡死，只能重启）。
+ *
+ * 所以先等一帧，失败再等一帧重试，最多三次；仍然失败就安静放弃：焦点不是功能必需，
+ * 不能让它把页面弄崩。调用点：进编辑区自动聚焦、概念「定位」后把焦点交回正文。
+ */
+internal suspend fun FocusRequester.requestFocusWhenReady(): Boolean {
+    repeat(3) {
+        withFrameNanos { }
+        val focused = try {
+            requestFocus()
+            true
+        } catch (notReady: IllegalStateException) {
+            false
+        }
+        if (focused) return true
+    }
+    return false
 }
 
 /** 顶部的小开关（编辑/预览、目录、快捷键）：比 [ChromeButton] 矮一档，一行放得下三个。 */

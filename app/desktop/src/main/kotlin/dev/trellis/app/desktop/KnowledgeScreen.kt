@@ -138,24 +138,38 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     }
 
     /**
-     * 抽取结果写回它所属的那篇笔记。
+     * 抽取/补全结果写回它所属的那篇笔记。
      *
      * 抽取在后台跑（2.5s 防抖 + 一次模型调用），期间用户可能已经切到别的笔记——
      * 所以不能拿「当前 loaded」当目标，否则会把 A 的概念写到 B 上。当前仍停在这篇才同步界面状态。
      */
-    fun applyExtracted(id: String, base: KnowledgeNote, next: List<String>) {
-        val updated = base.copy(concepts = next, updatedAt = clock.nowMs())
+    fun applyExtracted(
+        id: String,
+        base: KnowledgeNote,
+        nextConcepts: List<String>,
+        nextBody: String = base.body,
+    ): Boolean {
+        val updated = base.copy(
+            concepts = nextConcepts,
+            body = nextBody,
+            updatedAt = clock.nowMs(),
+        )
         if (!store.save(updated)) {
             message = "保存失败：写不进 " + store.notesDir.absolutePath
-            return
+            return false
         }
         notes = store.list()
         if (selectedId == id && loaded?.id == id) {
             loaded = updated
             savedAtMs = updated.updatedAt
+            // 正文补全只在用户没接着改的时候同步回编辑缓冲，避免盖掉刚打的字。
+            if (nextBody != base.body && body == base.body) {
+                body = nextBody
+                revision++
+            }
         }
         if (selectedId == id) runtime.knowledgeNoteId = id
-        message = "AI 整理了 " + (next.size - base.concepts.size) + " 个概念（点 × 可删除）"
+        return true
     }
 
     fun createNote() {
@@ -234,15 +248,17 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     }
 
     // 进页面：接回上次那篇（AppRuntime 记着），没有就选最近更新的。
+    // 焦点请求要等布局跑完，否则焦点节点还没挂上（见 MarkdownEditor.requestFocusWhenReady）。
     LaunchedEffect(Unit) {
-        pageFocus.requestFocus()
+        pageFocus.requestFocusWhenReady()
         selectedId = runtime.knowledgeNoteId?.takeIf { store.exists(it) } ?: notes.firstOrNull()?.id
     }
 
     // 预览态没有输入框，焦点会掉到「没有接收者」——Ctrl/Cmd+S、Ctrl/Cmd+/ 就收不到了。
     // 切到预览时把焦点交给页面根；切回编辑时编辑器会自己抢回来。
+    // 焦点请求要等布局跑完，否则焦点节点还没挂上（见 MarkdownEditor.requestFocusWhenReady）。
     LaunchedEffect(preview) {
-        if (preview) pageFocus.requestFocus()
+        if (preview) pageFocus.requestFocusWhenReady()
     }
 
     // 切换选中：从文件载入。读不到（被外部删了）就退到下一篇。
@@ -289,22 +305,36 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         persistNow()
     }
 
-    // 概念自动整理：保存后停手 2.5s 再调模型；抽到的概念默认点亮，用户可删。
+    // 概念自动整理 + 空位补全：保存后停手 2.5s 再调模型。
+    // 抽到的概念默认点亮；补到的内容包成 `{{…}}`，预览里画成绿色大引号（点 × 可删）。
     LaunchedEffect(savedAtMs) {
         savedAtMs ?: return@LaunchedEffect
         val id = selectedId ?: return@LaunchedEffect
         val note = loaded ?: return@LaunchedEffect
         if (note.id != id) return@LaunchedEffect
-        if (note.body.isBlank() || note.body.length < 40) return@LaunchedEffect
+        if (note.body.isBlank()) return@LaunchedEffect
+        val slots = findAiFillSlots(note.body)
+        if (note.body.length < 40 && slots.isEmpty()) return@LaunchedEffect
         if (extractedBodies[id] == note.body) return@LaunchedEffect
-        val client = runtime.llmClientOrNull() ?: return@LaunchedEffect
+        val client = runtime.llmClientOrNull()
+        if (client == null) {
+            if (slots.isNotEmpty()) message = "AI 没配置：补全空位需要先在设置里导入模型"
+            return@LaunchedEffect
+        }
         delay(2500)
         // 防抖期间又编辑的话 savedAtMs 会变、本 effect 已被取消；这里看到的是最新正文。
         val current = store.read(id) ?: return@LaunchedEffect
         if (current.body != note.body) return@LaunchedEffect
         extracting = true
         val raw = try {
-            client.complete(buildConceptExtractionMessages(current.title, current.body, current.concepts))
+            client.complete(
+                buildKnowledgeExtractionMessages(
+                    current.title,
+                    current.body,
+                    current.concepts,
+                    slots.map { it.label },
+                ),
+            )
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failed: Exception) {
@@ -312,15 +342,31 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         }
         extracting = false
         if (raw == null) {
-            message = "AI 整理失败，不影响笔记保存；可以稍后重试或在笔记里手动添加概念"
+            message = if (slots.isEmpty()) {
+                "AI 整理失败，不影响笔记保存；可以稍后重试或在笔记里手动添加概念"
+            } else {
+                "AI 补全失败，空位原样保留；可以稍后重试"
+            }
             return@LaunchedEffect
         }
-        val candidates = parseConceptCandidates(raw)
-        val merged = mergeConceptNames(current.concepts, candidates)
-        extractedBodies[id] = current.body
-        if (merged.size == current.concepts.size) return@LaunchedEffect
-        metaStore.fillMissing(candidateDefinitions(candidates))
-        applyExtracted(id, current, merged)
+        val result = parseExtractionResult(raw)
+        val filled = applyAiFills(current.body, result.fills.associate { it.label to it.text })
+        val merged = mergeConceptNames(
+            current.concepts + result.fills.map { it.label },
+            result.candidates,
+        )
+        extractedBodies[id] = filled.body
+        if (merged.size == current.concepts.size && filled.body == current.body) return@LaunchedEffect
+        metaStore.fillMissing(
+            candidateDefinitions(result.candidates) + fillDefinitions(result.fills),
+        )
+        if (!applyExtracted(id, current, merged, filled.body)) return@LaunchedEffect
+        val conceptsAdded = merged.size - current.concepts.size
+        message = if (filled.applied.isNotEmpty()) {
+            "AI 补全 " + filled.applied.size + " 处（绿引号标记，点 × 可删），整理了 " + conceptsAdded + " 个概念"
+        } else {
+            "AI 整理了 " + conceptsAdded + " 个概念（点 × 可删除）"
+        }
     }
 
     // 切页/关窗口时兜底：正在打的字不能留在内存里。
@@ -358,7 +404,9 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         }
     }
     val messageIsProblem = message?.let {
-        it.startsWith("保存失败") || it.startsWith("删除失败") || it.startsWith("AI 整理失败")
+        it.startsWith("保存失败") || it.startsWith("删除失败") ||
+            it.startsWith("AI 整理失败") || it.startsWith("AI 补全失败") ||
+            it.startsWith("AI 没配置")
     } == true
 
     Column(
@@ -531,6 +579,15 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                             onToggleShortcuts = { shortcutsOpen = !shortcutsOpen },
                             reveal = revealRange,
                             revealToken = revealToken,
+                            conceptNames = concepts.map { it.name },
+                            onDeleteAiLine = { line ->
+                                val next = removeAiBlockLine(body, line)
+                                if (next != null) {
+                                    body = next
+                                    revision++
+                                    message = "已删掉一处 AI 内容"
+                                }
+                            },
                         )
                     }
                 }
