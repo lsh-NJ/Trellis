@@ -1,6 +1,7 @@
 package dev.trellis.app.desktop
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -21,6 +23,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -40,28 +44,37 @@ import dev.trellis.ui.LocalExtraColors
  * agent 的回答天然带结构（小标题、清单、代码块、表格），以前用 [Text] 原样输出，
  * 用户看到的是满屏 `**加粗**` 和 `- 列表`。这里只做「轻量 Markdown」：
  *
- *  - 支持：标题、无序/有序列表、引用、围栏代码块、`行内代码`、**加粗**、*斜体*、[链接](url)；
- *  - 不支持：HTML、图片、脚注、嵌套复杂语法 —— 聊天记录不需要，也不该为它引入一整套解析器；
+ *  - 支持：标题、无序/有序/任务列表、引用、围栏代码块、`行内代码`、**加粗**、*斜体*、
+ *    ***粗斜体***、[链接](url)、![图片](url)、~~删除线~~、表格、分割线（`---`/`***`/`___`）；
+ *  - 不支持：HTML、脚注、嵌套复杂语法 —— 聊天记录和笔记预览不需要，也不该为它引入一整套解析器；
  *  - 解析失败绝不抛异常：认不出的就当普通段落显示，**宁可少一点样式，也不要吞掉内容**。
  */
 internal sealed interface MdBlock {
     data class Paragraph(val text: String) : MdBlock
     data class Heading(val level: Int, val text: String) : MdBlock
-    data class Bullet(val text: String, val depth: Int) : MdBlock
+    /** [checked] 非空 = 任务清单：null 是普通列表项，true/false 是勾没勾。 */
+    data class Bullet(val text: String, val depth: Int, val checked: Boolean? = null) : MdBlock
     data class Numbered(val number: String, val text: String, val depth: Int) : MdBlock
     data class Code(val language: String, val code: String) : MdBlock
     data class Quote(val text: String) : MdBlock
     data class Table(val header: List<String>, val rows: List<List<String>>) : MdBlock
     /** AI 写的块级内容（`:::ai` … `:::`）：预览渲染成绿色大引号，每行可点 × 删除。 */
     data class AiBlock(val items: List<String>) : MdBlock
+    data object Rule : MdBlock
 }
 
 private val bulletPattern = Regex("^(\\s*)[-*+]\\s+(.*)$")
 private val numberedPattern = Regex("^(\\s*)(\\d+)[.)]\\s+(.*)$")
-private val headingPattern = Regex("^(#{1,6})\\s+(.*)$")
+private val headingPattern = Regex("^(#{1,6})\\s+(.+)$")
 
 /** 表格的对齐行：`---` / `:---` / `---:` / `:---:`，只用来标记「这是表头分隔」。 */
 private val separatorCell = Regex("^:?-{2,}:?$")
+
+/** 分割线：整行只有 3 个以上同样的 `-` / `*` / `_`（中间可以夹空格）。 */
+private val rulePattern = Regex("^([-*_])(?:\\s*\\1){2,}$")
+
+/** 任务清单项：`[ ] 待办` / `[x] 已办`。 */
+private val taskPattern = Regex("^\\[([ xX])]\\s+(.*)$")
 
 
 /** 把整段 Markdown 切成块；行内样式留给 [inlineMarkdown]。 */
@@ -158,10 +171,28 @@ internal fun parseMarkdown(source: String): List<MdBlock> {
             continue
         }
 
+        // 分割线要排在列表前面：`- - -` 也能被列表正则认出来，先判横线才不会被吃成一项。
+        if (rulePattern.matches(line.trim())) {
+            flushParagraph()
+            blocks += MdBlock.Rule
+            index++
+            continue
+        }
+
         val bullet = bulletPattern.matchEntire(line)
         if (bullet != null) {
             flushParagraph()
-            blocks += MdBlock.Bullet(bullet.groupValues[2].trim(), indentDepth(bullet.groupValues[1]))
+            val content = bullet.groupValues[2].trim()
+            val task = taskPattern.matchEntire(content)
+            if (task != null) {
+                blocks += MdBlock.Bullet(
+                    text = task.groupValues[2].trim(),
+                    depth = indentDepth(bullet.groupValues[1]),
+                    checked = task.groupValues[1].equals("x", ignoreCase = true),
+                )
+            } else {
+                blocks += MdBlock.Bullet(content, indentDepth(bullet.groupValues[1]))
+            }
             index++
             continue
         }
@@ -196,13 +227,16 @@ internal fun parseMarkdown(source: String): List<MdBlock> {
 private fun indentDepth(prefix: String): Int = (prefix.length / 2).coerceIn(0, 3)
 
 private val inlinePattern = Regex(
+    // 用命名分组：加一条语法不会让所有 `groups[i]` 集体错位。
     // 强调符号必须贴着文字：`a * b * c` 里的星号是普通字符，不是斜体
     // （CommonMark 的「强调不能以空白开头/结尾」规则，简化版）。
-    "\\*\\*(?!\\s)(.+?)(?<!\\s)\\*\\*" +   // **粗体**
-        "|`([^`]+?)`" +                     // `行内代码`
-        "|\\*(?!\\s)(.+?)(?<!\\s)\\*" +     // *斜体*
-        "|\\[(.+?)]\\((.+?)\\)" +           // [文字](链接)
-        "|~~(?!\\s)(.+?)(?<!\\s)~~",        // ~~删除线~~
+    "\\*\\*\\*(?<bolditalic>(?!\\s).+?(?<!\\s))\\*\\*\\*" +      // ***粗斜体***
+        "|\\*\\*(?<bold>(?!\\s).+?(?<!\\s))\\*\\*" +             // **粗体**
+        "|`(?<code>[^`]+?)`" +                                  // `行内代码`
+        "|\\*(?<italic>(?!\\s).+?(?<!\\s))\\*" +                 // *斜体*
+        "|!\\[(?<imageAlt>.*?)]\\((?<imageUrl>.+?)\\)" +         // ![图片](url)
+        "|\\[(?<linkLabel>.+?)]\\((?<linkUrl>.+?)\\)" +          // [文字](链接)
+        "|~~(?<strike>(?!\\s).+?(?<!\\s))~~",                    // ~~删除线~~
 )
 
 /** 行内 AI 内容（`{{…}}`）在原文里的位置；[end] 是闭括号之后的偏移。 */
@@ -270,13 +304,20 @@ private fun AnnotatedString.Builder.appendStyledRange(
         val matchStart = from + match.range.first
         val matchEnd = from + match.range.last + 1
         appendPlain(cursor, matchStart)
-        val bold = match.groups[1]
-        val code = match.groups[2]
-        val italic = match.groups[3]
-        val linkLabel = match.groups[4]
-        val linkUrl = match.groups[5]
-        val strike = match.groups[6]
+        val groups = match.groups
+        val boldItalic = groups["bolditalic"]
+        val bold = groups["bold"]
+        val code = groups["code"]
+        val italic = groups["italic"]
+        val imageAlt = groups["imageAlt"]
+        val imageUrl = groups["imageUrl"]
+        val linkLabel = groups["linkLabel"]
+        val linkUrl = groups["linkUrl"]
+        val strike = groups["strike"]
         when {
+            boldItalic != null -> withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontStyle = FontStyle.Italic)) {
+                appendPlain(from + boldItalic.range.first, from + boldItalic.range.last + 1)
+            }
             bold != null -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
                 appendPlain(from + bold.range.first, from + bold.range.last + 1)
             }
@@ -285,6 +326,13 @@ private fun AnnotatedString.Builder.appendStyledRange(
             }
             italic != null -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
                 appendPlain(from + italic.range.first, from + italic.range.last + 1)
+            }
+            imageAlt != null && imageUrl != null -> {
+                // 不联网取图（笔记是本地文本，聊天也可能在离线环境）；把说明和地址读出来就够用。
+                withStyle(SpanStyle(color = ColorLink, fontWeight = FontWeight.Medium)) {
+                    append("［图］" + imageAlt.value.ifBlank { "图片" })
+                }
+                append(" (" + imageUrl.value + ")")
             }
             linkLabel != null && linkUrl != null -> {
                 withStyle(SpanStyle(color = ColorLink, fontWeight = FontWeight.Medium)) {
@@ -344,85 +392,110 @@ internal fun MarkdownText(
     bodyStyle: androidx.compose.ui.text.TextStyle? = null,
     conceptNames: List<String> = emptyList(),
     onDeleteAiBlockLine: ((String) -> Unit)? = null,
+    /**
+     * 预览的目录跳转用：每块报告自己在窗口里的 y（px）。
+     * 传 null 时完全不装这个 Modifier，聊天消息那边零额外开销。
+     */
+    onBlockLayout: ((index: Int, y: Float) -> Unit)? = null,
 ) {
     val paragraphStyle = bodyStyle ?: MaterialTheme.typography.bodyLarge
     val extra = LocalExtraColors.current
     val aiGreen = extra.accentText
     val blocks = remember(text) { parseMarkdown(text) }
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        for (block in blocks) {
-            when (block) {
-                is MdBlock.Paragraph -> Text(
-                    inlineMarkdown(block.text, conceptNames, aiGreen, aiGreen),
-                    style = paragraphStyle,
-                )
-                is MdBlock.Heading -> Text(
-                    inlineMarkdown(block.text, conceptNames, aiGreen, aiGreen),
-                    style = when (block.level) {
-                        1 -> MaterialTheme.typography.titleMedium
-                        2 -> MaterialTheme.typography.titleSmall
-                        else -> MaterialTheme.typography.labelLarge
-                    },
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-                is MdBlock.Bullet -> MarkdownBullet(
-                    block.depth,
-                    "•",
-                    block.text,
-                    paragraphStyle,
-                    conceptNames,
-                    aiGreen,
-                )
-                is MdBlock.Numbered -> MarkdownBullet(
-                    block.depth,
-                    block.number + ".",
-                    block.text,
-                    paragraphStyle,
-                    conceptNames,
-                    aiGreen,
-                )
-                is MdBlock.Code -> Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .background(
-                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                            RoundedCornerShape(6.dp),
-                        )
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                ) {
-                    Text(
-                        block.code,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
-                    )
+        blocks.forEachIndexed { index, block ->
+            val measured = if (onBlockLayout == null) {
+                Modifier
+            } else {
+                Modifier.onGloballyPositioned { coordinates ->
+                    onBlockLayout(index, coordinates.positionInRoot().y)
                 }
-                is MdBlock.Quote -> Row(
-                    Modifier.height(IntrinsicSize.Min),
-                    verticalAlignment = Alignment.Top,
-                ) {
-                    Box(
-                        Modifier
-                            .width(2.dp)
-                            .fillMaxHeight()
-                            .background(MaterialTheme.colorScheme.outlineVariant),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
+            }
+            Box(measured) {
+                when (block) {
+                    is MdBlock.Paragraph -> Text(
                         inlineMarkdown(block.text, conceptNames, aiGreen, aiGreen),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = paragraphStyle,
+                    )
+                    is MdBlock.Heading -> Text(
+                        inlineMarkdown(block.text, conceptNames, aiGreen, aiGreen),
+                        style = markdownHeadingStyle(block.level, paragraphStyle),
+                        modifier = Modifier.padding(top = headingTopSpacing(block.level)),
+                    )
+                    is MdBlock.Bullet -> if (block.checked != null) {
+                        MarkdownTaskRow(
+                            depth = block.depth,
+                            checked = block.checked,
+                            text = block.text,
+                            bodyStyle = paragraphStyle,
+                            conceptNames = conceptNames,
+                            aiGreen = aiGreen,
+                        )
+                    } else {
+                        MarkdownBullet(
+                            block.depth,
+                            "•",
+                            block.text,
+                            paragraphStyle,
+                            conceptNames,
+                            aiGreen,
+                        )
+                    }
+                    is MdBlock.Numbered -> MarkdownBullet(
+                        block.depth,
+                        block.number + ".",
+                        block.text,
+                        paragraphStyle,
+                        conceptNames,
+                        aiGreen,
+                    )
+                    is MdBlock.Code -> Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .background(
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                                RoundedCornerShape(6.dp),
+                            )
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                    ) {
+                        Text(
+                            block.code,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                    }
+                    is MdBlock.Quote -> Row(
+                        Modifier.height(IntrinsicSize.Min),
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        Box(
+                            Modifier
+                                .width(2.dp)
+                                .fillMaxHeight()
+                                .background(MaterialTheme.colorScheme.outlineVariant),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            inlineMarkdown(block.text, conceptNames, aiGreen, aiGreen),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    is MdBlock.Table -> MarkdownTable(block, conceptNames, aiGreen)
+                    is MdBlock.AiBlock -> AiBlockView(
+                        items = block.items,
+                        bodyStyle = paragraphStyle,
+                        aiGreen = aiGreen,
+                        containerColor = extra.successContainer,
+                        conceptNames = conceptNames,
+                        onDeleteLine = onDeleteAiBlockLine,
+                    )
+                    MdBlock.Rule -> androidx.compose.material3.HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 6.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                        thickness = 1.dp,
                     )
                 }
-                is MdBlock.Table -> MarkdownTable(block, conceptNames, aiGreen)
-                is MdBlock.AiBlock -> AiBlockView(
-                    items = block.items,
-                    bodyStyle = paragraphStyle,
-                    aiGreen = aiGreen,
-                    containerColor = extra.successContainer,
-                    conceptNames = conceptNames,
-                    onDeleteLine = onDeleteAiBlockLine,
-                )
             }
         }
     }
@@ -488,6 +561,48 @@ private fun AiBlockView(
     }
 }
 
+/**
+ * 标题字号：按正文字号算一档**独立的阶梯**，不直接借 MaterialTheme 的 `title*` / `label*`。
+ *
+ * 默认主题里 `titleMedium` 是 16sp、`bodyLarge` 也是 16sp，`titleSmall` 只有 14sp ——
+ * 照搬的结果是一级标题和正文一样大、二级标题比正文还小，「加粗的正文」反而压过标题
+ * （2026-10-31 用户反馈：加粗比标题还大）。这里保证三件事：
+ *
+ * 1. 每一级严格递减（`#` > `##` > `###` …）；
+ * 2. 任何一级标题都不小于正文——否则「这是标题」根本看不出来；
+ * 3. 加粗和正文同字号，所以它必然小于任何标题。
+ *
+ * 系数乘在传入的正文样式上，所以主题的整体缩放（`ChromeStyle.scale`）和用户字号偏好
+ * （`UiPrefs.fontScale`）都会自动跟着走，不用在这里再算一遍。
+ */
+internal fun markdownHeadingStyle(level: Int, base: androidx.compose.ui.text.TextStyle): androidx.compose.ui.text.TextStyle {
+    // TextUnit.Unspecified 的 value 是 NaN：没有字号时退回 16sp（和 bodyLarge 一致）。
+    val rawSize = base.fontSize.value
+    val baseSize = if (rawSize.isNaN() || rawSize <= 0f) 16.sp else rawSize.sp
+    val scale = when (level) {
+        1 -> 1.50f
+        2 -> 1.31f
+        3 -> 1.16f
+        4 -> 1.10f
+        5 -> 1.04f
+        else -> 1.00f
+    }
+    val size = baseSize * scale
+    return base.copy(
+        fontSize = size,
+        lineHeight = size * 1.32f,
+        fontWeight = FontWeight.Bold,
+    )
+}
+
+/** 标题上方留白：级别越高离上一段越远，读起来才知道「新的一节开始了」。 */
+private fun headingTopSpacing(level: Int) = when (level) {
+    1 -> 14.dp
+    2 -> 10.dp
+    3 -> 8.dp
+    else -> 6.dp
+}
+
 @Composable
 private fun MarkdownTable(table: MdBlock.Table, conceptNames: List<String>, aiGreen: Color) {
     // 列数取表头与数据行里最多的那个；超过 6 列就不再收（聊天里再宽也读不了）。
@@ -542,6 +657,70 @@ private fun MarkdownBullet(
         Text(
             inlineMarkdown(text, conceptNames, aiGreen, aiGreen),
             style = bodyStyle,
+        )
+    }
+}
+
+/**
+ * 任务清单一行：方框自己画，不用 `☑`/`☐` 字符。
+ *
+ * 那两个字符在 Windows 上会落到彩色 emoji 字体（预览里显示成紫色方块），
+ * 和周围的单色文字不搭；自己画的方框还能顺手给「已完成」加一条贯穿线。
+ */
+@Composable
+private fun MarkdownTaskRow(
+    depth: Int,
+    checked: Boolean,
+    text: String,
+    bodyStyle: androidx.compose.ui.text.TextStyle,
+    conceptNames: List<String>,
+    aiGreen: Color,
+) {
+    Row(
+        modifier = Modifier.padding(start = (depth * 14).dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(top = 4.dp)
+                .size(13.dp)
+                .clip(RoundedCornerShape(3.dp))
+                .border(
+                    width = 1.dp,
+                    color = if (checked) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                    },
+                    shape = RoundedCornerShape(3.dp),
+                )
+                .background(
+                    if (checked) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        Color.Transparent
+                    },
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (checked) {
+                Text(
+                    "✓",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                )
+            }
+        }
+        Spacer(Modifier.width(7.dp))
+        Text(
+            inlineMarkdown(text, conceptNames, aiGreen, aiGreen),
+            style = bodyStyle,
+            color = if (checked) {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            } else {
+                MaterialTheme.colorScheme.onSurface
+            },
+            textDecoration = if (checked) TextDecoration.LineThrough else null,
         )
     }
 }
