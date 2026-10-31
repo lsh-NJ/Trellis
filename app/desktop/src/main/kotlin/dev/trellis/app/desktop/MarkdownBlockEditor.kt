@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -44,10 +45,17 @@ import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -436,6 +444,42 @@ internal fun MarkdownBlockEditor(
         scope.launch { focus.requestFocusWhenReady() }
     }
 
+    // 编辑态的行内 WYSIWYG（marktext 行为）：光标不在 token 里时把 `**` 之类的标记藏起来，
+    // 只留样式；光标进入 token 时标记还原、可以逐字改。投影是纯函数，见 MarkdownInlineEdit.kt。
+    val activeBlock = activeStart?.let { start -> blocks.firstOrNull { it.start == start } }
+    val inlineProjection = activeBlock?.let { projectInlineEdit(field.text, field.selection, it.kind) }
+
+    /**
+     * 回车把当前块「收尾」，在它后面另起一个空段落（marktext/Typora 的段落行为）。
+     *
+     * 原来回车只是在块内插一个软换行，整段还是一条 BasicTextField；用户写着写着就会觉得
+     * 「一个块一个输入框」很怪。空段落不在 [splitBodyBlocks] 里，所以渲染时要补一个空块
+     * （见 renderBlocks），否则新段落没有输入框、光标无处可去。
+     */
+    fun startNewBlock() {
+        val start = activeStart ?: return
+        val selection = field.selection
+        val before = field.text.substring(0, selection.min)
+        val after = field.text.substring(selection.max)
+        val head = draft.substring(0, start)
+        val tail = draft.substring(activeEnd)
+        // 原来的块尾换行由我们自己重新补，补成「块 + 空行 + 新块 + 空行 + 下一块」。
+        val trimmedTail = tail.trimStart('\n')
+        val newDraft = if (trimmedTail.isEmpty()) {
+            head + before + "\n\n" + after
+        } else {
+            head + before + "\n\n" + after + "\n\n" + trimmedTail
+        }
+        val newStart = start + before.length + 2
+        draft = newDraft
+        activeStart = newStart
+        activeEnd = newStart + after.length
+        field = TextFieldValue(after, TextRange(0))
+        onBodyChange(newDraft)
+        closeSlash()
+        scope.launch { focus.requestFocusWhenReady() }
+    }
+
     fun handleKey(event: androidx.compose.ui.input.key.KeyEvent): Boolean {
         if (event.type != KeyEventType.KeyDown) return false
         val commandPressed = event.isCtrlPressed || event.isMetaPressed
@@ -465,6 +509,21 @@ internal fun MarkdownBlockEditor(
                 else -> Unit
             }
         }
+        // 标记被折叠时，光标落在 token 的边界上；直接删会删到看不见的 `*`。改成删内容。
+        if (event.key == Key.Backspace && field.selection.collapsed) {
+            val adjusted = projectedBackspace(field, inlineProjection)
+            if (adjusted != null) {
+                edit(adjusted)
+                return true
+            }
+        }
+        if (event.key == Key.Delete && field.selection.collapsed) {
+            val adjusted = projectedDelete(field, inlineProjection)
+            if (adjusted != null) {
+                edit(adjusted)
+                return true
+            }
+        }
         if (commandPressed && event.key == Key.Enter) {
             exitEdit()
             return true
@@ -477,17 +536,43 @@ internal fun MarkdownBlockEditor(
             return true
         }
         if (event.key == Key.Enter && !event.isShiftPressed) {
-            val continued = continueMarkdownList(field) ?: return false
-            edit(continued)
+            val kind = activeBlock?.kind
+            val structural = kind == null || kind == BlockKind.Paragraph || kind == BlockKind.Heading ||
+                kind == BlockKind.ListItem || kind == BlockKind.Quote
+            if (!structural) return false
+            val continued = continueMarkdownList(field)
+            if (continued != null) {
+                edit(continued)
+            } else {
+                startNewBlock()
+            }
             return true
         }
         return false
     }
 
     val paragraphStyle = MaterialTheme.typography.bodyLarge
-    val editStyle = paragraphStyle.merge(
-        TextStyle(color = MaterialTheme.colorScheme.onSurface, lineHeight = 26.sp),
+    // 标题块在编辑态也保留标题字号：整段套 heading 样式（行内 span 只管加粗/斜体这些）。
+    val headingStyle = inlineProjection?.headingLevel?.let { markdownHeadingStyle(it, paragraphStyle) }
+    val editStyle = (headingStyle ?: paragraphStyle).merge(
+        TextStyle(
+            color = MaterialTheme.colorScheme.onSurface,
+            lineHeight = headingStyle?.lineHeight ?: 26.sp,
+        ),
     )
+    val scheme = MaterialTheme.colorScheme
+    // 把投影结果（隐藏标记后的文本 + 样式 + 光标映射）交给 BasicTextField。
+    val inlineTransformation = remember(activeBlock, inlineProjection, paragraphStyle, scheme) {
+        val projection = inlineProjection
+        if (projection == null ||
+            (projection.text == field.text && projection.marks.isEmpty() && projection.syntax.isEmpty())
+        ) {
+            VisualTransformation.None
+        } else {
+            val annotated = buildInlineEditText(projection, paragraphStyle, scheme)
+            VisualTransformation { TransformedText(annotated, projection.mapping) }
+        }
+    }
 
     Column(
         modifier = modifier.fillMaxWidth(),
@@ -526,7 +611,21 @@ internal fun MarkdownBlockEditor(
             return@Column
         }
 
-        blocks.forEach { block ->
+        // 行尾回车新起的空段落不在 splitBodyBlocks 里（空行不算块），补一个空块给输入框；
+        // 位置要按 start 插回去，不能直接追加到末尾（否则新段落会跑到文末）。
+        val activeBlockStart = activeStart
+        val renderBlocks = remember(blocks, activeBlockStart) {
+            if (activeBlockStart == null || blocks.any { it.start == activeBlockStart }) {
+                blocks
+            } else {
+                val merged = blocks.toMutableList()
+                val insertAt = merged.indexOfFirst { it.start > activeBlockStart }.let { if (it < 0) merged.size else it }
+                merged.add(insertAt, BodyBlock(activeBlockStart, activeBlockStart, "", BlockKind.Paragraph))
+                merged
+            }
+        }
+
+        renderBlocks.forEach { block ->
             if (activeStart == block.start) {
                 Box(Modifier.fillMaxWidth()) {
                     // onFocusChanged 在节点挂载时会先回调一次「未聚焦」，不能当成失焦退出，
@@ -555,6 +654,7 @@ internal fun MarkdownBlockEditor(
                                 }
                                 .onPreviewKeyEvent { event -> handleKey(event) },
                             textStyle = editStyle,
+                            visualTransformation = inlineTransformation,
                             cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                         )
                     }
@@ -716,5 +816,87 @@ private fun BlockSlashRow(command: MarkdownCommand, selected: Boolean, onClick: 
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
             )
         }
+    }
+}
+
+/** 把行内投影画成 [AnnotatedString]：标记暗色、内容按语法加样式，标题/引用整段套样式。 */
+private fun buildInlineEditText(
+    projection: InlineEditProjection,
+    baseStyle: TextStyle,
+    scheme: ColorScheme,
+): AnnotatedString {
+    val builder = AnnotatedString.Builder(projection.text)
+    val syntaxStyle = SpanStyle(color = scheme.onSurfaceVariant.copy(alpha = 0.45f))
+    for (range in projection.syntax) {
+        builder.addStyle(syntaxStyle, range.first, range.last + 1)
+    }
+    for (mark in projection.marks) {
+        val style = when (mark.kind) {
+            InlineMarkKind.Bold -> SpanStyle(fontWeight = FontWeight.Bold)
+            InlineMarkKind.Italic -> SpanStyle(fontStyle = FontStyle.Italic)
+            InlineMarkKind.Code -> SpanStyle(fontFamily = FontFamily.Monospace)
+            InlineMarkKind.Strike -> SpanStyle(textDecoration = TextDecoration.LineThrough)
+            InlineMarkKind.Link -> SpanStyle(color = scheme.primary, textDecoration = TextDecoration.Underline)
+            InlineMarkKind.Math -> SpanStyle(fontFamily = FontFamily.Monospace, fontStyle = FontStyle.Italic)
+        }
+        builder.addStyle(style, mark.start, mark.end)
+    }
+    if (projection.isQuote) {
+        builder.addStyle(
+            SpanStyle(color = scheme.onSurfaceVariant, fontStyle = FontStyle.Italic),
+            0,
+            projection.text.length,
+        )
+    }
+    return builder.toAnnotatedString()
+}
+
+/**
+ * Backspace 落在折叠 token 的右边界时，删内容最后一个字符而不是看不见的 `*`；
+ * 内容只剩一个字符时整段标记一起删掉（否则会留下 `****` 这种死标记）。
+ */
+private fun projectedBackspace(
+    field: TextFieldValue,
+    projection: InlineEditProjection?,
+): TextFieldValue? {
+    if (projection == null) return null
+    val caret = field.selection.start
+    val raw = field.text
+    val token = projection.tokens.firstOrNull { it.end == caret }
+    if (token != null) {
+        return if (token.contentEnd - token.contentStart > 1) {
+            TextFieldValue(
+                raw.removeRange(token.contentEnd - 1, token.contentEnd),
+                TextRange(caret - 1),
+            )
+        } else {
+            TextFieldValue(raw.removeRange(token.start, token.end), TextRange(token.start))
+        }
+    }
+    val prefix = projection.prefix
+    if (prefix != null && caret == prefix.last + 1) {
+        // 标题/引用的行首标记：Backspace 一次去掉，块自然退化成普通段落。
+        return TextFieldValue(raw.removeRange(prefix.first, prefix.last + 1), TextRange(prefix.first))
+    }
+    return null
+}
+
+/** Delete 落在折叠 token 的左边界时，删内容第一个字符（同理，避免删掉标记）。 */
+private fun projectedDelete(
+    field: TextFieldValue,
+    projection: InlineEditProjection?,
+): TextFieldValue? {
+    if (projection == null) return null
+    val caret = field.selection.start
+    val raw = field.text
+    val token = projection.tokens.firstOrNull { it.start == caret }
+    if (token == null) return null
+    return if (token.contentEnd - token.contentStart > 1) {
+        TextFieldValue(
+            raw.removeRange(token.contentStart, token.contentStart + 1),
+            TextRange(caret),
+        )
+    } else {
+        TextFieldValue(raw.removeRange(token.start, token.end), TextRange(caret))
     }
 }

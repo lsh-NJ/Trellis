@@ -2,8 +2,8 @@
 
 > 对应 [pluginization-plan-2026-10-29.md](pluginization-plan-2026-10-29.md) 第 2 条「学习终端与知识体系」。
 > 第 1 条「计划自己推进」的讨论稿是 [plan-rhythm-draft.md](plan-rhythm-draft.md)，两篇**解耦**，互不前置。
-> 状态：讨论稿（2026-10-29）；P0 已落地（2026-10-30 两批 + 2026-10-31 第三至六批，见 §10）：
-> 笔记 + Markdown 编辑器（行内编辑/行外预览，§12）+ 概念抽取/点亮/熄灭/追溯/搜索 + 空位补全与 AI 内容标记（§11）+ 导出当前笔记为独立 Markdown。
+> 状态：讨论稿（2026-10-29）；P0 已落地（2026-10-30 两批 + 2026-10-31 第三至七批，见 §10）：
+> 笔记 + Markdown 编辑器（行内编辑/行外预览 + 编辑态行内 WYSIWYG，§12）+ 概念抽取/点亮/熄灭/追溯/搜索 + 空位补全与 AI 内容标记（§11）+ 导出当前笔记为独立 Markdown。
 > 未做：导入外部 Markdown、别名/合并、sdk-domain 契约与 `:features:knowledge` 拆模块（§9 记录了取舍）。
 
 ## 0. 一句话
@@ -154,6 +154,15 @@
 - 纯函数在 `KnowledgeNote.kt`：`exportNoteMarkdown`（拼标题 + 清洗正文）、`cleanAiMarkersForExport`（逐行还原 AI 标记）；落盘与文件名在 `MarkdownExport.kt`：`markdownExportFileName`（清掉 `/:*?"<>|` 等非法字符、空标题用「无标题笔记」）、`chooseMarkdownExportFile`（AWT `FileDialog` 系统保存面板，没写扩展名自动补 `.md`）、`writeMarkdownExport`（UTF-8，无 BOM）。用户取消不报错；失败在页头消息区显示「导出失败：…」。
 - 测试：`MarkdownExportTest`（8 个用例：标题只出现一次 / 去 frontmatter / `{{…}}` 还原 / `:::ai` 围栏去掉 / 代码块原样 / 文件名清理 / 正文保持 Markdown）。
 
+**已落地（2026-10-31，P0 第七批：编辑态行内 WYSIWYG）**
+
+- 起因：用户报「编辑时看到裸 `**`、好像没加粗」。实测渲染态一直正常（像素 ink 对照：加粗 ASCII +40%、CJK +12%），真正的问题是块编辑态直接显示原始 Markdown。
+- 做法参考 marktext/Muya：**行内标记只在光标进入该 token 时显示**，离开即折叠、只留样式。保留块模型（代码/公式/表格/AI 块需要独立渲染），不重写成 contenteditable。
+- 新增 `MarkdownInlineEdit.kt`（纯逻辑，`projectInlineEdit(raw, selection, kind): InlineEditProjection`）：隐藏 `**`/`*`/`` ` ``/`~~`/`$`/链接的 `[](url)`、标题的 `# ` 前缀、引用的 `> `、列表的 `-`（换成 `•`，1:1 保长度）；`InlineMarkKind` 给 Bold/Italic/Code/Strike/Link/Math；`headingLevel`/`isQuote` 决定整段字号与颜色；`InlineEditMapping` 给出 raw↔显示 的 `OffsetMapping`（隐藏区 offset 落到区段起点，光标不会跳进标记里）。`MarkdownText.kt` 的 `inlinePattern` 改为 `internal` 复用同一份正则。
+- `MarkdownBlockEditor.kt` 接线：活动块 `BasicTextField` 加 `visualTransformation`，标记按样式渲染（Bold/Italic/Mono/LineThrough/Link 下划线/Math mono 斜体），光标进入的 token 还原成暗灰标记；折叠态 Backspace/Delete 在 token 边界按内容字符删，不吞隐藏的 `*`；标题前缀删掉后块自动退回段落。
+- **回车分段**：段落/标题/列表/引用里按回车会在此处切开，新建一个同类型块（列表自动续 `- `），`startNewBlock` 只插一个空行；空块需要渲染占位编辑框，`renderBlocks` 按位置插影子块（不能追加到文末）。
+- 测试：`MarkdownInlineEditTest`（15 用例：标记隐藏/揭示规则、选区揭示、每种行内样式、heading 前缀与级别、bullet 替换、task 保留、quote 前缀、特殊块恒等、未闭合标记、mapping 往返、光标不落进隐藏区）；`:app:desktop:test` **360 个用例全绿**。
+
 ## 11. AI 补全与 AI 内容标记（2026-10-31 定稿）
 
 三种标记都写在正文里、明文可见、可编辑、可删除；渲染只在预览层发生，**不把大引号字符写进正文**（普通 `“ ”` 照常渲染，两者在颜色/字号上就能区分）。
@@ -179,7 +188,9 @@
 
 | 交互 | 行为 | 落点 |
 |---|---|---|
-| 点正文块 | 该块进入编辑态（`BasicTextField` 显示原始 Markdown），其余块继续渲染 | `MarkdownBlockEditor.kt` |
+| 点正文块 | 该块进入编辑态（行内 WYSIWYG：`**`/`~~`/反引号等标记收起，只显示样式），其余块继续渲染 | `MarkdownBlockEditor.kt` / `MarkdownInlineEdit.kt` |
+| 光标进入行内标记 | 该 token 的原始标记还原显示（暗灰），可编辑；移出即折叠 | 同上 |
+| 回车 | 在当前块内切开，新起一个同类型块（列表自动续 `- `；Shift+Enter 是块内软换行；代码/公式/表格/AI 块里回车仍是换行） | `MarkdownBlockEditor.kt` |
 | Esc / Ctrl+Enter / 失焦 | 退出当前块，回到渲染态 | 同上 |
 | 块内 `/` | 行首或空白后唤起斜杠命令菜单（代码块里不触发） | `MarkdownCommands.kt` |
 | 块间快捷键 | `Ctrl/Cmd+B/I/K`、`Shift+X/C/L/O/Q/R/T`、`0–3` 只作用当前块 | 同上 |
@@ -193,6 +204,8 @@
 几条约定：
 
 - **块是渲染与编辑的单位，不是存储单位**：标记仍写在正文里（`{{…}}`、`:::ai`、`。。。`），块切分只用于显示和替换；每次编辑只 splice 当前块，其它字节不动。
+- **行内标记只在光标进入时出现**（marktext 式）：折叠态看到的是渲染样式；标记被隐藏后，Backspace/Delete 在 token 边界按内容字符删，不会删到看不见的 `*`。
+- **已知差异**：点块进入编辑时光标在块尾（暂不支持点哪落哪）；编辑块有一圈边框；若以后要「整篇一个字段连续编辑、没有块边框」，需要把整篇做成单字段，代价是编辑时表格/公式/AI 块只能显示源码。
 - **空行是块间间隔**，不归任何块；删空一块后仍保留一个空编辑框，避免「删没了就点不回来」。
 - **标题也是块**（`# …`），所以标题里的行内语法同样在预览里渲染；目录与笔记列表的标题走同一套 `stripInlineMarkdown`。
 - **不做**：全局知识图、块拖拽排序、多光标；撤销/重做仍靠输入框自身。
