@@ -71,6 +71,10 @@ internal fun MarkdownEditor(
     reveal: TextRange? = null,
     /** 每次点「定位」+1：同一个范围再点一次也能重新选中（range 相同时靠它触发）。 */
     revealToken: Int = 0,
+    /** 预览里要绿色高亮的概念名（和知识库概念表一致）。 */
+    conceptNames: List<String> = emptyList(),
+    /** 预览里点 AI 内容（`:::ai` 块）某一行的 ×：把那一行从正文里删掉。 */
+    onDeleteAiLine: ((String) -> Unit)? = null,
 ) {
     // 每篇笔记一个编辑缓冲；切笔记时重置。光标/选区留在内部，页面只关心文本。
     var field by remember(noteId) { mutableStateOf(TextFieldValue(body)) }
@@ -153,7 +157,7 @@ internal fun MarkdownEditor(
                 .background(MaterialTheme.colorScheme.surface),
         ) {
             if (preview) {
-                MarkdownPreview(body)
+                MarkdownPreview(body, conceptNames, onDeleteAiLine)
             } else {
                 BasicTextField(
                     value = field,
@@ -224,7 +228,11 @@ internal fun MarkdownEditor(
 }
 
 @Composable
-private fun MarkdownPreview(body: String) {
+private fun MarkdownPreview(
+    body: String,
+    conceptNames: List<String>,
+    onDeleteAiLine: ((String) -> Unit)?,
+) {
     if (body.isBlank()) {
         Box(Modifier.fillMaxSize().padding(20.dp)) {
             Text(
@@ -242,7 +250,12 @@ private fun MarkdownPreview(body: String) {
                 .verticalScroll(rememberScrollState())
                 .padding(20.dp),
         ) {
-            MarkdownText(body, bodyStyle = MaterialTheme.typography.bodyLarge)
+            MarkdownText(
+                body,
+                bodyStyle = MaterialTheme.typography.bodyLarge,
+                conceptNames = conceptNames,
+                onDeleteAiBlockLine = onDeleteAiLine,
+            )
         }
     }
 }
