@@ -462,7 +462,11 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         Column(Modifier.fillMaxSize()) {
             // 页头固定：左边说明，右边三个小开关（编辑/预览、目录、菜单）。
             // 标题和正文一起滚，所以这些按钮不能跟着正文跑。
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            // 页面本身已经贴边（AppScreen 对 flush 页不再套 20dp），页头自己留 20dp。
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Column(Modifier.weight(1f)) {
                     Text("知识库", style = MaterialTheme.typography.titleLarge)
                     Text(
@@ -506,6 +510,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                     } else {
                         MaterialTheme.colorScheme.onSurfaceVariant
                     },
+                    modifier = Modifier.padding(horizontal = 20.dp),
                 )
             }
 
@@ -516,6 +521,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
             } else {
                 Row(Modifier.weight(1f).fillMaxWidth()) {
                     // 左栏：笔记列表 / 全局概念索引。可以收成一条窄边。
+                    // 和对话页共用 ListSidebar：标题/数量/动作/行样式同一套，宽度可拖。
                     if (leftCollapsed) {
                         Column(
                             Modifier.fillMaxHeight().width(36.dp),
@@ -529,22 +535,19 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                             )
                         }
                     } else {
-                        Column(Modifier.width(264.dp).fillMaxHeight()) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                // 弱化成描边按钮：黑底大按钮太压页面，新建是常用但不必最重。
-                                ChromeButton(
-                                    label = "新建笔记",
-                                    onClick = { createNote() },
-                                    filled = false,
-                                )
-                                Spacer(Modifier.weight(1f))
+                        ListSidebar(
+                            title = if (showConcepts) "概念" else "笔记",
+                            count = if (showConcepts) concepts.size else filteredNotes.size,
+                            actionLabel = "新建笔记",
+                            onAction = { createNote() },
+                            trailing = {
                                 EditorChip(
                                     label = "‹",
                                     active = false,
                                     onClick = { leftCollapsed = true },
                                 )
-                            }
-                            Spacer(Modifier.height(8.dp))
+                            },
+                        ) {
                             ChromeTextField(
                                 value = query,
                                 onValueChange = { query = it },
@@ -598,7 +601,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                             }
                         }
                     }
-                    Spacer(Modifier.width(16.dp))
+                    ListSidebarSplitter()
                     // 主区：概念详情，或者「标题 + 正文」一整块可滚动内容。
                     if (showConcepts) {
                         ConceptDetailPanel(
@@ -612,10 +615,16 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                             },
                             onLocate = { locateMention(it) },
                             onOpenRelated = { openConcept(it) },
-                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                            modifier = Modifier.weight(1f).fillMaxHeight().padding(start = 18.dp, end = 20.dp),
                         )
                     } else {
-                        Column(Modifier.weight(1f).fillMaxHeight()) {
+                        Column(
+                            Modifier.weight(1f).fillMaxHeight().padding(
+                                start = 18.dp,
+                                // 右栏可见时正文不需要再留右边距（右栏自己贴到窗口右边界）。
+                                end = if (MarkdownSidebarState.visible) 0.dp else 20.dp,
+                            ),
+                        ) {
                             // 标题和正文共用一条滚动轴（需求：标题跟着正文走）。
                             // 块编辑器自己不再滚动，高度随内容长；滚动交给这里。
                             Box(Modifier.weight(1f).fillMaxWidth()) {

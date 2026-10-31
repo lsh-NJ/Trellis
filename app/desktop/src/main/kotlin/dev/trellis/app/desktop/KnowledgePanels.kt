@@ -4,6 +4,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -128,16 +131,21 @@ private fun NoteListRow(
     onClick: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    val background = if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+    // 行样式与对话页会话行同一套（ListSidebar.kt 的 listRowSurface / ListRowSelectionBar）：
+    // 46dp 高、4dp 圆角、选中浅主色 + 左侧竖条、hover 淡底。
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(ControlShape)
-            .background(background)
+            .hoverable(interaction)
+            .listRowSurface(selected, hovered)
             .clickable(onClick = onClick)
-            .padding(start = 10.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+            .padding(start = 8.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        ListRowSelectionBar(selected)
+        Spacer(Modifier.width(6.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 displayTitle(note.title),
@@ -149,7 +157,7 @@ private fun NoteListRow(
             Text(
                 knowledgeTimeLabel(note.updatedAt, zone) + " · " + note.chars + " 字符",
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -416,17 +424,19 @@ internal fun ConceptListPanel(
     LazyColumn(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         items(concepts, key = { conceptKey(it.name) }) { concept ->
             val selected = conceptKey(concept.name) == selectedKey
+            val interaction = remember { MutableInteractionSource() }
+            val hovered by interaction.collectIsHoveredAsState()
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(ControlShape)
-                    .background(
-                        if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
-                    )
+                    .hoverable(interaction)
+                    .listRowSurface(selected, hovered)
                     .clickable { onSelect(concept.name) }
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                    .padding(start = 8.dp, end = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                ListRowSelectionBar(selected)
+                Spacer(Modifier.width(6.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
                         concept.name,
@@ -439,7 +449,7 @@ internal fun ConceptListPanel(
                         concept.noteCount.toString() + " 篇 · " + concept.mentionCount + " 次 · " +
                             knowledgeTimeLabel(concept.updatedAt, zone),
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )

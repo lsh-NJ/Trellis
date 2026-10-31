@@ -95,16 +95,21 @@ fun AppScreen(runtime: AppRuntime) {
             if (navLeft) {
                 NavRail(runtime)
             }
+            // 对话 / 知识库是「列表 + 正文」的横向结构：列表要贴导航栏、正文贴右边界。
+            // 其它页维持 1120dp 居中——把表单/卡片拉满宽屏反而更难读。
+            val flushPage = runtime.currentTab == TAB_CHAT || runtime.currentTab == TAB_KNOWLEDGE
             Column(
                 modifier = Modifier.weight(1f).fillMaxHeight(),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Column(
                     modifier = Modifier
-                        .widthIn(max = 1120.dp)
+                        .then(if (flushPage) Modifier else Modifier.widthIn(max = 1120.dp))
                         .fillMaxWidth()
                         .padding(horizontal = 20.dp)
-                        .weight(1f),
+                        // flush 页的页头只占自身高度，把剩下整屏留给正文区；
+                        // 非 flush 页仍由这层列撑满（TabContent 在里面按 weight 分）。
+                        .then(if (flushPage) Modifier else Modifier.weight(1f)),
                 ) {
                     AppHeader(runtime)
 
@@ -115,12 +120,18 @@ fun AppScreen(runtime: AppRuntime) {
                     AskDialogs(runtime)
 
                     // 导航放哪边是宿主样式（uiPrefs.nav），和配色/密度一样可调：
-                    // 宽屏上左栏比顶栏省纵向空间，窄屏上顶栏更省横向空间。
+                    // 宽屏上左栏比顶栏省横向空间，窄屏上顶栏更省横向空间。
                     if (!navLeft) {
                         TabBar(runtime)
                         Spacer(Modifier.height(16.dp))
                     }
-                    TabContent(runtime, Modifier.weight(1f))
+                    // flush 页把正文区单独拎出来贴满宽；非 flush 页仍在这层列里排。
+                    if (!flushPage) {
+                        TabContent(runtime, Modifier.weight(1f))
+                    }
+                }
+                if (flushPage) {
+                    TabContent(runtime, Modifier.weight(1f).fillMaxWidth())
                 }
             }
         }
