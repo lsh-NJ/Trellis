@@ -7,7 +7,7 @@ import androidx.compose.ui.text.input.TextFieldValue
  * Markdown 编辑器的文本变换。
  *
  * 全部是纯函数：输入「文本 + 选区」，输出「新文本 + 新选区」。
- * 这样工具栏按钮、快捷键、回车续列表共用同一份逻辑，也能在单元测试里钉住
+ * 这样斜杠命令、快捷键、回车续列表共用同一份逻辑，也能在单元测试里钉住
  * 「选区在中间时不能把字吃到标记里」这类事故。
  */
 internal data class MarkdownEditResult(val text: String, val selection: TextRange)
@@ -174,6 +174,55 @@ internal fun insertCodeBlock(text: String, selection: TextRange): MarkdownEditRe
     val contentStart = start + lead.length + 4
     val contentEnd = contentStart + selected.length
     return MarkdownEditResult(newText, TextRange(contentStart, contentEnd))
+}
+
+/** 图片：`![说明](url)`；没选区时插占位说明并选中它。 */
+internal fun insertMarkdownImage(text: String, selection: TextRange): MarkdownEditResult {
+    val (start, end) = bounds(selection)
+    return if (start == end) {
+        val snippet = "![图片说明](url)"
+        val newText = text.substring(0, start) + snippet + text.substring(end)
+        MarkdownEditResult(newText, TextRange(start + 2, start + 6))
+    } else {
+        val label = text.substring(start, end)
+        val snippet = "![" + label + "](url)"
+        val newText = text.substring(0, start) + snippet + text.substring(end)
+        val urlStart = start + label.length + 4
+        MarkdownEditResult(newText, TextRange(urlStart, urlStart + 3))
+    }
+}
+
+/**
+ * 分割线 `---`。
+ *
+ * 必须独占一行：`---` 粘在上一段末尾时，渲染器会把它当成段落的一部分（CommonMark 里
+ * 那甚至会变成 setext 标题的下划线）。所以前后各补一个换行，光标停在横线后面。
+ */
+internal fun insertHorizontalRule(text: String, selection: TextRange): MarkdownEditResult {
+    val (start, end) = bounds(selection)
+    val lead = if (start == 0 || text[start - 1] == '\n') "" else "\n"
+    val trail = if (end >= text.length || text[end] == '\n') "" else "\n"
+    val snippet = lead + "---" + trail
+    val newText = text.substring(0, start) + snippet + text.substring(end)
+    return MarkdownEditResult(newText, TextRange(start + lead.length + 3))
+}
+
+/** 任务清单：`- [ ] ` 前缀，整块切换；已勾选（`- [x] `）也算已有前缀。 */
+internal fun toggleTaskList(text: String, selection: TextRange): MarkdownEditResult {
+    val task = Regex("^(\\s*)- \\[[ xX]\\] ")
+    return applyToSelectedLines(text, selection) { lines ->
+        if (lines.all { task.containsMatchIn(it) }) {
+            lines.map { it.replaceFirst(task, "\$1") }
+        } else {
+            lines.map { if (task.containsMatchIn(it)) it else "- [ ] " + it }
+        }
+    }
+}
+
+/** 正文：去掉行首 1–6 级标题标记。 */
+internal fun clearHeading(text: String, selection: TextRange): MarkdownEditResult {
+    val heading = Regex("^#{1,6}\\s+")
+    return applyToSelectedLines(text, selection) { lines -> lines.map { it.replaceFirst(heading, "") } }
 }
 
 /** 表格：插一个 2×2 模板，选中第一格文字。 */

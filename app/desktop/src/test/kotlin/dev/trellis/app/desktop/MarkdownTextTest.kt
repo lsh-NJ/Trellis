@@ -1,5 +1,6 @@
 package dev.trellis.app.desktop
 
+import androidx.compose.ui.unit.sp
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -85,5 +86,85 @@ class MarkdownTextTest {
         val table = parseMarkdown("| a | b |\n| 1 | 2 |").filterIsInstance<MdBlock.Table>().single()
         assertEquals(listOf("a", "b"), table.header)
         assertEquals(listOf(listOf("1", "2")), table.rows)
+    }
+
+    @Test
+    fun aDashedRuleBecomesADivider() {
+        val blocks = parseMarkdown("上一段\n\n---\n\n下一段")
+        assertEquals(3, blocks.size)
+        assertEquals(MdBlock.Rule, blocks[1])
+        // 关键回归：`---` 以前被当成普通段落，预览里显示成三个横杠。
+        assertTrue(blocks.none { it is MdBlock.Paragraph && it.text.contains("---") })
+    }
+
+    @Test
+    fun rulesMadeOfStarsOrUnderscoresAlsoCount() {
+        assertTrue(parseMarkdown("a\n\n***\n\nb").any { it == MdBlock.Rule })
+        assertTrue(parseMarkdown("a\n\n___\n\nb").any { it == MdBlock.Rule })
+        // 中间夹空格也认；但不能把 `- 列表项` 吃成横线。
+        assertTrue(parseMarkdown("a\n\n- - -\n\nb").any { it == MdBlock.Rule })
+        assertTrue(parseMarkdown("- 一项").first() is MdBlock.Bullet)
+    }
+
+    @Test
+    fun aTableSeparatorIsStillATableNotARule() {
+        val table = parseMarkdown("| a | b |\n| --- | --- |\n| 1 | 2 |").filterIsInstance<MdBlock.Table>().single()
+        assertEquals(listOf("a", "b"), table.header)
+    }
+
+    @Test
+    fun taskItemsCarryTheirCheckedState() {
+        val bullets = parseMarkdown("- [ ] 待办\n- [x] 已办").filterIsInstance<MdBlock.Bullet>()
+        assertEquals(2, bullets.size)
+        assertEquals(false, bullets[0].checked)
+        assertEquals("待办", bullets[0].text)
+        assertEquals(true, bullets[1].checked)
+        assertEquals("已办", bullets[1].text)
+    }
+
+    @Test
+    fun imagesKeepAltTextAndUrl() {
+        val text = inlineMarkdown("![架构图](assets/a.png)")
+        assertTrue(text.text.contains("［图］架构图"), "实际 " + text.text)
+        assertTrue(text.text.contains("assets/a.png"), "实际 " + text.text)
+    }
+
+    @Test
+    fun tripleAsteriskIsBoldItalic() {
+        val text = inlineMarkdown("***重点***")
+        assertEquals("重点", text.text)
+        val style = text.spanStyles.single().item
+        assertEquals(androidx.compose.ui.text.font.FontWeight.Bold, style.fontWeight)
+        assertEquals(androidx.compose.ui.text.font.FontStyle.Italic, style.fontStyle)
+    }
+
+    @Test
+    fun anEmptyHeadingMarkerFallsBackToParagraph() {
+        // `## ` 后面没字：不出空标题（目录里也数不到），但那一行的内容也不能丢。
+        val blocks = parseMarkdown("## ")
+        assertEquals(1, blocks.size)
+        assertEquals("##", (blocks.single() as MdBlock.Paragraph).text)
+    }
+
+    @Test
+    fun headingSizesFormADescendingScaleThatStaysAboveBodyText() {
+        val base = androidx.compose.ui.text.TextStyle(fontSize = 16.sp)
+        val sizes = (1..6).map { level ->
+            markdownHeadingStyle(level, base).fontSize.value
+        }
+        // 一级最大、六级最小，且严格递减（同级不能有一样大的）。
+        assertEquals(sizes.sortedDescending(), sizes)
+        assertTrue(sizes.zipWithNext().all { (a, b) -> a > b }, "标题字号必须严格递减：$sizes")
+        // 任何一级都不小于正文，否则「加粗正文」会看起来比标题还大。
+        assertTrue(sizes.min() >= 16f, "最小一级标题不能小于正文：$sizes")
+        assertTrue(sizes.first() >= 22f, "一级标题要明显大于正文：$sizes")
+    }
+
+    @Test
+    fun headingScaleFollowsTheBaseBodySize() {
+        // 主题缩放/用户字号：系数乘在传入的正文上，大字号下阶梯跟着放大。
+        val small = markdownHeadingStyle(1, androidx.compose.ui.text.TextStyle(fontSize = 14.sp)).fontSize.value
+        val large = markdownHeadingStyle(1, androidx.compose.ui.text.TextStyle(fontSize = 20.sp)).fontSize.value
+        assertTrue(large > small)
     }
 }
