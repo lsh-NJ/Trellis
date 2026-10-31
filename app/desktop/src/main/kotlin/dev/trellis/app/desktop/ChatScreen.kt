@@ -362,6 +362,31 @@ private fun ChatConversation(
     }
 
     Column(modifier) {
+        // 「新对话」必须常驻在这里：会话列表在没有会话时整块不出现（见上），
+        // 把入口放进那一栏，等于第一次用的人没有入口 —— 之前那句
+        // 「标题和『新对话』都搬到了页头」指的是一个已经不存在的组件。
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            val sessionTitle = runtime.chatSessions.firstOrNull { it.id == runtime.currentChatId }?.title
+            Text(
+                sessionTitle ?: "新对话",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(
+                onClick = { runtime.newChat() },
+                // 空白的新对话上按它什么也不会变，索性不可用；正在跑一轮时也不让切走。
+                enabled = !runtime.chatBusy && (runtime.chat.isNotEmpty() || runtime.currentChatId != null),
+            ) {
+                Text("+ 新对话")
+            }
+        }
+
         if (runtime.chat.isEmpty()) {
             EmptyConversation(onPick = { input = it }, modifier = Modifier.weight(1f))
         } else {

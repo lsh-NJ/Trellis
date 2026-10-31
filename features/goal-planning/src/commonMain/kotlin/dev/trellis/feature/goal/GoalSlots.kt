@@ -430,9 +430,24 @@ class GoalSettingsSlot(
             size = UiTextSize.Small,
             tone = UiTone.Muted,
         )
-        children += UiNode.Button(
-            if (resetArmed) "确定删除？再点一次" else "删除这份规划",
-            tap("reset"),
+        // 删除入口只在「真有东西可删」时出现。
+        // 之前它一直显示，而 EMPTY 状态下点两次什么也不会变 —— 用户只会得出「这个按钮坏了」。
+        if (mirror.isEmpty) {
+            children += text("还没有目标，没有可删的东西。", size = UiTextSize.Small, tone = UiTone.Muted)
+            return UiNode.Column(children = children)
+        }
+        if (!resetArmed) {
+            children += UiNode.Button("删除这份规划", tap("reset"))
+            return UiNode.Column(children = children)
+        }
+        // 确认态不再是「同一个按钮改个文案再点一次」：那既容易被误当成没反应，
+        // 也没说清到底会删掉什么。改成一次说明 + 两个明确的出口。
+        children += UiNode.Notice("删除会清掉目标、画像、日计划和压缩过的历史；插件本身保留，状态回到「还没有目标」。")
+        children += UiNode.Row(
+            children = listOf(
+                UiNode.Button("确定删除", tap("reset-confirm")),
+                UiNode.Button("取消", tap("reset-cancel")),
+            ),
         )
         return UiNode.Column(children = children)
     }
@@ -458,16 +473,37 @@ class GoalSettingsSlot(
                 ActionOutcome(true, "推送时间 " + value)
             }
             "reset" -> {
-                if (!resetArmed) {
+                // 第一步只亮出确认，不删任何东西。
+                if (service.mirror().isEmpty) {
+                    ActionOutcome(false, "还没有目标，没有可删的东西")
+                } else {
                     resetArmed = true
-                    ActionOutcome(true, "再点一次确认删除：目标、画像、日计划都会清掉，插件本身保留")
+                    ActionOutcome(true, "确认要删的话，点「确定删除」；点「取消」则什么都不动")
+                }
+            }
+            "reset-confirm" -> {
+                // 没走过「亮确认」这一步就不许删：删除是不可逆的，
+                // 不能因为界面状态被重建、或者误触发一次调用就把用户的东西清掉。
+                if (!resetArmed) {
+                    ActionOutcome(false, "先点「删除这份规划」，看清会删什么再确认")
+                } else if (service.mirror().isEmpty) {
+                    resetArmed = false
+                    ActionOutcome(false, "还没有目标，没有可删的东西")
                 } else {
                     resetArmed = false
                     service.reset()
-                    ActionOutcome(true, "已删除。状态回到「还没有目标」")
+                    ActionOutcome(true, "已删除：目标、画像、日计划都清空了，插件本身还在")
                 }
             }
-            else -> ActionOutcome(false, "没有这个动作：" + handler + "；可用的是 cycle / push / reset")
+            "reset-cancel" -> {
+                resetArmed = false
+                ActionOutcome(true, "已取消，什么都没删")
+            }
+            else -> ActionOutcome(
+                false,
+                "没有这个动作：" + handler +
+                    "；可用的是 cycle / push / reset / reset-confirm / reset-cancel",
+            )
         }
 }
 
