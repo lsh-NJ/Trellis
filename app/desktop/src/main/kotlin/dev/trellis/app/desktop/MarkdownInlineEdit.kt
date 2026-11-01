@@ -14,7 +14,7 @@ import androidx.compose.ui.text.input.OffsetMapping
  * 投影只负责「显示成什么 + 光标怎么映射」，样式与渲染在 [MarkdownBlockEditor] 里按
  * [InlineEditProjection.marks] / [InlineEditProjection.syntax] 套。
  */
-internal enum class InlineMarkKind { Bold, Italic, Code, Strike, Link, Math }
+internal enum class InlineMarkKind { Bold, Italic, Code, Strike, Link, Math, Concept }
 
 /** 可见文本里的样式区间（坐标是投影后文本的偏移）。 */
 internal data class InlineMarkRange(val start: Int, val end: Int, val kind: InlineMarkKind)
@@ -110,7 +110,8 @@ internal fun projectInlineEdit(
                 headingLevel = match.groups[1]!!.value.length
                 val end = match.range.last + 1
                 prefix = indent..(end - 1)
-                if (selection.min in indent until end) syntax += indent..(end - 1) else hidden += indent..(end - 1)
+                // 标题的 `#` 一直显示成暗色源码：编辑这一块时能看到它是几级标题（预览态仍渲染成大字）。
+                syntax += indent..(end - 1)
             }
         }
 
@@ -131,7 +132,8 @@ internal fun projectInlineEdit(
                 isQuote = true
                 val end = indent + 2
                 prefix = indent..(end - 1)
-                if (selection.min in indent until end) syntax += indent..(end - 1) else hidden += indent..(end - 1)
+                // 标题的 `#` 一直显示成暗色源码：编辑这一块时能看到它是几级标题（预览态仍渲染成大字）。
+                syntax += indent..(end - 1)
             }
         }
 
@@ -187,6 +189,13 @@ internal fun projectInlineEdit(
                 val content = groups["math"]!!.range
                 defs += InlineTokenRange(start, end, content.first, content.last + 1, InlineMarkKind.Math) to
                     listOf(InlineMarkKind.Math)
+            }
+
+            // `[[概念]]`：AI/人手动标的概念，编辑时和别的标记一样隐藏 `[[ ]]`、只留概念名。
+            groups["concept"] != null -> {
+                val content = groups["concept"]!!.range
+                defs += InlineTokenRange(start, end, content.first, content.last + 1, InlineMarkKind.Concept) to
+                    listOf(InlineMarkKind.Concept)
             }
         }
     }

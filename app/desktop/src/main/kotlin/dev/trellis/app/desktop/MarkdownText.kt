@@ -21,16 +21,25 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -39,6 +48,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.trellis.ui.LocalExtraColors
@@ -270,6 +280,7 @@ internal val inlinePattern = Regex(
         "|\\*(?<italic>(?!\\s).+?(?<!\\s))\\*" +                 // *斜体*
         "|!\\[(?<imageAlt>.*?)]\\((?<imageUrl>.+?)\\)" +         // ![图片](url)
         "|\\[(?<linkLabel>.+?)]\\((?<linkUrl>.+?)\\)" +          // [文字](链接)
+        "|\\[\\[(?<concept>[^\\[\\]\\n]+?)\\]\\]" +              // [[概念]]：显式标记的概念
         "|~~(?<strike>(?!\\s).+?(?<!\\s))~~" +                   // ~~删除线~~
         "|\\$(?!\$)(?<math>(?!\\s)[^$\\n]+?(?<!\\s))\\$(?!\$)", // $行内公式$
 )
@@ -309,9 +320,11 @@ private val AiQuoteFontSize = 26.sp
  * Compose 的 [SpanStyle] 没有独立的下划线颜色，下划线会跟随文字颜色，
  * 所以这里用「浅一档的绿 + 下划线」：远看是划线在标记概念，近看字也不刺眼。
  */
+private fun conceptColor(conceptGreen: Color): Color = conceptGreen.copy(alpha = 0.62f)
+
 private fun conceptStyle(conceptGreen: Color): SpanStyle =
     SpanStyle(
-        color = conceptGreen.copy(alpha = 0.62f),
+        color = conceptColor(conceptGreen),
         textDecoration = TextDecoration.Underline,
     )
 
@@ -336,10 +349,18 @@ internal fun markdownBoldStyle(textColor: Color, italic: Boolean = false): SpanS
     },
 )
 
-/** 行内代码的样式：等宽 + 底色（Compose 的 SpanStyle 背景没有圆角，方角先接受）。 */
-internal fun markdownCodeStyle(): SpanStyle = SpanStyle(
-    fontFamily = FontFamily.Monospace,
-    background = MarkdownCodeBackground,
+/**
+ * 行内代码的样式：只负责等宽。
+ *
+ * 底色不能走 [SpanStyle.background]：它画出来是方角、而且盒子高度跟着行盒走（下沿贴降部），
+ * 和「圆角芯片、上下对称」的要求不符。底色统一由 [drawInlineCodeChips] 按文本布局自己画。
+ */
+internal fun markdownCodeStyle(): SpanStyle = SpanStyle(fontFamily = FontFamily.Monospace)
+
+/** 行内渲染结果：显示文本 + 显示文本里行内代码的区间（给圆角芯片画底用）。 */
+internal data class MarkdownInline(
+    val text: AnnotatedString,
+    val codeChips: List<IntRange> = emptyList(),
 )
 
 /**
@@ -355,8 +376,16 @@ private fun AnnotatedString.Builder.appendStyledRange(
     conceptGreen: Color,
     textColor: Color = Color.Unspecified,
     showLinkUrl: Boolean = true,
+    chips: MutableList<IntRange>? = null,
 ) {
     if (to <= from) return
+
+    /** 粗体的阴影要和这段文字实际的颜色一致；概念高亮是绿色，阴影也必须绿色。 */
+    fun boldShadowColor(a: Int, b: Int): Color {
+        if (textColor == Color.Unspecified) return Color.Unspecified
+        val overlapsConcept = conceptHits.any { it.first < b && it.last >= a }
+        return if (overlapsConcept) conceptColor(conceptGreen) else textColor
+    }
     var cursor = from
     fun appendPlain(a: Int, b: Int) {
         if (b <= a) return
@@ -377,6 +406,7 @@ private fun AnnotatedString.Builder.appendStyledRange(
         val matchEnd = from + match.range.last + 1
         appendPlain(cursor, matchStart)
         val groups = match.groups
+        val concept = groups["concept"]
         val boldItalic = groups["bolditalic"]
         val bold = groups["bold"]
         val code = groups["code"]
@@ -388,14 +418,28 @@ private fun AnnotatedString.Builder.appendStyledRange(
         val strike = groups["strike"]
         val math = groups["math"]
         when {
-            boldItalic != null -> withStyle(markdownBoldStyle(textColor, italic = true)) {
+            concept != null -> withStyle(conceptStyle(conceptGreen)) {
+                append(text.substring(from + concept.range.first, from + concept.range.last + 1))
+            }
+            boldItalic != null -> withStyle(
+                markdownBoldStyle(
+                    boldShadowColor(from + boldItalic.range.first, from + boldItalic.range.last + 1),
+                    italic = true,
+                ),
+            ) {
                 appendPlain(from + boldItalic.range.first, from + boldItalic.range.last + 1)
             }
-            bold != null -> withStyle(markdownBoldStyle(textColor)) {
+            bold != null -> withStyle(
+                markdownBoldStyle(boldShadowColor(from + bold.range.first, from + bold.range.last + 1)),
+            ) {
                 appendPlain(from + bold.range.first, from + bold.range.last + 1)
             }
-            code != null -> withStyle(markdownCodeStyle()) {
-                appendPlain(from + code.range.first, from + code.range.last + 1)
+            code != null -> {
+                val chipStart = length
+                withStyle(markdownCodeStyle()) {
+                    appendPlain(from + code.range.first, from + code.range.last + 1)
+                }
+                chips?.add(chipStart until length)
             }
             italic != null -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
                 appendPlain(from + italic.range.first, from + italic.range.last + 1)
@@ -441,11 +485,28 @@ internal fun inlineMarkdown(
     conceptGreen: Color = MarkdownAiGreen,
     textColor: Color = Color.Unspecified,
     showLinkUrl: Boolean = true,
-): AnnotatedString = buildAnnotatedString {
+): AnnotatedString = buildInlineMarkdown(
+    text, conceptNames, aiGreen, conceptGreen, textColor, showLinkUrl,
+).text
+
+/**
+ * 和 [inlineMarkdown] 同一套规则，但额外返回「显示文本里哪些区间是行内代码」，
+ * 让渲染层能用 [drawInlineCodeChips] 画圆角芯片。
+ */
+internal fun buildInlineMarkdown(
+    text: String,
+    conceptNames: List<String> = emptyList(),
+    aiGreen: Color = MarkdownAiGreen,
+    conceptGreen: Color = MarkdownAiGreen,
+    textColor: Color = Color.Unspecified,
+    showLinkUrl: Boolean = true,
+): MarkdownInline {
+    val chips = mutableListOf<IntRange>()
+    val annotated = buildAnnotatedString {
     val hits = conceptHits(text, conceptNames)
     var cursor = 0
     for (span in aiInlineSpans(text)) {
-        appendStyledRange(text, cursor, span.start, hits, conceptGreen, textColor, showLinkUrl)
+        appendStyledRange(text, cursor, span.start, hits, conceptGreen, textColor, showLinkUrl, chips)
         withStyle(SpanStyle(color = aiGreen, fontWeight = FontWeight.Bold, fontSize = AiQuoteFontSize)) {
             append("\u201C")
         }
@@ -457,13 +518,16 @@ internal fun inlineMarkdown(
             conceptGreen,
             textColor,
             showLinkUrl,
+            chips,
         )
         withStyle(SpanStyle(color = aiGreen, fontWeight = FontWeight.Bold, fontSize = AiQuoteFontSize)) {
             append("\u201D")
         }
         cursor = span.end
     }
-    appendStyledRange(text, cursor, text.length, hits, conceptGreen, textColor, showLinkUrl)
+    appendStyledRange(text, cursor, text.length, hits, conceptGreen, textColor, showLinkUrl, chips)
+    }
+    return MarkdownInline(annotated, chips)
 }
 
 /**
@@ -486,7 +550,7 @@ private fun markdownInline(
     aiGreen: Color,
     conceptGreen: Color,
     textColor: Color,
-): AnnotatedString = inlineMarkdown(
+): MarkdownInline = buildInlineMarkdown(
     text = text,
     conceptNames = conceptNames,
     aiGreen = aiGreen,
@@ -494,6 +558,90 @@ private fun markdownInline(
     textColor = textColor,
     showLinkUrl = LocalMarkdownShowLinkUrl.current,
 )
+
+/**
+ * 行内代码芯片：圆角矩形，上下按字号对称留白。
+ *
+ * 不用 [SpanStyle.background] 的原因：它画出来是方角，而且盒子跟着行盒走——下沿贴着降部，
+ * 和「上边界对齐大写字母、下边界对称」的要求差一截。这里按 [TextLayoutResult] 的基线
+ * 自己算盒子：上沿 = 基线 - 0.80 倍字号，下沿 = 基线 + 0.24 倍字号。
+ */
+internal fun DrawScope.drawInlineCodeChips(
+    layout: TextLayoutResult,
+    ranges: List<IntRange>,
+    style: TextStyle,
+    background: Color = MarkdownCodeBackground,
+    radius: Dp = 4.dp,
+    horizontalPadding: Dp = 3.dp,
+) {
+    if (ranges.isEmpty()) return
+    val fontSizeSp = style.fontSize.value
+    if (fontSizeSp.isNaN() || fontSizeSp <= 0f) return
+    val fontSize = fontSizeSp.sp.toPx()
+    val radiusPx = radius.toPx()
+    val padPx = horizontalPadding.toPx()
+    val textLength = layout.layoutInput.text.length
+    for (range in ranges) {
+        if (range.isEmpty()) continue
+        val start = range.first.coerceIn(0, textLength)
+        val end = (range.last + 1).coerceIn(start, textLength)
+        if (end <= start) continue
+        val firstLine = layout.getLineForOffset(start)
+        val lastLine = layout.getLineForOffset(end - 1)
+        for (line in firstLine..lastLine) {
+            val lineStart = layout.getLineStart(line)
+            val lineEnd = layout.getLineEnd(line, visibleEnd = true)
+            val segStart = maxOf(start, lineStart)
+            val segEnd = minOf(end, lineEnd)
+            if (segEnd <= segStart) continue
+            val left = layout.getHorizontalPosition(segStart, usePrimaryDirection = true) - padPx
+            val right = if (segEnd >= lineEnd) {
+                layout.getLineRight(line) + padPx
+            } else {
+                layout.getHorizontalPosition(segEnd, usePrimaryDirection = true) + padPx
+            }
+            val baseline = layout.getLineBaseline(line)
+            val top = baseline - fontSize * 0.80f
+            val bottom = baseline + fontSize * 0.24f
+            drawRoundRect(
+                color = background,
+                topLeft = Offset(left, top),
+                size = Size(right - left, bottom - top),
+                cornerRadius = CornerRadius(radiusPx, radiusPx),
+            )
+        }
+    }
+}
+
+/**
+ * 带行内代码芯片的 Text：布局出来后在文字底下补圆角底色，其余样式仍走 [Text]。
+ */
+@Composable
+private fun MarkdownInlineText(
+    markdown: MarkdownInline,
+    style: TextStyle,
+    modifier: Modifier = Modifier,
+    color: Color = Color.Unspecified,
+    fontWeight: FontWeight? = null,
+    textDecoration: TextDecoration? = null,
+) {
+    var layout by remember(markdown) { mutableStateOf<TextLayoutResult?>(null) }
+    Box(
+        modifier.drawBehind {
+            val result = layout ?: return@drawBehind
+            drawInlineCodeChips(result, markdown.codeChips, style)
+        },
+    ) {
+        Text(
+            text = markdown.text,
+            style = style,
+            color = color,
+            fontWeight = fontWeight,
+            textDecoration = textDecoration,
+            onTextLayout = { layout = it },
+        )
+    }
+}
 
 /** 链接颜色在这里硬编码会绕开主题；用「主色文本」的近似值，暗色下也读得清。 */
 private val ColorLink = Color(0xFF2E5AAC)
@@ -542,12 +690,16 @@ private fun MarkdownBody(
             }
             Box(measured) {
                 when (block) {
-                    is MdBlock.Paragraph -> Text(
-                        markdownInline(block.text, conceptNames, aiGreen, aiGreen, MaterialTheme.colorScheme.onSurface),
+                    is MdBlock.Paragraph -> MarkdownInlineText(
+                        markdown = markdownInline(
+                            block.text, conceptNames, aiGreen, aiGreen, MaterialTheme.colorScheme.onSurface,
+                        ),
                         style = paragraphStyle,
                     )
-                    is MdBlock.Heading -> Text(
-                        markdownInline(block.text, conceptNames, aiGreen, aiGreen, MaterialTheme.colorScheme.onSurface),
+                    is MdBlock.Heading -> MarkdownInlineText(
+                        markdown = markdownInline(
+                            block.text, conceptNames, aiGreen, aiGreen, MaterialTheme.colorScheme.onSurface,
+                        ),
                         style = markdownHeadingStyle(block.level, paragraphStyle),
                         modifier = Modifier.padding(top = headingTopSpacing(block.level)),
                     )
@@ -623,8 +775,8 @@ private fun MarkdownBody(
                                 .background(MaterialTheme.colorScheme.outlineVariant),
                         )
                         Spacer(Modifier.width(8.dp))
-                        Text(
-                            markdownInline(
+                        MarkdownInlineText(
+                            markdown = markdownInline(
                                 block.text,
                                 conceptNames,
                                 aiGreen,
@@ -694,8 +846,10 @@ private fun AiBlockView(
             Text("AI 补充", style = MaterialTheme.typography.labelSmall, color = aiGreen)
             for (item in items) {
                 Row(verticalAlignment = Alignment.Top) {
-                    Text(
-                        markdownInline(item, conceptNames, aiGreen, aiGreen, MaterialTheme.colorScheme.onSurface),
+                    MarkdownInlineText(
+                        markdown = markdownInline(
+                            item, conceptNames, aiGreen, aiGreen, MaterialTheme.colorScheme.onSurface,
+                        ),
                         style = bodyStyle,
                         modifier = Modifier.weight(1f),
                     )
@@ -777,8 +931,8 @@ private fun MarkdownTableRow(cells: List<String>, header: Boolean, conceptNames:
     Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
         for (cell in cells) {
             Box(Modifier.weight(1f)) {
-                Text(
-                    markdownInline(
+                MarkdownInlineText(
+                    markdown = markdownInline(
                         cell,
                         conceptNames,
                         aiGreen,
@@ -818,8 +972,8 @@ private fun MarkdownBullet(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.width(18.dp),
         )
-        Text(
-            markdownInline(text, conceptNames, aiGreen, aiGreen, MaterialTheme.colorScheme.onSurface),
+        MarkdownInlineText(
+            markdown = markdownInline(text, conceptNames, aiGreen, aiGreen, MaterialTheme.colorScheme.onSurface),
             style = bodyStyle,
         )
     }
@@ -876,8 +1030,8 @@ private fun MarkdownTaskRow(
             }
         }
         Spacer(Modifier.width(7.dp))
-        Text(
-            markdownInline(
+        MarkdownInlineText(
+            markdown = markdownInline(
                 text,
                 conceptNames,
                 aiGreen,

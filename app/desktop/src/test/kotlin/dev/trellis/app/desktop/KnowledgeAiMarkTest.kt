@@ -179,7 +179,7 @@ class KnowledgeAiMarkTest {
     @Test
     fun oldConceptsOnlyPromptStillWorks() {
         val messages = buildConceptExtractionMessages("标题", "正文", emptyList())
-        assertFalse(messages[1].content.contains("用户留的空位"))
+        assertFalse(messages[1].content.contains("空位（整行是"))
     }
 
     // ---- 渲染 ----
@@ -228,6 +228,45 @@ class KnowledgeAiMarkTest {
         val ranges = highlighted.spanStyles.filter { it.item.textDecoration == TextDecoration.Underline }
         assertEquals(1, ranges.size)
         assertEquals("RAG", highlighted.text.substring(ranges[0].start, ranges[0].end))
+    }
+
+    // ---- 概念标记 [[…]] ----
+
+    @Test
+    fun markConceptMentionsWrapsTheFirstPlainMention() {
+        val body = "RAG 是检索增强。后面又提到 RAG。"
+        assertEquals("[[RAG]] 是检索增强。后面又提到 RAG。", markConceptMentions(body, listOf("RAG")))
+    }
+
+    @Test
+    fun markConceptMentionsSkipsCodeAiBlocksAndMissingNames() {
+        val body = "普通 RAG 段落\n```\nRAG\n```\n:::ai\nRAG\n:::"
+        val marked = markConceptMentions(body, listOf("RAG", "BM25"))
+        assertEquals("普通 [[RAG]] 段落\n```\nRAG\n```\n:::ai\nRAG\n:::", marked)
+    }
+
+    @Test
+    fun markConceptMentionsDoesNotNestOrRepeat() {
+        assertEquals("[[RAG]] 已标过", markConceptMentions("[[RAG]] 已标过", listOf("RAG")))
+        assertEquals("{{RAG}} 是补全", markConceptMentions("{{RAG}} 是补全", listOf("RAG")))
+    }
+
+    @Test
+    fun conceptSyntaxRendersOnlyTheName() {
+        val rendered = inlineMarkdown("用 [[RAG]] 做检索", conceptGreen = MarkdownAiGreen)
+        assertEquals("用 RAG 做检索", rendered.text)
+        val underline = rendered.spanStyles.filter { it.item.textDecoration == TextDecoration.Underline }
+        assertEquals(1, underline.size)
+        assertEquals("RAG", rendered.text.substring(underline[0].start, underline[0].end))
+    }
+
+    @Test
+    fun extractionPromptRaisesTheBarForConcepts() {
+        val messages = buildKnowledgeExtractionMessages("检索笔记", "RAG 是检索增强生成。", emptyList(), emptyList())
+        val prompt = messages[1].content
+        assertTrue(prompt.contains("正文依据"))
+        assertTrue(prompt.contains("逐字出现在正文里"))
+        assertTrue(prompt.contains("宁缺勿滥"))
     }
 
     @Test

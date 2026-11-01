@@ -3,7 +3,8 @@ package dev.trellis.app.desktop
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
@@ -35,10 +36,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.isPrimaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -65,6 +68,8 @@ import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import dev.trellis.ui.LocalExtraColors
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
@@ -571,6 +576,7 @@ internal fun MarkdownBlockEditor(
         ),
     )
     val scheme = MaterialTheme.colorScheme
+    val conceptGreen = LocalExtraColors.current.accentText
     // 把投影结果（隐藏标记后的文本 + 样式 + 光标映射）交给 BasicTextField。
     val inlineTransformation = remember(activeBlock, inlineProjection, paragraphStyle, scheme) {
         val projection = inlineProjection
@@ -579,7 +585,7 @@ internal fun MarkdownBlockEditor(
         ) {
             VisualTransformation.None
         } else {
-            val annotated = buildInlineEditText(projection, paragraphStyle, scheme)
+            val annotated = buildInlineEditText(projection, paragraphStyle, scheme, conceptGreen)
             VisualTransformation { TransformedText(annotated, projection.mapping) }
         }
     }
@@ -642,6 +648,7 @@ internal fun MarkdownBlockEditor(
                     // onFocusChanged 在节点挂载时会先回调一次「未聚焦」，不能当成失焦退出，
                     // 否则点进编辑态的当场就被取消。只有真正聚焦过再丢焦点才退出。
                     var hadFocus by remember(block.start) { mutableStateOf(false) }
+                    var editLayout by remember(block.start) { mutableStateOf<TextLayoutResult?>(null) }
                     Box(
                         Modifier
                             .fillMaxWidth()
@@ -651,24 +658,37 @@ internal fun MarkdownBlockEditor(
                             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.10f))
                             .padding(horizontal = 8.dp, vertical = 4.dp),
                     ) {
-                        BasicTextField(
-                            value = field,
-                            onValueChange = { updated -> edit(updated) },
-                            modifier = Modifier
+                        Box(
+                            Modifier
                                 .fillMaxWidth()
-                                .focusRequester(focus)
-                                .onFocusChanged { state ->
-                                    if (state.isFocused) {
-                                        hadFocus = true
-                                    } else if (hadFocus && activeStart == block.start) {
-                                        exitEdit()
+                                .drawBehind {
+                                    val layout = editLayout ?: return@drawBehind
+                                    val chips = inlineProjection?.marks.orEmpty()
+                                        .filter { it.kind == InlineMarkKind.Code }
+                                        .map { it.start until it.end }
+                                    drawInlineCodeChips(layout, chips, editStyle)
+                                },
+                        ) {
+                            BasicTextField(
+                                value = field,
+                                onValueChange = { updated -> edit(updated) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .focusRequester(focus)
+                                    .onFocusChanged { state ->
+                                        if (state.isFocused) {
+                                            hadFocus = true
+                                        } else if (hadFocus && activeStart == block.start) {
+                                            exitEdit()
+                                        }
                                     }
-                                }
-                                .onPreviewKeyEvent { event -> handleKey(event) },
-                            textStyle = editStyle,
-                            visualTransformation = inlineTransformation,
-                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                        )
+                                    .onPreviewKeyEvent { event -> handleKey(event) },
+                                textStyle = editStyle,
+                                visualTransformation = inlineTransformation,
+                                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                                onTextLayout = { editLayout = it },
+                            )
+                        }
                     }
                     if (slashStart != null) {
                         BlockSlashMenu(
@@ -725,8 +745,12 @@ private fun BlockPreview(
             .background(if (hovered) accent.copy(alpha = 0.05f) else Color.Transparent)
             .hoverable(interaction)
             .pointerInput(block.start, block.raw, contentWidth, measureStyle) {
-                detectTapGestures { offset ->
-                    onClick(caretOffsetForTap(block, offset, contentWidth, measureStyle, measurer, density))
+                // 按下就落光标，不等抬起：点另一块时焦点变化会马上重组、把 tap 手势取消，
+                // 只等 tap 就会变成「第一下只退出编辑、第二下才落点」。
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    if (!currentEvent.buttons.isPrimaryPressed) return@awaitEachGesture
+                    onClick(caretOffsetForTap(block, down.position, contentWidth, measureStyle, measurer, density))
                 }
             }
             .padding(horizontal = 8.dp, vertical = 4.dp),
@@ -903,6 +927,7 @@ private fun buildInlineEditText(
     projection: InlineEditProjection,
     baseStyle: TextStyle,
     scheme: ColorScheme,
+    conceptGreen: Color,
 ): AnnotatedString {
     val builder = AnnotatedString.Builder(projection.text)
     val syntaxStyle = SpanStyle(color = scheme.onSurfaceVariant.copy(alpha = 0.45f))
@@ -919,6 +944,10 @@ private fun buildInlineEditText(
             InlineMarkKind.Strike -> SpanStyle(textDecoration = TextDecoration.LineThrough)
             InlineMarkKind.Link -> SpanStyle(color = scheme.primary, textDecoration = TextDecoration.Underline)
             InlineMarkKind.Math -> SpanStyle(fontFamily = FontFamily.Monospace, fontStyle = FontStyle.Italic)
+            InlineMarkKind.Concept -> SpanStyle(
+                color = conceptGreen.copy(alpha = 0.62f),
+                textDecoration = TextDecoration.Underline,
+            )
         }
         builder.addStyle(style, mark.start, mark.end)
     }
@@ -981,3 +1010,4 @@ private fun projectedDelete(
         TextFieldValue(raw.removeRange(token.start, token.end), TextRange(caret))
     }
 }
+

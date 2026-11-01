@@ -386,16 +386,18 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         }
         val result = parseExtractionResult(raw)
         val filled = applyAiFills(current.body, result.fills.associate { it.label to it.text })
+        // 抽到的概念在正文第一次出现处包成 [[概念]]：语法层标记，预览里只显示概念名 + 下划线。
+        val markedBody = markConceptMentions(filled.body, result.candidates.map { it.name })
         val merged = mergeConceptNames(
             current.concepts + result.fills.map { it.label },
             result.candidates,
         )
-        extractedBodies[id] = filled.body
-        if (merged.size == current.concepts.size && filled.body == current.body) return@LaunchedEffect
+        extractedBodies[id] = markedBody
+        if (merged.size == current.concepts.size && markedBody == current.body) return@LaunchedEffect
         metaStore.fillMissing(
             candidateDefinitions(result.candidates) + fillDefinitions(result.fills),
         )
-        if (!applyExtracted(id, current, merged, filled.body)) return@LaunchedEffect
+        if (!applyExtracted(id, current, merged, markedBody)) return@LaunchedEffect
         val conceptsAdded = merged.size - current.concepts.size
         message = if (filled.applied.isNotEmpty()) {
             "AI 补全 " + filled.applied.size + " 处（绿引号标记，点 × 可删），整理了 " + conceptsAdded + " 个概念"

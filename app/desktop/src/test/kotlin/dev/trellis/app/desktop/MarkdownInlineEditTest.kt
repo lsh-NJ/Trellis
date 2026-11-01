@@ -97,14 +97,16 @@ class MarkdownInlineEditTest {
     }
 
     @Test
-    fun headingPrefixIsHiddenAndTheLevelIsReported() {
+    fun headingPrefixStaysVisibleAsSyntaxAndTheLevelIsReported() {
         val raw = "## 小节标题"
         val projection = project(raw, kind = BlockKind.Heading)
 
-        assertEquals("小节标题", projection.text)
+        // `#` 一直显示成暗色源码：编辑这一块时能看到它是几级标题（预览态仍渲染成大字）。
+        assertEquals(raw, projection.text)
         assertEquals(2, projection.headingLevel)
         assertEquals(0..2, projection.prefix)
-        assertEquals(listOf(0..2), projection.hidden)
+        assertEquals(emptyList<IntRange>(), projection.hidden)
+        assertTrue(projection.syntax.contains(0..2))
     }
 
     @Test
@@ -136,13 +138,15 @@ class MarkdownInlineEditTest {
     }
 
     @Test
-    fun quotePrefixIsHidden() {
+    fun quotePrefixStaysVisibleAsSyntax() {
         val raw = "> 引用一行"
         val projection = project(raw, kind = BlockKind.Quote)
 
-        assertEquals("引用一行", projection.text)
+        // 和标题一样：编辑引用块时把 `>` 露出来当源码，预览态不显示。
+        assertEquals(raw, projection.text)
         assertTrue(projection.isQuote)
-        assertEquals(listOf(0..1), projection.hidden)
+        assertEquals(emptyList<IntRange>(), projection.hidden)
+        assertTrue(projection.syntax.contains(0..1))
     }
 
     @Test
@@ -178,11 +182,32 @@ class MarkdownInlineEditTest {
     }
 
     @Test
-    fun caretAfterAHiddenPrefixLandsOnTheContent() {
+    fun conceptMarkersAreHiddenAndTheNameIsStyled() {
+        val raw = "正文里 [[RAG]] 是检索"
+        val projection = project(raw)
+
+        assertEquals("正文里 RAG 是检索", projection.text)
+        assertTrue(projection.hidden.contains(4..5))
+        assertTrue(projection.hidden.contains(9..10))
+        assertTrue(projection.marks.any { it.kind == InlineMarkKind.Concept && it.start == 4 && it.end == 7 })
+    }
+
+    @Test
+    fun conceptMarkersComeBackWhenTheCaretIsInside() {
+        val projection = project("正文里 [[RAG]] 是检索", caret = 7)
+
+        assertEquals("正文里 [[RAG]] 是检索", projection.text)
+        assertTrue(projection.syntax.contains(4..5))
+    }
+
+    @Test
+    fun headingPrefixKeepsCaretOnThePrefixItself() {
         val raw = "## 标题"
         val projection = project(raw, kind = BlockKind.Heading)
 
+        // 前缀不再被隐藏，光标可以直接落在 `#` 上（删前缀就把标题改回段落）。
         assertEquals(0, projection.mapping.originalToTransformed(0))
-        assertEquals(3, projection.mapping.transformedToOriginal(0))
+        assertEquals(0, projection.mapping.transformedToOriginal(0))
+        assertEquals(3, projection.mapping.transformedToOriginal(3))
     }
 }

@@ -32,7 +32,7 @@ internal data class ExtractionResult(
 )
 
 /** 一次抽取最多写回几个概念：防止模型把整篇笔记拆成几十个词。 */
-internal const val MAX_EXTRACTED_CONCEPTS: Int = 8
+internal const val MAX_EXTRACTED_CONCEPTS: Int = 6
 
 /** 正文送进模型的上限：再长就不是「这篇笔记在讲什么」而是「整本书」。 */
 private const val MAX_EXTRACT_BODY_CHARS: Int = 6000
@@ -49,9 +49,9 @@ internal fun buildKnowledgeExtractionMessages(
     existing: List<String>,
     slots: List<String>,
 ): List<LlmMessage> {
-    val system = "你是个人知识库的整理助手。从用户的 Markdown 笔记里找出值得长期回查的概念" +
-        "（名词性知识单元：技术名词、方法、模型、定理、算法、工具），每个给一句话定义；" +
-        "笔记里整行是「标签：$AI_SLOT_MARKER」的行是用户留的空位，要各补一句话。" +
+    val system = "你是个人知识库的整理助手。任务只有两件：①从笔记里挑出**作者确实讲过**、" +
+        "值得长期回查的概念，每个给一句话定义；②把用户留的空位补上一句话。" +
+        "笔记里整行是「标签：$AI_SLOT_MARKER」的行是用户留的空位。" +
         "只输出 JSON 对象，不输出解释。"
     val user = buildString {
         append("笔记标题：").append(title.ifBlank { "（无标题）" }).append("\n\n")
@@ -64,12 +64,19 @@ internal fun buildKnowledgeExtractionMessages(
                 .append(slots.joinToString("、")).append("\n\n")
         }
         append("要求：\n")
-        append("1. 只抽真正的概念，不抽「笔记」「总结」「学习」这类泛词，不抽人名和组织名。\n")
-        append("2. 最多 ").append(MAX_EXTRACTED_CONCEPTS).append(" 个，宁少勿多。\n")
-        append("3. definition 不超过 40 个字，一句能独立看懂的解释。\n")
-        append("4. fills 只补上面列出的空位：label 必须和空位标签逐字一致，text 是一句话（不超过 ")
+        append("1. 概念必须有「正文依据」，满足任一条才抽：\n")
+        append("   a) 正文里对它做过解释、下定义、说明作用或步骤；\n")
+        append("   b) 它和用户留的空位直接相关，补全那个空位后能看懂。\n")
+        append("   只是被提到一次的名词、查不到解释的词、泛词（「笔记」「总结」「学习」）、")
+            .append("人名、组织名、产品名都不要。\n")
+        append("2. name 必须**逐字出现在正文里**（大小写、空格、标点与原文一致）；")
+            .append("系统会把 name 第一次出现的地方包成 `[[name]]`，写错的 name 会被丢掉。\n")
+        append("3. 最多 ").append(MAX_EXTRACTED_CONCEPTS).append(" 个，宁缺勿滥；")
+            .append("拿不准就不抽。\n")
+        append("4. definition 不超过 40 个字，一句能独立看懂的解释（不是复述名词）。\n")
+        append("5. fills 只补上面列出的空位：label 必须和空位标签逐字一致，text 是一句话（不超过 ")
             .append(MAX_AI_FILL_CHARS).append(" 字）；没有空位就输出空数组。\n")
-        append("5. 输出严格 JSON 对象，格式：\n")
+        append("6. 输出严格 JSON 对象，格式：\n")
         append("```json\n")
         append("{\"concepts\":[{\"name\":\"概念名\",\"definition\":\"一句话定义\"}],")
         append("\"fills\":[{\"label\":\"空位标签\",\"text\":\"补全的一句话\"}]}\n")
