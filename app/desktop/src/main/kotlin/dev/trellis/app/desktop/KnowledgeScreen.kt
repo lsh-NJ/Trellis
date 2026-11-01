@@ -28,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,7 +47,9 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /** 「定位」请求：等目标笔记真正载入后再选中命中处。 */
 private data class PendingReveal(val noteId: String, val start: Int, val end: Int)
@@ -59,8 +62,8 @@ private data class PendingReveal(val noteId: String, val start: Int, val end: In
  * - 笔记：`<home>/knowledge/notes/<id>.md`，frontmatter 里记 `concepts:`；
  * - 概念：索引每次从笔记现算，点亮 = 至少一篇笔记的 frontmatter 提到它；
  *    「熄灭」就是从所有笔记里删掉这条引用（本轮从当前笔记删）；
- * - 抽取：保存后停手 2.5s，让模型补一轮概念（只建议、默认点亮、可删），
- *    失败不影响保存；没配模型就跳过，用户也可以手动添加。
+ * - 抽取：焦点离开正文时（不是每次保存）才让模型补一轮概念与空位
+ *    （只建议、默认点亮、可删），失败不影响保存；没配模型就跳过，用户也可以手动添加。
  */
 @Composable
 internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
@@ -95,8 +98,11 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     var collapsedOutline by remember { mutableStateOf(emptySet<Int>()) }
     var pendingReveal by remember { mutableStateOf<PendingReveal?>(null) }
     var extracting by remember { mutableStateOf(false) }
-    // 记「哪个正文已经整理过」：避免同一次编辑里反复调模型（页面重进时不需要持久化）。
-    val extractedBodies = remember { mutableStateMapOf<String, String>() }
+    val scope = rememberCoroutineScope()
+    var aiJob by remember { mutableStateOf<Job?>(null) }
+    // 每篇笔记「上次交给 AI 时的正文基准」：比较时忽略 AI 标记/AI 补全/`:::ai` 块
+    // （见 bodyForAiComparison），所以删标记、AI 补全本身都不算修过正文。
+    val aiBaselines = remember { mutableStateMapOf<String, String>() }
 
     val concepts = remember(notes, loaded) { store.conceptIndex() }
     val conceptDetail = remember(selectedConcept, notes, loaded) {
@@ -207,8 +213,81 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         return true
     }
 
+    /**
+     * 焦点离开正文时整理这一篇：抽概念 + 补空位。
+     *
+     * 只在「人写的内容真的变了」时才调模型——比较基准见 [bodyForAiComparison]：
+     * AI 补全、删/加 `[[概念]]` 标记都不算正文变化，所以不会反复解析。
+     */
+    fun organizeNote(id: String) {
+        val note = store.read(id) ?: return
+        if (note.body.isBlank()) return
+        val slots = findAiFillSlots(note.body)
+        if (note.body.length < 40 && slots.isEmpty()) return
+        if (bodyForAiComparison(note.body) == aiBaselines[id]) return
+        val client = runtime.llmClientOrNull()
+        if (client == null) {
+            if (slots.isNotEmpty()) message = "AI 没配置：补全空位需要先在设置里导入模型"
+            return
+        }
+        // 同一篇的整理请求后到先得：新请求取消旧的，避免两轮结果互相盖。
+        aiJob?.cancel()
+        aiJob = scope.launch {
+            extracting = true
+            val raw = try {
+                client.complete(
+                    buildKnowledgeExtractionMessages(
+                        note.title,
+                        note.body,
+                        note.concepts,
+                        slots.map { it.label },
+                    ),
+                )
+            } catch (cancelled: CancellationException) {
+                extracting = false
+                throw cancelled
+            } catch (failed: Exception) {
+                null
+            }
+            extracting = false
+            if (raw == null) {
+                message = if (slots.isEmpty()) {
+                    "AI 整理失败，不影响笔记保存；可以稍后重试或在笔记里手动添加概念"
+                } else {
+                    "AI 补全失败，空位原样保留；可以稍后重试"
+                }
+                return@launch
+            }
+            val current = store.read(id) ?: return@launch
+            // 调模型期间人又改了：这轮结果作废，等下次焦点离开再整理（不覆盖新内容）。
+            if (bodyForAiComparison(current.body) != bodyForAiComparison(note.body)) return@launch
+            val result = parseExtractionResult(raw)
+            val filled = applyAiFills(current.body, result.fills.associate { it.label to it.text })
+            // 抽到的概念在正文第一次出现处包成 [[概念]]：语法层标记，预览里只显示概念名 + 下划线。
+            val markedBody = markConceptMentions(filled.body, result.candidates.map { it.name })
+            val merged = mergeConceptNames(
+                current.concepts + result.fills.map { it.label },
+                result.candidates,
+            )
+            aiBaselines[id] = bodyForAiComparison(markedBody)
+            if (merged.size == current.concepts.size && markedBody == current.body) return@launch
+            metaStore.fillMissing(
+                candidateDefinitions(result.candidates) + fillDefinitions(result.fills),
+            )
+            if (!applyExtracted(id, current, merged, markedBody)) return@launch
+            val conceptsAdded = merged.size - current.concepts.size
+            message = if (filled.applied.isNotEmpty()) {
+                "AI 补全 " + filled.applied.size + " 处（绿引号标记，点 × 可删），整理了 " +
+                    conceptsAdded + " 个概念"
+            } else {
+                "AI 整理了 " + conceptsAdded + " 个概念（点 × 可删除）"
+            }
+        }
+    }
+
     fun createNote() {
         persistNow()
+        loaded?.id?.let { previous -> organizeNote(previous) }
         val note = store.create()
         notes = store.list()
         selectedId = note.id
@@ -219,6 +298,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     fun selectNote(id: String) {
         if (id == selectedId) return
         persistNow()
+        loaded?.id?.takeIf { it != id }?.let { previous -> organizeNote(previous) }
         preview = false
         selectedId = id
     }
@@ -257,7 +337,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
             return
         }
         applyConcepts(merged)
-        extractedBodies[note.id] = body
+        aiBaselines[note.id] = bodyForAiComparison(body)
         message = "已点亮「" + normalizeConceptName(name) + "」"
     }
 
@@ -266,7 +346,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         val next = note.concepts.filterNot { conceptKey(it) == conceptKey(name) }
         if (next.size == note.concepts.size) return
         applyConcepts(next)
-        extractedBodies[note.id] = body
+        aiBaselines[note.id] = bodyForAiComparison(body)
         message = "已熄灭「" + name + "」（这篇笔记不再引用它）"
     }
 
@@ -319,6 +399,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         savedAtMs = note.updatedAt
         revision = 0
         runtime.knowledgeNoteId = id
+        aiBaselines[id] = bodyForAiComparison(note.body)
     }
 
     // 定位请求：等目标笔记载入后，把命中范围交给编辑器选中。
@@ -338,72 +419,6 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         if (revision == 0 || loaded == null) return@LaunchedEffect
         delay(600)
         persistNow()
-    }
-
-    // 概念自动整理 + 空位补全：保存后停手 2.5s 再调模型。
-    // 抽到的概念默认点亮；补到的内容包成 `{{…}}`，预览里画成绿色大引号（点 × 可删）。
-    LaunchedEffect(savedAtMs) {
-        savedAtMs ?: return@LaunchedEffect
-        val id = selectedId ?: return@LaunchedEffect
-        val note = loaded ?: return@LaunchedEffect
-        if (note.id != id) return@LaunchedEffect
-        if (note.body.isBlank()) return@LaunchedEffect
-        val slots = findAiFillSlots(note.body)
-        if (note.body.length < 40 && slots.isEmpty()) return@LaunchedEffect
-        if (extractedBodies[id] == note.body) return@LaunchedEffect
-        val client = runtime.llmClientOrNull()
-        if (client == null) {
-            if (slots.isNotEmpty()) message = "AI 没配置：补全空位需要先在设置里导入模型"
-            return@LaunchedEffect
-        }
-        delay(2500)
-        // 防抖期间又编辑的话 savedAtMs 会变、本 effect 已被取消；这里看到的是最新正文。
-        val current = store.read(id) ?: return@LaunchedEffect
-        if (current.body != note.body) return@LaunchedEffect
-        extracting = true
-        val raw = try {
-            client.complete(
-                buildKnowledgeExtractionMessages(
-                    current.title,
-                    current.body,
-                    current.concepts,
-                    slots.map { it.label },
-                ),
-            )
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (failed: Exception) {
-            null
-        }
-        extracting = false
-        if (raw == null) {
-            message = if (slots.isEmpty()) {
-                "AI 整理失败，不影响笔记保存；可以稍后重试或在笔记里手动添加概念"
-            } else {
-                "AI 补全失败，空位原样保留；可以稍后重试"
-            }
-            return@LaunchedEffect
-        }
-        val result = parseExtractionResult(raw)
-        val filled = applyAiFills(current.body, result.fills.associate { it.label to it.text })
-        // 抽到的概念在正文第一次出现处包成 [[概念]]：语法层标记，预览里只显示概念名 + 下划线。
-        val markedBody = markConceptMentions(filled.body, result.candidates.map { it.name })
-        val merged = mergeConceptNames(
-            current.concepts + result.fills.map { it.label },
-            result.candidates,
-        )
-        extractedBodies[id] = markedBody
-        if (merged.size == current.concepts.size && markedBody == current.body) return@LaunchedEffect
-        metaStore.fillMissing(
-            candidateDefinitions(result.candidates) + fillDefinitions(result.fills),
-        )
-        if (!applyExtracted(id, current, merged, markedBody)) return@LaunchedEffect
-        val conceptsAdded = merged.size - current.concepts.size
-        message = if (filled.applied.isNotEmpty()) {
-            "AI 补全 " + filled.applied.size + " 处（绿引号标记，点 × 可删），整理了 " + conceptsAdded + " 个概念"
-        } else {
-            "AI 整理了 " + conceptsAdded + " 个概念（点 × 可删除）"
-        }
     }
 
     // 切页/关窗口时兜底：正在打的字不能留在内存里。
@@ -682,6 +697,12 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                                                 revision++
                                                 message = "已删掉一处 AI 内容"
                                             }
+                                        },
+                                        // 焦点离开正文（点标题/列表/别的地方）才算一次「写完了」：
+                                        // 先落盘，再决定要不要请 AI 整理（正文真变了才调模型）。
+                                        onEditingFinished = {
+                                            persistNow()
+                                            loaded?.id?.let { id -> organizeNote(id) }
                                         },
                                     )
                                     Spacer(Modifier.height(20.dp))

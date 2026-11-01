@@ -5,6 +5,7 @@ import dev.trellis.ai.LlmRole
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -266,7 +267,40 @@ class KnowledgeAiMarkTest {
         val prompt = messages[1].content
         assertTrue(prompt.contains("正文依据"))
         assertTrue(prompt.contains("逐字出现在正文里"))
-        assertTrue(prompt.contains("宁缺勿滥"))
+        assertTrue(prompt.contains("数量不设上限"))
+    }
+
+    @Test
+    fun extractionDoesNotCapTheNumberOfConcepts() {
+        val concepts = (1..20).joinToString(",") { "{\"name\":\"概念$it\",\"definition\":\"定义$it\"}" }
+        val result = parseExtractionResult("{\"concepts\":[$concepts],\"fills\":[]}")
+        assertEquals(20, result.candidates.size)
+    }
+
+    // ---- 焦点离开时「正文有没有真的变过」 ----
+
+    @Test
+    fun bodyForAiComparisonIgnoresConceptMarkers() {
+        assertEquals(
+            bodyForAiComparison("用 RAG 做检索"),
+            bodyForAiComparison("用 [[RAG]] 做检索"),
+        )
+    }
+
+    @Test
+    fun bodyForAiComparisonIgnoresAiFillsAndAiBlocks() {
+        val plain = "标题\n\n答案："
+        assertEquals(bodyForAiComparison(plain), bodyForAiComparison("标题\n\n答案：{{一句 AI 补全}}"))
+        val withBlock = "标题\n\n:::ai\nAI 写的内容\n第二行\n:::\n\n答案："
+        assertEquals(bodyForAiComparison(plain), bodyForAiComparison(withBlock))
+    }
+
+    @Test
+    fun bodyForAiComparisonSeesRealContentEdits() {
+        assertNotEquals(
+            bodyForAiComparison("RAG 是检索增强"),
+            bodyForAiComparison("RAG 是检索增强生成"),
+        )
     }
 
     @Test
