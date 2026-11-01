@@ -19,6 +19,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -352,6 +354,7 @@ private fun AnnotatedString.Builder.appendStyledRange(
     conceptHits: List<ConceptHit>,
     conceptGreen: Color,
     textColor: Color = Color.Unspecified,
+    showLinkUrl: Boolean = true,
 ) {
     if (to <= from) return
     var cursor = from
@@ -408,7 +411,9 @@ private fun AnnotatedString.Builder.appendStyledRange(
                 withStyle(SpanStyle(color = ColorLink, fontWeight = FontWeight.Medium)) {
                     appendPlain(from + linkLabel.range.first, from + linkLabel.range.last + 1)
                 }
-                append(" (" + linkUrl.value + ")")
+                // marktext 只显示 label，点进编辑态才展开 `[label](url)`；
+                // 聊天消息仍把地址带上，模型给的链接才复制得走。
+                if (showLinkUrl) append(" (" + linkUrl.value + ")")
             }
             strike != null -> withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) {
                 appendPlain(from + strike.range.first, from + strike.range.last + 1)
@@ -435,11 +440,12 @@ internal fun inlineMarkdown(
     aiGreen: Color = MarkdownAiGreen,
     conceptGreen: Color = MarkdownAiGreen,
     textColor: Color = Color.Unspecified,
+    showLinkUrl: Boolean = true,
 ): AnnotatedString = buildAnnotatedString {
     val hits = conceptHits(text, conceptNames)
     var cursor = 0
     for (span in aiInlineSpans(text)) {
-        appendStyledRange(text, cursor, span.start, hits, conceptGreen, textColor)
+        appendStyledRange(text, cursor, span.start, hits, conceptGreen, textColor, showLinkUrl)
         withStyle(SpanStyle(color = aiGreen, fontWeight = FontWeight.Bold, fontSize = AiQuoteFontSize)) {
             append("\u201C")
         }
@@ -450,14 +456,44 @@ internal fun inlineMarkdown(
             hits,
             conceptGreen,
             textColor,
+            showLinkUrl,
         )
         withStyle(SpanStyle(color = aiGreen, fontWeight = FontWeight.Bold, fontSize = AiQuoteFontSize)) {
             append("\u201D")
         }
         cursor = span.end
     }
-    appendStyledRange(text, cursor, text.length, hits, conceptGreen, textColor)
+    appendStyledRange(text, cursor, text.length, hits, conceptGreen, textColor, showLinkUrl)
 }
+
+/**
+ * 渲染态是否把链接地址一起显示。
+ *
+ * 知识库正文只显示 label（点进块编辑才展开 `[label](url)`，marktext 的做法）；
+ * 聊天消息保持显示地址，模型给的链接才复制得走。
+ */
+private val LocalMarkdownShowLinkUrl = compositionLocalOf { true }
+
+/**
+ * 渲染态用的行内渲染：按当前 [MarkdownText] 的链接显示方式调纯函数 [inlineMarkdown]。
+ *
+ * 纯函数保持默认行为（显示地址），方便单测直接调。
+ */
+@Composable
+private fun markdownInline(
+    text: String,
+    conceptNames: List<String>,
+    aiGreen: Color,
+    conceptGreen: Color,
+    textColor: Color,
+): AnnotatedString = inlineMarkdown(
+    text = text,
+    conceptNames = conceptNames,
+    aiGreen = aiGreen,
+    conceptGreen = conceptGreen,
+    textColor = textColor,
+    showLinkUrl = LocalMarkdownShowLinkUrl.current,
+)
 
 /** 链接颜色在这里硬编码会绕开主题；用「主色文本」的近似值，暗色下也读得清。 */
 private val ColorLink = Color(0xFF2E5AAC)
@@ -474,6 +510,22 @@ internal fun MarkdownText(
      * 传 null 时完全不装这个 Modifier，聊天消息那边零额外开销。
      */
     onBlockLayout: ((index: Int, y: Float) -> Unit)? = null,
+    /** 链接是否把地址一起显示；知识库预览传 false（只显示 label）。 */
+    showLinkUrl: Boolean = true,
+) {
+    CompositionLocalProvider(LocalMarkdownShowLinkUrl provides showLinkUrl) {
+        MarkdownBody(text, modifier, bodyStyle, conceptNames, onDeleteAiBlockLine, onBlockLayout)
+    }
+}
+
+@Composable
+private fun MarkdownBody(
+    text: String,
+    modifier: Modifier,
+    bodyStyle: androidx.compose.ui.text.TextStyle?,
+    conceptNames: List<String>,
+    onDeleteAiBlockLine: ((String) -> Unit)?,
+    onBlockLayout: ((index: Int, y: Float) -> Unit)?,
 ) {
     val paragraphStyle = bodyStyle ?: MaterialTheme.typography.bodyLarge
     val extra = LocalExtraColors.current
@@ -491,11 +543,11 @@ internal fun MarkdownText(
             Box(measured) {
                 when (block) {
                     is MdBlock.Paragraph -> Text(
-                        inlineMarkdown(block.text, conceptNames, aiGreen, aiGreen, MaterialTheme.colorScheme.onSurface),
+                        markdownInline(block.text, conceptNames, aiGreen, aiGreen, MaterialTheme.colorScheme.onSurface),
                         style = paragraphStyle,
                     )
                     is MdBlock.Heading -> Text(
-                        inlineMarkdown(block.text, conceptNames, aiGreen, aiGreen, MaterialTheme.colorScheme.onSurface),
+                        markdownInline(block.text, conceptNames, aiGreen, aiGreen, MaterialTheme.colorScheme.onSurface),
                         style = markdownHeadingStyle(block.level, paragraphStyle),
                         modifier = Modifier.padding(top = headingTopSpacing(block.level)),
                     )
@@ -572,7 +624,7 @@ internal fun MarkdownText(
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            inlineMarkdown(
+                            markdownInline(
                                 block.text,
                                 conceptNames,
                                 aiGreen,
@@ -643,7 +695,7 @@ private fun AiBlockView(
             for (item in items) {
                 Row(verticalAlignment = Alignment.Top) {
                     Text(
-                        inlineMarkdown(item, conceptNames, aiGreen, aiGreen, MaterialTheme.colorScheme.onSurface),
+                        markdownInline(item, conceptNames, aiGreen, aiGreen, MaterialTheme.colorScheme.onSurface),
                         style = bodyStyle,
                         modifier = Modifier.weight(1f),
                     )
@@ -698,7 +750,7 @@ internal fun markdownHeadingStyle(level: Int, base: androidx.compose.ui.text.Tex
 }
 
 /** 标题上方留白：级别越高离上一段越远，读起来才知道「新的一节开始了」。 */
-private fun headingTopSpacing(level: Int) = when (level) {
+internal fun headingTopSpacing(level: Int) = when (level) {
     1 -> 14.dp
     2 -> 10.dp
     3 -> 8.dp
@@ -726,7 +778,7 @@ private fun MarkdownTableRow(cells: List<String>, header: Boolean, conceptNames:
         for (cell in cells) {
             Box(Modifier.weight(1f)) {
                 Text(
-                    inlineMarkdown(
+                    markdownInline(
                         cell,
                         conceptNames,
                         aiGreen,
@@ -767,7 +819,7 @@ private fun MarkdownBullet(
             modifier = Modifier.width(18.dp),
         )
         Text(
-            inlineMarkdown(text, conceptNames, aiGreen, aiGreen, MaterialTheme.colorScheme.onSurface),
+            markdownInline(text, conceptNames, aiGreen, aiGreen, MaterialTheme.colorScheme.onSurface),
             style = bodyStyle,
         )
     }
@@ -825,7 +877,7 @@ private fun MarkdownTaskRow(
         }
         Spacer(Modifier.width(7.dp))
         Text(
-            inlineMarkdown(
+            markdownInline(
                 text,
                 conceptNames,
                 aiGreen,
