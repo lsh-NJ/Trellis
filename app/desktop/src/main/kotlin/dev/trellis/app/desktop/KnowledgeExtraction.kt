@@ -31,9 +31,6 @@ internal data class ExtractionResult(
     val fills: List<FillSuggestion> = emptyList(),
 )
 
-/** 一次抽取最多写回几个概念：防止模型把整篇笔记拆成几十个词。 */
-internal const val MAX_EXTRACTED_CONCEPTS: Int = 6
-
 /** 正文送进模型的上限：再长就不是「这篇笔记在讲什么」而是「整本书」。 */
 private const val MAX_EXTRACT_BODY_CHARS: Int = 6000
 
@@ -71,8 +68,8 @@ internal fun buildKnowledgeExtractionMessages(
             .append("人名、组织名、产品名都不要。\n")
         append("2. name 必须**逐字出现在正文里**（大小写、空格、标点与原文一致）；")
             .append("系统会把 name 第一次出现的地方包成 `[[name]]`，写错的 name 会被丢掉。\n")
-        append("3. 最多 ").append(MAX_EXTRACTED_CONCEPTS).append(" 个，宁缺勿滥；")
-            .append("拿不准就不抽。\n")
+        append("3. 数量不设上限：正文里确实讲过的概念都可以列，但每个都必须满足上面的依据；")
+            .append("拿不准的就别抽。\n")
         append("4. definition 不超过 40 个字，一句能独立看懂的解释（不是复述名词）。\n")
         append("5. fills 只补上面列出的空位：label 必须和空位标签逐字一致，text 是一句话（不超过 ")
             .append(MAX_AI_FILL_CHARS).append(" 字）；没有空位就输出空数组。\n")
@@ -145,7 +142,6 @@ private fun parseCandidatesFrom(element: JsonElement?): List<ConceptCandidate> {
             if (name.isEmpty()) null else ConceptCandidate(name, definition)
         }
             .distinctBy { conceptKey(it.name) }
-            .take(MAX_EXTRACTED_CONCEPTS)
     }.getOrElse { emptyList() }
 }
 

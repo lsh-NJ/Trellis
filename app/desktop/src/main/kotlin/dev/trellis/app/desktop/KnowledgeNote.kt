@@ -366,6 +366,36 @@ private fun insidePair(body: String, position: Int, length: Int): Boolean {
 }
 
 /**
+ * 「正文有没有真的变过」的比较基准，用来决定焦点离开后要不要再麻烦模型。
+ *
+ * 只比较人写的内容：`[[概念]]` 只留名字、`{{AI 补全}}` 整段去掉、`:::ai` 块整块去掉、
+ * 行尾空白忽略。于是「AI 补全」「人删/加 AI 做的标记」都不算正文变了，
+ * 不会反复解析；反过来，人只要真的改了正文，基准就对不上。
+ */
+internal fun bodyForAiComparison(body: String): String {
+    val kept = StringBuilder()
+    var inAiBlock = false
+    for (line in body.replace("\r\n", "\n").split('\n')) {
+        val trimmed = line.trim()
+        if (inAiBlock) {
+            if (trimmed == AI_BLOCK_END) inAiBlock = false
+            continue
+        }
+        if (trimmed.startsWith(AI_BLOCK_START)) {
+            inAiBlock = true
+            continue
+        }
+        kept.append(line.trimEnd()).append('\n')
+    }
+    return kept.toString()
+        .replace(Regex("\\{\\{[^\\n]*?\\}\\}"), "")
+        .replace(Regex("\\[\\[([^\\[\\]\\n]*?)\\]\\]"), "$1")
+        // 删掉 AI 块会留下空行：连续空行压成一个，避免「只删了 AI 内容」看起来像改过正文。
+        .replace(Regex("\\n{3,}"), "\n\n")
+        .trim()
+}
+
+/**
  * 预览里点 AI 块的 ×：删掉这一行内容；块空了就连 `:::ai` / `:::` 一起删。
  * 只在 `:::ai` 块里找，避免误删正文里一模一样的普通行；找不到返回 null。
  */

@@ -58,6 +58,7 @@ internal fun MarkdownEditor(
     onDeleteAiLine: ((String) -> Unit)? = null,
     reveal: TextRange? = null,
     revealToken: Int = 0,
+    onEditingFinished: (() -> Unit)? = null,
 ) {
     MarkdownBlockEditor(
         noteId = noteId,
@@ -69,6 +70,7 @@ internal fun MarkdownEditor(
         onDeleteAiLine = onDeleteAiLine,
         reveal = reveal,
         revealToken = revealToken,
+        onEditingFinished = onEditingFinished,
     )
 }
 

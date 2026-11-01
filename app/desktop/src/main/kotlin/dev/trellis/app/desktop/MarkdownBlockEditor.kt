@@ -338,6 +338,7 @@ internal fun MarkdownBlockEditor(
     onDeleteAiLine: ((String) -> Unit)? = null,
     reveal: TextRange? = null,
     revealToken: Int = 0,
+    onEditingFinished: (() -> Unit)? = null,
 ) {
     // 本地正文：先写到 draft，再通知页面。父级 state 回到这里通常已经等于 draft，
     // 这样连续击键（父级还没重组）也不会拿旧正文做 splice、把上一个字覆盖掉。
@@ -415,6 +416,8 @@ internal fun MarkdownBlockEditor(
         activeStart = null
         activeEnd = 0
         closeSlash()
+        // 焦点离开这块（点页面别处/切预览）：算「这一轮写完了」，页面可以据此收尾（如 AI 整理）。
+        onEditingFinished?.invoke()
     }
 
     fun refreshSlash(updated: TextFieldValue) {
