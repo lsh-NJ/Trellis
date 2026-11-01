@@ -73,6 +73,16 @@ class MarkdownTextTest {
     }
 
     @Test
+    fun linksHideTheUrlWhenThePreviewOnlyWantsTheLabel() {
+        // 知识库预览按 marktext 的做法只显示 label；点进块编辑才会展开 [label](url)。
+        assertEquals("链接", inlineMarkdown("[链接](https://example.com)", showLinkUrl = false).text)
+        assertEquals(
+            "链接 (https://example.com)",
+            inlineMarkdown("[链接](https://example.com)").text,
+        )
+    }
+
+    @Test
     fun aPipeTableBecomesRealRows() {
         val blocks = parseMarkdown("| 档位 | 已售 |\n| --- | --- |\n| 早鸟 | 742 |\n| 预售 | 1180 |")
         val table = blocks.filterIsInstance<MdBlock.Table>().single()

@@ -3,6 +3,8 @@ package dev.trellis.app.desktop
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -30,12 +32,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -48,15 +54,19 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
@@ -584,6 +594,7 @@ internal fun MarkdownBlockEditor(
                     block.raw,
                     conceptNames = conceptNames,
                     onDeleteAiBlockLine = onDeleteAiLine,
+                    showLinkUrl = false,
                 )
             }
             return@Column
@@ -675,41 +686,108 @@ internal fun MarkdownBlockEditor(
                     bodyStyle = paragraphStyle,
                     conceptNames = conceptNames,
                     onDeleteAiLine = onDeleteAiLine,
-                    onClick = { startEditing(block) },
+                    onClick = { caret -> startEditing(block, TextRange(caret)) },
                 )
             }
         }
     }
 }
 
-/** 一块的渲染态：hover 时整块浮现淡主色底，点一下进入编辑。 */
+/** 一块的渲染态：hover 时整块浮现淡主色底，点一下进入编辑（光标落在点击处）。 */
 @Composable
 private fun BlockPreview(
     block: BodyBlock,
     bodyStyle: TextStyle,
     conceptNames: List<String>,
     onDeleteAiLine: ((String) -> Unit)?,
-    onClick: () -> Unit,
+    onClick: (Int) -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
     val accent = MaterialTheme.colorScheme.primary
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    var contentWidth by remember(block.start) { mutableStateOf(0) }
+    val quoteStyle = MaterialTheme.typography.bodyMedium
+    // 量文本要按「用户看到的那套样式」来：标题用标题字号、引用用引用字号，
+    // 否则点同一处算出来的字符下标会偏。
+    val measureStyle = remember(block.kind, block.raw, bodyStyle, quoteStyle) {
+        when (block.kind) {
+            BlockKind.Heading -> markdownHeadingStyle(headingLevelOf(block.raw), bodyStyle)
+            BlockKind.Quote -> quoteStyle
+            else -> bodyStyle
+        }
+    }
     Box(
         Modifier
             .fillMaxWidth()
             .clip(ControlShape)
             .background(if (hovered) accent.copy(alpha = 0.05f) else Color.Transparent)
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .hoverable(interaction)
+            .pointerInput(block.start, block.raw, contentWidth, measureStyle) {
+                detectTapGestures { offset ->
+                    onClick(caretOffsetForTap(block, offset, contentWidth, measureStyle, measurer, density))
+                }
+            }
             .padding(horizontal = 8.dp, vertical = 4.dp),
     ) {
         MarkdownText(
             block.raw,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().onSizeChanged { contentWidth = it.width },
             bodyStyle = bodyStyle,
             conceptNames = conceptNames,
             onDeleteAiBlockLine = onDeleteAiLine,
+            showLinkUrl = false,
         )
     }
+}
+
+/** `##` 连写几个就是几级标题。 */
+private fun headingLevelOf(raw: String): Int = raw.takeWhile { it == '#' }.length.coerceIn(1, 6)
+
+/**
+ * 点块时算光标该落在原始 Markdown 的哪个下标（marktext 式「点哪落哪」）。
+ *
+ * 做法：按预览样式把「隐藏标记后的文本」（和编辑态同一份投影）量一遍，点击坐标
+ * 先换算成文本偏移，再经 [projectInlineEdit] 的映射回到原始 Markdown 偏移。
+ * 预览里的列表标记列（18dp）和引用竖线（10dp）不是文本的一部分，要减掉；
+ * 标题上方的留白也要减，否则点第一行会落到行尾。嵌套列表的缩进暂没参与换算。
+ */
+private fun caretOffsetForTap(
+    block: BodyBlock,
+    tap: Offset,
+    contentWidth: Int,
+    style: TextStyle,
+    measurer: TextMeasurer,
+    density: Density,
+): Int {
+    val raw = block.raw
+    if (raw.isEmpty()) return 0
+    val projection = projectInlineEdit(raw, TextRange(raw.length), block.kind)
+    val layout = measurer.measure(
+        text = AnnotatedString(projection.text),
+        style = style,
+        softWrap = true,
+        constraints = Constraints(maxWidth = contentWidth.coerceAtLeast(1)),
+    )
+    val leftPad = with(density) { 8.dp.toPx() }
+    val topPad = with(density) { 4.dp.toPx() }
+    val markerColumn = with(density) {
+        when (block.kind) {
+            BlockKind.ListItem -> 18.dp.toPx()
+            BlockKind.Quote -> 10.dp.toPx()
+            else -> 0f
+        }
+    }
+    val headingSpacing = if (block.kind == BlockKind.Heading) {
+        with(density) { headingTopSpacing(headingLevelOf(raw)).toPx() }
+    } else {
+        0f
+    }
+    val x = (tap.x - leftPad - markerColumn).coerceAtLeast(0f)
+    val y = (tap.y - topPad - headingSpacing).coerceAtLeast(0f)
+    val transformed = layout.getOffsetForPosition(Offset(x, y))
+    return projection.mapping.transformedToOriginal(transformed).coerceIn(0, raw.length)
 }
 
 /** 斜杠命令菜单：贴着当前编辑块的左下角浮起来（和整篇编辑器的菜单同一份命令表）。 */
