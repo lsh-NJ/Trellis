@@ -296,6 +296,75 @@ internal fun applyAiFills(body: String, fills: Map<String, String>): AiFillResul
     return AiFillResult(lines.joinToString("\n"), applied)
 }
 
+/** 概念标记 `[[…]]` 的两侧。和 `{{…}}`（AI 补全）一样是「语法层」标记，预览时只渲染内容。 */
+internal const val CONCEPT_OPEN: String = "[["
+internal const val CONCEPT_CLOSE: String = "]]"
+
+/**
+ * 把抽取出来的概念名在正文里第一次出现的地方包成 `[[概念]]`。
+ *
+ * 规则（和人工标记一致，也不破坏原文）：
+ *  - 只标第一次出现：概念可能在正文里出现很多次，标满会花；
+ *  - 只在「普通正文行」里找：代码块、`:::ai` 块、已有的 `{{…}}`/`[[…]]` 里不标；
+ *  - 名字在正文里找不到就跳过（模型编出来的名字不落盘）；
+ *  - 已经标过（`[[名字]]` 存在）的东西不再重复包。
+ */
+internal fun markConceptMentions(body: String, names: List<String>): String {
+    if (body.isBlank() || names.isEmpty()) return body
+    val targets = names.map(::normalizeConceptName).filter { it.isNotBlank() }.distinctBy(::conceptKey)
+    if (targets.isEmpty()) return body
+    var result = body.replace("\r\n", "\n")
+    for (name in targets) {
+        if (result.contains(CONCEPT_OPEN + name + CONCEPT_CLOSE)) continue
+        val index = findPlainMention(result, name) ?: continue
+        result = result.substring(0, index) + CONCEPT_OPEN + name + CONCEPT_CLOSE +
+            result.substring(index + name.length)
+    }
+    return result
+}
+
+/** 在普通正文行里找 [name] 第一个不在标记内部的字符位置；找不到返回 null。 */
+private fun findPlainMention(body: String, name: String): Int? {
+    var offset = 0
+    var inCode = false
+    var inAiBlock = false
+    for (line in body.split('\n')) {
+        val trimmed = line.trimStart()
+        when {
+            trimmed.startsWith("```") -> inCode = !inCode
+            inCode -> Unit
+            trimmed.startsWith(":::ai") -> inAiBlock = true
+            trimmed == ":::" -> inAiBlock = false
+            inAiBlock -> Unit
+            else -> {
+                var from = 0
+                while (true) {
+                    val local = line.indexOf(name, from)
+                    if (local < 0) break
+                    val absolute = offset + local
+                    if (!insidePair(body, absolute, name.length)) return absolute
+                    from = local + 1
+                }
+            }
+        }
+        offset += line.length + 1
+    }
+    return null
+}
+
+/** [position] 处那段文字是否已经落在 `[[…]]` 或 `{{…}}` 内部。 */
+private fun insidePair(body: String, position: Int, length: Int): Boolean {
+    fun inside(open: String, close: String): Boolean {
+        val openAt = body.lastIndexOf(open, position)
+        if (openAt < 0) return false
+        val closeBefore = body.lastIndexOf(close, position)
+        if (closeBefore > openAt) return false
+        val closeAfter = body.indexOf(close, position + length)
+        return closeAfter >= 0
+    }
+    return inside(CONCEPT_OPEN, CONCEPT_CLOSE) || inside("{{", "}}")
+}
+
 /**
  * 预览里点 AI 块的 ×：删掉这一行内容；块空了就连 `:::ai` / `:::` 一起删。
  * 只在 `:::ai` 块里找，避免误删正文里一模一样的普通行；找不到返回 null。

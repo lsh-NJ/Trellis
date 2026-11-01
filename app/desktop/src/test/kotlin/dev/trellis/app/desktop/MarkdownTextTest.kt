@@ -1,5 +1,7 @@
 package dev.trellis.app.desktop
 
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -17,6 +19,22 @@ class MarkdownTextTest {
         assertEquals(2, blocks.size)
         assertEquals("第一段第一行 第一段第二行", (blocks[0] as MdBlock.Paragraph).text)
         assertEquals("第二段", (blocks[1] as MdBlock.Paragraph).text)
+    }
+
+    @Test
+    fun inlineCodeRecordsChipsAndDropsTheBackticks() {
+        val rendered = buildInlineMarkdown("先跑 `val x = 1` 再跑 `y`")
+        assertEquals("先跑 val x = 1 再跑 y", rendered.text.text)
+        assertEquals(2, rendered.codeChips.size)
+        assertEquals("val x = 1", rendered.text.substring(rendered.codeChips[0].first, rendered.codeChips[0].last + 1))
+        assertEquals("y", rendered.text.substring(rendered.codeChips[1].first, rendered.codeChips[1].last + 1))
+    }
+
+    @Test
+    fun boldShadowUsesTheTextColorSoItDoesNotTurnBlackOnGreenConcepts() {
+        val normal = inlineMarkdown("**加粗**", textColor = Color(0xFF2E5AAC))
+        val shadow = normal.spanStyles.first { it.item.fontWeight == FontWeight.Bold }.item.shadow
+        assertTrue(shadow != null && shadow.color == Color(0xFF2E5AAC))
     }
 
     @Test
