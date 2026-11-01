@@ -635,8 +635,9 @@ internal fun MarkdownBlockEditor(
                         Modifier
                             .fillMaxWidth()
                             .clip(ControlShape)
-                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, ControlShape)
-                            .background(MaterialTheme.colorScheme.surface)
+                            // 编辑块不再画输入框边框：只留一层极淡的底，视线落在文字上，
+                            // 而不是落在一个个「盒子」上（marktext 的写法就是这样）。
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.10f))
                             .padding(horizontal = 8.dp, vertical = 4.dp),
                     ) {
                         BasicTextField(
@@ -830,11 +831,13 @@ private fun buildInlineEditText(
     for (range in projection.syntax) {
         builder.addStyle(syntaxStyle, range.first, range.last + 1)
     }
+    // 中文粗体要和渲染态一致（系统字重不够时靠同色阴影补笔画），颜色跟着这一段走。
+    val boldColor = if (projection.isQuote) scheme.onSurfaceVariant else scheme.onSurface
     for (mark in projection.marks) {
         val style = when (mark.kind) {
-            InlineMarkKind.Bold -> SpanStyle(fontWeight = FontWeight.Bold)
+            InlineMarkKind.Bold -> markdownBoldStyle(boldColor)
             InlineMarkKind.Italic -> SpanStyle(fontStyle = FontStyle.Italic)
-            InlineMarkKind.Code -> SpanStyle(fontFamily = FontFamily.Monospace)
+            InlineMarkKind.Code -> markdownCodeStyle()
             InlineMarkKind.Strike -> SpanStyle(textDecoration = TextDecoration.LineThrough)
             InlineMarkKind.Link -> SpanStyle(color = scheme.primary, textDecoration = TextDecoration.Underline)
             InlineMarkKind.Math -> SpanStyle(fontFamily = FontFamily.Monospace, fontStyle = FontStyle.Italic)

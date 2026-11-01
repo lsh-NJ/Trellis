@@ -197,8 +197,10 @@ internal fun projectInlineEdit(
         tokens += token
         marks += markKinds.map { InlineMarkRange(token.contentStart, token.contentEnd, it) }
 
+        // 光标在 token 里、或紧挨着 token（前后各一格）都把源码露出来：
+        // 正好对应「光标在里面或紧挨 ` 就显示出 `」的交互习惯。
         val revealed = if (selection.collapsed) {
-            selection.start in token.start until token.end
+            selection.start in maxOf(0, token.start - 1)..token.end
         } else {
             selection.min < token.end && selection.max > token.start
         }
