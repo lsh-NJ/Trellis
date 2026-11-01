@@ -23,9 +23,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -311,6 +313,33 @@ private fun conceptStyle(conceptGreen: Color): SpanStyle =
         textDecoration = TextDecoration.Underline,
     )
 
+/** 行内代码的底色：半透明灰，暗色主题下提亮、亮色主题下压暗，两边都能和正文分开。 */
+internal val MarkdownCodeBackground: Color = Color(0x2E9E9E9E)
+
+/**
+ * 中文粗体的视觉问题：macOS 的中文回退字体（PingFang SC）最粗只有 Semibold，
+ * `FontWeight.Bold` 和 `FontWeight.Black` 会落到同一个字面，中文几乎看不出变粗。
+ *
+ * 解决方式是再叠一层「同色、只往右偏一丁点、不模糊」的阴影：相当于把每根笔画加宽约 1px，
+ * 视觉上等价于真正的粗体，而且不依赖平台字体是否有对应的字重。
+ * [textColor] 未知（[Color.Unspecified]）时不画阴影，保持纯函数旧的输出，单测不受影响。
+ */
+internal fun markdownBoldStyle(textColor: Color, italic: Boolean = false): SpanStyle = SpanStyle(
+    fontWeight = FontWeight.Bold,
+    fontStyle = if (italic) FontStyle.Italic else FontStyle.Normal,
+    shadow = if (textColor == Color.Unspecified) {
+        null
+    } else {
+        Shadow(color = textColor, offset = Offset(2.2f, 0f), blurRadius = 0f)
+    },
+)
+
+/** 行内代码的样式：等宽 + 底色（Compose 的 SpanStyle 背景没有圆角，方角先接受）。 */
+internal fun markdownCodeStyle(): SpanStyle = SpanStyle(
+    fontFamily = FontFamily.Monospace,
+    background = MarkdownCodeBackground,
+)
+
 /**
  * 在一段文本的 [from, to) 区间里应用行内样式与概念高亮。
  *
@@ -322,6 +351,7 @@ private fun AnnotatedString.Builder.appendStyledRange(
     to: Int,
     conceptHits: List<ConceptHit>,
     conceptGreen: Color,
+    textColor: Color = Color.Unspecified,
 ) {
     if (to <= from) return
     var cursor = from
@@ -355,13 +385,13 @@ private fun AnnotatedString.Builder.appendStyledRange(
         val strike = groups["strike"]
         val math = groups["math"]
         when {
-            boldItalic != null -> withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontStyle = FontStyle.Italic)) {
+            boldItalic != null -> withStyle(markdownBoldStyle(textColor, italic = true)) {
                 appendPlain(from + boldItalic.range.first, from + boldItalic.range.last + 1)
             }
-            bold != null -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+            bold != null -> withStyle(markdownBoldStyle(textColor)) {
                 appendPlain(from + bold.range.first, from + bold.range.last + 1)
             }
-            code != null -> withStyle(SpanStyle(fontFamily = FontFamily.Monospace)) {
+            code != null -> withStyle(markdownCodeStyle()) {
                 appendPlain(from + code.range.first, from + code.range.last + 1)
             }
             italic != null -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
@@ -404,11 +434,12 @@ internal fun inlineMarkdown(
     conceptNames: List<String> = emptyList(),
     aiGreen: Color = MarkdownAiGreen,
     conceptGreen: Color = MarkdownAiGreen,
+    textColor: Color = Color.Unspecified,
 ): AnnotatedString = buildAnnotatedString {
     val hits = conceptHits(text, conceptNames)
     var cursor = 0
     for (span in aiInlineSpans(text)) {
-        appendStyledRange(text, cursor, span.start, hits, conceptGreen)
+        appendStyledRange(text, cursor, span.start, hits, conceptGreen, textColor)
         withStyle(SpanStyle(color = aiGreen, fontWeight = FontWeight.Bold, fontSize = AiQuoteFontSize)) {
             append("\u201C")
         }
@@ -418,13 +449,14 @@ internal fun inlineMarkdown(
             span.end - AI_INLINE_CLOSE.length,
             hits,
             conceptGreen,
+            textColor,
         )
         withStyle(SpanStyle(color = aiGreen, fontWeight = FontWeight.Bold, fontSize = AiQuoteFontSize)) {
             append("\u201D")
         }
         cursor = span.end
     }
-    appendStyledRange(text, cursor, text.length, hits, conceptGreen)
+    appendStyledRange(text, cursor, text.length, hits, conceptGreen, textColor)
 }
 
 /** 链接颜色在这里硬编码会绕开主题；用「主色文本」的近似值，暗色下也读得清。 */
@@ -459,11 +491,11 @@ internal fun MarkdownText(
             Box(measured) {
                 when (block) {
                     is MdBlock.Paragraph -> Text(
-                        inlineMarkdown(block.text, conceptNames, aiGreen, aiGreen),
+                        inlineMarkdown(block.text, conceptNames, aiGreen, aiGreen, MaterialTheme.colorScheme.onSurface),
                         style = paragraphStyle,
                     )
                     is MdBlock.Heading -> Text(
-                        inlineMarkdown(block.text, conceptNames, aiGreen, aiGreen),
+                        inlineMarkdown(block.text, conceptNames, aiGreen, aiGreen, MaterialTheme.colorScheme.onSurface),
                         style = markdownHeadingStyle(block.level, paragraphStyle),
                         modifier = Modifier.padding(top = headingTopSpacing(block.level)),
                     )
@@ -540,7 +572,13 @@ internal fun MarkdownText(
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            inlineMarkdown(block.text, conceptNames, aiGreen, aiGreen),
+                            inlineMarkdown(
+                                block.text,
+                                conceptNames,
+                                aiGreen,
+                                aiGreen,
+                                MaterialTheme.colorScheme.onSurfaceVariant,
+                            ),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -605,7 +643,7 @@ private fun AiBlockView(
             for (item in items) {
                 Row(verticalAlignment = Alignment.Top) {
                     Text(
-                        inlineMarkdown(item, conceptNames, aiGreen, aiGreen),
+                        inlineMarkdown(item, conceptNames, aiGreen, aiGreen, MaterialTheme.colorScheme.onSurface),
                         style = bodyStyle,
                         modifier = Modifier.weight(1f),
                     )
@@ -688,7 +726,17 @@ private fun MarkdownTableRow(cells: List<String>, header: Boolean, conceptNames:
         for (cell in cells) {
             Box(Modifier.weight(1f)) {
                 Text(
-                    inlineMarkdown(cell, conceptNames, aiGreen, aiGreen),
+                    inlineMarkdown(
+                        cell,
+                        conceptNames,
+                        aiGreen,
+                        aiGreen,
+                        if (header) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                    ),
                     style = if (header) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
                     fontWeight = if (header) FontWeight.Bold else FontWeight.Normal,
                     color = if (header) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
@@ -719,7 +767,7 @@ private fun MarkdownBullet(
             modifier = Modifier.width(18.dp),
         )
         Text(
-            inlineMarkdown(text, conceptNames, aiGreen, aiGreen),
+            inlineMarkdown(text, conceptNames, aiGreen, aiGreen, MaterialTheme.colorScheme.onSurface),
             style = bodyStyle,
         )
     }
@@ -777,7 +825,17 @@ private fun MarkdownTaskRow(
         }
         Spacer(Modifier.width(7.dp))
         Text(
-            inlineMarkdown(text, conceptNames, aiGreen, aiGreen),
+            inlineMarkdown(
+                text,
+                conceptNames,
+                aiGreen,
+                aiGreen,
+                if (checked) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
+            ),
             style = bodyStyle,
             color = if (checked) {
                 MaterialTheme.colorScheme.onSurfaceVariant

@@ -64,9 +64,20 @@ class MarkdownInlineEditTest {
     }
 
     @Test
+    fun markersComeBackWhenTheCaretSitsRightNextToTheToken() {
+        val raw = "别礼**战技**起手"
+        // 紧挨在开标记之前（token.start - 1）或闭标记之后（token.end）都算「在编辑这个 token」。
+        assertEquals(raw, project(raw, caret = 1).text)
+        assertEquals(raw, project(raw, caret = 8).text)
+        assertEquals("别礼战技起手", project(raw, caret = 0).text)
+        assertEquals("别礼战技起手", project(raw, caret = 9).text)
+    }
+
+    @Test
     fun everyInlineKindGetsAHiddenMarkerAndAStyle() {
         val raw = "斜体*italic*与 `code` 和 ~~gone~~ 与 [标签](https://x.y)"
-        val projection = project(raw)
+        // 光标放到最前面（离每个 token 都超过一格），所有标记都应该收起。
+        val projection = project(raw, caret = 0)
 
         assertEquals("斜体italic与 code 和 gone 与 标签", projection.text)
         assertEquals(

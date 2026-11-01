@@ -161,7 +161,14 @@
 - 新增 `MarkdownInlineEdit.kt`（纯逻辑，`projectInlineEdit(raw, selection, kind): InlineEditProjection`）：隐藏 `**`/`*`/`` ` ``/`~~`/`$`/链接的 `[](url)`、标题的 `# ` 前缀、引用的 `> `、列表的 `-`（换成 `•`，1:1 保长度）；`InlineMarkKind` 给 Bold/Italic/Code/Strike/Link/Math；`headingLevel`/`isQuote` 决定整段字号与颜色；`InlineEditMapping` 给出 raw↔显示 的 `OffsetMapping`（隐藏区 offset 落到区段起点，光标不会跳进标记里）。`MarkdownText.kt` 的 `inlinePattern` 改为 `internal` 复用同一份正则。
 - `MarkdownBlockEditor.kt` 接线：活动块 `BasicTextField` 加 `visualTransformation`，标记按样式渲染（Bold/Italic/Mono/LineThrough/Link 下划线/Math mono 斜体），光标进入的 token 还原成暗灰标记；折叠态 Backspace/Delete 在 token 边界按内容字符删，不吞隐藏的 `*`；标题前缀删掉后块自动退回段落。
 - **回车分段**：段落/标题/列表/引用里按回车会在此处切开，新建一个同类型块（列表自动续 `- `），`startNewBlock` 只插一个空行；空块需要渲染占位编辑框，`renderBlocks` 按位置插影子块（不能追加到文末）。
-- 测试：`MarkdownInlineEditTest`（15 用例：标记隐藏/揭示规则、选区揭示、每种行内样式、heading 前缀与级别、bullet 替换、task 保留、quote 前缀、特殊块恒等、未闭合标记、mapping 往返、光标不落进隐藏区）；`:app:desktop:test` **360 个用例全绿**。
+- 测试：`MarkdownInlineEditTest`（16 用例：标记隐藏/揭示规则、选区揭示、紧挨 token 也揭示、每种行内样式、heading 前缀与级别、bullet 替换、task 保留、quote 前缀、特殊块恒等、未闭合标记、mapping 往返、光标不落进隐藏区）；`:app:desktop:test` **361 个用例全绿**。
+
+**已落地（2026-11-01，P0 第七批补丁：粗体/行内代码/编辑块外观）**
+
+- **中文粗体**：macOS 中文回退字体（PingFang SC）最粗只有 Semibold，`FontWeight.Bold` 只让笔画粗 ~12%，肉眼几乎看不出。改成「系统字重 + 同色、右偏 2.2px、不模糊的阴影」叠一层，笔画实际加宽约 1px：实测 CJK ink 从 378 提到 570（**+51%**，和 ASCII 的 +40% 接近）。样式在 `MarkdownText.kt` 的 `markdownBoldStyle(textColor)`，渲染态与编辑态共用；`inlineMarkdown` 新增 `textColor` 参数（默认 `Color.Unspecified` 不画阴影，纯函数单测不受影响），调用点按正文/引用/表格传主题色。
+- **行内代码**：`markdownCodeStyle()` = 等宽 + 半透明灰底（`MarkdownCodeBackground = Color(0x2E9E9E9E)`，暗色下提亮、亮色下压暗），预览和编辑态一致；Compose 的 `SpanStyle` 背景没有圆角，先接受方角。
+- **编辑块外观**：活动块去掉 1dp 边框，只留 `surfaceVariant` 10% 的淡底（保持 8/4 padding，进入编辑时文字不跳动），贴近 marktext 的「文字本身在编辑」的观感。
+- **揭示规则放宽**：光标在 token 内**或紧挨着 token 前后一格**都显示源码（`selection.start in maxOf(0, token.start - 1)..token.end`），输入完 `**粗**` 光标还贴在闭标记后面时能继续改；离开一格即折叠。
 
 ## 11. AI 补全与 AI 内容标记（2026-10-31 定稿）
 
@@ -189,7 +196,7 @@
 | 交互 | 行为 | 落点 |
 |---|---|---|
 | 点正文块 | 该块进入编辑态（行内 WYSIWYG：`**`/`~~`/反引号等标记收起，只显示样式），其余块继续渲染 | `MarkdownBlockEditor.kt` / `MarkdownInlineEdit.kt` |
-| 光标进入行内标记 | 该 token 的原始标记还原显示（暗灰），可编辑；移出即折叠 | 同上 |
+| 光标进入/紧挨行内标记 | 该 token 的原始标记还原显示（暗灰），可编辑；光标离开一格即折叠 | 同上 |
 | 回车 | 在当前块内切开，新起一个同类型块（列表自动续 `- `；Shift+Enter 是块内软换行；代码/公式/表格/AI 块里回车仍是换行） | `MarkdownBlockEditor.kt` |
 | Esc / Ctrl+Enter / 失焦 | 退出当前块，回到渲染态 | 同上 |
 | 块内 `/` | 行首或空白后唤起斜杠命令菜单（代码块里不触发） | `MarkdownCommands.kt` |
@@ -204,8 +211,9 @@
 几条约定：
 
 - **块是渲染与编辑的单位，不是存储单位**：标记仍写在正文里（`{{…}}`、`:::ai`、`。。。`），块切分只用于显示和替换；每次编辑只 splice 当前块，其它字节不动。
-- **行内标记只在光标进入时出现**（marktext 式）：折叠态看到的是渲染样式；标记被隐藏后，Backspace/Delete 在 token 边界按内容字符删，不会删到看不见的 `*`。
-- **已知差异**：点块进入编辑时光标在块尾（暂不支持点哪落哪）；编辑块有一圈边框；若以后要「整篇一个字段连续编辑、没有块边框」，需要把整篇做成单字段，代价是编辑时表格/公式/AI 块只能显示源码。
+- **行内标记只在光标进入或紧挨时出现**（marktext 式）：折叠态看到的是渲染样式；标记被隐藏后，Backspace/Delete 在 token 边界按内容字符删，不会删到看不见的 `*`。
+- **中文粗体是「系统字重 + 同色阴影」叠出来的**：不依赖平台字体有没有真正的 Bold 字面，跨平台观感一致；行内代码是「等宽 + 半透明底」，不画圆角。
+- **已知差异**：点块进入编辑时光标在块尾（暂不支持点哪落哪）；编辑块只剩极淡底色、没有边框；若以后要「整篇一个字段连续编辑」，需要把整篇做成单字段，代价是编辑时表格/公式/AI 块只能显示源码。
 - **空行是块间间隔**，不归任何块；删空一块后仍保留一个空编辑框，避免「删没了就点不回来」。
 - **标题也是块**（`# …`），所以标题里的行内语法同样在预览里渲染；目录与笔记列表的标题走同一套 `stripInlineMarkdown`。
 - **不做**：全局知识图、块拖拽排序、多光标；撤销/重做仍靠输入框自身。
