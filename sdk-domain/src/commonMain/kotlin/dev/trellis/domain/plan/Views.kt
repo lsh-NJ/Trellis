@@ -30,6 +30,13 @@ data class DayOccurrence(
     val carried: Boolean,
     val origin: OriginLabel,
     val actions: List<String>,
+    /**
+     * 这个节点上已经发生的计时分钟（`session` 表里已结束的段）。
+     *
+     * [minutes] 是「打算做多久」，这里是「实际做了多久」。0 表示还没计过时，
+     * 不代表没做——用户可能没开计时器。
+     */
+    val actualMinutes: Int = 0,
 )
 
 @Serializable
@@ -37,6 +44,8 @@ data class CompletedOccurrence(
     val id: String,
     val title: String,
     val note: String? = null,
+    /** 同 [DayOccurrence.actualMinutes]。 */
+    val actualMinutes: Int = 0,
 )
 
 @Serializable

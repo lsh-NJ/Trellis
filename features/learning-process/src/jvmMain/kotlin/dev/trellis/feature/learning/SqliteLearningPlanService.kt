@@ -504,6 +504,14 @@ internal class SqliteLearningPlanService(
 
     override fun endSession(env: CommandEnvelope, sessionId: String) = cmdEndSession(env, sessionId)
 
+    override fun recordSession(
+        env: CommandEnvelope,
+        occurrenceId: String,
+        startedAt: String,
+        endedAt: String,
+        source: String,
+    ) = cmdRecordSession(env, occurrenceId, startedAt, endedAt, source)
+
     override fun addTodo(env: CommandEnvelope, title: String, estimateMinutes: Int?) =
         cmdAddTodo(env, title, estimateMinutes)
 

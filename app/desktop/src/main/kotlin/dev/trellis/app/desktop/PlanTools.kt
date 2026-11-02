@@ -128,6 +128,8 @@ private fun JsonObject.intArg(name: String): Int? =
 class PlanTools(
     private val service: () -> LearningPlanService?,
     private val onChanged: () -> Unit,
+    /** 计划建好之后的通知（planId, 标题）：宿主用它把「发起这次计划」的待办挂上去。 */
+    private val onPlanCreated: (String, String) -> Unit = { _, _ -> },
     /** 设置页里的「每天预计投入」×7；没设置就是 null，计划就只记标题和目标。 */
     private val weeklyCapacity: () -> Int? = { null },
     /** 只读的 B 站客户端；`bvid` 模式直接拉分集生成全部单元。测试可注入假 fetch。 */
@@ -383,7 +385,7 @@ class PlanTools(
      * 三条命令真正落库；失败返回错误 [ToolResult]，成功返回 null（由调用方拼成功文案）。
      * 两条路径（手写 / bvid）共用，避免写库流程各写一遍。
      */
-    private fun writePlan(
+    private suspend fun writePlan(
         plan: LearningPlanService,
         title: String,
         dailyMinutes: Int,
@@ -418,6 +420,8 @@ class PlanTools(
         if (accepted.value == null) {
             return ToolResult("生效失败：" + (accepted.error?.message ?: "未知原因"), isError = true)
         }
+        // 如果这次是从待办行发起的，计划建出来就把那条待办挂上（行上显示「已排入《…》」）。
+        onPlanCreated(createdValue.planId, title)
         onChanged()
         return null
     }

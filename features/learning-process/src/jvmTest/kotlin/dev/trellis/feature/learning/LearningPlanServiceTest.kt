@@ -187,6 +187,51 @@ class LearningPlanServiceTest {
     }
 
     @Test
+    fun timerSessionsShowUpAsActualMinutesOnTheDayView() {
+        val svc = service()
+        val (planId, _, _) = seedTwoWeekPlan(svc)
+        val occurrence = svc.today(planId, "2026-10-26").occurrences.first()
+
+        val started = svc.startSession(env(planId), occurrence.id, "timer")
+        assertTrue(started.ok, started.error?.message)
+
+        moveClockTo("2026-10-26T08:42")
+        val ended = svc.endSession(env(planId), started.value!!.sessionId)
+        assertTrue(ended.ok, ended.error?.message)
+
+        val view = svc.today(planId, "2026-10-26").occurrences.first()
+        assertEquals(42, view.actualMinutes, "42 分钟的计时应该出现在日视图上")
+    }
+
+    @Test
+    fun recordingAPastActivityBlockCountsAndDeduplicates() {
+        val svc = service()
+        val (planId, _, _) = seedTwoWeekPlan(svc)
+        val occurrence = svc.today(planId, "2026-10-26").occurrences.first()
+
+        val first = svc.recordSession(
+            env(planId),
+            occurrence.id,
+            "2026-10-26T01:10:00Z",
+            "2026-10-26T01:40:00Z",
+            "activity",
+        )
+        assertTrue(first.ok, first.error?.message)
+
+        // 同一段再点一次不能变成 60 分钟。
+        val again = svc.recordSession(
+            env(planId),
+            occurrence.id,
+            "2026-10-26T01:10:00Z",
+            "2026-10-26T01:40:00Z",
+            "activity",
+        )
+        assertTrue(again.ok, again.error?.message)
+
+        assertEquals(30, svc.today(planId, "2026-10-26").occurrences.first().actualMinutes)
+    }
+
+    @Test
     fun aCompletedOccurrenceCanBeMarkedUndoneOnPurpose() {
         val svc = service()
         val (planId, _, _) = seedTwoWeekPlan(svc)

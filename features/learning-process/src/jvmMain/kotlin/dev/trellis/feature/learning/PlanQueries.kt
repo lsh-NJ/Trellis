@@ -41,10 +41,12 @@ internal fun SqliteLearningPlanService.buildDayView(planId: String?, day: String
     if (planId == null) {
         return DayView(day, label, "还没有计划。", todos = queryTodos(null).map { TodoItem(it.id, it.title, it.status) })
     }
-    val occurrences = plannedOccurrences(planId, day)
+    val actual = actualMinutesByOccurrence(planId, day)
+    val occurrences = plannedOccurrences(planId, day, actual)
     // 「哪天做完的」与「哪天该做」是两笔账：天条上写「周一 1 件」是按安排的日，
     // 所以正文也要把「安排在这天、已经勾掉」的那些列出来，否则看起来像凭空少了一条。
-    val completed = (completedOccurrences(planId, day) + doneScheduledOn(planId, day)).distinctBy { it.id }
+    val completed = (completedOccurrences(planId, day, actual) + doneScheduledOn(planId, day, actual))
+        .distinctBy { it.id }
     val todos = queryTodos(planId)
     // 看的可能不是今天（周卡片可以点未来的周），别把「今天」当成所有日子的代词。
     val isToday = date == todayDate()
@@ -66,7 +68,11 @@ internal fun SqliteLearningPlanService.buildDayView(planId: String?, day: String
     )
 }
 
-private fun SqliteLearningPlanService.plannedOccurrences(planId: String, day: String): List<DayOccurrence> =
+private fun SqliteLearningPlanService.plannedOccurrences(
+    planId: String,
+    day: String,
+    actualMinutes: Map<String, Int>,
+): List<DayOccurrence> =
     connection.prepareStatement(
         "SELECT d.id, d.unit_title, d.chapter, d.estimate_minutes, d.mode, d.status, d.min_version_minutes, " +
             "d.moved_from, d.carried_from, d.todo_title FROM v_occurrence_detail d " +
@@ -100,6 +106,7 @@ private fun SqliteLearningPlanService.plannedOccurrences(planId: String, day: St
                                 label = if (rs.getString(9) != null) "从上周结转" else "本周承诺",
                             ),
                             actions = listOf("complete", "move", "split", "shorten", "skip"),
+                            actualMinutes = actualMinutes[rs.getString(1)] ?: 0,
                         ),
                     )
                 }
@@ -107,7 +114,11 @@ private fun SqliteLearningPlanService.plannedOccurrences(planId: String, day: St
         }
     }
 
-private fun SqliteLearningPlanService.completedOccurrences(planId: String, day: String): List<CompletedOccurrence> =
+private fun SqliteLearningPlanService.completedOccurrences(
+    planId: String,
+    day: String,
+    actualMinutes: Map<String, Int>,
+): List<CompletedOccurrence> =
     connection.prepareStatement(
         "SELECT d.id, d.unit_title, o.note FROM v_occurrence_detail d " +
             "JOIN occurrence o ON o.id = d.id " +
@@ -118,13 +129,26 @@ private fun SqliteLearningPlanService.completedOccurrences(planId: String, day: 
         ps.setString(2, day)
         ps.executeQuery().use { rs ->
             buildList {
-                while (rs.next()) add(CompletedOccurrence(rs.getString(1), rs.getString(2) ?: "任务", rs.getString(3)))
+                while (rs.next()) {
+                    add(
+                        CompletedOccurrence(
+                            rs.getString(1),
+                            rs.getString(2) ?: "任务",
+                            rs.getString(3),
+                            actualMinutes[rs.getString(1)] ?: 0,
+                        ),
+                    )
+                }
             }
         }
     }
 
 /** 安排在这一天、并且已经勾掉的那些（不管哪天勾的）。 */
-private fun SqliteLearningPlanService.doneScheduledOn(planId: String, day: String): List<CompletedOccurrence> =
+private fun SqliteLearningPlanService.doneScheduledOn(
+    planId: String,
+    day: String,
+    actualMinutes: Map<String, Int>,
+): List<CompletedOccurrence> =
     connection.prepareStatement(
         "SELECT d.id, d.unit_title, o.note FROM v_occurrence_detail d " +
             "JOIN occurrence o ON o.id = d.id " +
@@ -135,10 +159,56 @@ private fun SqliteLearningPlanService.doneScheduledOn(planId: String, day: Strin
         ps.setString(2, day)
         ps.executeQuery().use { rs ->
             buildList {
-                while (rs.next()) add(CompletedOccurrence(rs.getString(1), rs.getString(2) ?: "任务", rs.getString(3)))
+                while (rs.next()) {
+                    add(
+                        CompletedOccurrence(
+                            rs.getString(1),
+                            rs.getString(2) ?: "任务",
+                            rs.getString(3),
+                            actualMinutes[rs.getString(1)] ?: 0,
+                        ),
+                    )
+                }
             }
         }
     }
+
+/**
+ * 每个 occurrence 上已经结束的计时分钟。
+ *
+ * 只算 `ended_at` 非空的 session：开着的计时还没结束，算进去会让数字一直跳。
+ * 时间戳是 ISO 8601 带偏移的字符串，用 [java.time.Instant] 解析后相减，
+ * 不依赖 SQLite 的日期函数（它对带偏移的字符串不保证）。
+ */
+private fun SqliteLearningPlanService.actualMinutesByOccurrence(
+    planId: String,
+    day: String,
+): Map<String, Int> {
+    val out = HashMap<String, Int>()
+    connection.prepareStatement(
+        "SELECT s.occurrence_id, s.started_at, s.ended_at FROM session s " +
+            "JOIN v_occurrence_detail d ON d.id = s.occurrence_id " +
+            "WHERE d.plan_id = ? AND d.day = ? AND s.ended_at IS NOT NULL",
+    ).use { ps ->
+        ps.setString(1, planId)
+        ps.setString(2, day)
+        ps.executeQuery().use { rs ->
+            while (rs.next()) {
+                val id = rs.getString(1) ?: continue
+                val started = runCatching { java.time.Instant.parse(rs.getString(2)) }.getOrNull()
+                    ?: continue
+                val ended = runCatching { java.time.Instant.parse(rs.getString(3)) }.getOrNull()
+                    ?: continue
+                val minutes = java.time.Duration.between(started, ended).toMinutes()
+                    .coerceAtLeast(0)
+                    .coerceAtMost(24L * 60)
+                    .toInt()
+                out[id] = (out[id] ?: 0) + minutes
+            }
+        }
+    }
+    return out
+}
 
 // ---------------------------------------------------------------------------
 // 本周

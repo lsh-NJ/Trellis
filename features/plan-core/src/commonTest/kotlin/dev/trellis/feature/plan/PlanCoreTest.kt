@@ -121,6 +121,19 @@ class PlanCoreTest {
     }
 
     @Test
+    fun taskKeepsTheLearningPlanLinkWhenSaved() = runTest {
+        val h = boot()
+        val task = h.plan.addTask("学完 React")
+
+        h.plan.save(task.copy(learningPlanId = "p_01J", learningPlanTitle = "React 入门"))
+
+        val reloaded = h.plan.task(task.id)!!
+        assertEquals("p_01J", reloaded.learningPlanId)
+        assertEquals("React 入门", reloaded.learningPlanTitle)
+        h.kernel.shutdown()
+    }
+
+    @Test
     fun timeTrackingAndSummaryAccumulate() = runTest {
         val h = boot()
         val task = h.plan.addTask("刷题", estimateMinutes = 60)

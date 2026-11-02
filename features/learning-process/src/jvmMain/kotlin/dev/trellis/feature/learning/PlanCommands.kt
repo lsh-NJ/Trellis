@@ -1132,9 +1132,74 @@ internal fun SqliteLearningPlanService.cmdEndSession(env: CommandEnvelope, sessi
     ok(Unit)
 }
 
+/**
+ * 记一段已经过去的时间（活动页「把这段归到节点」）。
+ *
+ * 只写 closed session；时间戳统一成 `Instant.toString()`（UTC 的 Z 结尾），
+ * 和日视图聚合里的 `Instant.parse` 对得上。重复提交同一段是幂等的。
+ */
+internal fun SqliteLearningPlanService.cmdRecordSession(
+    env: CommandEnvelope,
+    occurrenceId: String,
+    startedAt: String,
+    endedAt: String,
+    source: String,
+): CommandResult<SessionRef> = write(env) {
+    if (source !in setOf("manual", "timer", "activity")) {
+        return@write fail(ErrorCode.E_INVALID, "source 只能是 manual / timer / activity。")
+    }
+    val start = runCatching { java.time.Instant.parse(startedAt) }.getOrNull()
+        ?: return@write fail(ErrorCode.E_INVALID, "开始时间不是 ISO 8601：" + startedAt)
+    val end = runCatching { java.time.Instant.parse(endedAt) }.getOrNull()
+        ?: return@write fail(ErrorCode.E_INVALID, "结束时间不是 ISO 8601：" + endedAt)
+    if (!end.isAfter(start)) return@write fail(ErrorCode.E_INVALID, "结束时间要晚于开始时间。")
+    val minutes = java.time.Duration.between(start, end).toMinutes()
+    if (minutes > 24L * 60) return@write fail(ErrorCode.E_INVALID, "一段计时不能超过 24 小时。")
+
+    val row = occurrenceRow(occurrenceId) ?: return@write fail(ErrorCode.E_NOT_FOUND, "找不到这条任务。")
+    val startIso = start.toString()
+    val endIso = end.toString()
+    val existing = connection.prepareStatement(
+        "SELECT id FROM session WHERE occurrence_id = ? AND started_at = ? AND ended_at = ? AND source = ? LIMIT 1",
+    ).use { ps ->
+        ps.setString(1, occurrenceId)
+        ps.setString(2, startIso)
+        ps.setString(3, endIso)
+        ps.setString(4, source)
+        ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+    }
+    if (existing != null) {
+        return@write ok(SessionRef(existing), warnings = listOf("这段时间已经记过了。"))
+    }
+
+    val id = Ids.next("se_")
+    connection.prepareStatement(
+        "INSERT INTO session(id,occurrence_id,started_at,ended_at,source,created_at) VALUES(?,?,?,?,?,?)",
+    ).use { ps ->
+        ps.setString(1, id)
+        ps.setString(2, occurrenceId)
+        ps.setString(3, startIso)
+        ps.setString(4, endIso)
+        ps.setString(5, source)
+        ps.setString(6, nowIso())
+        ps.executeUpdate()
+    }
+    appendEvent(
+        type = "session.recorded", entity = "session", entityId = id, planId = row.planId,
+        payload = eventJson(
+            "occurrenceId" to JsonPrimitive(occurrenceId),
+            "minutes" to JsonPrimitive(minutes.coerceAtLeast(0)),
+            "source" to JsonPrimitive(source),
+        ),
+        actor = env.actor, commandId = env.commandId,
+    )
+    ok(SessionRef(id))
+}
+
 // ---------------------------------------------------------------------------
 // 待办
 // ---------------------------------------------------------------------------
+
 
 internal fun SqliteLearningPlanService.cmdAddTodo(
     env: CommandEnvelope,

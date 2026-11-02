@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -93,6 +95,8 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     var revealRange by remember { mutableStateOf<TextRange?>(null) }
     var revealToken by remember { mutableStateOf(0) }
     var shortcutsOpen by remember { mutableStateOf(false) }
+    // 「关联计划节点」菜单：列出待办板上今天/逾期的节点，选一个就写进笔记 frontmatter。
+    var linkMenuOpen by remember { mutableStateOf(false) }
     // 布局：左右两栏都能收起（宽度不记忆，每次进页面先都展开；目录宽度例外，见 MarkdownSidebarState）。
     var leftCollapsed by remember { mutableStateOf(false) }
     var collapsedOutline by remember { mutableStateOf(emptySet<Int>()) }
@@ -140,6 +144,33 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         savedAtMs = updated.updatedAt
         notes = store.list()
         runtime.knowledgeNoteId = id
+        // 已关联计划节点的笔记：保存即视为「这个节点做完了」。没关联的什么也不做。
+        if (runtime.onNoteSaved(updated)) {
+            message = "笔记已保存，并完成了关联的计划节点"
+        }
+    }
+
+    /**
+     * 把当前笔记关联到某个计划节点，并立刻按「笔记」记一次完成。
+     *
+     * 关联写在笔记 frontmatter（`plan` / `occurrence`），不建索引；节点 id 失效时还有标题兜底。
+     */
+    fun linkNoteTo(node: PlanNodeRow) {
+        val base = loaded ?: return
+        val updated = base
+            .copy(title = title, body = body, updatedAt = clock.nowMs())
+            .withPlanLink(node.planId, node.occurrenceId, node.planTitle, node.title)
+        if (!store.save(updated)) {
+            message = "关联失败：写不进笔记"
+            return
+        }
+        loaded = updated
+        notes = store.list()
+        message = if (runtime.onNoteSaved(updated)) {
+            "已关联并完成：" + node.title
+        } else {
+            "已关联：" + node.title
+        }
     }
 
     /**
@@ -522,6 +553,41 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                             active = MarkdownSidebarState.visible,
                             onClick = { MarkdownSidebarState.visible = !MarkdownSidebarState.visible },
                         )
+                        Box {
+                            EditorChip(
+                                label = if (loaded?.occurrenceId != null) "已关联" else "关联",
+                                active = loaded?.occurrenceId != null,
+                                onClick = {
+                                    // 待办板是计划的「今天/逾期」视图；先刷一遍，菜单里才有节点。
+                                    runtime.refreshPlan()
+                                    linkMenuOpen = true
+                                },
+                            )
+                            DropdownMenu(
+                                expanded = linkMenuOpen,
+                                onDismissRequest = { linkMenuOpen = false },
+                            ) {
+                                val nodes = runtime.todoPlanNodes.flatMap { group ->
+                                    group.nodes.map { node -> group.planTitle to node }
+                                }
+                                if (nodes.isEmpty()) {
+                                    DropdownMenuItem(
+                                        text = { Text("今天没有待做的计划节点") },
+                                        onClick = { linkMenuOpen = false },
+                                    )
+                                } else {
+                                    nodes.forEach { (planTitle, node) ->
+                                        DropdownMenuItem(
+                                            text = { Text(planTitle + " · " + node.title) },
+                                            onClick = {
+                                                linkMenuOpen = false
+                                                linkNoteTo(node)
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        }
                         EditorChip(
                             label = "导出",
                             active = false,

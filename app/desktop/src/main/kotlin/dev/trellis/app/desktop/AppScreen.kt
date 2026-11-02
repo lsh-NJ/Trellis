@@ -509,6 +509,8 @@ internal fun TaskBoard(runtime: AppRuntime, taskFocus: FocusRequester, framed: B
                         task = task,
                         onToggle = { scope.launch { runtime.toggle(it) } },
                         onTimer = { runtime.openTimer(it) },
+                        onPlan = { runtime.planFromTask(it) },
+                        onOpenPlan = { runtime.openTab("plan") },
                         onDelete = { scope.launch { runtime.delete(it) } },
                     )
                 }
@@ -526,6 +528,8 @@ internal fun TaskBoard(runtime: AppRuntime, taskFocus: FocusRequester, framed: B
                             task = task,
                             onToggle = { scope.launch { runtime.toggle(it) } },
                             onTimer = { runtime.openTimer(it) },
+                            onPlan = { runtime.planFromTask(it) },
+                            onOpenPlan = { runtime.openTab("plan") },
                             onDelete = { scope.launch { runtime.delete(it) } },
                         )
                     }
@@ -773,6 +777,8 @@ private fun TaskRow(
     task: Task,
     onToggle: (Task) -> Unit,
     onTimer: (Task) -> Unit,
+    onPlan: (Task) -> Unit,
+    onOpenPlan: (Task) -> Unit,
     onDelete: (Task) -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -852,6 +858,14 @@ private fun TaskRow(
                         color = muted.copy(alpha = 0.8f),
                     )
                 }
+                if (!task.learningPlanTitle.isNullOrBlank()) {
+                    Text(
+                        "已排入《" + task.learningPlanTitle + "》",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable { onOpenPlan(task) },
+                    )
+                }
             }
         }
 
@@ -859,6 +873,7 @@ private fun TaskRow(
         if (hovered) {
             // 一个任务只有一个计时入口（原来那个「记 25 分钟」并进计时窗口里）。
             if (!task.isDone) IconAction("⏱", "开计时器") { onTimer(task) }
+            if (!task.isDone) IconAction("↗", "排成学习计划") { onPlan(task) }
             IconAction("⌫", "删除", tint = extra.danger) { onDelete(task) }
         }
     }

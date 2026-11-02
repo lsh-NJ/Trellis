@@ -54,6 +54,15 @@ data class Task(
     val note: String = "",
     val createdAt: Long,
     val completedAt: Long? = null,
+    /**
+     * 这条待办被排进哪份**学习计划**（学习计划后端的 plan id）。
+     *
+     * 和 [planId] 不是一回事：[planId] 是旧的任务分组（KV `Plan`），
+     * 这里指向 plan.db 里的学习计划。两个都留着是为了旧数据还能读。
+     */
+    val learningPlanId: String? = null,
+    /** 学习计划标题的冗余副本：待办行上直接显示「已排入《…》」，不用再查库。 */
+    val learningPlanTitle: String? = null,
 ) {
     val isDone: Boolean get() = status == TaskStatus.DONE
 }

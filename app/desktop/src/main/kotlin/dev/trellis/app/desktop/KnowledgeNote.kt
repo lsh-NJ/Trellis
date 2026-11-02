@@ -31,6 +31,41 @@ internal data class KnowledgeNote(
     val extras: Map<String, String> = emptyMap(),
 )
 
+// ---- 与学习计划的关联（frontmatter 的 plan / occurrence） ----
+//
+// 关联写在笔记文件里，不建索引库：换机器、重装应用、把笔记丢进 Obsidian 都还在。
+
+/** 这篇笔记关联的计划 id；没关联时为 null。 */
+internal val KnowledgeNote.planId: String?
+    get() = extras["plan"]?.trim()?.takeIf { it.isNotEmpty() }
+
+/** 这篇笔记关联的计划节点（occurrence）id；没关联时为 null。 */
+internal val KnowledgeNote.occurrenceId: String?
+    get() = extras["occurrence"]?.trim()?.takeIf { it.isNotEmpty() }
+
+/**
+ * 写入/清除计划关联；其余 extras 原样保留。
+ *
+ * 同时记下计划名和节点名：节点 id 会随计划换版本而失效，标题至少还能给人看，
+ * 也能在计划重建后按标题重新对上。
+ */
+internal fun KnowledgeNote.withPlanLink(
+    planId: String?,
+    occurrenceId: String?,
+    planTitle: String? = null,
+    nodeTitle: String? = null,
+): KnowledgeNote {
+    val next = extras.toMutableMap()
+    fun put(key: String, value: String?) {
+        if (value.isNullOrBlank()) next.remove(key) else next[key] = value
+    }
+    put("plan", planId)
+    put("occurrence", occurrenceId)
+    put("plan_title", planTitle)
+    put("node_title", nodeTitle)
+    return copy(extras = next)
+}
+
 /** 列表用的轻量信息：不把正文全带进列表渲染。 */
 internal data class NoteSummary(
     val id: String,

@@ -1626,7 +1626,8 @@ class AppRuntime private constructor() {
             val planTools = PlanTools(
                 { learningPlan() },
                 { refreshPlan() },
-                { studyPrefs.weeklyMinutes },
+                onPlanCreated = { planId, title -> chatScope.launch { attachPendingTask(planId, title) } },
+                weeklyCapacity = { studyPrefs.weeklyMinutes },
                 planDbError = { planDbError },
                 clock = clock,
             )
@@ -1750,6 +1751,14 @@ class AppRuntime private constructor() {
 
     var tasks by mutableStateOf<List<Task>>(emptyList())
         private set
+
+    /**
+     * 点了待办行的「排成计划」之后，等计划建出来要回写的那条待办。
+     *
+     * 计划创建走的是对话里的 `create_learning_plan`，模型回复里不一定带任务 id，
+     * 所以这里先记着，等 `PlanTools.writePlan` 成功时由 [attachPendingTask] 取走。
+     */
+    internal var pendingPlanTask by mutableStateOf<Task?>(null)
 
     var summary by mutableStateOf(PlanSummary())
         private set
@@ -2825,6 +2834,29 @@ class AppRuntime private constructor() {
     }
 
     /**
+     * 从一条待办发起「排成学习计划」：记住这条待办，把请求预填进对话。
+     *
+     * 计划真正建出来时（`PlanTools.writePlan` 成功）由 [attachPendingTask] 回写，
+     * 所以不依赖模型在回复里带任务 id。
+     */
+    internal fun planFromTask(task: Task) {
+        pendingPlanTask = task
+        askInChat("我想学「" + task.title + "」，帮我做一个学习计划")
+    }
+
+    /** 计划建出来后，把刚才那条待办挂到计划上（待办行会显示「已排入《…》」）。 */
+    internal suspend fun attachPendingTask(planId: String, planTitle: String) {
+        val pending = pendingPlanTask ?: return
+        pendingPlanTask = null
+        // 计划生成要几十秒，这期间任务可能被勾掉/改过：以库里最新的一条为准再写链接。
+        val current = planService.task(pending.id) ?: return
+        val updated = runCatching {
+            planService.save(current.copy(learningPlanId = planId, learningPlanTitle = planTitle))
+        }.getOrNull() ?: return
+        tasks = tasks.map { if (it.id == updated.id) updated else it }
+    }
+
+    /**
      * 删除一条任务，但给 5 秒撤回窗口。
      *
      * 为什么不一上来就弹确认框：删除是高频动作，确认框会让每次删除多一次决策；
@@ -3173,6 +3205,62 @@ class AppRuntime private constructor() {
                 "已同步 " + report.buckets + " 个 bucket、" + report.rows + " 条事件"
             }
         }
+    }
+
+    /**
+     * 某一天的计划日视图，给活动页做「计划 vs 实际」用。
+     *
+     * 和计划页共用同一个 [LearningPlanService]，但不改计划页的选中状态；
+     * 同一天里节点上的 actualMinutes 来自 session（计时器关掉时写入）。
+     */
+    internal fun planDayFor(day: String): DayView? {
+        val service = learningPlan() ?: return null
+        return runCatching { service.today(service.activePlanId(), day) }.getOrNull()
+    }
+
+    /**
+     * 笔记保存后：如果它关联了某个计划节点，就把这篇笔记当作「这个节点做完了」的证据。
+     *
+     * 只对已关联的笔记生效，没关联的不猜；节点已经完成时后端会拒绝，这里静默返回 false。
+     * 完成记录落在 occurrence 状态和 note 上，不另建表。
+     */
+    internal fun onNoteSaved(note: KnowledgeNote): Boolean {
+        val planId = note.planId ?: return false
+        val occurrenceId = note.occurrenceId ?: return false
+        val service = learningPlan() ?: return false
+        val title = note.title.ifBlank { "无标题笔记" }
+        val result = runCatching {
+            service.completeOccurrence(uiCommand(planId), occurrenceId, "笔记《" + title + "》")
+        }.getOrNull() ?: return false
+        if (!result.ok) return false
+        refreshPlan()
+        return true
+    }
+
+    /**
+     * 把活动页的一段活动归到某个计划节点：记一段已经结束的 session（source = activity）。
+     *
+     * 幂等：同一节点 + 同一时段重复点不会重复记（后端按 occurrence/start/end/source 查重）。
+     */
+    internal fun attributeSegment(segment: Segment, node: PlanNodeRow): Boolean {
+        val service = learningPlan() ?: return false
+        val command = CommandEnvelope(
+            commandId = "act_" + node.occurrenceId + "_" + segment.fromMs + "_" + segment.toMs,
+            actor = Actor.USER,
+            planId = node.planId,
+            origin = "ui.activity",
+        )
+        val result = runCatching {
+            service.recordSession(
+                command,
+                node.occurrenceId,
+                java.time.Instant.ofEpochMilli(segment.fromMs).toString(),
+                java.time.Instant.ofEpochMilli(segment.toMs).toString(),
+                "activity",
+            )
+        }.getOrNull() ?: return false
+        if (result.ok) refreshPlan()
+        return result.ok
     }
 
     /** 某一天的汇总；库没打开 / 读失败时返回 null（错误在 [activityMessage]）。 */

@@ -24,6 +24,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -53,6 +55,7 @@ import dev.trellis.activity.ClassificationExplanation
 import dev.trellis.activity.DaySummary
 import dev.trellis.activity.RangeSummary
 import dev.trellis.activity.Segment
+import dev.trellis.domain.plan.DayView as PlanDayView
 import dev.trellis.ui.LocalCardStyle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -82,6 +85,8 @@ internal fun ActivityScreen(runtime: AppRuntime, modifier: Modifier = Modifier) 
 
     var daySummary by remember { mutableStateOf<DaySummary?>(null) }
     var daySegments by remember { mutableStateOf<List<Segment>>(emptyList()) }
+    var planDay by remember { mutableStateOf<PlanDayView?>(null) }
+    var baselineMs by remember { mutableStateOf<Long?>(null) }
     var rangeSummary by remember { mutableStateOf<RangeSummary?>(null) }
     var loading by remember { mutableStateOf(false) }
 
@@ -110,6 +115,8 @@ internal fun ActivityScreen(runtime: AppRuntime, modifier: Modifier = Modifier) 
         loading = true
         daySummary = runtime.activityDay(noonOf(selectedDay))
         daySegments = runtime.activitySegments(noonOf(selectedDay))
+        // 同一根轴上再叠一层计划：某天安排了什么、做完没有、计时了多久。
+        planDay = runtime.planDayFor(selectedDay.toString())
         loading = false
     }
 
@@ -118,6 +125,15 @@ internal fun ActivityScreen(runtime: AppRuntime, modifier: Modifier = Modifier) 
         loading = true
         rangeSummary = runtime.activityRange(noonOf(rangeStart), noonOf(rangeEnd))
         loading = false
+    }
+
+    // 「活跃度」要有个人基线：取选中日往前 14 天活跃时长的中位数（忽略没有数据的天）。
+    LaunchedEffect(mode, selectedDay) {
+        if (mode != ActivityMode.Day) return@LaunchedEffect
+        val values = (1..14).mapNotNull { offset ->
+            runtime.activityDay(noonOf(selectedDay.minusDays(offset.toLong())))?.activeMs
+        }.filter { it > 0 }
+        baselineMs = medianOf(values)
     }
 
     Column(
@@ -156,6 +172,8 @@ internal fun ActivityScreen(runtime: AppRuntime, modifier: Modifier = Modifier) 
             ActivityMode.Day -> DayView(
                 summary = daySummary,
                 segments = daySegments,
+                planDay = planDay,
+                baselineMs = baselineMs,
                 loading = loading,
                 onOpenDetail = { detail = it },
             )
@@ -202,6 +220,7 @@ internal fun ActivityScreen(runtime: AppRuntime, modifier: Modifier = Modifier) 
                 classify = segment
                 detail = null
             },
+            onAttributed = { reloadTick++ },
         )
     }
 
@@ -311,11 +330,89 @@ private fun ActivityHeader(
     }
 }
 
+/**
+ * 活动页里的计划层：今天安排了什么、做完没有、计时了多久。
+ *
+ * 数据全部来自 [PlanDayView]（计划后端的日视图）；这里只做展示，
+ * 不提供勾选/改期——那些动作在计划页，避免活动页变成第二个计划入口。
+ */
+@Composable
+private fun PlanTodayCard(day: PlanDayView) {
+    val planned = day.occurrences.sumOf { it.minutes }
+    val actual = day.occurrences.sumOf { it.actualMinutes } + day.completed.sumOf { it.actualMinutes }
+    val done = day.completed.size
+    val total = day.occurrences.size + done
+    ActivityCard {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Text("计划", style = MaterialTheme.typography.titleSmall)
+            Spacer(Modifier.weight(1f))
+            Text(
+                "完成 $done/$total · 计划 $planned 分钟 · 已计时 $actual 分钟",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        day.occurrences.forEach { item ->
+            PlanLine(
+                title = item.title,
+                meta = buildString {
+                    if (item.chapter.isNotBlank()) append(item.chapter).append(" · ")
+                    append("预估 ").append(item.minutes).append(" 分钟")
+                    if (item.actualMinutes > 0) append(" · 计时 ").append(item.actualMinutes).append(" 分钟")
+                },
+                done = false,
+            )
+        }
+        day.completed.forEach { item ->
+            PlanLine(
+                title = item.title,
+                meta = if (item.actualMinutes > 0) "已计时 " + item.actualMinutes + " 分钟" else "已完成",
+                done = true,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PlanLine(title: String, meta: String, done: Boolean) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp),
+    ) {
+        Box(
+            Modifier
+                .size(7.dp)
+                .clip(CircleShape)
+                .background(
+                    if (done) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                ),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            title,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            meta,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
 /** 日视图：统计条 → 24 小时时间轴 → 分类树 → 应用排行 → 未分类折叠块。 */
 @Composable
 private fun DayView(
     summary: DaySummary?,
     segments: List<Segment>,
+    planDay: PlanDayView?,
+    baselineMs: Long?,
     loading: Boolean,
     onOpenDetail: (Segment) -> Unit,
 ) {
@@ -339,6 +436,7 @@ private fun DayView(
     val uncategorized = remember(segments) {
         segments.filter { it.categoryId == ActivityCategoryUncategorized }.sortedByDescending { it.durationMs }
     }
+    val todayPlan = planDay
 
     LazyColumn(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
@@ -352,7 +450,20 @@ private fun DayView(
                     ActivityStat("其他", formatDuration((summary.observedMs - summary.activeMs - summary.afkMs).coerceAtLeast(0)))
                     ActivityStat("片段", summary.segmentCount.toString() + " 段")
                 }
+                if (baselineMs != null && baselineMs > 0) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "活跃度：" + activityLevel(summary.activeMs, baselineMs) +
+                            "（近 14 天基线 " + formatDuration(baselineMs) + "）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
+        }
+
+        if (todayPlan != null && (todayPlan.occurrences.isNotEmpty() || todayPlan.completed.isNotEmpty())) {
+            item { PlanTodayCard(todayPlan) }
         }
 
         item {
@@ -756,14 +867,41 @@ private fun SegmentDetailDialog(
     segment: Segment,
     onDismiss: () -> Unit,
     onClassify: () -> Unit,
+    onAttributed: () -> Unit,
 ) {
     val explanation by produceState<ClassificationExplanation?>(initialValue = null, segment) {
         value = runtime.activityExplain(segment.app, segment.title, segment.url)
     }
+    var planMenu by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box {
+                    TextButton(onClick = { runtime.refreshPlan(); planMenu = true }) { Text("归到计划…") }
+                    DropdownMenu(expanded = planMenu, onDismissRequest = { planMenu = false }) {
+                        val nodes = runtime.todoPlanNodes.flatMap { group ->
+                            group.nodes.map { node -> group.planTitle to node }
+                        }
+                        if (nodes.isEmpty()) {
+                            DropdownMenuItem(
+                                text = { Text("今天没有待做的计划节点") },
+                                onClick = { planMenu = false },
+                            )
+                        } else {
+                            nodes.forEach { (planTitle, node) ->
+                                DropdownMenuItem(
+                                    text = { Text(planTitle + " · " + node.title) },
+                                    onClick = {
+                                        planMenu = false
+                                        if (runtime.attributeSegment(segment, node)) onAttributed()
+                                        onDismiss()
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
                 TextButton(onClick = onClassify) { Text("归到分类…") }
                 TextButton(onClick = onDismiss) { Text("关闭") }
             }
@@ -930,6 +1068,25 @@ private fun formatDuration(ms: Long): String {
         minutes % 60 == 0L -> (minutes / 60).toString() + " 小时"
         else -> (minutes / 60).toString() + " 小时 " + (minutes % 60) + " 分"
     }
+}
+
+/** 活跃度分级：和「过去 14 天中位数」比，不看绝对时长（每个人基线不同）。 */
+private fun activityLevel(todayMs: Long, baselineMs: Long): String {
+    if (baselineMs <= 0) return "—"
+    val ratio = todayMs.toDouble() / baselineMs
+    return when {
+        ratio < 0.4 -> "静默"
+        ratio < 0.8 -> "偏低"
+        ratio <= 1.25 -> "正常"
+        else -> "偏高"
+    }
+}
+
+private fun medianOf(values: List<Long>): Long? {
+    if (values.isEmpty()) return null
+    val sorted = values.sorted()
+    val mid = sorted.size / 2
+    return if (sorted.size % 2 == 1) sorted[mid] else (sorted[mid - 1] + sorted[mid]) / 2
 }
 
 private fun dayLabel(date: LocalDate): String {

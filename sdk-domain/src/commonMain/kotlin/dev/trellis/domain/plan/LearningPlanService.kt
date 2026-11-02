@@ -122,6 +122,21 @@ interface LearningPlanService {
 
     fun endSession(env: CommandEnvelope, sessionId: String): CommandResult<Unit>
 
+    /**
+     * 直接记一段**已经过去**的时间（活动页把某段活动归到计划节点时用）。
+     *
+     * 和 [startSession]/[endSession] 的区别：那两个记的是「现在开始/现在结束」，
+     * 这条记的是给定时段；写入后 `session` 就是 closed 的，日视图的 actualMinutes 会算进去。
+     * 同一 occurrence + 同一时段重复调用不会重复记（返回已有 session 并带 warning）。
+     */
+    fun recordSession(
+        env: CommandEnvelope,
+        occurrenceId: String,
+        startedAt: String,
+        endedAt: String,
+        source: String = "activity",
+    ): CommandResult<SessionRef>
+
     // ---------------- 待办 ----------------
 
     fun addTodo(env: CommandEnvelope, title: String, estimateMinutes: Int? = null): CommandResult<TodoRef>
