@@ -2,6 +2,7 @@ package dev.trellis.app.desktop
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.sp
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -28,6 +29,19 @@ class MarkdownTextTest {
         assertEquals(2, rendered.codeChips.size)
         assertEquals("val x = 1", rendered.text.substring(rendered.codeChips[0].first, rendered.codeChips[0].last + 1))
         assertEquals("y", rendered.text.substring(rendered.codeChips[1].first, rendered.codeChips[1].last + 1))
+    }
+
+    @Test
+    fun onlyAnnotatedConceptsAreUnderlined() {
+        val rendered = buildInlineMarkdown(
+            text = "RAG 与 [[检索增强生成=>RAG]] 都提到",
+            conceptNames = listOf("RAG", "检索增强生成"),
+        )
+        assertEquals("RAG 与 检索增强生成 都提到", rendered.text.text)
+        val underlines = rendered.text.spanStyles.count { it.item.textDecoration == TextDecoration.Underline }
+        assertEquals(1, underlines)
+        val colored = rendered.text.spanStyles.filter { it.item.color != Color.Unspecified }
+        assertTrue(colored.size >= 2, "普通出现和标注都要染色，实际 " + colored)
     }
 
     @Test

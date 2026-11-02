@@ -22,18 +22,24 @@ import androidx.compose.ui.text.input.TextFieldValue
  */
 
 /** 行内标记的种类；[MarkdownDocumentEditor] 按它挑样式。 */
-internal enum class InlineMarkKind { Bold, Italic, Code, Strike, Link, Math, Concept }
+internal enum class InlineMarkKind { Bold, Italic, Code, Strike, Link, Math, Concept, ConceptPlain }
 
 /** 可见文本里的样式区间（坐标是投影后文本的偏移）。 */
 internal data class InlineMarkRange(val start: Int, val end: Int, val kind: InlineMarkKind)
 
-/** 原文里一个行内 token；[contentStart]..[contentEnd] 是内容，两侧是标记。 */
+/**
+ * 原文里一个行内 token；[contentStart]..[contentEnd] 是内容，两侧是标记。
+ *
+ * [innerHidden] 是内容里「只在编辑时出现、平时该藏起来」的部分（`[[原文=>概念名]]` 的
+ * `=> 概念名`）——折叠时藏掉，光标进来时按语法色显示。
+ */
 internal data class InlineTokenRange(
     val start: Int,
     val end: Int,
     val contentStart: Int,
     val contentEnd: Int,
     val kind: InlineMarkKind,
+    val innerHidden: IntRange? = null,
 )
 
 /** 一行正文的类别（决定显示样式和回车行为）。 */
@@ -265,7 +271,11 @@ private fun structuralLine(
  * [selection] 用原文坐标；标题/引用的行首标记按「光标是否在这一行」决定显示还是隐藏，
  * 行内 token 按「光标是否在 token 里或前后紧挨一格」决定。
  */
-internal fun projectDocument(body: String, selection: TextRange): DocumentProjection {
+internal fun projectDocument(
+    body: String,
+    selection: TextRange,
+    conceptNames: List<String> = emptyList(),
+): DocumentProjection {
     val lines = scanDocumentLines(body)
     val caretIndex = lines.indexOfLast { it.start <= selection.min }.coerceAtLeast(0)
     val caretLine = lines.getOrNull(caretIndex)
@@ -315,6 +325,7 @@ internal fun projectDocument(body: String, selection: TextRange): DocumentProjec
         val groups = match.groups
         val kind: InlineMarkKind
         val content: IntRange
+        var innerHidden: IntRange? = null
         when {
             // 图片保持原样（图不是文本，折叠 URL 反而看不懂）。
             groups["imageAlt"] != null -> continue
@@ -350,8 +361,14 @@ internal fun projectDocument(body: String, selection: TextRange): DocumentProjec
             }
 
             groups["concept"] != null -> {
+                val conceptRange = groups["concept"]!!.range
                 kind = InlineMarkKind.Concept
-                content = groups["concept"]!!.range
+                content = conceptRange
+                val contentText = body.substring(conceptRange.first, conceptRange.last + 1)
+                val displayLength = conceptAnnotationDisplayLength(contentText)
+                if (displayLength in 0 until contentText.length) {
+                    innerHidden = (conceptRange.first + displayLength)..conceptRange.last
+                }
             }
 
             groups["strike"] != null -> {
@@ -366,10 +383,26 @@ internal fun projectDocument(body: String, selection: TextRange): DocumentProjec
 
             else -> continue
         }
-        val token = InlineTokenRange(start, end, content.first, content.last + 1, kind)
+        val token = InlineTokenRange(start, end, content.first, content.last + 1, kind, innerHidden)
         tokens += token
         marks += InlineMarkRange(token.contentStart, token.contentEnd, kind)
         applyTokenMarkers(token, selection, hiddenRanges, syntaxRanges)
+    }
+
+    // 概念名/别名在正文里的普通出现：只染色、不加下划线（标注过的 `[[…]]` 才有下划线）。
+    if (conceptNames.isNotEmpty()) {
+        val annotatedContents = tokens
+            .filter { it.kind == InlineMarkKind.Concept }
+            .map { it.contentStart until it.contentEnd }
+        val plainMarks = conceptHits(body, conceptNames).mapNotNull { hit ->
+            val start = hit.first
+            val end = hit.last + 1
+            val line = lines.firstOrNull { start >= it.start && start < it.end } ?: return@mapNotNull null
+            if (line.kind in rawContentKinds) return@mapNotNull null
+            if (annotatedContents.any { start < it.last + 1 && end > it.first }) return@mapNotNull null
+            InlineMarkRange(start, end, InlineMarkKind.ConceptPlain)
+        }
+        if (plainMarks.isNotEmpty()) marks.addAll(0, plainMarks)
     }
 
     val isHidden = BooleanArray(body.length)
@@ -461,9 +494,11 @@ private fun applyTokenMarkers(
     if (revealed) {
         leftRange?.let(syntax::add)
         rightRange?.let(syntax::add)
+        token.innerHidden?.let(syntax::add)
     } else {
         leftRange?.let(hidden::add)
         rightRange?.let(hidden::add)
+        token.innerHidden?.let(hidden::add)
     }
 }
 
@@ -479,6 +514,106 @@ private fun mergeRanges(ranges: List<IntRange>): List<IntRange> {
         }
     }
     return merged
+}
+
+// ---- `[[` 自动补全（纯函数，方便单测；编辑器只负责弹菜单、把选择塞回去） ----
+
+/** 候选项里代表 `=>` 的那一项：把左边原文映射到右边概念名（不是真的概念名）。 */
+internal const val CONCEPT_COMPLETION_SEPARATOR: String = "=>"
+
+/** 一次 `[[` 补全要补什么；[openStart] 是 `[[` 的起始下标。 */
+internal data class ConceptCompletion(
+    val openStart: Int,
+    /** 当前正在补的名字片段在原文里的起点。 */
+    val nameStart: Int,
+    /** 已经输入的名字片段（空串表示刚敲完 `=>`）。 */
+    val query: String,
+    /** 已经敲过 `=>`，现在补的是右边的概念名。 */
+    val afterSeparator: Boolean,
+    val candidates: List<String>,
+)
+
+private const val CONCEPT_COMPLETION_LIMIT = 6
+private val conceptCompletionSeparator = Regex("(?:=>|→)")
+
+/**
+ * 光标如果落在一条还没闭合的 `[[…]]` 里，给出候选；否则返回 null。
+ *
+ * 两条防打扰规则（用户定的）：没敲过 `=>` 时已输入字数必须 > 1；名字已经完整匹配到
+ * 唯一候选时不再弹（否则打全了还挂着一个「补全」很烦）。
+ */
+internal fun conceptCompletionAt(
+    text: String,
+    cursor: Int,
+    names: List<String>,
+): ConceptCompletion? {
+    if (cursor <= 0 || cursor > text.length) return null
+    var open = text.lastIndexOf(CONCEPT_OPEN, cursor - 1)
+    while (open >= 0) {
+        val inner = text.substring(open + 2, cursor)
+        if (!inner.contains(CONCEPT_CLOSE) && !inner.contains('\n')) break
+        open = text.lastIndexOf(CONCEPT_OPEN, open - 1)
+    }
+    if (open < 0 || open + 2 > cursor) return null
+    val inner = text.substring(open + 2, cursor)
+    if (inner.contains(CONCEPT_CLOSE) || inner.contains('\n')) return null
+
+    val separator = conceptCompletionSeparator.findAll(inner).lastOrNull()
+    val afterSeparator = separator != null
+    val queryPart = if (separator != null) {
+        inner.substring(separator.range.last + 1)
+    } else {
+        inner
+    }
+    val query = queryPart.trim()
+    if (!afterSeparator && query.length <= 1) return null
+    val rawStart = open + 2 + (separator?.let { it.range.last + 1 } ?: 0)
+    val nameStart = rawStart + (queryPart.length - queryPart.trimStart().length)
+
+    val matches = names.asSequence()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .distinctBy { conceptKey(it) }
+        .filter { query.isEmpty() || it.contains(query, ignoreCase = true) }
+        .sortedWith(
+            compareByDescending<String> { it.startsWith(query, ignoreCase = true) }
+                .thenBy { it.length }
+                .thenBy { it },
+        )
+        .take(CONCEPT_COMPLETION_LIMIT)
+        .toMutableList()
+    if (!afterSeparator && matches.any { it.equals(query, ignoreCase = true) } && matches.size <= 1) {
+        // 完全匹配：用户已经把名字打全了，别再弹一个只有自己的候选。
+        return null
+    }
+    if (!afterSeparator) matches += CONCEPT_COMPLETION_SEPARATOR
+    if (matches.isEmpty()) return null
+    return ConceptCompletion(open, nameStart, query, afterSeparator, matches)
+}
+
+/**
+ * 把补全选择写回文本。
+ *
+ * - 选 `=>`：只在光标处插 ` => `（左边的原文原样保留），光标停在 `=>` 后面继续补概念名；
+ * - 选概念名：替换已输入的名字片段，并补上 `]]`（后面已经是 `]]` 就不重复补）。
+ */
+internal fun applyConceptCompletion(
+    value: TextFieldValue,
+    completion: ConceptCompletion,
+    choice: String,
+): TextFieldValue {
+    val text = value.text
+    val cursor = value.selection.max.coerceIn(0, text.length)
+    val isSeparator = choice == CONCEPT_COMPLETION_SEPARATOR
+    val alreadyClosed = text.startsWith(CONCEPT_CLOSE, cursor)
+    val insert = when {
+        isSeparator -> " " + CONCEPT_SEPARATOR + " "
+        alreadyClosed -> choice
+        else -> choice + CONCEPT_CLOSE
+    }
+    val start = if (isSeparator) cursor else completion.nameStart.coerceIn(0, cursor)
+    val newText = text.substring(0, start) + insert + text.substring(cursor)
+    return TextFieldValue(newText, TextRange(start + insert.length))
 }
 
 // ---- 回车行为（纯函数，方便单测；编辑器只负责把结果塞回 BasicTextField） ----

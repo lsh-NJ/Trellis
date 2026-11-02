@@ -105,12 +105,6 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     val aiBaselines = remember { mutableStateMapOf<String, String>() }
 
     val concepts = remember(notes, loaded) { store.conceptIndex() }
-    val conceptDetail = remember(selectedConcept, notes, loaded) {
-        selectedConcept?.let { store.conceptDetail(it) }
-    }
-    val searchHits = remember(notes, query, loaded) {
-        if (query.isBlank()) null else store.search(query)
-    }
     val outlineItems = remember(body) { parseOutline(body) }
 
     /** 目录「全部收起」要收的节点：所有带子标题的标题 offset。 */
@@ -118,11 +112,47 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         if (item.children.isEmpty()) emptyList() else listOf(item.offset) + parentOffsets(item.children)
     }
 
+    /** 概念库的身份表（规范名 + 别名）+ 索引里已有的概念：正文标注靠它解析成规范名。 */
+    fun currentIdentities(): List<ConceptIdentity> {
+        val known = LinkedHashMap<String, ConceptIdentity>()
+        for (identity in metaStore.identities()) {
+            known.putIfAbsent(conceptKey(identity.name), identity)
+        }
+        for (summary in concepts) {
+            known.putIfAbsent(conceptKey(summary.name), ConceptIdentity(summary.name))
+        }
+        return known.values.toList()
+    }
+
+    // 概念详情 / 搜索要认识别名，所以身份表算在前面（概念库 + 索引现算）。
+    val identities = remember(notes, loaded) { currentIdentities() }
+    val conceptDetail = remember(selectedConcept, notes, loaded) {
+        selectedConcept?.let { store.conceptDetail(it, identities = identities) }
+    }
+    val searchHits = remember(notes, query, loaded) {
+        if (query.isBlank()) null else store.search(query, identities = identities)
+    }
+
+    /** 正文里要高亮的名字：概念规范名 + 别名（别名只匹配、不改归属）。 */
+    fun conceptHighlightNames(): List<String> {
+        val names = ArrayList<String>()
+        val seen = HashSet<String>()
+        for (identity in currentIdentities()) {
+            for (name in listOf(identity.name) + identity.aliases) {
+                if (seen.add(conceptKey(name))) names += name
+            }
+        }
+        return names
+    }
+
     /** 只写文件、不动界面状态；返回是否成功。离开组合时用它兜底。 */
     fun saveCurrent(): Boolean {
         val note = loaded ?: return true
         if (note.title == title && note.body == body) return true
-        val updated = note.copy(title = title, body = body, updatedAt = clock.nowMs())
+        val updated = synchronizeConceptMembership(
+            note.copy(title = title, body = body, updatedAt = clock.nowMs()),
+            currentIdentities(),
+        )
         return store.save(updated)
     }
 
@@ -131,7 +161,10 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         val note = loaded ?: return
         val id = selectedId ?: return
         if (note.title == title && note.body == body) return
-        val updated = note.copy(title = title, body = body, updatedAt = clock.nowMs())
+        val updated = synchronizeConceptMembership(
+            note.copy(title = title, body = body, updatedAt = clock.nowMs()),
+            currentIdentities(),
+        )
         if (!store.save(updated)) {
             message = "保存失败：写不进 " + store.notesDir.absolutePath
             return
@@ -164,20 +197,6 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         }
     }
 
-    /** 概念改动写回；正文没变，所以不动 revision，也不触发重新载入。 */
-    fun applyConcepts(next: List<String>) {
-        val note = loaded ?: return
-        val updated = note.copy(concepts = next, updatedAt = clock.nowMs())
-        if (!store.save(updated)) {
-            message = "保存失败：写不进 " + store.notesDir.absolutePath
-            return
-        }
-        loaded = updated
-        notes = store.list()
-        savedAtMs = updated.updatedAt
-        runtime.knowledgeNoteId = updated.id
-    }
-
     /**
      * 抽取/补全结果写回它所属的那篇笔记。
      *
@@ -187,13 +206,11 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     fun applyExtracted(
         id: String,
         base: KnowledgeNote,
-        nextConcepts: List<String>,
         nextBody: String = base.body,
     ): Boolean {
-        val updated = base.copy(
-            concepts = nextConcepts,
-            body = nextBody,
-            updatedAt = clock.nowMs(),
+        val updated = synchronizeConceptMembership(
+            base.copy(body = nextBody, updatedAt = clock.nowMs()),
+            currentIdentities(),
         )
         if (!store.save(updated)) {
             message = "保存失败：写不进 " + store.notesDir.absolutePath
@@ -263,19 +280,25 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
             if (bodyForAiComparison(current.body) != bodyForAiComparison(note.body)) return@launch
             val result = parseExtractionResult(raw)
             val filled = applyAiFills(current.body, result.fills.associate { it.label to it.text })
-            // 抽到的概念在正文第一次出现处包成 [[概念]]：语法层标记，预览里只显示概念名 + 下划线。
-            val markedBody = markConceptMentions(filled.body, result.candidates.map { it.name })
-            val merged = mergeConceptNames(
-                current.concepts + result.fills.map { it.label },
-                result.candidates,
-            )
+            // 抽到的概念在正文第一次出现处包成 [[概念]]：标记才是「本文概念」的唯一来源，
+            // frontmatter 的 concepts 只是按标注重算出来的缓存（见 synchronizeConceptMembership）。
+            val markedBody = markConceptAnnotations(filled.body, result.candidates)
             aiBaselines[id] = bodyForAiComparison(markedBody)
-            if (merged.size == current.concepts.size && markedBody == current.body) return@launch
-            metaStore.fillMissing(
-                candidateDefinitions(result.candidates) + fillDefinitions(result.fills),
+            val next = synchronizeConceptMembership(
+                current.copy(body = markedBody),
+                currentIdentities(),
             )
-            if (!applyExtracted(id, current, merged, markedBody)) return@launch
-            val conceptsAdded = merged.size - current.concepts.size
+            if (next.concepts == current.concepts && markedBody == current.body) return@launch
+            // mention 在正文里找不到的候选已经被丢掉了，别在概念库里留下没有出处的定义。
+            val keptCandidates = retainedCandidates(markedBody, result.candidates, currentIdentities())
+            metaStore.fillMissing(
+                candidateDefinitions(keptCandidates) + fillDefinitions(result.fills),
+            )
+            candidateAliases(keptCandidates).forEach { (name, aliases) ->
+                metaStore.mergeAliases(name, aliases)
+            }
+            if (!applyExtracted(id, current, markedBody)) return@launch
+            val conceptsAdded = next.concepts.size - current.concepts.size
             message = if (filled.applied.isNotEmpty()) {
                 "AI 补全 " + filled.applied.size + " 处（绿引号标记，点 × 可删），整理了 " +
                     conceptsAdded + " 个概念"
@@ -329,25 +352,71 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         message = null
     }
 
+    /**
+     * 人工标注概念：在正文里插 `[[原文=>概念名]]`（原文不在正文里就追加到文末）。
+     *
+     * 归属不在这里直接写 frontmatter——保存时统一按正文标记重算，
+     * 所以人工和 AI 走的是同一条路（见 [synchronizeConceptMembership]）。
+     */
     fun addConcept(name: String) {
         val note = loaded ?: return
-        val merged = mergeConceptNames(note.concepts, listOf(ConceptCandidate(normalizeConceptName(name), "")))
-        if (merged.size == note.concepts.size) {
-            message = "「" + name + "」已经在概念里了"
+        val canonical = resolveConceptName(name, currentIdentities())
+        if (canonical.isEmpty()) return
+        val nextBody = addConceptAnnotation(body, canonical, currentIdentities())
+        if (nextBody == body) {
+            persistNow()
+            val pinned = loaded?.concepts?.any { conceptKey(it) == conceptKey(canonical) } == true
+            message = if (pinned) {
+                "「" + canonical + "」已经在概念里了"
+            } else {
+                "「" + canonical + "」已在概念库里，但正文里没有这个词；先把它写进正文再标注"
+            }
             return
         }
-        applyConcepts(merged)
-        aiBaselines[note.id] = bodyForAiComparison(body)
-        message = "已点亮「" + normalizeConceptName(name) + "」"
+        metaStore.ensureConcepts(listOf(canonical))
+        body = nextBody
+        revision++
+        aiBaselines[note.id] = bodyForAiComparison(nextBody)
+        persistNow()
+        message = "已标注「" + canonical + "」（正文里插入了 [[…]] 标记）"
     }
 
+    /** 右栏「已删除」里点 ↩：重新在正文里插一处标注（墓碑由同步函数自动清掉）。 */
+    fun restoreConcept(name: String) {
+        addConcept(name)
+        message = "已恢复「" + name + "」的标注"
+    }
+
+    /** 右栏 ×：把正文里这个概念的标记降级成纯文本 → 进「已删除」（墓碑，可恢复）。 */
     fun removeConcept(name: String) {
         val note = loaded ?: return
-        val next = note.concepts.filterNot { conceptKey(it) == conceptKey(name) }
-        if (next.size == note.concepts.size) return
-        applyConcepts(next)
-        aiBaselines[note.id] = bodyForAiComparison(body)
-        message = "已熄灭「" + name + "」（这篇笔记不再引用它）"
+        val key = conceptKey(name)
+        val nextBody = stripConceptAnnotations(body, name, currentIdentities())
+        if (nextBody == body) {
+            message = "「" + name + "」正文里没有标记，无法删除标注"
+            return
+        }
+        // 这里手动把概念写进墓碑：删掉的若是最后一个标记，正文已经没有 `[[…]]`，
+        // 只靠同步函数会被「老笔记不做迁移」的分支当成旧数据保留下来。
+        val canonical = resolveConceptName(name, currentIdentities()).ifBlank { name }
+        val seeded = note.copy(
+            title = title,
+            body = nextBody,
+            updatedAt = clock.nowMs(),
+            concepts = note.concepts.filterNot { conceptKey(it) == key },
+            removedConcepts = (note.removedConcepts + canonical).distinctBy(::conceptKey),
+        )
+        if (!store.save(seeded)) {
+            message = "保存失败：写不进 " + store.notesDir.absolutePath
+            return
+        }
+        body = nextBody
+        revision++
+        loaded = seeded
+        savedAtMs = seeded.updatedAt
+        notes = store.list()
+        aiBaselines[note.id] = bodyForAiComparison(nextBody)
+        message = "已删除「" + name + "」的标注（原文保留，可在已删除里恢复）"
     }
 
     /** 概念详情里点「来源」：切回笔记并选中正文命中处。 */
@@ -689,7 +758,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                                         preview = preview,
                                         reveal = revealRange,
                                         revealToken = revealToken,
-                                        conceptNames = concepts.map { it.name },
+                                        conceptNames = conceptHighlightNames(),
                                         onDeleteAiLine = { line ->
                                             val next = removeAiBlockLine(body, line)
                                             if (next != null) {
@@ -737,9 +806,11 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                             Column(Modifier.width(MarkdownSidebarState.width).fillMaxHeight()) {
                                 NoteConceptPanel(
                                     concepts = loaded?.concepts.orEmpty(),
+                                    removedConcepts = loaded?.removedConcepts.orEmpty(),
                                     onOpenConcept = { openConcept(it) },
                                     onRemoveConcept = { removeConcept(it) },
                                     onAddConcept = { addConcept(it) },
+                                    onRestoreConcept = { restoreConcept(it) },
                                 )
                                 Spacer(Modifier.height(8.dp))
                                 HorizontalDivider(

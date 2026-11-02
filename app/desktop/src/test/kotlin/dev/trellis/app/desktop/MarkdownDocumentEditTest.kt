@@ -117,6 +117,119 @@ class MarkdownDocumentEditTest {
     }
 
     @Test
+    fun conceptAnnotationShowsOnlyTheOriginalText() {
+        val body = "正文 [[检索增强生成=>RAG]] 对比"
+        val projection = projectDocument(body, TextRange(0), listOf("RAG"))
+        assertEquals("正文 检索增强生成 对比", projection.text)
+        assertTrue(projection.marks.any { it.kind == InlineMarkKind.Concept && it.start == 3 && it.end == 9 })
+        assertTrue(projection.hidden.any { it.first == 11 && it.last == 17 })
+    }
+
+    @Test
+    fun plainConceptOccurrenceIsColoredWithoutBeingAnnotated() {
+        val body = "RAG 与 检索增强 都写一遍"
+        val projection = projectDocument(body, TextRange(0), listOf("RAG"))
+        assertTrue(projection.marks.any { it.kind == InlineMarkKind.ConceptPlain && it.start == 0 && it.end == 3 })
+        assertTrue(projection.marks.none { it.kind == InlineMarkKind.Concept })
+    }
+
+    @Test
+    fun aliasOccurrenceIsHighlightedAsPlainConcept() {
+        val body = "这里用检索增强生成做问答"
+        val projection = projectDocument(body, TextRange(0), listOf("检索增强生成"))
+        assertTrue(projection.marks.any {
+            it.kind == InlineMarkKind.ConceptPlain && it.start == 3 && it.end == 9
+        })
+    }
+
+    @Test
+    fun caretInsideAConceptAnnotationShowsTheWholeMarker() {
+        val body = "[[检索增强生成=>RAG]]"
+        val projection = projectDocument(body, TextRange(5), listOf("RAG"))
+        assertEquals(body, projection.text)
+        assertTrue(projection.syntax.any { it.first <= 8 && it.last >= 8 })
+    }
+
+    // ---- `[[` 自动补全 ----
+
+    private val completionNames = listOf("RAG", "检索增强生成", "GraphRAG")
+
+    @Test
+    fun completionWaitsUntilMoreThanOneCharacterIsTyped() {
+        assertNull(conceptCompletionAt("[[检", 3, completionNames))
+        assertNull(conceptCompletionAt("[[", 2, completionNames))
+        val completion = conceptCompletionAt("[[检索", 4, completionNames)
+        assertTrue(completion != null && completion.query == "检索")
+    }
+
+    @Test
+    fun completionSuggestsNamesAndTheMappingSeparator() {
+        val completion = conceptCompletionAt("[[检索", 4, completionNames) ?: error("要弹补全")
+        assertEquals(2, completion.nameStart)
+        assertFalse(completion.afterSeparator)
+        assertTrue(completion.candidates.contains("检索增强生成"))
+        assertEquals(CONCEPT_COMPLETION_SEPARATOR, completion.candidates.last())
+    }
+
+    @Test
+    fun completionLeavesFullyMatchedNamesAlone() {
+        assertNull(conceptCompletionAt("[[检索增强生成", 8, completionNames))
+        assertNull(conceptCompletionAt("[[GraphRAG", 10, completionNames))
+    }
+
+    @Test
+    fun afterTheSeparatorItCompletesConceptNames() {
+        val text = "[[检索增强生成 => RA"
+        val completion = conceptCompletionAt(text, text.length, completionNames) ?: error("要弹补全")
+        assertTrue(completion.afterSeparator)
+        assertEquals("RA", completion.query)
+        assertEquals(
+            listOf("RAG", "GraphRAG"),
+            completion.candidates.filter { it != CONCEPT_COMPLETION_SEPARATOR },
+        )
+        assertFalse(completion.candidates.contains(CONCEPT_COMPLETION_SEPARATOR))
+    }
+
+    @Test
+    fun pickingTheSeparatorKeepsTheOriginalText() {
+        // 原文和概念名不一样时：先打原文，再从补全里选 `=>`，原文一个字符都不动。
+        val text = "[[检索"
+        val completion = conceptCompletionAt(text, text.length, completionNames) ?: error("要弹补全")
+        val updated = applyConceptCompletion(
+            TextFieldValue(text, TextRange(text.length)),
+            completion,
+            CONCEPT_COMPLETION_SEPARATOR,
+        )
+        assertEquals("[[检索 => ", updated.text)
+        assertEquals(updated.text.length, updated.selection.min)
+    }
+
+    @Test
+    fun pickingAConceptNameClosesTheBrackets() {
+        val text = "[[检索增强生成 => RA"
+        val completion = conceptCompletionAt(text, text.length, completionNames) ?: error("要弹补全")
+        val updated = applyConceptCompletion(
+            TextFieldValue(text, TextRange(text.length)),
+            completion,
+            "RAG",
+        )
+        assertEquals("[[检索增强生成 => RAG]]", updated.text)
+        assertEquals(updated.text.length, updated.selection.min)
+    }
+
+    @Test
+    fun completionDoesNotTouchTextOutsideTheMarker() {
+        val text = "前面 [[RA]] 后面"
+        val completion = conceptCompletionAt(text, 7, completionNames) ?: error("要弹补全")
+        val updated = applyConceptCompletion(
+            TextFieldValue(text, TextRange(7)),
+            completion,
+            "RAG",
+        )
+        assertEquals("前面 [[RAG]] 后面", updated.text)
+    }
+
+    @Test
     fun linkShowsOnlyItsLabelWhenTheCaretIsElsewhere() {
         val projection = project("看 [示例](https://a.b) 完", caret = 0)
         assertEquals("看 示例 完", projection.text)
