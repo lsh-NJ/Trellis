@@ -37,16 +37,16 @@ import androidx.compose.ui.unit.dp
 /**
  * 知识库的 Markdown 编辑器（外壳）。
  *
- * 真正的编辑体验在 [MarkdownBlockEditor]：正文按块渲染，光标落在哪一块，
- * 哪一块就显示原始 Markdown，其余块显示渲染结果（行内编辑、行外预览）。
+ * 真正的编辑体验在 [MarkdownDocumentEditor]：整篇正文是一个输入面，光标不在的
+ * 地方把 Markdown 标记折叠成样式，光标进去时标记还原（marktext 的做法）。
  *
  * 这个文件只留三件页面级的东西：
- *  - [MarkdownEditor] 很薄的入口，页面不必知道块编辑器的细节；
+ *  - [MarkdownEditor] 很薄的入口，页面不必知道编辑器的细节；
  *  - [EditorChip] / [MarkdownMenuOverlay]：页头的「编辑 / 预览」「目录」「菜单」与菜单浮层；
  *  - [requestFocusWhenReady]：安全的焦点请求（等布局就绪，失败安静放弃，见函数注释）。
  */
 
-/** 页面入口：正文编辑器。参数语义见 [MarkdownBlockEditor]。 */
+/** 页面入口：正文编辑器。参数语义见 [MarkdownDocumentEditor]。 */
 @Composable
 internal fun MarkdownEditor(
     noteId: String,
@@ -60,7 +60,7 @@ internal fun MarkdownEditor(
     revealToken: Int = 0,
     onEditingFinished: (() -> Unit)? = null,
 ) {
-    MarkdownBlockEditor(
+    MarkdownDocumentEditor(
         noteId = noteId,
         body = body,
         onBodyChange = onBodyChange,
