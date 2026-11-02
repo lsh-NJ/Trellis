@@ -9,10 +9,16 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 
-/** 一个概念的补充元数据：目前只有定义（别名、合并留到 P1）。 */
+/**
+ * 一个概念的补充元数据：定义 + 别名。
+ *
+ * [aliases] 只用于「正文里出现的别的写法 → 这个概念」的匹配（高亮、`[[…]]` 解析、检索），
+ * 不参与显示；不会自动从 `[[原文=>概念名]]` 的原文里学习（防垃圾别名，见 docs/knowledge-base-draft.md §11）。
+ */
 internal data class ConceptMeta(
     val name: String,
     val definition: String,
+    val aliases: List<String> = emptyList(),
 )
 
 /**
@@ -41,13 +47,37 @@ internal class ConceptMetaStore(home: File) {
             val name = normalizeConceptName((obj["name"] as? JsonPrimitive)?.content.orEmpty())
             if (name.isEmpty()) continue
             val definition = (obj["definition"] as? JsonPrimitive)?.content.orEmpty().trim()
-            result[conceptKey(name)] = ConceptMeta(name, definition)
+            val aliases = (obj["aliases"] as? kotlinx.serialization.json.JsonArray)
+                ?.mapNotNull { (it as? JsonPrimitive)?.takeIf { primitive -> primitive.isString }?.content }
+                ?.map(::normalizeConceptName)
+                ?.filter { it.isNotBlank() }
+                ?.distinctBy(::conceptKey)
+                .orEmpty()
+            result[conceptKey(name)] = ConceptMeta(name, definition, aliases)
         }
         result
     }.getOrElse { emptyMap() }
 
     /** 某条定义；没有/空定义返回 null。 */
     fun definition(name: String): String? = load()[conceptKey(name)]?.definition?.takeIf { it.isNotBlank() }
+
+    /** 概念库里的全部身份（规范名 + 别名），用于把正文标注解析成规范名。 */
+    fun identities(): List<ConceptIdentity> = load().values.map { ConceptIdentity(it.name, it.aliases) }
+
+    /** 确保这些概念在库里有个条目（定义/别名可以为空）；已存在的不动。 */
+    fun ensureConcepts(names: List<String>): Boolean {
+        val targets = names.map(::normalizeConceptName).filter { it.isNotBlank() }.distinctBy(::conceptKey)
+        if (targets.isEmpty()) return true
+        val current = load().toMutableMap()
+        var changed = false
+        for (name in targets) {
+            val key = conceptKey(name)
+            if (current.containsKey(key)) continue
+            current[key] = ConceptMeta(normalizeConceptName(name), "")
+            changed = true
+        }
+        return if (changed) write(current.values.toList()) else true
+    }
 
     /** 写一条定义（空定义等价于删除）。返回是否真的写成功。 */
     fun saveDefinition(name: String, definition: String): Boolean {
@@ -58,8 +88,43 @@ internal class ConceptMetaStore(home: File) {
         if (text.isEmpty()) {
             current.remove(key)
         } else {
-            current[key] = ConceptMeta(normalizeConceptName(name), text)
+            current[key] = ConceptMeta(normalizeConceptName(name), text, current[key]?.aliases.orEmpty())
         }
+        return write(current.values.toList())
+    }
+
+    /** 写一个概念的别名（空列表 = 清空）；概念不存在时先建条目。 */
+    fun saveAliases(name: String, aliases: List<String>): Boolean {
+        val key = conceptKey(name)
+        if (key.isEmpty()) return false
+        val current = load().toMutableMap()
+        val existing = current[key]
+        val normalized = aliases.map(::normalizeConceptName)
+            .filter { it.isNotBlank() }
+            .distinctBy(::conceptKey)
+        current[key] = ConceptMeta(
+            existing?.name ?: normalizeConceptName(name),
+            existing?.definition.orEmpty(),
+            normalized,
+        )
+        return write(current.values.toList())
+    }
+
+    /** 合并别名：已有的保留，只追加新的（AI 抽出来的别名不能把用户删掉的又加回来）。 */
+    fun mergeAliases(name: String, aliases: List<String>): Boolean {
+        val key = conceptKey(name)
+        if (key.isEmpty() || aliases.isEmpty()) return false
+        val current = load().toMutableMap()
+        val existing = current[key]
+        val merged = (existing?.aliases.orEmpty() + aliases)
+            .map(::normalizeConceptName)
+            .filter { it.isNotBlank() }
+            .distinctBy(::conceptKey)
+        current[key] = ConceptMeta(
+            existing?.name ?: normalizeConceptName(name),
+            existing?.definition.orEmpty(),
+            merged,
+        )
         return write(current.values.toList())
     }
 
@@ -73,7 +138,11 @@ internal class ConceptMetaStore(home: File) {
             if (key.isEmpty() || definition.isBlank()) continue
             val existing = current[key]
             if (existing != null && existing.definition.isNotBlank()) continue
-            current[key] = ConceptMeta(normalizeConceptName(name), definition.trim())
+            current[key] = ConceptMeta(
+                normalizeConceptName(name),
+                definition.trim(),
+                current[key]?.aliases.orEmpty(),
+            )
             changed = true
         }
         return if (changed) write(current.values.toList()) else true
@@ -90,6 +159,12 @@ internal class ConceptMetaStore(home: File) {
                             buildJsonObject {
                                 put("name", item.name)
                                 put("definition", item.definition)
+                                if (item.aliases.isNotEmpty()) {
+                                    put(
+                                        "aliases",
+                                        buildJsonArray { for (alias in item.aliases) add(JsonPrimitive(alias)) },
+                                    )
+                                }
                             },
                         )
                     }

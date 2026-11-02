@@ -160,6 +160,68 @@ class KnowledgeConceptTest {
         assertTrue(store.search("不存在的词").notes.isEmpty())
     }
 
+    @Test
+    fun conceptDetailSeparatesAnnotatedFromPlainMentions() {
+        val store = store(tempHome())
+        nowMs += 60_000
+        store.save(
+            store.create("标注过的").copy(
+                body = "这篇把 [[RAG]] 标成本文概念。",
+                concepts = listOf("RAG"),
+            ),
+        )
+        nowMs += 60_000
+        store.save(store.create("只是提到").copy(body = "这篇只是提到 RAG，没有标注。"))
+
+        val detail = assertNotNull(store.conceptDetail("RAG"))
+        assertEquals(listOf("标注过的"), detail.mentions.map { it.noteTitle })
+        assertEquals(listOf("只是提到"), detail.others.map { it.noteTitle })
+        assertTrue(detail.others.single().snippet.contains("RAG"))
+        assertTrue(detail.others.single().start >= 0)
+    }
+
+    @Test
+    fun conceptDetailResolvesAliasQueriesAndMappedAnnotations() {
+        val store = store(tempHome())
+        store.save(
+            store.create("检索笔记").copy(
+                body = "先做 [[检索增强生成 => RAG]]，再让模型作答。",
+                concepts = listOf("RAG"),
+            ),
+        )
+        val identities = listOf(ConceptIdentity("RAG", listOf("检索增强生成", "检索增强")))
+
+        val byAlias = assertNotNull(store.conceptDetail("检索增强", identities = identities))
+        assertEquals("RAG", byAlias.summary.name)
+        assertEquals(listOf("检索笔记"), byAlias.mentions.map { it.noteTitle })
+        val mention = byAlias.mentions.single()
+        assertTrue(mention.snippet.contains("检索增强生成"), "片段要落在正文原词上")
+        assertTrue(
+            mention.start == "先做 [[".length,
+            "命中位置是标注里原文的开头，不该选中整段标记",
+        )
+    }
+
+    @Test
+    fun searchMatchesAliasesAndPutsAnnotatedNotesFirst() {
+        val store = store(tempHome())
+        nowMs += 60_000
+        store.save(store.create("只是提到").copy(body = "这篇提到 检索增强 但没标注。"))
+        nowMs += 60_000
+        store.save(
+            store.create("标注过的").copy(
+                body = "这篇把 [[检索增强生成 => RAG]] 标了。",
+                concepts = listOf("RAG"),
+            ),
+        )
+        val identities = listOf(ConceptIdentity("RAG", listOf("检索增强生成", "检索增强")))
+
+        val hits = store.search("检索增强", identities = identities)
+        assertEquals(listOf("RAG"), hits.concepts.map { it.name }, "别名也要能搜到概念")
+        assertEquals("标注过的", hits.notes.first().title, "标注过命中概念的笔记排最前")
+        assertTrue(hits.notes.any { it.title == "只是提到" })
+    }
+
     // ---- 定义文件 ----
 
     @Test

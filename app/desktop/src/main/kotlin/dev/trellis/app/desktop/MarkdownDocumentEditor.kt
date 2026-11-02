@@ -17,7 +17,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -127,14 +129,38 @@ internal fun MarkdownDocumentEditor(
     var slashIndex by remember(noteId) { mutableStateOf(0) }
     val slashMatches = remember(slashQuery) { filterMarkdownCommands(slashQuery) }
 
-    val projection = remember(field.text, field.selection) {
-        projectDocument(field.text, field.selection)
+    // `[[` 补全：光标在一条还没闭合的概念标注里时，弹概念名（含别名）候选。
+    var completion by remember(noteId) { mutableStateOf<ConceptCompletion?>(null) }
+    var completionIndex by remember(noteId) { mutableStateOf(0) }
+
+    val projection = remember(field.text, field.selection, conceptNames) {
+        projectDocument(field.text, field.selection, conceptNames)
     }
 
     fun closeSlash() {
         slashStart = null
         slashQuery = ""
         slashIndex = 0
+    }
+
+    fun closeCompletion() {
+        completion = null
+        completionIndex = 0
+    }
+
+    /** 按当前文本/光标刷新补全候选；斜杠菜单和补全不同时出现。 */
+    fun refreshCompletion(updated: TextFieldValue) {
+        val cursor = updated.selection.min
+        val next = if (updated.selection.collapsed && conceptNames.isNotEmpty() &&
+            !insideCodeFence(updated.text, cursor)
+        ) {
+            conceptCompletionAt(updated.text, cursor, conceptNames)
+        } else {
+            null
+        }
+        completion = next
+        completionIndex = completionIndex.coerceIn(0, maxOf(0, (next?.candidates?.size ?: 1) - 1))
+        if (next != null) closeSlash()
     }
 
     // 外部正文变了（切笔记、AI 补全、页面重新载入）：跟上，光标尽量留在原处。
@@ -187,6 +213,7 @@ internal fun MarkdownDocumentEditor(
         val textChanged = updated.text != field.text
         field = updated
         refreshSlash(updated)
+        refreshCompletion(updated)
         if (textChanged) onBodyChange(updated.text)
     }
 
@@ -217,6 +244,14 @@ internal fun MarkdownDocumentEditor(
         replaceSelection("\n")
     }
 
+    /** 选中一个补全候选；`=>` 只插分隔符，概念名则替换输入并补 `]]`。 */
+    fun applyCompletion(choice: String) {
+        val current = completion ?: return
+        val updated = applyConceptCompletion(field, current, choice)
+        apply(updated)
+        scope.launch { focus.requestFocusWhenReady() }
+    }
+
     fun applySlash(command: MarkdownCommand) {
         val start = slashStart ?: return
         val result = applySlashCommand(field.text, start, field.selection.max, command)
@@ -235,12 +270,35 @@ internal fun MarkdownDocumentEditor(
     fun handleKey(event: KeyEvent): Boolean {
         if (event.type != KeyEventType.KeyDown) return false
         if (event.key == Key.Escape) {
-            if (slashStart != null) {
+            if (completion != null) {
+                closeCompletion()
+            } else if (slashStart != null) {
                 closeSlash()
             } else {
                 focusManager.clearFocus(force = true)
             }
             return true
+        }
+        val active = completion
+        if (active != null) {
+            when (event.key) {
+                Key.DirectionDown -> {
+                    completionIndex = (completionIndex + 1) % active.candidates.size
+                    return true
+                }
+
+                Key.DirectionUp -> {
+                    completionIndex = (completionIndex - 1 + active.candidates.size) % active.candidates.size
+                    return true
+                }
+
+                Key.Enter, Key.NumPadEnter, Key.Tab -> {
+                    applyCompletion(active.candidates[completionIndex])
+                    return true
+                }
+
+                else -> Unit
+            }
         }
         if (slashStart != null) {
             when (event.key) {
@@ -353,6 +411,7 @@ internal fun MarkdownDocumentEditor(
                         } else if (hadFocus) {
                             hadFocus = false
                             closeSlash()
+                            closeCompletion()
                             // 焦点离开正文：算「这一轮写完了」，页面据此收尾（如 AI 整理）。
                             onEditingFinished?.invoke()
                         }
@@ -382,6 +441,14 @@ internal fun MarkdownDocumentEditor(
                 query = slashQuery,
                 selectedIndex = slashIndex,
                 onPick = { applySlash(it) },
+                modifier = Modifier.offset { menuOffset },
+            )
+        }
+        completion?.let { active ->
+            ConceptCompletionMenu(
+                completion = active,
+                selectedIndex = completionIndex,
+                onPick = { applyCompletion(it) },
                 modifier = Modifier.offset { menuOffset },
             )
         }
@@ -475,6 +542,8 @@ private fun buildDocumentEditText(
                 color = conceptGreen.copy(alpha = 0.62f),
                 textDecoration = TextDecoration.Underline,
             )
+            // 普通出现的概念名/别名：只染色，和预览态一致（只有 [[…]] 标注才带下划线）。
+            InlineMarkKind.ConceptPlain -> SpanStyle(color = conceptGreen.copy(alpha = 0.62f))
         }
         add(mark.start..(mark.end - 1), style)
     }
@@ -532,6 +601,87 @@ private fun SlashMenu(
                         selected = matches.indexOf(command) == selectedIndex,
                         onClick = { onPick(command) },
                     )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * `[[` 补全菜单：上游给候选，这里只负责画和把点击转成 [onPick]。
+ *
+ * `=>` 那一项会把左边已经输入的原文映射到右边概念名（`[[原文 => 概念]]`）。
+ */
+@Composable
+private fun ConceptCompletionMenu(
+    completion: ConceptCompletion,
+    selectedIndex: Int,
+    onPick: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .width(320.dp)
+            .clip(ControlShape)
+            .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, ControlShape),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                if (completion.afterSeparator) "补全概念名" else "补全概念",
+                style = MaterialTheme.typography.labelMedium,
+                fontFamily = AppFonts.mono,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                "↑↓ 选 · 回车补全 · Esc 关",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+            )
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+        Column(Modifier.heightIn(max = 232.dp).verticalScroll(rememberScrollState())) {
+            completion.candidates.forEachIndexed { index, candidate ->
+                val isSeparator = candidate == CONCEPT_COMPLETION_SEPARATOR
+                val interaction = remember { MutableInteractionSource() }
+                val hovered by interaction.collectIsHoveredAsState()
+                val accent = MaterialTheme.colorScheme.primary
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                        .clip(ControlShape)
+                        .background(
+                            when {
+                                index == selectedIndex -> accent.copy(alpha = 0.14f)
+                                hovered -> accent.copy(alpha = 0.07f)
+                                else -> Color.Transparent
+                            },
+                        )
+                        .clickable(interactionSource = interaction, indication = null) { onPick(candidate) }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            if (isSeparator) "=> 原文和概念名不一样" else candidate,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            if (isSeparator) {
+                                "先保留左边原文，再选一个概念名映射过去"
+                            } else {
+                                "概念名 / 别名"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                        )
+                    }
                 }
             }
         }

@@ -8,10 +8,18 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 
-/** 抽取出来的一个候选概念。 */
+/**
+ * 抽取出来的一个候选概念。
+ *
+ * [name] 是规范名（概念库里用的那个）；[mention] 是正文里的原词原句——系统只会把这个
+ * 原词包成 `[[mention => name]]`，JSON 里没给 mention 时退回 name。[aliases] 是同一个
+ * 概念在别处的叫法（只参与匹配与高亮，不从 `=>` 左边自动学习）。
+ */
 internal data class ConceptCandidate(
     val name: String,
     val definition: String,
+    val mention: String = "",
+    val aliases: List<String> = emptyList(),
 )
 
 /** 一个槽位（`标签：。。。`）的补全建议。 */
@@ -47,9 +55,12 @@ internal fun buildKnowledgeExtractionMessages(
     slots: List<String>,
 ): List<LlmMessage> {
     val system = "你是个人知识库的整理助手。任务只有两件：①从笔记里挑出**作者确实讲过**、" +
-        "值得长期回查的概念，每个给一句话定义；②把用户留的空位补上一句话。" +
+        "值得长期回查的概念，每个给出规范名、正文里的原词（mention）、可选别名和一句话定义；" +
+        "②把用户留的空位补上一句话。" +
         "笔记里整行是「标签：$AI_SLOT_MARKER」的行是用户留的空位。" +
-        "只输出 JSON 对象，不输出解释。"
+        "系统只信任正文原文：它会把 mention 在正文里第一次出现的位置包成 " +
+        "`[[mention => 规范名]]`（mention 与规范名相同时包成 `[[规范名]]`），" +
+        "所以 mention 必须是正文里的原词，改写过的词会被丢掉。只输出 JSON 对象，不输出解释。"
     val user = buildString {
         append("笔记标题：").append(title.ifBlank { "（无标题）" }).append("\n\n")
         append("笔记正文：\n").append(body.take(MAX_EXTRACT_BODY_CHARS)).append("\n\n")
@@ -66,16 +77,20 @@ internal fun buildKnowledgeExtractionMessages(
         append("   b) 它和用户留的空位直接相关，补全那个空位后能看懂。\n")
         append("   只是被提到一次的名词、查不到解释的词、泛词（「笔记」「总结」「学习」）、")
             .append("人名、组织名、产品名都不要。\n")
-        append("2. name 必须**逐字出现在正文里**（大小写、空格、标点与原文一致）；")
-            .append("系统会把 name 第一次出现的地方包成 `[[name]]`，写错的 name 会被丢掉。\n")
-        append("3. 数量不设上限：正文里确实讲过的概念都可以列，但每个都必须满足上面的依据；")
+        append("2. mention 必须**逐字出现在正文里**（原词原句，大小写、空格、标点与原文一致）；")
+            .append("系统只会把 mention 第一次出现的地方包成 `[[mention => name]]`，")
+            .append("找不到的 mention 会被丢掉。正文原词和 name 相同时 mention 可以省略。\n")
+        append("3. name 是规范名：想总结得更标准可以写在 name 里，但必须通过 mention 映射回正文原词；")
+            .append("别人对同一个概念的不同叫法写进 aliases（不要自己发明没人用过的词）。\n")
+        append("4. 数量不设上限：正文里确实讲过的概念都可以列，但每个都必须满足上面的依据；")
             .append("拿不准的就别抽。\n")
-        append("4. definition 不超过 40 个字，一句能独立看懂的解释（不是复述名词）。\n")
-        append("5. fills 只补上面列出的空位：label 必须和空位标签逐字一致，text 是一句话（不超过 ")
+        append("5. definition 不超过 40 个字，一句能独立看懂的解释（不是复述名词）。\n")
+        append("6. fills 只补上面列出的空位：label 必须和空位标签逐字一致，text 是一句话（不超过 ")
             .append(MAX_AI_FILL_CHARS).append(" 字）；没有空位就输出空数组。\n")
-        append("6. 输出严格 JSON 对象，格式：\n")
+        append("7. 输出严格 JSON 对象，格式：\n")
         append("```json\n")
-        append("{\"concepts\":[{\"name\":\"概念名\",\"definition\":\"一句话定义\"}],")
+        append("{\"concepts\":[{\"name\":\"规范名\",\"mention\":\"正文里的原词\",")
+        append("\"aliases\":[\"别名\"],\"definition\":\"一句话定义\"}],")
         append("\"fills\":[{\"label\":\"空位标签\",\"text\":\"补全的一句话\"}]}\n")
         append("```")
     }
@@ -139,7 +154,15 @@ private fun parseCandidatesFrom(element: JsonElement?): List<ConceptCandidate> {
             val obj = item.jsonObject
             val name = normalizeConceptName((obj["name"] as? JsonPrimitive)?.content.orEmpty())
             val definition = (obj["definition"] as? JsonPrimitive)?.content.orEmpty().trim().take(120)
-            if (name.isEmpty()) null else ConceptCandidate(name, definition)
+            val mention = (obj["mention"] as? JsonPrimitive)?.content.orEmpty()
+                .replace("\n", " ").trim().take(MAX_CONCEPT_NAME_LENGTH)
+            val aliases = (obj["aliases"] as? kotlinx.serialization.json.JsonArray)
+                ?.mapNotNull { (it as? JsonPrimitive)?.takeIf { primitive -> primitive.isString }?.content }
+                ?.map(::normalizeConceptName)
+                ?.filter { it.isNotBlank() }
+                ?.distinctBy(::conceptKey)
+                .orEmpty()
+            if (name.isEmpty()) null else ConceptCandidate(name, definition, mention, aliases)
         }
             .distinctBy { conceptKey(it.name) }
     }.getOrElse { emptyList() }
@@ -171,6 +194,11 @@ internal fun candidateDefinitions(candidates: List<ConceptCandidate>): Map<Strin
     candidates
         .filter { it.definition.isNotBlank() }
         .associate { normalizeConceptName(it.name) to it.definition.trim() }
+
+/** 候选里的别名；写概念库时只合并、不覆盖用户已有的别名。 */
+internal fun candidateAliases(candidates: List<ConceptCandidate>): Map<String, List<String>> =
+    candidates.filter { it.aliases.isNotEmpty() }
+        .associate { normalizeConceptName(it.name) to it.aliases }
 
 /** 槽位补全也能当概念定义用：只填空定义，不覆盖用户改过的（见 [ConceptMetaStore.fillMissing]）。 */
 internal fun fillDefinitions(fills: List<FillSuggestion>): Map<String, String> =

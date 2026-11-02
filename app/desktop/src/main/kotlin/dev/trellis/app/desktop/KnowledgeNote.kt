@@ -28,6 +28,13 @@ internal data class KnowledgeNote(
      * 概念索引（[KnowledgeStore.conceptIndex]）删掉也能从这里重建，不用重新调模型。
      */
     val concepts: List<String> = emptyList(),
+    /**
+     * 被删除（标记被拿掉）的概念，frontmatter 的 `removed-concepts:`。
+     *
+     * 它只是「墓碑」：右栏默认收起，点开能看到、能恢复；不参与点亮与索引。
+     * 重新在正文里 `[[标注]]` 同一个概念时，会自动从这里移除（见 [synchronizeConceptMembership]）。
+     */
+    val removedConcepts: List<String> = emptyList(),
     val extras: Map<String, String> = emptyMap(),
 )
 
@@ -63,11 +70,17 @@ internal data class ConceptMention(
     val end: Int,
 )
 
-/** 概念详情：定义不在这里（[ConceptMetaStore]），这里只有引用与共现的相关概念。 */
+/**
+ * 概念详情：定义不在这里（[ConceptMetaStore]），这里只有引用与共现的相关概念。
+ *
+ * [mentions] 是正文里用 `[[…]]` 标注过这个概念（或 frontmatter 里登记过）的笔记；
+ * [others] 是只在正文里普通提到、没有标注的笔记——分开列，避免「提到」被当成「归属」。
+ */
 internal data class ConceptDetail(
     val summary: ConceptSummary,
     val mentions: List<ConceptMention>,
     val related: List<ConceptSummary>,
+    val others: List<ConceptMention> = emptyList(),
 )
 
 /** 搜索命中：概念和笔记分两组，界面上也分两组显示。 */
@@ -111,7 +124,7 @@ internal fun stripInlineMarkdown(text: String): String {
 /** 标题为空时列表/编辑器上显示的占位名。 */
 internal fun displayTitle(title: String): String = stripInlineMarkdown(title).ifBlank { "无标题笔记" }
 
-private val knownFrontMatterKeys = setOf("title", "created", "updated", "concepts")
+private val knownFrontMatterKeys = setOf("title", "created", "updated", "concepts", "removed-concepts")
 private val isoFormatter = DateTimeFormatter.ISO_OFFSET_DATE_TIME
 private val headingPattern = Regex("^#\\s+(.+)$")
 
@@ -197,6 +210,7 @@ internal fun parseNoteMarkdown(id: String, raw: String, zone: ZoneId, fallbackMs
     val updated = parseTimestamp(fields["updated"]) ?: created
     val extras = fields.filterKeys { it !in knownFrontMatterKeys }
     val concepts = splitConceptList(fields["concepts"].orEmpty())
+    val removedConcepts = splitConceptList(fields["removed-concepts"].orEmpty())
 
     return KnowledgeNote(
         id = id,
@@ -205,6 +219,7 @@ internal fun parseNoteMarkdown(id: String, raw: String, zone: ZoneId, fallbackMs
         createdAt = created,
         updatedAt = updated,
         concepts = concepts,
+        removedConcepts = removedConcepts,
         extras = extras,
     )
 }
@@ -512,6 +527,8 @@ internal fun formatNoteMarkdown(note: KnowledgeNote, zone: ZoneId): String = bui
     append("updated: ").append(formatTimestamp(note.updatedAt, zone)).append('\n')
     val concepts = joinConceptList(note.concepts)
     if (concepts.isNotEmpty()) append("concepts: ").append(concepts).append('\n')
+    val removed = joinConceptList(note.removedConcepts)
+    if (removed.isNotEmpty()) append("removed-concepts: ").append(removed).append('\n')
     for ((key, value) in note.extras) {
         if (key.lowercase() in knownFrontMatterKeys) continue
         append(key).append(": ").append(oneLine(value)).append('\n')
@@ -534,7 +551,7 @@ private val exportHeadingPattern = Regex("^(#{1,6})\\s+(.+)$")
  * 其它情况（标题只存在 frontmatter、正文从段落或二级标题开始）才补 `# 标题`。
  */
 internal fun exportNoteMarkdown(note: KnowledgeNote): String {
-    val cleanBody = cleanAiMarkersForExport(note.body)
+    val cleanBody = stripAllConceptAnnotations(cleanAiMarkersForExport(note.body))
     val title = displayTitle(note.title)
     val firstHeading = cleanBody.lineSequence()
         .map { it.trim() }
@@ -589,4 +606,292 @@ internal fun cleanAiMarkersForExport(body: String): String {
         output += line.replace(AI_INLINE_OPEN, "").replace(AI_INLINE_CLOSE, "")
     }
     return output.joinToString("\n")
+}
+
+// ---- 概念标注：`[[正文原文=>概念名]]`（约定见 docs/knowledge-base-draft.md §11） ----
+
+/** `[[…]]` 里「原文 => 概念名」的分隔符；同时也接受 `→`（解析时统一）。 */
+internal const val CONCEPT_SEPARATOR: String = "=>"
+
+/** 概念库里一个概念的身份：规范名 + 别名。别名只为匹配，不会自动从正文学习。 */
+internal data class ConceptIdentity(
+    val name: String,
+    val aliases: List<String> = emptyList(),
+)
+
+/**
+ * 正文里一条 `[[…]]` 标注的原始解析结果；[start]/[end] 是正文绝对偏移（end 不含）。
+ *
+ * [display] 是显示/降级时要保留的原文（分隔符左边）；[target] 是分隔符右边的概念名，
+ * 只有写了 `原文 => 概念名` 时才非空。
+ */
+internal data class ConceptAnnotation(
+    val start: Int,
+    val end: Int,
+    val display: String,
+    val target: String?,
+)
+
+private val conceptAnnotationPattern = Regex("\\[\\[([^\\[\\]\\n]*?)\\]\\]")
+private val inlineAiSpanPattern = Regex("\\{\\{[^\\n]*?\\}\\}")
+private val conceptSeparatorPattern = Regex("\\s*(?:=>|→)\\s*")
+
+/**
+ * 扫出正文里所有 `[[…]]` 标注。
+ *
+ * 和 AI 打标用同一套「哪里算普通正文」的规则：fenced code、`:::ai` 块、
+ * `{{…}}`（AI 补全内容）里的 `[[…]]` 不算标注，原样当普通文字。
+ * 表格行照常解析（分隔符用 `=>`，不会和表格里的 `|` 打架）。
+ */
+internal fun parseConceptAnnotations(body: String): List<ConceptAnnotation> {
+    val text = body.replace("\r\n", "\n")
+    if (!text.contains(CONCEPT_OPEN)) return emptyList()
+    val result = ArrayList<ConceptAnnotation>()
+    var lineStart = 0
+    var inCode = false
+    var inAiBlock = false
+    for (line in text.split('\n')) {
+        val trimmed = line.trimStart()
+        val base = lineStart
+        lineStart += line.length + 1
+        when {
+            trimmed.startsWith("```") -> {
+                inCode = !inCode
+                continue
+            }
+            inCode -> continue
+            trimmed.startsWith(AI_BLOCK_START) -> {
+                inAiBlock = true
+                continue
+            }
+            trimmed == AI_BLOCK_END -> {
+                inAiBlock = false
+                continue
+            }
+            inAiBlock -> continue
+        }
+        if (!line.contains(CONCEPT_OPEN)) continue
+        val aiSpans = inlineAiSpanPattern.findAll(line).map { it.range }.toList()
+        for (match in conceptAnnotationPattern.findAll(line)) {
+            if (aiSpans.any { match.range.first in it }) continue
+            val parsed = parseConceptAnnotationContent(match.groupValues[1]) ?: continue
+            result += ConceptAnnotation(
+                start = base + match.range.first,
+                end = base + match.range.last + 1,
+                display = parsed.first,
+                target = parsed.second,
+            )
+        }
+    }
+    return result
+}
+
+/** 把 `[[…]]` 里的内容拆成「原文 + 可选概念名」；空内容/空原文返回 null。 */
+private fun parseConceptAnnotationContent(raw: String): Pair<String, String?>? {
+    val pieces = raw.split(conceptSeparatorPattern, limit = 2)
+    val display = pieces.firstOrNull()?.trim().orEmpty()
+    if (display.isEmpty()) return null
+    val target = pieces.getOrNull(1)?.let(::normalizeConceptName)?.takeIf { it.isNotEmpty() }
+    return display to target
+}
+
+/** `[[…]]` 里要显示/保留的原文（分隔符左边）；没有分隔符时就是整段内容。 */
+internal fun conceptAnnotationDisplay(content: String): String {
+    val pieces = content.split(conceptSeparatorPattern, limit = 2)
+    val display = pieces.firstOrNull()?.trim().orEmpty()
+    return if (display.isEmpty()) content.trim() else display
+}
+
+/**
+ * `[[…]]` 内容里从哪个下标开始是「只管解析、不该显示」的部分（`=> 概念名`）。
+ *
+ * 返回值是内容内部的偏移；没有分隔符返回 -1。编辑态靠它把 `=> 名字` 一起藏掉。
+ */
+internal fun conceptAnnotationDisplayLength(content: String): Int {
+    val match = conceptSeparatorPattern.find(content) ?: return -1
+    return content.substring(0, match.range.first).trimEnd().length
+}
+
+/**
+ * 把一个名字解析成概念库里的规范名。
+ *
+ * 顺序：规范名逐字（大小写不敏感）→ 别名 → 都没有就当新概念（用规范化后的原文）。
+ * 返回空串表示这个名字没法用。
+ */
+internal fun resolveConceptName(raw: String, identities: List<ConceptIdentity>): String {
+    val normalized = normalizeConceptName(raw)
+    if (normalized.isEmpty()) return ""
+    val key = conceptKey(normalized)
+    identities.firstOrNull { conceptKey(it.name) == key }?.let { return it.name }
+    identities.firstOrNull { identity -> identity.aliases.any { conceptKey(it) == key } }?.let { return it.name }
+    return normalized
+}
+
+/** 一条标注指向的规范概念名（有 `=>` 看右边，否则看原文）。 */
+internal fun conceptAnnotationName(annotation: ConceptAnnotation, identities: List<ConceptIdentity>): String =
+    resolveConceptName(annotation.target ?: annotation.display, identities)
+
+/** 正文标注出来的概念名（按出现顺序去重）——「本文概念」的唯一来源。 */
+internal fun annotatedConceptNames(body: String, identities: List<ConceptIdentity>): List<String> =
+    parseConceptAnnotations(body)
+        .map { conceptAnnotationName(it, identities) }
+        .filter { it.isNotEmpty() }
+        .distinctBy(::conceptKey)
+
+/**
+ * 按正文标注重算「本文概念」和墓碑。
+ *
+ * - `concepts:` = 正文里 `[[…]]` 解析出的规范名（顺序按第一次出现）；
+ * - 之前登记过、这次没有标注的概念，挪进 `removed-concepts:`（墓碑，可恢复）；
+ * - 重新标注的概念从墓碑里移除；
+ * - 从没出现过 `[[…]]`、也没有墓碑的老笔记原样返回（不做迁移，避免一保存就把旧概念清空）。
+ */
+internal fun synchronizeConceptMembership(note: KnowledgeNote, identities: List<ConceptIdentity>): KnowledgeNote {
+    val text = note.body.replace("\r\n", "\n")
+    val annotations = parseConceptAnnotations(text)
+    if (annotations.isEmpty() && note.removedConcepts.isEmpty() && !text.contains(CONCEPT_OPEN)) return note
+    val derived = annotations
+        .map { conceptAnnotationName(it, identities) }
+        .filter { it.isNotEmpty() }
+        .distinctBy(::conceptKey)
+    val derivedKeys = derived.map(::conceptKey).toSet()
+    val claimed = LinkedHashMap<String, String>()
+    for (old in note.concepts + note.removedConcepts) {
+        val key = conceptKey(old)
+        if (key.isNotEmpty()) claimed.putIfAbsent(key, normalizeConceptName(old))
+    }
+    val removed = claimed.filterKeys { it !in derivedKeys }.values.toList()
+    if (derived == note.concepts && removed == note.removedConcepts) return note
+    return note.copy(concepts = derived, removedConcepts = removed)
+}
+
+/**
+ * AI 整理：把每条候选概念按 mention 在正文里第一次出现的位置包成标注。
+ *
+ * - mention 与规范名相同 → `[[名字]]`；
+ * - 不同 → `[[正文原词 => 规范名]]`（AI 想换一种说法时，正文原词一个字符都不动）；
+ * - mention 在正文里找不到、或正文已经有这个概念的标注 → 跳过（宁可漏标，不要标错）。
+ */
+internal fun markConceptAnnotations(body: String, candidates: List<ConceptCandidate>): String {
+    if (candidates.isEmpty()) return body
+    var text = body
+    for (candidate in candidates) {
+        val name = normalizeConceptName(candidate.name)
+        if (name.isEmpty()) continue
+        if (hasAnnotationFor(text, name)) continue
+        val mention = candidate.mention.trim().ifBlank { name }
+        if (mention.isEmpty()) continue
+        val index = findPlainMention(text, mention) ?: continue
+        val marker = if (conceptKey(mention) == conceptKey(name)) {
+            CONCEPT_OPEN + mention + CONCEPT_CLOSE
+        } else {
+            CONCEPT_OPEN + mention + " " + CONCEPT_SEPARATOR + " " + name + CONCEPT_CLOSE
+        }
+        text = text.substring(0, index) + marker + text.substring(index + mention.length)
+    }
+    return text
+}
+
+/**
+ * 只留下「正文里真的落成标注」的候选：mention 找不到的被丢掉，不该在概念库里留下孤儿定义。
+ */
+internal fun retainedCandidates(
+    body: String,
+    candidates: List<ConceptCandidate>,
+    identities: List<ConceptIdentity>,
+): List<ConceptCandidate> {
+    if (candidates.isEmpty()) return emptyList()
+    val annotated = annotatedConceptNames(body, identities).map(::conceptKey).toSet()
+    return candidates.filter { conceptKey(it.name) in annotated }
+}
+
+/** 正文里是不是已经有一条指向 [name] 的标注（规范名或别名，大小写不敏感）。 */
+private fun hasAnnotationFor(body: String, name: String): Boolean {
+    val key = conceptKey(name)
+    if (key.isEmpty()) return false
+    for (match in conceptAnnotationPattern.findAll(body)) {
+        val content = match.groupValues.getOrNull(1) ?: continue
+        val pieces = content.split(conceptSeparatorPattern, limit = 2)
+        val display = pieces.firstOrNull()?.trim().orEmpty()
+        val target = pieces.getOrNull(1)?.trim().orEmpty()
+        if (conceptKey(display) == key || conceptKey(target) == key) return true
+    }
+    return false
+}
+
+/** 把所有标注降级成纯文本（导出用）：`[[原文=>概念]]` 只剩「原文」。 */
+internal fun stripAllConceptAnnotations(body: String): String {
+    val text = body.replace("\r\n", "\n")
+    val annotations = parseConceptAnnotations(text)
+    if (annotations.isEmpty()) return text
+    val builder = StringBuilder(text.length)
+    var cursor = 0
+    for (annotation in annotations) {
+        if (annotation.start < cursor) continue
+        builder.append(text, cursor, annotation.start)
+        builder.append(annotation.display)
+        cursor = annotation.end
+    }
+    builder.append(text, cursor, text.length)
+    return builder.toString()
+}
+
+/**
+ * 删除某个概念的标注：把指向它的标记降级成纯文本（保留原文），其它标记不动。
+ *
+ * 右栏的 × 走这里——概念从正文里消失，下一次 [synchronizeConceptMembership] 会把它挪进墓碑。
+ */
+internal fun stripConceptAnnotations(body: String, name: String, identities: List<ConceptIdentity>): String {
+    val key = conceptKey(name)
+    if (key.isEmpty()) return body
+    val text = body.replace("\r\n", "\n")
+    val annotations = parseConceptAnnotations(text)
+    if (annotations.isEmpty()) return text
+    val builder = StringBuilder(text.length)
+    var cursor = 0
+    var changed = false
+    for (annotation in annotations) {
+        if (annotation.start < cursor) continue
+        builder.append(text, cursor, annotation.start)
+        if (conceptKey(conceptAnnotationName(annotation, identities)) == key) {
+            builder.append(annotation.display)
+            changed = true
+        } else {
+            builder.append(text, annotation.start, annotation.end)
+        }
+        cursor = annotation.end
+    }
+    builder.append(text, cursor, text.length)
+    return if (changed) builder.toString() else text
+}
+
+/**
+ * 人工「添加概念」：优先把正文里第一次普通出现包成标注，正文没有就追加到文末。
+ *
+ * 命中的是别名时写成 `[[别名=>规范名]]`（显示仍是原文，但归属明确）；
+ * 命中的就是规范名时写成 `[[规范名]]`。
+ */
+internal fun addConceptAnnotation(body: String, name: String, identities: List<ConceptIdentity>): String {
+    val text = body.replace("\r\n", "\n")
+    val canonical = resolveConceptName(name, identities)
+    if (canonical.isEmpty()) return text
+    val key = conceptKey(canonical)
+    if (parseConceptAnnotations(text).any { conceptKey(conceptAnnotationName(it, identities)) == key }) return text
+    val aliases = identities.firstOrNull { conceptKey(it.name) == key }?.aliases.orEmpty()
+    val variants = (listOf(canonical) + aliases).filter { it.isNotBlank() }.distinctBy(::conceptKey)
+    for (variant in variants) {
+        val index = findPlainMention(text, variant) ?: continue
+        val original = text.substring(index, index + variant.length)
+        val marker = if (conceptKey(variant) == key) {
+            CONCEPT_OPEN + original + CONCEPT_CLOSE
+        } else {
+            CONCEPT_OPEN + original + " " + CONCEPT_SEPARATOR + " " + canonical + CONCEPT_CLOSE
+        }
+        return text.substring(0, index) + marker + text.substring(index + variant.length)
+    }
+    return if (text.isBlank()) {
+        CONCEPT_OPEN + canonical + CONCEPT_CLOSE
+    } else {
+        text.trimEnd() + "\n\n" + CONCEPT_OPEN + canonical + CONCEPT_CLOSE + "\n"
+    }
 }

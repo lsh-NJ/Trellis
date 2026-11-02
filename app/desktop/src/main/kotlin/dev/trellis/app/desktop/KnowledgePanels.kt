@@ -1,5 +1,10 @@
 package dev.trellis.app.desktop
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -27,6 +32,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,8 +49,10 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -268,12 +276,26 @@ internal fun NoteConceptChips(
 @Composable
 internal fun NoteConceptPanel(
     concepts: List<String>,
+    removedConcepts: List<String>,
     onOpenConcept: (String) -> Unit,
     onRemoveConcept: (String) -> Unit,
     onAddConcept: (String) -> Unit,
+    onRestoreConcept: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var input by remember { mutableStateOf("") }
+    // 「已删除」默认收起；刚删掉一个概念时，标题旁边闪一下亮色「＋1」。
+    var showRemoved by remember { mutableStateOf(false) }
+    var pulseVisible by remember { mutableStateOf(false) }
+    var lastRemovedCount by remember { mutableStateOf(removedConcepts.size) }
+    LaunchedEffect(removedConcepts.size) {
+        if (removedConcepts.size > lastRemovedCount && removedConcepts.isNotEmpty()) {
+            pulseVisible = true
+            delay(1600)
+            pulseVisible = false
+        }
+        lastRemovedCount = removedConcepts.size
+    }
 
     fun submit() {
         val name = normalizeConceptName(input)
@@ -330,6 +352,28 @@ internal fun NoteConceptPanel(
                 }
             }
         }
+        if (removedConcepts.isNotEmpty()) {
+            RemovedConceptHeader(
+                count = removedConcepts.size,
+                expanded = showRemoved,
+                pulseVisible = pulseVisible,
+                onToggle = { showRemoved = !showRemoved },
+            )
+            if (showRemoved) {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    for (name in removedConcepts) {
+                        RemovedConceptChip(
+                            name = name,
+                            onRestore = { onRestoreConcept(name) },
+                        )
+                    }
+                }
+            }
+        }
         Spacer(Modifier.height(8.dp))
         BasicTextField(
             value = input,
@@ -364,6 +408,84 @@ internal fun NoteConceptPanel(
                     inner()
                 }
             },
+        )
+    }
+}
+
+/** 「已删除 N」这一行：点一下展开/收起；刚删掉一个时闪一下亮色 `＋1`。 */
+@Composable
+private fun RemovedConceptHeader(
+    count: Int,
+    expanded: Boolean,
+    pulseVisible: Boolean,
+    onToggle: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggle)
+            .padding(start = 12.dp, end = 8.dp, top = 6.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            if (expanded) "已删除 ▾" else "已删除 ▸",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.weight(1f))
+        AnimatedVisibility(
+            visible = pulseVisible,
+            enter = fadeIn() + scaleIn(initialScale = 0.7f),
+            exit = fadeOut(),
+        ) {
+            Text(
+                "＋1",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .clip(ControlShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f))
+                    .padding(horizontal = 6.dp, vertical = 1.dp),
+            )
+        }
+        Spacer(Modifier.width(6.dp))
+        Text(
+            count.toString(),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+        )
+    }
+}
+
+/** 已删除的概念：划掉灰显，点 ↩ 恢复（正文里重新出现一处标记）。 */
+@Composable
+private fun RemovedConceptChip(
+    name: String,
+    onRestore: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .clip(ControlShape)
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f))
+            .padding(start = 9.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            name,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+            textDecoration = TextDecoration.LineThrough,
+            modifier = Modifier.padding(vertical = 4.dp),
+        )
+        Text(
+            "↩",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier
+                .clip(ControlShape)
+                .clickable(onClick = onRestore)
+                .padding(horizontal = 6.dp, vertical = 4.dp),
         )
     }
 }
@@ -465,6 +587,46 @@ internal fun ConceptListPanel(
  * 定义存在 `<home>/knowledge/concepts.json`（[ConceptMetaStore]），不进笔记正文；
  * 来源片段每次从笔记文件现算，所以删掉笔记里的引用，这里也自动变少。
  */
+/** 概念详情里的一行引用：点一下跳回正文命中处。 */
+@Composable
+private fun ConceptMentionRow(
+    mention: ConceptMention,
+    zone: ZoneId,
+    onLocate: (ConceptMention) -> Unit,
+    muted: Boolean = false,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(ControlShape)
+            .clickable { onLocate(mention) }
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                displayTitle(mention.noteTitle),
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (muted) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                knowledgeTimeLabel(mention.noteUpdatedAt, zone),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text(
+            mention.snippet,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
 @Composable
 internal fun ConceptDetailPanel(
     detail: ConceptDetail?,
@@ -476,6 +638,8 @@ internal fun ConceptDetailPanel(
     onOpenRelated: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // 「其他提到」默认收起：没标注的笔记只是碰巧提到，不该和归属混在一起。
+    var showOthers by remember(detail?.summary?.name) { mutableStateOf(false) }
     if (detail == null) {
         Box(modifier.fillMaxWidth().padding(24.dp)) {
             Text(
@@ -541,41 +705,33 @@ internal fun ConceptDetailPanel(
         Spacer(Modifier.height(12.dp))
 
         Text(
-            "来源（点一下跳回正文）",
+            "标注过的笔记（点一下跳回正文）",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(4.dp))
         LazyColumn(Modifier.weight(1f, fill = false), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             items(detail.mentions, key = { it.noteId }) { mention ->
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(ControlShape)
-                        .clickable { onLocate(mention) }
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            displayTitle(mention.noteTitle),
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            knowledgeTimeLabel(mention.noteUpdatedAt, zone),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                ConceptMentionRow(mention, zone, onLocate)
+            }
+            if (detail.others.isNotEmpty()) {
+                item(key = "others-header") {
                     Text(
-                        mention.snippet,
+                        (if (showOthers) "▾ 其他提到（未标注） " else "▸ 其他提到（未标注） ") +
+                            detail.others.size,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(ControlShape)
+                            .clickable { showOthers = !showOthers }
+                            .padding(vertical = 6.dp, horizontal = 2.dp),
                     )
+                }
+                if (showOthers) {
+                    items(detail.others, key = { "other-" + it.noteId }) { mention ->
+                        ConceptMentionRow(mention, zone, onLocate, muted = true)
+                    }
                 }
             }
         }

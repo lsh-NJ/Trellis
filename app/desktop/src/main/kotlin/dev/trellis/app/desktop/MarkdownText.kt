@@ -322,11 +322,20 @@ private val AiQuoteFontSize = 26.sp
  */
 private fun conceptColor(conceptGreen: Color): Color = conceptGreen.copy(alpha = 0.62f)
 
+/** 标注过的概念（`[[…]]`）：浅绿 + 下划线，一眼看出「这里是本文概念」。 */
 private fun conceptStyle(conceptGreen: Color): SpanStyle =
     SpanStyle(
         color = conceptColor(conceptGreen),
         textDecoration = TextDecoration.Underline,
     )
+
+/**
+ * 概念名/别名在正文里的普通出现：只染色、不加下划线。
+ *
+ * 和 [conceptStyle] 的差别就是「算不算本文概念」——普通出现只是提到，标注过的才算。
+ */
+private fun conceptPlainStyle(conceptGreen: Color): SpanStyle =
+    SpanStyle(color = conceptColor(conceptGreen))
 
 /** 行内代码的底色：半透明灰，暗色主题下提亮、亮色主题下压暗，两边都能和正文分开。 */
 internal val MarkdownCodeBackground: Color = Color(0x2E9E9E9E)
@@ -395,7 +404,7 @@ private fun AnnotatedString.Builder.appendStyledRange(
             val start = maxOf(hit.first, position)
             val end = minOf(hit.last + 1, b)
             if (start > position) append(text.substring(position, start))
-            withStyle(conceptStyle(conceptGreen)) { append(text.substring(start, end)) }
+            withStyle(conceptPlainStyle(conceptGreen)) { append(text.substring(start, end)) }
             position = end
         }
         if (b > position) append(text.substring(position, b))
@@ -419,7 +428,8 @@ private fun AnnotatedString.Builder.appendStyledRange(
         val math = groups["math"]
         when {
             concept != null -> withStyle(conceptStyle(conceptGreen)) {
-                append(text.substring(from + concept.range.first, from + concept.range.last + 1))
+                // 只显示分隔符左边的原文：`[[检索增强生成 => RAG]]` 显示「检索增强生成」。
+                append(conceptAnnotationDisplay(text.substring(from + concept.range.first, from + concept.range.last + 1)))
             }
             boldItalic != null -> withStyle(
                 markdownBoldStyle(

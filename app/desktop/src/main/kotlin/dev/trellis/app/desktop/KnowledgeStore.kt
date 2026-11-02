@@ -92,37 +92,100 @@ internal class KnowledgeStore(private val home: File, private val clock: Trellis
             .sortedWith(compareByDescending<ConceptSummary> { it.updatedAt }.thenBy { it.name })
     }
 
-    /** 概念详情：引用按笔记最近更新排；相关概念按「同笔记共现」现算。 */
-    fun conceptDetail(name: String, notes: List<KnowledgeNote> = allNotes()): ConceptDetail? {
+    /**
+     * 概念详情：引用按笔记最近更新排，相关概念按「同笔记共现」现算。
+     *
+     * 两组引用分开：[ConceptDetail.mentions] 是标注过本概念的笔记（归属），
+     * [ConceptDetail.others] 是只提到、没标注的笔记——普通出现只点亮，不改归属。
+     * [identities] 用来把正文里的别名/`[[原文 => 规范名]]` 解析成规范名。
+     */
+    fun conceptDetail(
+        name: String,
+        notes: List<KnowledgeNote> = allNotes(),
+        identities: List<ConceptIdentity> = emptyList(),
+    ): ConceptDetail? {
         val key = conceptKey(name)
         if (key.isEmpty()) return null
-        val members = notes.filter { note -> note.concepts.any { conceptKey(it) == key } }
+        val identity = identities.firstOrNull { candidate ->
+            conceptKey(candidate.name) == key || candidate.aliases.any { conceptKey(it) == key }
+        }
+        val canonicalName = identity?.name ?: normalizeConceptName(name)
+        val canonicalKey = conceptKey(canonicalName)
+        val terms = (listOf(canonicalName) + identity?.aliases.orEmpty())
+            .map(::normalizeConceptName)
+            .filter { it.isNotBlank() }
+            .distinctBy(::conceptKey)
+        val annotationsByNote = notes.associate { note -> note.id to parseConceptAnnotations(note.body) }
+        fun annotationsFor(note: KnowledgeNote): List<ConceptAnnotation> = annotationsByNote[note.id].orEmpty()
+        fun isAboutThisConcept(annotation: ConceptAnnotation): Boolean =
+            conceptKey(conceptAnnotationName(annotation, identities)) == canonicalKey
+
+        val members = notes.filter { note ->
+            note.concepts.any { conceptKey(it) == canonicalKey } ||
+                annotationsFor(note).any(::isAboutThisConcept)
+        }
         if (members.isEmpty()) return null
         val display = members
             .maxByOrNull { it.updatedAt }
             ?.concepts
-            ?.firstOrNull { conceptKey(it) == key }
-            ?: normalizeConceptName(name)
+            ?.firstOrNull { conceptKey(it) == canonicalKey }
+            ?: canonicalName
+
+        /** 这篇笔记里这个概念第一次出现的位置：优先用标注的原文位置，再退回普通词命中。 */
+        fun firstHit(note: KnowledgeNote): Pair<Int, Int>? {
+            val annotation = annotationsFor(note).firstOrNull(::isAboutThisConcept)
+            if (annotation != null) {
+                val start = annotation.start + CONCEPT_OPEN.length
+                if (start + annotation.display.length <= note.body.length) {
+                    return start to annotation.display.length
+                }
+            }
+            for (term in terms) {
+                val index = conceptFirstHit(note.body, term)
+                if (index >= 0) return index to term.length
+            }
+            return null
+        }
 
         var totalMentions = 0
         val mentions = members.sortedByDescending { it.updatedAt }.map { note ->
-            val count = conceptOccurrences(note.body, display)
-            totalMentions += count
-            val start = if (count > 0) conceptFirstHit(note.body, display) else -1
-            val end = if (start >= 0) start + display.length else -1
+            totalMentions += terms.sumOf { term -> conceptOccurrences(note.body, term) }
+            val hit = firstHit(note)
             ConceptMention(
                 noteId = note.id,
                 noteTitle = note.title,
                 noteUpdatedAt = note.updatedAt,
-                snippet = if (start >= 0) {
-                    snippetAround(note.body, start, end)
+                snippet = if (hit != null) {
+                    snippetAround(note.body, hit.first, hit.first + hit.second)
                 } else {
                     "（只在 frontmatter 里标注，正文未出现）"
                 },
-                start = start,
-                end = end,
+                start = hit?.first ?: -1,
+                end = hit?.let { it.first + it.second } ?: -1,
             )
         }
+        val memberIds = members.map { it.id }.toSet()
+        val others = notes
+            .filter { it.id !in memberIds }
+            .mapNotNull { note ->
+                val hit = terms.asSequence()
+                    .mapNotNull { term ->
+                        val index = conceptFirstHit(note.body, term)
+                        if (index >= 0) index to term.length else null
+                    }
+                    .firstOrNull()
+                    ?: return@mapNotNull null
+                ConceptMention(
+                    noteId = note.id,
+                    noteTitle = note.title,
+                    noteUpdatedAt = note.updatedAt,
+                    snippet = snippetAround(note.body, hit.first, hit.first + hit.second),
+                    start = hit.first,
+                    end = hit.first + hit.second,
+                )
+            }
+            .sortedByDescending { it.noteUpdatedAt }
+
         return ConceptDetail(
             summary = ConceptSummary(
                 name = display,
@@ -131,21 +194,49 @@ internal class KnowledgeStore(private val home: File, private val clock: Trellis
                 updatedAt = members.maxOf { it.updatedAt },
             ),
             mentions = mentions,
-            related = relatedConcepts(members, key, notes),
+            related = relatedConcepts(members, canonicalKey, notes),
+            others = others,
         )
     }
 
-    /** 搜索：概念名 + 笔记标题/正文；空关键词返回全部笔记。 */
-    fun search(query: String, notes: List<KnowledgeNote> = allNotes()): SearchHits {
+    /**
+     * 搜索：概念（规范名 + 别名）与笔记标题/正文。
+     *
+     * 笔记里标注过命中概念的排在最前面，其次才是普通文字命中——「标注」比「碰巧出现过」更相关。
+     */
+    fun search(
+        query: String,
+        notes: List<KnowledgeNote> = allNotes(),
+        identities: List<ConceptIdentity> = emptyList(),
+    ): SearchHits {
         val keyword = query.trim()
         if (keyword.isEmpty()) return SearchHits(emptyList(), list())
-        val concepts = conceptIndex(notes).filter { it.name.contains(keyword, ignoreCase = true) }
-        val matched = notes.filter {
-            it.title.contains(keyword, ignoreCase = true) || it.body.contains(keyword, ignoreCase = true)
+        val aliasesByKey = identities.associate { conceptKey(it.name) to it.aliases }
+        val concepts = conceptIndex(notes).filter { summary ->
+            summary.name.contains(keyword, ignoreCase = true) ||
+                aliasesByKey[conceptKey(summary.name)].orEmpty()
+                    .any { alias -> alias.contains(keyword, ignoreCase = true) }
+        }
+        val matchedKeys = concepts.map { conceptKey(it.name) }.toSet()
+        val annotatedIds = if (matchedKeys.isEmpty()) {
+            emptySet()
+        } else {
+            notes.filter { note -> note.concepts.any { conceptKey(it) in matchedKeys } }
+                .map { it.id }
+                .toSet()
+        }
+        val matched = notes.filter { note ->
+            note.title.contains(keyword, ignoreCase = true) ||
+                note.body.contains(keyword, ignoreCase = true) ||
+                note.id in annotatedIds
         }
         val summaries = matched
             .map { NoteSummary(it.id, it.title, it.updatedAt, it.body.length) }
-            .sortedWith(compareByDescending<NoteSummary> { it.updatedAt }.thenBy { displayTitle(it.title) })
+            .sortedWith(
+                compareByDescending<NoteSummary> { it.id in annotatedIds }
+                    .thenByDescending { it.updatedAt }
+                    .thenBy { displayTitle(it.title) },
+            )
         return SearchHits(concepts, summaries)
     }
 
