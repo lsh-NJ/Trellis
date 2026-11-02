@@ -662,7 +662,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                             ),
                         ) {
                             // 标题和正文共用一条滚动轴（需求：标题跟着正文走）。
-                            // 块编辑器自己不再滚动，高度随内容长；滚动交给这里。
+                            // 文档编辑器自己不再滚动，高度随内容长；滚动交给这里。
                             Box(Modifier.weight(1f).fillMaxWidth()) {
                                 Column(
                                     Modifier
