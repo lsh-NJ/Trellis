@@ -130,6 +130,8 @@ internal fun KnowledgeGraphView(
     var createParent by remember { mutableStateOf<Pair<String?, Boolean>?>(null) }
     var renameTarget by remember { mutableStateOf<GraphNode?>(null) }
     var deleteTarget by remember { mutableStateOf<GraphNode?>(null) }
+    // 「新建上级分类」：先创建根分类，再把当前分类挂进去。
+    var newParentTarget by remember { mutableStateOf<GraphNode?>(null) }
 
     val categories: List<Pair<String, String>> = remember(graph) {
         graph.nodes.values
@@ -222,6 +224,10 @@ internal fun KnowledgeGraphView(
                                 persist(assignConcept(user, conceptKey, categoryId))
                             },
                             onNewSubcategory = { parentId -> createParent = parentId to false },
+                            onNewParentCategory = { categoryId -> newParentTarget = graph.nodes[categoryId] },
+                            onMoveCategory = { categoryId, newParentId ->
+                                persist(moveCategory(user, categoryId, newParentId))
+                            },
                             onRenameCategory = { categoryId -> renameTarget = graph.nodes[categoryId] },
                             onDeleteCategory = { categoryId -> deleteTarget = graph.nodes[categoryId] },
                         )
@@ -244,6 +250,31 @@ internal fun KnowledgeGraphView(
             onConfirm = { name ->
                 createParent = null
                 persist(createCategory(user, name, parentId, runtime.clock.nowMs()))
+            },
+        )
+    }
+    val newParent = newParentTarget
+    if (newParent != null) {
+        GraphTextInputDialog(
+            title = "新建上级分类",
+            label = "分类名（例如「RAG 系统」）",
+            confirmLabel = "创建并移入",
+            initial = "",
+            onDismiss = { newParentTarget = null },
+            onConfirm = { name ->
+                newParentTarget = null
+                val before = user.categories.map { it.id }.toSet()
+                val created = createCategory(user, name, null, runtime.clock.nowMs())
+                if (created.error != null) {
+                    persist(created)
+                } else {
+                    val newId = created.user.categories.firstOrNull { it.id !in before }?.id
+                    if (newId == null) {
+                        persist(created)
+                    } else {
+                        persist(moveCategory(created.user, newParent.key, newId))
+                    }
+                }
             },
         )
     }
