@@ -45,41 +45,99 @@ internal const val MAX_EXTRACT_BODY_CHARS: Int = 6000
 /** 一次整理最多分这么多段（≈ [MAX_EXTRACT_BODY_CHARS] × 8 字）；再长只整理前面这几段。 */
 internal const val MAX_EXTRACT_CHUNKS: Int = 8
 
+/** 一/二级标题行：`# 标题`、`## 标题`（`###` 不会命中一级/二级模式）。 */
+private val firstLevelHeadingLine = Regex("^#\\s+\\S")
+private val secondLevelHeadingLine = Regex("^##\\s+\\S")
+
 /**
- * 把长正文按行切成不超过 [MAX_EXTRACT_BODY_CHARS] 的段。
+ * 把长正文按「标题结构」切成不超过 [MAX_EXTRACT_BODY_CHARS] 的段。
  *
- * 优先在行尾断开（Markdown 的段落/列表本来按行组织），单行超长时硬切；
- * 最多返回 [MAX_EXTRACT_CHUNKS] 段，太长的笔记尾部不再送模型（避免一次整理打十几个请求）。
+ * 优先按**一级标题**分段；某个一级段太大就降级按**二级标题**拆；仍然太大才按行断开
+ * （单行超长硬切）。相邻的小段会拼在一起，避免每节都单独打一次请求。
+ * 最多返回 [MAX_EXTRACT_CHUNKS] 段，更长的笔记尾部不再送模型（避免一次整理打十几个请求）。
  * 短正文原样返回一段。
  */
 internal fun extractionBodyChunks(body: String): List<String> {
     if (body.length <= MAX_EXTRACT_BODY_CHARS) return listOf(body)
-    val chunks = ArrayList<String>()
+    val pieces = ArrayList<String>()
+    for (topSection in splitAtHeadingLevel(body, firstLevelHeadingLine)) {
+        if (topSection.length <= MAX_EXTRACT_BODY_CHARS) {
+            pieces += topSection
+            continue
+        }
+        for (secondSection in splitAtHeadingLevel(topSection, secondLevelHeadingLine)) {
+            if (secondSection.length <= MAX_EXTRACT_BODY_CHARS) {
+                pieces += secondSection
+            } else {
+                pieces += splitIntoLines(secondSection)
+            }
+        }
+    }
+    return packPieces(pieces).take(MAX_EXTRACT_CHUNKS)
+}
+
+/** 按标题行把正文切成若干节；每节从标题行开始，第一节是第一个标题之前的内容（可能为空）。 */
+private fun splitAtHeadingLevel(body: String, heading: Regex): List<String> {
+    val sections = ArrayList<String>()
+    val current = StringBuilder()
+    val lines = body.split('\n')
+    val headingLines = lines.indices.filter { heading.containsMatchIn(lines[it]) }
+    if (headingLines.isEmpty()) return listOf(body)
+    for ((index, line) in lines.withIndex()) {
+        val piece = if (index == lines.lastIndex) line else line + "\n"
+        if (index in headingLines && current.isNotEmpty()) {
+            sections += current.toString()
+            current.clear()
+        }
+        current.append(piece)
+    }
+    if (current.isNotEmpty()) sections += current.toString()
+    return sections.filter { it.isNotEmpty() }
+}
+
+/** 单节还是太大：按行断开（优先行尾，单行超长硬切）。 */
+private fun splitIntoLines(text: String): List<String> {
+    if (text.length <= MAX_EXTRACT_BODY_CHARS) return listOf(text)
+    val pieces = ArrayList<String>()
     val current = StringBuilder()
     fun flush() {
         if (current.isNotEmpty()) {
-            chunks += current.toString()
+            pieces += current.toString()
             current.clear()
         }
     }
-    fun hardSplit(text: String) {
-        var rest = text
-        while (rest.length > MAX_EXTRACT_BODY_CHARS) {
+    fun hardSplit(rest: String) {
+        var remaining = rest
+        while (remaining.length > MAX_EXTRACT_BODY_CHARS) {
             flush()
-            chunks += rest.substring(0, MAX_EXTRACT_BODY_CHARS)
-            rest = rest.substring(MAX_EXTRACT_BODY_CHARS)
+            pieces += remaining.substring(0, MAX_EXTRACT_BODY_CHARS)
+            remaining = remaining.substring(MAX_EXTRACT_BODY_CHARS)
         }
-        current.append(rest)
+        current.append(remaining)
     }
-    val lines = body.split('\n')
+    val lines = text.split('\n')
     for ((index, line) in lines.withIndex()) {
         val piece = if (index == lines.lastIndex) line else line + "\n"
         if (current.length + piece.length > MAX_EXTRACT_BODY_CHARS && current.isNotEmpty()) flush()
         if (piece.length > MAX_EXTRACT_BODY_CHARS) hardSplit(piece) else current.append(piece)
-        if (chunks.size >= MAX_EXTRACT_CHUNKS) break
     }
     flush()
-    return if (chunks.size <= MAX_EXTRACT_CHUNKS) chunks else chunks.take(MAX_EXTRACT_CHUNKS)
+    return pieces
+}
+
+/** 把相邻的小段拼成不超过上限的块：标题边界优先，但不为每节单独打一次请求。 */
+private fun packPieces(pieces: List<String>): List<String> {
+    val packed = ArrayList<String>()
+    val current = StringBuilder()
+    for (piece in pieces) {
+        if (current.isNotEmpty() && current.length + piece.length > MAX_EXTRACT_BODY_CHARS) {
+            packed += current.toString()
+            current.clear()
+        }
+        current.append(piece)
+    }
+    if (current.isNotEmpty()) packed += current.toString()
+    return packed
 }
 
 /**
@@ -255,6 +313,92 @@ private fun parseFillsFrom(element: JsonElement?): List<FillSuggestion> {
             .distinctBy { conceptKey(it.label) }
             .take(MAX_AI_FILL_SLOTS)
     }.getOrElse { emptyList() }
+}
+
+/**
+ * 跨段统一分析：各段分别抽到的概念可能有重复/叫法不同/定义不一致，把它们放在一起再请模型整理一遍。
+ *
+ * 只整理「已有候选」，不允许新增：模型漏掉的候选会原样保留（见 [applyConsolidatedCandidates]），
+ * mention 也永远用原来的正文原词，避免模型改写导致打不上标记。
+ */
+internal fun buildConceptConsolidationMessages(
+    title: String,
+    candidates: List<ConceptCandidate>,
+): List<LlmMessage> {
+    val system = "你是个人知识库的整理助手。下面这些概念是从同一篇长笔记的不同段落分别抽出来的，" +
+        "可能有重复（同一个概念换了个说法）、定义不一致、或者别名分散在多条里。" +
+        "请把它们合并成一份：同一个概念只留一条，选最合适的规范名；别名取并集；" +
+        "定义用最完整、能独立看懂的一句（不超过 40 个字）；不要新增原文里没有的概念。" +
+        "name 只能从下面给出的名字/别名里选（或它们的合理写法），不要编造。只输出 JSON 对象。"
+    val user = buildString {
+        append("笔记标题：").append(title.ifBlank { "（无标题）" }).append("\n\n")
+        append("候选概念（共 ").append(candidates.size).append(" 条）：\n")
+        candidates.forEach { candidate ->
+            append("- ").append(candidate.name)
+            if (candidate.mention.isNotBlank() && conceptKey(candidate.mention) != conceptKey(candidate.name)) {
+                append("（正文原词：").append(candidate.mention).append("）")
+            }
+            if (candidate.aliases.isNotEmpty()) append("（别名：").append(candidate.aliases.joinToString("、")).append("）")
+            if (candidate.definition.isNotBlank()) append("：").append(candidate.definition)
+            append('\n')
+        }
+        append("\n输出严格 JSON 对象，格式：")
+        append("{\"concepts\":[{\"name\":\"规范名\",\"aliases\":[\"别名\"],\"definition\":\"一句话定义\"}]}")
+    }
+    return listOf(
+        LlmMessage(LlmRole.System, system),
+        LlmMessage(LlmRole.User, user),
+    )
+}
+
+/**
+ * 把统一分析的结果套回原始候选。
+ *
+ * - 只接受「能在原始候选里找到」的条目（规范名或别名匹配身份键），模型新增的概念一律丢掉；
+ * - mention 永远沿用原始候选的正文原词（模型改写过的会标不上）；
+ * - 模型漏掉的原始候选原样保留（宁多勿丢，准入规则在解析阶段已经挡过垃圾）。
+ */
+internal fun applyConsolidatedCandidates(
+    original: List<ConceptCandidate>,
+    consolidated: List<ConceptCandidate>,
+): List<ConceptCandidate> {
+    if (original.isEmpty() || consolidated.isEmpty()) return original
+    val byKey = LinkedHashMap<String, ConceptCandidate>()
+    for (candidate in original) byKey[conceptIdentityKey(candidate.name)] = candidate
+    val covered = HashSet<String>()
+    val merged = ArrayList<ConceptCandidate>()
+    for (item in consolidated) {
+        if (!isAcceptableConceptName(item.name)) continue
+        val matches = ArrayList<ConceptCandidate>()
+        byKey[conceptIdentityKey(item.name)]?.let { matches += it }
+        for (alias in item.aliases) {
+            if (alias.isBlank()) continue
+            byKey[conceptIdentityKey(alias)]?.let { candidate ->
+                if (matches.none { it === candidate }) matches += candidate
+            }
+        }
+        val uncovered = matches.filter { conceptIdentityKey(it.name) !in covered }
+        if (uncovered.isEmpty()) continue
+        uncovered.forEach { covered += conceptIdentityKey(it.name) }
+        val mention = uncovered.firstNotNullOfOrNull { it.mention.ifBlank { null } }
+            ?: uncovered.first().mention
+        val aliases = (uncovered.flatMap { it.aliases } + item.aliases)
+            .map(::normalizeConceptName)
+            .filter { it.isNotBlank() && isAcceptableConceptName(it) }
+            .filter { conceptIdentityKey(it) != conceptIdentityKey(item.name) }
+            .distinctBy(::conceptIdentityKey)
+        merged += ConceptCandidate(
+            name = normalizeConceptName(item.name),
+            definition = item.definition.ifBlank { uncovered.first().definition },
+            mention = mention,
+            aliases = aliases,
+        )
+    }
+    for (candidate in original) {
+        if (conceptIdentityKey(candidate.name) in covered) continue
+        merged += candidate
+    }
+    return merged
 }
 
 /**

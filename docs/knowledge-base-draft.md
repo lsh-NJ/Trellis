@@ -214,6 +214,8 @@
 - **切段**：新增 `extractionBodyChunks(body)`——按行切，每段 ≤6000 字（优先在行尾断开，单行超长硬切）；最多 8 段（≈4.8 万字），再长只整理前 8 段，避免一次整理打十几个请求。
 - **逐段调用**：`buildKnowledgeExtractionMessages` 加 `chunkIndex/chunkCount`，提示词里写明「这是整篇正文的第 i/n 段，其余段落这里省略」；`organizeNote` 按段顺序调用模型，空位只送本段里出现的（`findAiFillSlots(chunk)`），避免模型凭标签猜后面几段的空位。
 - **合并**：`mergeExtractionResults` 合并各段结果——概念按身份键去重（定义取信息更全的那份、别名取并集、mention 取首个非空），补全按标签去重；图建议逐段用 `parseNoteGraphSuggestions` 解析后 `mergeNoteGraphSuggestions` 合并（分类按「概念 + 路径」、关系按 from→to + 类型，RELATED 双向归一，重复保留高置信度那条，合并后再夹单篇上限）。
+- **分段优先级（2026-11-03 补充）**：先按一级标题（`# `）分段；某个一级段还是太大就降级按二级标题（`## `）拆；仍然太大才按行断开（单行超长硬切）。相邻的小段会拼在一起，避免每节单独打一次请求——段数上限仍是 8。
+- **跨段统一分析（2026-11-03 补充）**：分段时，各段候选合并后再请模型统一整理一遍（`buildConceptConsolidationMessages` / `applyConsolidatedCandidates`）：合并同义项、统一别名与定义。只整理已有候选、不新增；mention 永远沿用原始候选的正文原词（模型改写的会标不上）；模型漏掉的候选原样保留。
 - **提示**：长笔记整理成功时消息带「（长笔记分 N 段整理）」。
 - 测试：新增 `KnowledgeExtractionChunkTest`（短正文整段、行尾断开、超长行硬切、8 段上限、提示词「第 2/3 段」、候选/补全去重、图建议合并去重与高置信保留）；真机 mock LLM 验证 1.1 万字长笔记：发出 2 次请求（`第 1/2 段`、`第 2/2 段`），开头 `AlphaCore` 与 6000 字之后的 `ZetaRecall` 都写进正文标记、frontmatter `concepts` 派生两者，消息显示「长笔记分 2 段整理」；`:app:desktop:test` **544 个用例全绿**。
 
