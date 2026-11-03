@@ -141,6 +141,31 @@ internal class StewardRuntime(
         }
     }
 
+    /**
+     * 开发者调试：立刻按 [ritual] 发一次，不管到没到点、今天发过没有。
+     *
+     * 和 [check] 的区别只有两处：不读也不写 checkpoints（同一个应用内日期可以反复触发），
+     * 强制触发时即使应用在前台也尝试弹一次系统通知。消息、记忆、摘要、建议卡都走
+     * 与真实仪式完全相同的路径——调它就是在验证那条路径。
+     */
+    suspend fun forceRun(ritual: StewardRitual): StewardRunResult = mutex.withLock {
+        val today = LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(clock()), zone).toLocalDate()
+        val facts = ports.planFacts(today) ?: return@withLock StewardRunResult.Nothing
+        val text = polish(ritual, today, facts)
+        val kind = when (ritual) {
+            StewardRitual.Morning, StewardRitual.MorningWithEveningCatchUp -> StewardMemoryKind.Morning
+            StewardRitual.Evening -> StewardMemoryKind.Evening
+        }
+        if (!send(text, today, kind, digest = ritual == StewardRitual.Evening, forceNotify = true)) {
+            return@withLock StewardRunResult.Busy
+        }
+        when (ritual) {
+            StewardRitual.Morning -> StewardRunResult.Morning
+            StewardRitual.Evening -> StewardRunResult.Evening
+            StewardRitual.MorningWithEveningCatchUp -> StewardRunResult.MorningWithEveningCatchUp
+        }
+    }
+
     /** 建议被采纳/被「先这样」：记一条，下一次仪式能读到上次的结论。 */
     fun rememberProposalDecision(day: LocalDate, adopted: Boolean, summary: String) {
         store.appendMemory(
@@ -207,6 +232,7 @@ internal class StewardRuntime(
         today: LocalDate,
         kind: StewardMemoryKind,
         digest: Boolean,
+        forceNotify: Boolean = false,
     ): Boolean {
         val body = text.trim().takeIf { it.isNotBlank() } ?: return false
         val proposal = runCatching { ports.proposal(today) }.getOrNull()
@@ -221,7 +247,7 @@ internal class StewardRuntime(
             ),
         )
         if (digest) store.saveDigest(today.toString(), body)
-        if (store.settings().notifyDesktop && !ports.appFocused()) {
+        if (store.settings().notifyDesktop && (forceNotify || !ports.appFocused())) {
             runCatching { ports.notify(StewardRuntime.STEWARD_TITLE, body.take(120)) }
         }
         return true
