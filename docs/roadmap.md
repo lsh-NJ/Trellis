@@ -152,3 +152,8 @@
 - AI 建议加「一键采纳」：左栏「查看 AI 建议」旁，一次确认全部归类+关系建议（`confirmCategorySuggestions` + `confirmRelationSuggestions` 串联，写 `graph.user.json` 并清缓存建议），逐条确认/全部确认/全部忽略仍在建议面板。
 - 左栏空搜索态下半部分列「分类树」：每棵树根分类 + 「未分类」行（复用 `GraphHitRow`），点击选中并把相机居中到该树。
 - 验证：`:app:desktop` 544 条测试 0 失败（graph 124）、`./gradlew check` 绿；渲染测试 2 绿并重生成 4 张 Density(2f) 截图；设计见 `knowledge-graph-design.md` 附录 D/E.8。
+
+## 0.11 2026-11-03 知识网络补丁 7（画布边界圆角）
+
+- 用户反馈「把图边界改为圆角」：网络视图画布外层加 4/12/2/12dp 内边距露出底色，内层 12dp 圆角裁剪 + 1dp `outlineVariant` 半透明描边 + `surface` 背景；点阵、节点、浮窗、图例都裁在圆角内，与左栏/页头/浮窗的圆角语言统一。
+- 验证：编译绿、渲染测试 2 绿并重生成 4 张 Density(2f) 截图、`:app:desktop` 550 条测试 0 失败、`check` 绿；设计见 `knowledge-graph-design.md` 附录 E.9。

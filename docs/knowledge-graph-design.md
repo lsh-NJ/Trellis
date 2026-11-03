@@ -1573,5 +1573,15 @@ G1 明确没做（留后续）：真实模型 key 的本机手测；「已忽略
 
 ---
 
+### E.9 v1.3 补丁 7：画布边界改圆角（2026-11-03 傍晚）
+
+| 改动 | 文件 | 内容 |
+|---|---|---|
+| 画布卡片 | `KnowledgeGraphScreen.kt` | 网络视图的画布不再四边直角贴边：外层加 `padding(start=4.dp, end=12.dp, top=2.dp, bottom=12.dp)` 露出底色，内层 `clip(RoundedCornerShape(12.dp))` + `background(surface)` + `border(1.dp, outlineVariant 50%)`，和左栏/页头/浮窗的圆角语言一致；点阵背景、节点、浮窗、图例都裁在圆角内 |
+
+验证：`:app:desktop:compileKotlin` 绿；`KnowledgeGraphScreenRenderTest` 2 tests 绿并重生成 4 张 Density(2f) 截图；全量 `:app:desktop:test` 550 条 0 失败、`./gradlew check` 绿。
+
+---
+
 > 本文件是设计稿，不是实现；实现时若发现与代码冲突，以代码为准并回来修本文件。
 
