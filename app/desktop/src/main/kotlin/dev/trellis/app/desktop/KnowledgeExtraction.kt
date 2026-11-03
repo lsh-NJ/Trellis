@@ -60,7 +60,9 @@ internal fun buildKnowledgeExtractionMessages(
         "笔记里整行是「标签：$AI_SLOT_MARKER」的行是用户留的空位。" +
         "系统只信任正文原文：它会把 mention 在正文里第一次出现的位置包成 " +
         "`[[mention => 规范名]]`（mention 与规范名相同时包成 `[[规范名]]`），" +
-        "所以 mention 必须是正文里的原词，改写过的词会被丢掉。只输出 JSON 对象，不输出解释。"
+        "所以 mention 必须是正文里的原词，改写过的词会被丢掉。" +
+        "不要抽标题行/章节名、单字母或两三个字母的缩写、纯符号、泛词——这些会在正文里" +
+        "「绿色满天飞」，用户要的是真正被解释过的概念。只输出 JSON 对象，不输出解释。"
     val user = buildString {
         append("笔记标题：").append(title.ifBlank { "（无标题）" }).append("\n\n")
         append("笔记正文：\n").append(body.take(MAX_EXTRACT_BODY_CHARS)).append("\n\n")
@@ -77,17 +79,21 @@ internal fun buildKnowledgeExtractionMessages(
         append("   b) 它和用户留的空位直接相关，补全那个空位后能看懂。\n")
         append("   只是被提到一次的名词、查不到解释的词、泛词（「笔记」「总结」「学习」）、")
             .append("人名、组织名、产品名都不要。\n")
-        append("2. mention 必须**逐字出现在正文里**（原词原句，大小写、空格、标点与原文一致）；")
+        append("2. 准入门槛（不满足就不要抽）：概念名至少 2 个字，英文缩写至少 3 个字母；")
+            .append("纯符号、单个字母、两个字母的缩写（M、ef、en 这种）、标题行/章节名、通用类别词")
+            .append("（集合、段、索引、总结、学习）都不算概念。\n")
+        append("3. mention 必须**逐字出现在正文里**（原词原句，大小写、空格、标点与原文一致）；")
             .append("系统只会把 mention 第一次出现的地方包成 `[[mention => name]]`，")
             .append("找不到的 mention 会被丢掉。正文原词和 name 相同时 mention 可以省略。\n")
-        append("3. name 是规范名：想总结得更标准可以写在 name 里，但必须通过 mention 映射回正文原词；")
-            .append("别人对同一个概念的不同叫法写进 aliases（不要自己发明没人用过的词）。\n")
-        append("4. 数量不设上限：正文里确实讲过的概念都可以列，但每个都必须满足上面的依据；")
+        append("4. name 是规范名：想总结得更标准可以写在 name 里，但必须通过 mention 映射回正文原词；")
+            .append("别人对同一个概念的不同叫法写进 aliases（不要自己发明没人用过的词，也不要把")
+            .append("「集合」「段」这种通用词当别名）。\n")
+        append("5. 数量不设上限：正文里确实讲过的概念都可以列，但每个都必须满足上面的依据；")
             .append("拿不准的就别抽。\n")
-        append("5. definition 不超过 40 个字，一句能独立看懂的解释（不是复述名词）。\n")
-        append("6. fills 只补上面列出的空位：label 必须和空位标签逐字一致，text 是一句话（不超过 ")
+        append("6. definition 不超过 40 个字，一句能独立看懂的解释（不是复述名词）。\n")
+        append("7. fills 只补上面列出的空位：label 必须和空位标签逐字一致，text 是一句话（不超过 ")
             .append(MAX_AI_FILL_CHARS).append(" 字）；没有空位就输出空数组。\n")
-        append("7. 输出严格 JSON 对象，格式：\n")
+        append("8. 输出严格 JSON 对象，格式：\n")
         append("```json\n")
         append("{\"concepts\":[{\"name\":\"规范名\",\"mention\":\"正文里的原词\",")
         append("\"aliases\":[\"别名\"],\"definition\":\"一句话定义\"}],")
@@ -159,12 +165,13 @@ private fun parseCandidatesFrom(element: JsonElement?): List<ConceptCandidate> {
             val aliases = (obj["aliases"] as? kotlinx.serialization.json.JsonArray)
                 ?.mapNotNull { (it as? JsonPrimitive)?.takeIf { primitive -> primitive.isString }?.content }
                 ?.map(::normalizeConceptName)
-                ?.filter { it.isNotBlank() }
-                ?.distinctBy(::conceptKey)
+                ?.filter { isAcceptableConceptName(it) && conceptIdentityKey(it) != conceptIdentityKey(name) }
+                ?.distinctBy(::conceptIdentityKey)
                 .orEmpty()
-            if (name.isEmpty()) null else ConceptCandidate(name, definition, mention, aliases)
+            // 模型偶尔还是抽 M / ef / 纯符号：这类名字进库就会让正文满天飞，解析阶段就挡掉。
+            if (!isAcceptableConceptName(name)) null else ConceptCandidate(name, definition, mention, aliases)
         }
-            .distinctBy { conceptKey(it.name) }
+            .distinctBy { conceptIdentityKey(it.name) }
     }.getOrElse { emptyList() }
 }
 
@@ -186,8 +193,8 @@ private fun parseFillsFrom(element: JsonElement?): List<FillSuggestion> {
 internal fun mergeConceptNames(existing: List<String>, candidates: List<ConceptCandidate>): List<String> =
     (existing + candidates.map { it.name })
         .map(::normalizeConceptName)
-        .filter { it.isNotBlank() }
-        .distinctBy(::conceptKey)
+        .filter(::isAcceptableConceptName)
+        .distinctBy(::conceptIdentityKey)
 
 /** 候选里带定义的部分；写定义时只填缺失的，不覆盖用户改过的。 */
 internal fun candidateDefinitions(candidates: List<ConceptCandidate>): Map<String, String> =

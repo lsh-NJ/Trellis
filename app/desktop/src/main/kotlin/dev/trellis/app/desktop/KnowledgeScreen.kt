@@ -80,7 +80,6 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     var body by remember { mutableStateOf("") }
     var revision by remember { mutableStateOf(0) }
     var savedAtMs by remember { mutableStateOf<Long?>(null) }
-    var preview by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
     var deleteTarget by remember { mutableStateOf<NoteSummary?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -115,11 +114,12 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     /** 概念库的身份表（规范名 + 别名）+ 索引里已有的概念：正文标注靠它解析成规范名。 */
     fun currentIdentities(): List<ConceptIdentity> {
         val known = LinkedHashMap<String, ConceptIdentity>()
+        // 空白变体（「Matryoshka 表示学习 / Matryoshka表示学习」）算同一个身份。
         for (identity in metaStore.identities()) {
-            known.putIfAbsent(conceptKey(identity.name), identity)
+            if (isAcceptableConceptName(identity.name)) known.putIfAbsent(conceptIdentityKey(identity.name), identity)
         }
         for (summary in concepts) {
-            known.putIfAbsent(conceptKey(summary.name), ConceptIdentity(summary.name))
+            if (isAcceptableConceptName(summary.name)) known.putIfAbsent(conceptIdentityKey(summary.name), ConceptIdentity(summary.name))
         }
         return known.values.toList()
     }
@@ -133,17 +133,9 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         if (query.isBlank()) null else store.search(query, identities = identities)
     }
 
-    /** 正文里要高亮的名字：概念规范名 + 别名（别名只匹配、不改归属）。 */
-    fun conceptHighlightNames(): List<String> {
-        val names = ArrayList<String>()
-        val seen = HashSet<String>()
-        for (identity in currentIdentities()) {
-            for (name in listOf(identity.name) + identity.aliases) {
-                if (seen.add(conceptKey(name))) names += name
-            }
-        }
-        return names
-    }
+    /** 正文里要高亮的名字：只取「本文概念」+ 它们的别名（见 [highlightNamesForNote]）。 */
+    fun conceptHighlightNames(): List<String> =
+        highlightNamesForNote(loaded?.concepts.orEmpty(), currentIdentities())
 
     /** 只写文件、不动界面状态；返回是否成功。离开组合时用它兜底。 */
     fun saveCurrent(): Boolean {
@@ -314,7 +306,6 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         val note = store.create()
         notes = store.list()
         selectedId = note.id
-        preview = false
         message = null
     }
 
@@ -322,7 +313,6 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         if (id == selectedId) return
         persistNow()
         loaded?.id?.takeIf { it != id }?.let { previous -> organizeNote(previous) }
-        preview = false
         selectedId = id
     }
 
@@ -338,7 +328,6 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
             savedAtMs = null
             title = ""
             body = ""
-            preview = false
             selectedId = notes.firstOrNull()?.id
         }
     }
@@ -360,6 +349,10 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
      */
     fun addConcept(name: String) {
         val note = loaded ?: return
+        if (!isAcceptableConceptName(name)) {
+            message = "「" + name + "」太短或太泛，不作为概念（至少 2 个字；英文缩写至少 3 个字母）"
+            return
+        }
         val canonical = resolveConceptName(name, currentIdentities())
         if (canonical.isEmpty()) return
         val nextBody = addConceptAnnotation(body, canonical, currentIdentities())
@@ -390,7 +383,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     /** 右栏 ×：把正文里这个概念的标记降级成纯文本 → 进「已删除」（墓碑，可恢复）。 */
     fun removeConcept(name: String) {
         val note = loaded ?: return
-        val key = conceptKey(name)
+        val key = conceptIdentityKey(name)
         val nextBody = stripConceptAnnotations(body, name, currentIdentities())
         if (nextBody == body) {
             message = "「" + name + "」正文里没有标记，无法删除标注"
@@ -403,8 +396,8 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
             title = title,
             body = nextBody,
             updatedAt = clock.nowMs(),
-            concepts = note.concepts.filterNot { conceptKey(it) == key },
-            removedConcepts = (note.removedConcepts + canonical).distinctBy(::conceptKey),
+            concepts = note.concepts.filterNot { conceptIdentityKey(it) == key },
+            removedConcepts = (note.removedConcepts + canonical).distinctBy(::conceptIdentityKey),
         )
         if (!store.save(seeded)) {
             message = "保存失败：写不进 " + store.notesDir.absolutePath
@@ -421,7 +414,6 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
 
     /** 概念详情里点「来源」：切回笔记并选中正文命中处。 */
     fun locateMention(mention: ConceptMention) {
-        preview = false
         showConcepts = false
         if (selectedId != mention.noteId) selectNote(mention.noteId)
         if (mention.start < 0) {
@@ -436,13 +428,6 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     LaunchedEffect(Unit) {
         pageFocus.requestFocusWhenReady()
         selectedId = runtime.knowledgeNoteId?.takeIf { store.exists(it) } ?: notes.firstOrNull()?.id
-    }
-
-    // 预览态没有输入框，焦点会掉到「没有接收者」——Ctrl/Cmd+S、Ctrl/Cmd+/ 就收不到了。
-    // 切到预览时把焦点交给页面根；切回编辑时编辑器会自己抢回来。
-    // 焦点请求要等布局跑完，否则焦点节点还没挂上（见 MarkdownEditor.requestFocusWhenReady）。
-    LaunchedEffect(preview) {
-        if (preview) pageFocus.requestFocusWhenReady()
     }
 
     // 切换选中：从文件载入。读不到（被外部删了）就退到下一篇。
@@ -540,7 +525,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                 if (event.type != KeyEventType.KeyDown) {
                     false
                 } else if (command && event.key == Key.Slash) {
-                    // 菜单挂在页面上：预览态没有输入框，按键本来也只会走到这里。
+                    // 菜单挂在页面上：编辑面没有焦点时，按键也只会走到这里。
                     shortcutsOpen = !shortcutsOpen
                     true
                 } else if (event.key == Key.Escape && shortcutsOpen) {
@@ -556,10 +541,6 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                             createNote(); true
                         }
 
-                        Key.E -> {
-                            preview = !preview; true
-                        }
-
                         else -> false
                     }
                 } else {
@@ -568,7 +549,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
             },
     ) {
         Column(Modifier.fillMaxSize()) {
-            // 页头固定：只留视图开关（编辑/预览、目录、菜单）；页面标题由左侧导航承担，这里不再重复。
+            // 页头固定：只留（目录、导出、菜单）；页面标题由左侧导航承担，这里不再重复。
             // 标题和正文一起滚，所以这些按钮不能跟着正文跑。
             // 页面本身已经贴边（AppScreen 对 flush 页不再套 20dp），页头自己留 20dp。
             Row(
@@ -581,11 +562,6 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        EditorChip(
-                            label = if (preview) "编辑" else "预览",
-                            active = preview,
-                            onClick = { preview = !preview },
-                        )
                         EditorChip(
                             label = "目录",
                             active = MarkdownSidebarState.visible,
@@ -755,7 +731,6 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                                             revision++
                                         },
                                         modifier = Modifier.fillMaxWidth(),
-                                        preview = preview,
                                         reveal = revealRange,
                                         revealToken = revealToken,
                                         conceptNames = conceptHighlightNames(),

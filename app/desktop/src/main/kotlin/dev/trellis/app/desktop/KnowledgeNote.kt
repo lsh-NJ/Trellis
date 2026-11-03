@@ -144,8 +144,59 @@ internal fun normalizeConceptName(raw: String): String =
         .take(MAX_CONCEPT_NAME_LENGTH)
         .trim()
 
+/**
+ * 正文里要高亮的名字：只算「本文概念」。
+ *
+ * 只看这篇笔记 frontmatter 里标注过（`concepts:`）的概念，再加上概念库里登记的别名；
+ * 概念库里的其它概念不在本文染色——否则任何笔记里只要撞上概念库的词就一片绿。
+ * 名字过一遍准入 + 身份键去重（旧数据里的 M / ef / 空白变体在这里被挡住）。
+ */
+internal fun highlightNamesForNote(
+    concepts: List<String>,
+    identities: List<ConceptIdentity>,
+): List<String> {
+    if (concepts.isEmpty()) return emptyList()
+    val names = ArrayList<String>()
+    val seen = HashSet<String>()
+    for (raw in concepts) {
+        val name = normalizeConceptName(raw)
+        if (!isAcceptableConceptName(name)) continue
+        val key = conceptIdentityKey(name)
+        if (seen.add(key)) names += name
+        val identity = identities.firstOrNull { conceptIdentityKey(it.name) == key } ?: continue
+        for (alias in identity.aliases) {
+            if (isAcceptableConceptName(alias) && seen.add(conceptIdentityKey(alias))) names += alias
+        }
+    }
+    return names
+}
+
 /** 概念的去重/比较键：大小写不敏感。 */
 internal fun conceptKey(name: String): String = normalizeConceptName(name).lowercase()
+
+/**
+ * 概念身份键：判断「是不是同一个概念」时用它。
+ *
+ * 比 [conceptKey] 多忽略空白——「Matryoshka 表示学习」和「Matryoshka表示学习」是同一个
+ * 概念，不能因为中间有没有空格被拆成两条（AI 两次抽取很容易抽出这种变体）。
+ */
+internal fun conceptIdentityKey(name: String): String =
+    conceptKey(name).filterNot { it.isWhitespace() }
+
+/**
+ * 概念准入：太短、纯符号、单字母缩写这类名字一旦进概念库，正文里会「绿色满天飞」
+ * （M / ef / en / [] 这种）。登记、别名、高亮、抽取解析都走这里，宁缺毋滥：
+ *  - 至少 2 个字符；
+ *  - 至少含一个字母或汉字（纯标点、纯数字不算）；
+ *  - 纯 ASCII 的名字至少 3 个字符（否则两字母缩写太容易误命中）。
+ */
+internal fun isAcceptableConceptName(raw: String): Boolean {
+    val name = normalizeConceptName(raw)
+    if (name.length < 2) return false
+    if (name.none { it.isLetter() }) return false
+    val asciiOnly = name.all { it.code < 0x80 }
+    return !(asciiOnly && name.length < 3)
+}
 
 /** 拆 frontmatter 里一行概念列表：中英文逗号/分号都可，去空、按 [conceptKey] 去重。 */
 internal fun splitConceptList(raw: String): List<String> =
@@ -721,9 +772,9 @@ internal fun conceptAnnotationDisplayLength(content: String): Int {
 internal fun resolveConceptName(raw: String, identities: List<ConceptIdentity>): String {
     val normalized = normalizeConceptName(raw)
     if (normalized.isEmpty()) return ""
-    val key = conceptKey(normalized)
-    identities.firstOrNull { conceptKey(it.name) == key }?.let { return it.name }
-    identities.firstOrNull { identity -> identity.aliases.any { conceptKey(it) == key } }?.let { return it.name }
+    val key = conceptIdentityKey(normalized)
+    identities.firstOrNull { conceptIdentityKey(it.name) == key }?.let { return it.name }
+    identities.firstOrNull { identity -> identity.aliases.any { conceptIdentityKey(it) == key } }?.let { return it.name }
     return normalized
 }
 
@@ -736,7 +787,7 @@ internal fun annotatedConceptNames(body: String, identities: List<ConceptIdentit
     parseConceptAnnotations(body)
         .map { conceptAnnotationName(it, identities) }
         .filter { it.isNotEmpty() }
-        .distinctBy(::conceptKey)
+        .distinctBy(::conceptIdentityKey)
 
 /**
  * 按正文标注重算「本文概念」和墓碑。
@@ -753,11 +804,11 @@ internal fun synchronizeConceptMembership(note: KnowledgeNote, identities: List<
     val derived = annotations
         .map { conceptAnnotationName(it, identities) }
         .filter { it.isNotEmpty() }
-        .distinctBy(::conceptKey)
-    val derivedKeys = derived.map(::conceptKey).toSet()
+        .distinctBy(::conceptIdentityKey)
+    val derivedKeys = derived.map(::conceptIdentityKey).toSet()
     val claimed = LinkedHashMap<String, String>()
     for (old in note.concepts + note.removedConcepts) {
-        val key = conceptKey(old)
+        val key = conceptIdentityKey(old)
         if (key.isNotEmpty()) claimed.putIfAbsent(key, normalizeConceptName(old))
     }
     val removed = claimed.filterKeys { it !in derivedKeys }.values.toList()
@@ -782,7 +833,7 @@ internal fun markConceptAnnotations(body: String, candidates: List<ConceptCandid
         val mention = candidate.mention.trim().ifBlank { name }
         if (mention.isEmpty()) continue
         val index = findPlainMention(text, mention) ?: continue
-        val marker = if (conceptKey(mention) == conceptKey(name)) {
+        val marker = if (conceptIdentityKey(mention) == conceptIdentityKey(name)) {
             CONCEPT_OPEN + mention + CONCEPT_CLOSE
         } else {
             CONCEPT_OPEN + mention + " " + CONCEPT_SEPARATOR + " " + name + CONCEPT_CLOSE
@@ -801,20 +852,20 @@ internal fun retainedCandidates(
     identities: List<ConceptIdentity>,
 ): List<ConceptCandidate> {
     if (candidates.isEmpty()) return emptyList()
-    val annotated = annotatedConceptNames(body, identities).map(::conceptKey).toSet()
-    return candidates.filter { conceptKey(it.name) in annotated }
+    val annotated = annotatedConceptNames(body, identities).map(::conceptIdentityKey).toSet()
+    return candidates.filter { conceptIdentityKey(it.name) in annotated }
 }
 
 /** 正文里是不是已经有一条指向 [name] 的标注（规范名或别名，大小写不敏感）。 */
 private fun hasAnnotationFor(body: String, name: String): Boolean {
-    val key = conceptKey(name)
+    val key = conceptIdentityKey(name)
     if (key.isEmpty()) return false
     for (match in conceptAnnotationPattern.findAll(body)) {
         val content = match.groupValues.getOrNull(1) ?: continue
         val pieces = content.split(conceptSeparatorPattern, limit = 2)
         val display = pieces.firstOrNull()?.trim().orEmpty()
         val target = pieces.getOrNull(1)?.trim().orEmpty()
-        if (conceptKey(display) == key || conceptKey(target) == key) return true
+        if (conceptIdentityKey(display) == key || conceptIdentityKey(target) == key) return true
     }
     return false
 }
@@ -842,7 +893,7 @@ internal fun stripAllConceptAnnotations(body: String): String {
  * 右栏的 × 走这里——概念从正文里消失，下一次 [synchronizeConceptMembership] 会把它挪进墓碑。
  */
 internal fun stripConceptAnnotations(body: String, name: String, identities: List<ConceptIdentity>): String {
-    val key = conceptKey(name)
+    val key = conceptIdentityKey(name)
     if (key.isEmpty()) return body
     val text = body.replace("\r\n", "\n")
     val annotations = parseConceptAnnotations(text)
@@ -853,7 +904,7 @@ internal fun stripConceptAnnotations(body: String, name: String, identities: Lis
     for (annotation in annotations) {
         if (annotation.start < cursor) continue
         builder.append(text, cursor, annotation.start)
-        if (conceptKey(conceptAnnotationName(annotation, identities)) == key) {
+        if (conceptIdentityKey(conceptAnnotationName(annotation, identities)) == key) {
             builder.append(annotation.display)
             changed = true
         } else {
@@ -875,14 +926,14 @@ internal fun addConceptAnnotation(body: String, name: String, identities: List<C
     val text = body.replace("\r\n", "\n")
     val canonical = resolveConceptName(name, identities)
     if (canonical.isEmpty()) return text
-    val key = conceptKey(canonical)
-    if (parseConceptAnnotations(text).any { conceptKey(conceptAnnotationName(it, identities)) == key }) return text
-    val aliases = identities.firstOrNull { conceptKey(it.name) == key }?.aliases.orEmpty()
-    val variants = (listOf(canonical) + aliases).filter { it.isNotBlank() }.distinctBy(::conceptKey)
+    val key = conceptIdentityKey(canonical)
+    if (parseConceptAnnotations(text).any { conceptIdentityKey(conceptAnnotationName(it, identities)) == key }) return text
+    val aliases = identities.firstOrNull { conceptIdentityKey(it.name) == key }?.aliases.orEmpty()
+    val variants = (listOf(canonical) + aliases).filter { it.isNotBlank() }.distinctBy(::conceptIdentityKey)
     for (variant in variants) {
         val index = findPlainMention(text, variant) ?: continue
         val original = text.substring(index, index + variant.length)
-        val marker = if (conceptKey(variant) == key) {
+        val marker = if (conceptIdentityKey(variant) == key) {
             CONCEPT_OPEN + original + CONCEPT_CLOSE
         } else {
             CONCEPT_OPEN + original + " " + CONCEPT_SEPARATOR + " " + canonical + CONCEPT_CLOSE

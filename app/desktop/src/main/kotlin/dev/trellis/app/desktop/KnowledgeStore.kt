@@ -69,8 +69,9 @@ internal class KnowledgeStore(private val home: File, private val clock: Trellis
         for (note in notes) {
             for (raw in note.concepts) {
                 val name = normalizeConceptName(raw)
-                if (name.isEmpty()) continue
-                val key = conceptKey(name)
+                // frontmatter 里的旧数据也可能有 M / ef 这类垃圾概念：索引里同样不认。
+                if (!isAcceptableConceptName(name)) continue
+                val key = conceptIdentityKey(name)
                 val entry = acc.getOrPut(key) { Acc(name, note.updatedAt, 0) }
                 if (note.updatedAt >= entry.updatedAt) {
                     entry.name = name
@@ -104,31 +105,31 @@ internal class KnowledgeStore(private val home: File, private val clock: Trellis
         notes: List<KnowledgeNote> = allNotes(),
         identities: List<ConceptIdentity> = emptyList(),
     ): ConceptDetail? {
-        val key = conceptKey(name)
+        val key = conceptIdentityKey(name)
         if (key.isEmpty()) return null
         val identity = identities.firstOrNull { candidate ->
-            conceptKey(candidate.name) == key || candidate.aliases.any { conceptKey(it) == key }
+            conceptIdentityKey(candidate.name) == key || candidate.aliases.any { conceptIdentityKey(it) == key }
         }
         val canonicalName = identity?.name ?: normalizeConceptName(name)
-        val canonicalKey = conceptKey(canonicalName)
+        val canonicalKey = conceptIdentityKey(canonicalName)
         val terms = (listOf(canonicalName) + identity?.aliases.orEmpty())
             .map(::normalizeConceptName)
             .filter { it.isNotBlank() }
-            .distinctBy(::conceptKey)
+            .distinctBy(::conceptIdentityKey)
         val annotationsByNote = notes.associate { note -> note.id to parseConceptAnnotations(note.body) }
         fun annotationsFor(note: KnowledgeNote): List<ConceptAnnotation> = annotationsByNote[note.id].orEmpty()
         fun isAboutThisConcept(annotation: ConceptAnnotation): Boolean =
-            conceptKey(conceptAnnotationName(annotation, identities)) == canonicalKey
+            conceptIdentityKey(conceptAnnotationName(annotation, identities)) == canonicalKey
 
         val members = notes.filter { note ->
-            note.concepts.any { conceptKey(it) == canonicalKey } ||
+            note.concepts.any { conceptIdentityKey(it) == canonicalKey } ||
                 annotationsFor(note).any(::isAboutThisConcept)
         }
         if (members.isEmpty()) return null
         val display = members
             .maxByOrNull { it.updatedAt }
             ?.concepts
-            ?.firstOrNull { conceptKey(it) == canonicalKey }
+            ?.firstOrNull { conceptIdentityKey(it) == canonicalKey }
             ?: canonicalName
 
         /** 这篇笔记里这个概念第一次出现的位置：优先用标注的原文位置，再退回普通词命中。 */
@@ -211,17 +212,17 @@ internal class KnowledgeStore(private val home: File, private val clock: Trellis
     ): SearchHits {
         val keyword = query.trim()
         if (keyword.isEmpty()) return SearchHits(emptyList(), list())
-        val aliasesByKey = identities.associate { conceptKey(it.name) to it.aliases }
+        val aliasesByKey = identities.associate { conceptIdentityKey(it.name) to it.aliases }
         val concepts = conceptIndex(notes).filter { summary ->
             summary.name.contains(keyword, ignoreCase = true) ||
-                aliasesByKey[conceptKey(summary.name)].orEmpty()
+                aliasesByKey[conceptIdentityKey(summary.name)].orEmpty()
                     .any { alias -> alias.contains(keyword, ignoreCase = true) }
         }
-        val matchedKeys = concepts.map { conceptKey(it.name) }.toSet()
+        val matchedKeys = concepts.map { conceptIdentityKey(it.name) }.toSet()
         val annotatedIds = if (matchedKeys.isEmpty()) {
             emptySet()
         } else {
-            notes.filter { note -> note.concepts.any { conceptKey(it) in matchedKeys } }
+            notes.filter { note -> note.concepts.any { conceptIdentityKey(it) in matchedKeys } }
                 .map { it.id }
                 .toSet()
         }
@@ -249,13 +250,13 @@ internal class KnowledgeStore(private val home: File, private val clock: Trellis
         val counts = LinkedHashMap<String, Int>()
         for (note in members) {
             for (raw in note.concepts) {
-                val key = conceptKey(raw)
+                val key = conceptIdentityKey(raw)
                 if (key.isEmpty() || key == selfKey) continue
                 counts[key] = (counts[key] ?: 0) + 1
             }
         }
         if (counts.isEmpty()) return emptyList()
-        val index = conceptIndex(notes).associateBy { conceptKey(it.name) }
+        val index = conceptIndex(notes).associateBy { conceptIdentityKey(it.name) }
         return counts.entries
             .sortedByDescending { it.value }
             .mapNotNull { (key, _) -> index[key] }
