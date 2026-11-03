@@ -1,5 +1,6 @@
 package dev.trellis.app.desktop
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -40,6 +41,7 @@ internal fun KnowledgeGraphView(
     runtime: AppRuntime,
     notesVersion: Int,
     modifier: Modifier = Modifier,
+    onSwitchTab: (KnowledgeTab) -> Unit = {},
     onOpenNote: (noteId: String, start: Int, end: Int) -> Unit,
 ) {
     val home = runtime.knowledgeStore.home
@@ -363,6 +365,28 @@ internal fun KnowledgeGraphView(
     }
 
     Column(modifier = modifier.fillMaxSize()) {
+        // 网络视图是全屏替换：这里常驻三 tab，否则进来以后没有入口切回笔记/概念。
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            KnowledgePaneTab(
+                label = "笔记",
+                selected = false,
+                onClick = { onSwitchTab(KnowledgeTab.Notes) },
+            )
+            KnowledgePaneTab(
+                label = "概念",
+                selected = false,
+                onClick = { onSwitchTab(KnowledgeTab.Concepts) },
+            )
+            KnowledgePaneTab(
+                label = "网络",
+                selected = true,
+                onClick = {},
+            )
+        }
         KnowledgeGraphToolbar(
             onExpandAll = { KnowledgeGraphViewState.collapsed = emptySet() },
             onCollapseAll = {

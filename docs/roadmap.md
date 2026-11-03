@@ -130,3 +130,5 @@
 - **验证**：`:app:desktop` 共 533 条测试 0 失败（graph 122：Store 11 + Taxonomy 36 + Build 25 + Layout 23 + Ai 23 + Canvas 3 + Screen 1）；`./gradlew check` 绿；假 LLM 端到端覆盖「2 批 2 次调用 / 确认前 user.json 不变 / 失败跳过 / 墓碑过滤」；截图 `docs/assets/knowledge-graph/impl-v1.3-g1-suggestions.png`。
 - **没做（后续）**：真实 key 的本机手测；已忽略建议的恢复列表 UI；自动应用开关（默认关）；关系证据 hover 高亮。
 - **下一步**：G2（合并两个已存在概念 → 体系视图可选只读 → 计划接入 → AI 工具 `KnowledgeTools`）；或先按用户实际试用反馈磨 G0/G1。
+
+- 2026-11-03 补丁：网络视图顶部常驻「笔记 / 概念 / 网络」三 tab（此前进入图后无路可退），并加点击回归测试；`:app:desktop` 534 条测试 0 失败。
