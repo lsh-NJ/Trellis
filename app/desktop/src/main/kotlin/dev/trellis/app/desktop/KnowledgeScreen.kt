@@ -423,6 +423,19 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         pendingReveal = PendingReveal(mention.noteId, mention.start, mention.end)
     }
 
+    /**
+     * 搜索结果里点一篇笔记：切到这篇；正文里命中就选中命中处并滚动过去（标题命中只打开）。
+     *
+     * 复用概念详情的「定位」管线：设 pendingReveal，等笔记载入后交给编辑器。
+     */
+    fun openSearchHit(hit: NoteSearchHit) {
+        val id = hit.summary.id
+        showConcepts = false
+        if (selectedId != id) selectNote(id)
+        if (hit.start < 0) return
+        pendingReveal = PendingReveal(id, hit.start, hit.end)
+    }
+
     // 进页面：接回上次那篇（AppRuntime 记着），没有就选最近更新的。
     // 焦点请求要等布局跑完，否则焦点节点还没挂上（见 MarkdownEditor.requestFocusWhenReady）。
     LaunchedEffect(Unit) {
@@ -656,7 +669,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                                     selectedNoteId = selectedId,
                                     selectedConceptName = selectedConcept,
                                     zone = clock.zone,
-                                    onOpenNote = { selectNote(it) },
+                                    onOpenNote = { openSearchHit(it) },
                                     onOpenConcept = { openConcept(it) },
                                     modifier = Modifier.fillMaxSize(),
                                 )

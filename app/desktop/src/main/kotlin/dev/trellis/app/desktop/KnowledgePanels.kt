@@ -138,6 +138,7 @@ private fun NoteListRow(
     zone: ZoneId,
     onClick: () -> Unit,
     onDelete: () -> Unit,
+    metaOverride: String? = null,
 ) {
     // 行样式与对话页会话行同一套（ListSidebar.kt 的 listRowSurface / ListRowSelectionBar）：
     // 46dp 高、4dp 圆角、选中浅主色 + 左侧竖条、hover 淡底。
@@ -163,7 +164,7 @@ private fun NoteListRow(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                knowledgeTimeLabel(note.updatedAt, zone) + " · " + note.chars + " 字符",
+                metaOverride ?: (knowledgeTimeLabel(note.updatedAt, zone) + " · " + note.chars + " 字符"),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                 maxLines = 1,
@@ -763,14 +764,14 @@ internal fun ConceptDetailPanel(
     }
 }
 
-/** 搜索命中：概念一组、笔记一组；点哪个进哪个。 */
+/** 搜索命中：概念一组、笔记一组；点哪个进哪个（笔记带正文命中位置，点开会跳过去）。 */
 @Composable
 internal fun KnowledgeSearchResults(
     hits: SearchHits,
     selectedNoteId: String?,
     selectedConceptName: String?,
     zone: ZoneId,
-    onOpenNote: (String) -> Unit,
+    onOpenNote: (NoteSearchHit) -> Unit,
     onOpenConcept: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -817,13 +818,14 @@ internal fun KnowledgeSearchResults(
         }
         if (hits.notes.isNotEmpty()) {
             item { SectionLabel("笔记") }
-            items(hits.notes, key = { "note:" + it.id }) { note ->
+            items(hits.notes, key = { "note:" + it.summary.id }) { hit ->
                 NoteListRow(
-                    note = note,
-                    selected = note.id == selectedNoteId,
+                    note = hit.summary,
+                    selected = hit.summary.id == selectedNoteId,
                     zone = zone,
-                    onClick = { onOpenNote(note.id) },
+                    onClick = { onOpenNote(hit) },
                     onDelete = {},
+                    metaOverride = hit.snippet,
                 )
             }
         }
