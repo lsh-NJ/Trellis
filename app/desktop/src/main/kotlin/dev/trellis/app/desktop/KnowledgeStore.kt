@@ -211,7 +211,7 @@ internal class KnowledgeStore(private val home: File, private val clock: Trellis
         identities: List<ConceptIdentity> = emptyList(),
     ): SearchHits {
         val keyword = query.trim()
-        if (keyword.isEmpty()) return SearchHits(emptyList(), list())
+        if (keyword.isEmpty()) return SearchHits(emptyList(), emptyList())
         val aliasesByKey = identities.associate { conceptIdentityKey(it.name) to it.aliases }
         val concepts = conceptIndex(notes).filter { summary ->
             summary.name.contains(keyword, ignoreCase = true) ||
@@ -232,11 +232,21 @@ internal class KnowledgeStore(private val home: File, private val clock: Trellis
                 note.id in annotatedIds
         }
         val summaries = matched
-            .map { NoteSummary(it.id, it.title, it.updatedAt, it.body.length) }
+            .map { note ->
+                // 正文命中就带上第一处位置：点结果时编辑器选中它、滚动过去。
+                val start = note.body.indexOf(keyword, ignoreCase = true)
+                val end = if (start >= 0) start + keyword.length else -1
+                NoteSearchHit(
+                    summary = NoteSummary(note.id, note.title, note.updatedAt, note.body.length),
+                    start = start,
+                    end = end,
+                    snippet = if (start >= 0) plainSnippet(snippetAround(note.body, start, end)) else null,
+                )
+            }
             .sortedWith(
-                compareByDescending<NoteSummary> { it.id in annotatedIds }
-                    .thenByDescending { it.updatedAt }
-                    .thenBy { displayTitle(it.title) },
+                compareByDescending<NoteSearchHit> { it.summary.id in annotatedIds }
+                    .thenByDescending { it.summary.updatedAt }
+                    .thenBy { displayTitle(it.summary.title) },
             )
         return SearchHits(concepts, summaries)
     }

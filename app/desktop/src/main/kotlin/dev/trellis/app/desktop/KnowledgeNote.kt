@@ -83,10 +83,21 @@ internal data class ConceptDetail(
     val others: List<ConceptMention> = emptyList(),
 )
 
+/**
+ * 搜索命中的一篇笔记：[start]/[end] 是正文里第一次出现关键词的范围（标题命中、正文没出现时是 -1），
+ * 点搜索结果时编辑器用它选中并滚动到命中处；[snippet] 是命中那一行的上下文，给结果行做副标题。
+ */
+internal data class NoteSearchHit(
+    val summary: NoteSummary,
+    val start: Int = -1,
+    val end: Int = -1,
+    val snippet: String? = null,
+)
+
 /** 搜索命中：概念和笔记分两组，界面上也分两组显示。 */
 internal data class SearchHits(
     val concepts: List<ConceptSummary>,
-    val notes: List<NoteSummary>,
+    val notes: List<NoteSearchHit>,
 )
 
 internal val noteFileExtension: String = ".md"
@@ -123,6 +134,15 @@ internal fun stripInlineMarkdown(text: String): String {
 
 /** 标题为空时列表/编辑器上显示的占位名。 */
 internal fun displayTitle(title: String): String = stripInlineMarkdown(title).ifBlank { "无标题笔记" }
+
+/**
+ * 搜索结果里给命中行当副标题的片段：去掉行首的块级标记（`###`、`>`、`-`、`1.`）、
+ * 行内标记（加粗/代码/链接）和概念标注括号，只留人读得懂的文本。
+ */
+internal fun plainSnippet(text: String): String {
+    val noBlock = text.replace(Regex("^\\s*(#{1,6}|>|[-*+]|\\d+[.)])\\s+"), "")
+    return stripInlineMarkdown(stripAllConceptAnnotations(noBlock))
+}
 
 private val knownFrontMatterKeys = setOf("title", "created", "updated", "concepts", "removed-concepts")
 private val isoFormatter = DateTimeFormatter.ISO_OFFSET_DATE_TIME

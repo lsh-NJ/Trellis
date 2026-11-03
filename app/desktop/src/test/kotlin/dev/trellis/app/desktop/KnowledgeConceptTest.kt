@@ -152,12 +152,30 @@ class KnowledgeConceptTest {
 
         val byConcept = store.search("BM")
         assertEquals(listOf("BM25"), byConcept.concepts.map { it.name })
-        assertTrue(byConcept.notes.any { it.title == "检索笔记" })
+        assertTrue(byConcept.notes.any { it.summary.title == "检索笔记" })
 
         val byBody = store.search("向量")
-        assertTrue(byBody.notes.any { it.title == "检索笔记" })
+        assertTrue(byBody.notes.any { it.summary.title == "检索笔记" })
         assertTrue(store.search("不存在的词").concepts.isEmpty())
         assertTrue(store.search("不存在的词").notes.isEmpty())
+    }
+
+    @Test
+    fun searchReportsTheFirstBodyHitSoTheEditorCanJumpThere() {
+        val store = store(tempHome())
+        store.save(
+            store.create("检索笔记").copy(
+                body = "第一段没命中。\n\n第二段有 BM25 这个关键词，后面还有 BM25。",
+            ),
+        )
+        val hit = store.search("BM25").notes.single()
+        assertEquals("第一段没命中。\n\n第二段有 ".length, hit.start)
+        assertEquals("BM25".length, hit.end - hit.start)
+        assertTrue(hit.snippet.orEmpty().contains("BM25"), "副标题要显示命中那一行的上下文")
+
+        val titleOnly = store.search("检索笔记").notes.single()
+        assertEquals(-1, titleOnly.start, "只有标题命中时不该给正文位置")
+        assertNull(titleOnly.snippet)
     }
 
     @Test
@@ -218,8 +236,8 @@ class KnowledgeConceptTest {
 
         val hits = store.search("检索增强", identities = identities)
         assertEquals(listOf("RAG"), hits.concepts.map { it.name }, "别名也要能搜到概念")
-        assertEquals("标注过的", hits.notes.first().title, "标注过命中概念的笔记排最前")
-        assertTrue(hits.notes.any { it.title == "只是提到" })
+        assertEquals("标注过的", hits.notes.first().summary.title, "标注过命中概念的笔记排最前")
+        assertTrue(hits.notes.any { it.summary.title == "只是提到" })
     }
 
     // ---- 定义文件 ----
