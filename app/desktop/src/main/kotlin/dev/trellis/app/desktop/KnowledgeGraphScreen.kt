@@ -8,10 +8,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -202,9 +202,8 @@ internal fun KnowledgeGraphView(
     val llmReady = remember(runtime) { runtime.llmClientOrNull() != null }
     val aiHint = when {
         aiBusy -> aiProgress
-        !llmReady -> "AI 没配置：先去设置页导入模型；也可以手动拖节点整理。"
-        unclassifiedConcepts.isEmpty() && pendingSuggestions.isEmpty ->
-            "没有未归类的概念。整理笔记时会顺带产生归类 / 关系建议，回笔记页写几句再回来。"
+        !llmReady -> "AI 没配置（设置页导入模型后可整理）"
+        unclassifiedConcepts.isEmpty() && pendingSuggestions.isEmpty -> "暂无未归类概念"
         else -> null
     }
     val aiEnabled = llmReady && unclassifiedConcepts.isNotEmpty() && !aiBusy
@@ -365,63 +364,100 @@ internal fun KnowledgeGraphView(
     }
 
     Column(modifier = modifier.fillMaxSize()) {
-        // 网络视图是全屏替换：这里常驻三 tab，否则进来以后没有入口切回笔记/概念。
+        // 页头动作和笔记/概念页一样：右对齐的小 chip，不另起一套工具条。
         Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 2.dp),
+            horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            KnowledgePaneTab(
-                label = "笔记",
-                selected = false,
-                onClick = { onSwitchTab(KnowledgeTab.Notes) },
-            )
-            KnowledgePaneTab(
-                label = "概念",
-                selected = false,
-                onClick = { onSwitchTab(KnowledgeTab.Concepts) },
-            )
-            KnowledgePaneTab(
-                label = "网络",
-                selected = true,
-                onClick = {},
+            KnowledgeGraphToolbar(
+                onExpandAll = { KnowledgeGraphViewState.collapsed = emptySet() },
+                onCollapseAll = {
+                    KnowledgeGraphViewState.collapsed = graph.childrenOf(null)
+                        .filter { it.kind == GraphNodeKind.CATEGORY }
+                        .map { it.key }
+                        .toSet()
+                },
+                onFit = { KnowledgeGraphViewState.fitReset() },
+                onNewVirtualNode = { addVirtualNode() },
             )
         }
-        KnowledgeGraphToolbar(
-            onExpandAll = { KnowledgeGraphViewState.collapsed = emptySet() },
-            onCollapseAll = {
-                KnowledgeGraphViewState.collapsed = graph.childrenOf(null)
-                    .filter { it.kind == GraphNodeKind.CATEGORY }
-                    .map { it.key }
-                    .toSet()
-            },
-            onFit = { KnowledgeGraphViewState.fitReset() },
-            onNewVirtualNode = { addVirtualNode() },
-        )
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
         Row(Modifier.weight(1f).fillMaxWidth()) {
-            Box(Modifier.width(268.dp).fillMaxHeight().padding(horizontal = 12.dp, vertical = 10.dp)) {
-                KnowledgeGraphLeftPanel(
-                    graph = graph,
-                    query = KnowledgeGraphViewState.query,
-                    message = KnowledgeGraphViewState.message,
-                    showUnclassified = KnowledgeGraphViewState.showUnclassified,
-                    onQueryChange = { KnowledgeGraphViewState.query = it },
-                    onNodeClick = { key ->
-                        KnowledgeGraphViewState.expandTo(key, graph)
-                        KnowledgeGraphViewState.selectedKey = key
+            // 左栏与笔记/概念页共用 ListSidebar（同一宽度、同一套行样式与收起行为）。
+            if (KnowledgeGraphViewState.leftCollapsed) {
+                Column(
+                    Modifier.fillMaxHeight().width(36.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Spacer(Modifier.height(2.dp))
+                    EditorChip(
+                        label = "›",
+                        active = false,
+                        onClick = { KnowledgeGraphViewState.leftCollapsed = false },
+                    )
+                }
+            } else {
+                ListSidebar(
+                    title = "网络",
+                    count = graph.stats.conceptCount,
+                    actionLabel = "",
+                    onAction = null,
+                    trailing = {
+                        EditorChip(
+                            label = "‹",
+                            active = false,
+                            onClick = { KnowledgeGraphViewState.leftCollapsed = true },
+                        )
                     },
-                    onShowUnclassified = { KnowledgeGraphViewState.showUnclassified = it },
-                    aiEnabled = aiEnabled,
-                    aiBusy = aiBusy,
-                    aiHint = aiHint,
-                    suggestionCount = pendingSuggestions.total,
-                    onAiOrganize = { requestAiOrganize() },
-                    onOpenSuggestions = { KnowledgeGraphViewState.suggestionsOpen = true },
-                )
+                ) {
+                    ChromeTextField(
+                        value = KnowledgeGraphViewState.query,
+                        onValueChange = { KnowledgeGraphViewState.query = it },
+                        placeholder = "搜索概念或分类",
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        KnowledgePaneTab(
+                            label = "笔记",
+                            selected = false,
+                            onClick = { onSwitchTab(KnowledgeTab.Notes) },
+                        )
+                        KnowledgePaneTab(
+                            label = "概念",
+                            selected = false,
+                            onClick = { onSwitchTab(KnowledgeTab.Concepts) },
+                        )
+                        KnowledgePaneTab(
+                            label = "网络",
+                            selected = true,
+                            onClick = {},
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    KnowledgeGraphLeftPanel(
+                        graph = graph,
+                        query = KnowledgeGraphViewState.query,
+                        message = KnowledgeGraphViewState.message,
+                        showUnclassified = KnowledgeGraphViewState.showUnclassified,
+                        modifier = Modifier.weight(1f),
+                        onQueryChange = { KnowledgeGraphViewState.query = it },
+                        onNodeClick = { key ->
+                            KnowledgeGraphViewState.expandTo(key, graph)
+                            KnowledgeGraphViewState.selectedKey = key
+                        },
+                        onShowUnclassified = { KnowledgeGraphViewState.showUnclassified = it },
+                        aiEnabled = aiEnabled,
+                        aiBusy = aiBusy,
+                        aiHint = aiHint,
+                        suggestionCount = pendingSuggestions.total,
+                        onAiOrganize = { requestAiOrganize() },
+                        onOpenSuggestions = { KnowledgeGraphViewState.suggestionsOpen = true },
+                    )
+                }
             }
-            Spacer(Modifier.width(4.dp))
+            ListSidebarSplitter()
             Box(Modifier.weight(1f).fillMaxHeight()) {
                 if (graph.nodes.isEmpty()) {
                     KnowledgeGraphEmptyState(

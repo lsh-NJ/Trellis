@@ -208,7 +208,8 @@ class KnowledgeGraphScreenRenderTest {
         }
         scene.render()
         val pressed = PointerButtons(isPrimaryPressed = true)
-        val tabCenter = Offset(88f, 40f) // density=2：padding 20dp/6dp + 第一个 tab 约 96x52px
+        // density=2：左栏 ListSidebar 里「笔记/概念/网络」tab 行（标题 + 搜索框下面那一行）。
+        val tabCenter = Offset(88f, 270f)
         scene.sendPointerEvent(PointerEventType.Press, tabCenter, type = PointerType.Mouse, buttons = pressed)
         scene.render()
         scene.sendPointerEvent(PointerEventType.Release, tabCenter, type = PointerType.Mouse)
