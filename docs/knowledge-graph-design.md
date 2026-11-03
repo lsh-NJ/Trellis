@@ -1408,7 +1408,7 @@ G0 验收（§9.1）状态：`G0-0` 文字测量 spike 通过（`rememberTextMea
 | 接线 | `KnowledgeGraphScreen.kt` | 去掉右栏；Canvas + Popover；相机 fit 与 layout cache 写回；分隔对话框 |
 | 深度 | `KnowledgeGraphTaxonomy.kt` + 测试 | `MAX_CATEGORY_DEPTH` 5 → 32（安全护栏），测试改为按常量构造深层链 |
 
-验证：`:app:desktop` 共 **509 条测试、0 失败**（graph 相关 98：Store 11 + Taxonomy 36 + Build 25 + Layout 23 + Canvas 2 + Screen 1）；`./gradlew check` 绿；截图 `build/ui-shot-graph-view.png`（真实 AppTheme，明/暗）与 `build/ui-shot-graph-canvas.png` 人工核对：树/连线/聚焦淡出/浮窗（路径/定义/来源/关系）正常。
+验证：`:app:desktop` 共 **509 条测试、0 失败**（graph 相关 98：Store 11 + Taxonomy 36 + Build 25 + Layout 23 + Canvas 2 + Screen 1）；`./gradlew check` 绿；截图（真实 AppTheme 离屏渲染，已随文档归档）[明色视图](assets/knowledge-graph/impl-v1.2-view.png) · [暗色视图](assets/knowledge-graph/impl-v1.2-view-dark.png) · [画布特写](assets/knowledge-graph/impl-v1.2-canvas.png)：树/连线/聚焦淡出/浮窗（所属路径/定义/直接关联/来源）均正常；测试里同时写 `build/ui-shot-*.png`。
 
 v1.2 明确没做（留 G1/G2）：AI 归类与深度建议（G1）、AI 关系建议（G1）、体系视图（G2）、计划接入（G2）。
 
