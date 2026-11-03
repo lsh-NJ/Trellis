@@ -22,7 +22,9 @@ class KnowledgeGraphScreenRenderTest {
 
     @OptIn(ExperimentalComposeUiApi::class)
     private fun render(runtime: AppRuntime, dark: Boolean): ByteArray {
-        val scene = ImageComposeScene(width = 1400, height = 900, density = Density(1f)) {
+        // density 用 2 模拟 Retina：布局尺寸（dp）与 12sp 文字（px）必须按 density
+        // 对齐，否则中文标签会被压成一两个字——这条截图就是防这个回归的。
+        val scene = ImageComposeScene(width = 2200, height = 1400, density = Density(2f)) {
             AppTheme(
                 prefs = runtime.uiPrefs,
                 themeScheme = runtime.themeScheme(dark),

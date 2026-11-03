@@ -18,6 +18,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -118,6 +119,8 @@ internal fun KnowledgeGraphCanvas(
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
+                // 画布内容会平移/缩放，必须 clip，否则节点会画到左栏上（v1.3 实测溢出）。
+                .clipToBounds()
                 .onSizeChanged { size ->
                     val next = GraphSize(size.width.toFloat(), size.height.toFloat())
                     canvasSize = next
@@ -401,7 +404,9 @@ private fun DrawScope.drawTreeNode(
         fontSize = fontSize,
         fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
     )
-    val maxWidthPx = ((width - 16.dp.toPx()).coerceAtLeast(12f)).roundToInt()
+    // 节点宽度本身已经含两端留白（布局里 estimateLabelWidth + padding）；
+    // 这里只留很小的内缩，避免中文名/英文缩写被椭到只剩一两个字。
+    val maxWidthPx = ((width - 8f).coerceAtLeast(12f)).roundToInt()
     val text = measurer.measure(
         text = AnnotatedString(label),
         style = style,
