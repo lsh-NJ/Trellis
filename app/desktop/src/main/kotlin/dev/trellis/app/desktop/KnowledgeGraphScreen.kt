@@ -164,7 +164,7 @@ internal fun KnowledgeGraphView(
     }
 
     // 新建 / 重命名 / 删除分类的对话框状态。
-    var createParent by remember { mutableStateOf<Pair<String?, Boolean>?>(null) }
+    var createParent by remember { mutableStateOf<String?>(null) }
     var renameTarget by remember { mutableStateOf<GraphNode?>(null) }
     var deleteTarget by remember { mutableStateOf<GraphNode?>(null) }
     // 「新建上级分类」：先创建根分类，再把当前分类挂进去。
@@ -190,7 +190,6 @@ internal fun KnowledgeGraphView(
                     .toSet()
             },
             onFit = { KnowledgeGraphViewState.fitReset() },
-            onNewCategory = { createParent = null to true },
             onNewVirtualNode = { addVirtualNode() },
         )
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
@@ -208,8 +207,6 @@ internal fun KnowledgeGraphView(
                         KnowledgeGraphViewState.selectedKey = key
                     },
                     onShowUnclassified = { KnowledgeGraphViewState.showUnclassified = it },
-                    onNewCategory = { createParent = null to true },
-                    onNewVirtualNode = { addVirtualNode() },
                 )
             }
             Spacer(Modifier.width(4.dp))
@@ -279,7 +276,7 @@ internal fun KnowledgeGraphView(
                             onMoveToCategory = { conceptKey, categoryId ->
                                 persist(assignConcept(user, conceptKey, categoryId))
                             },
-                            onNewSubcategory = { parentId -> createParent = parentId to false },
+                            onNewSubcategory = { parentId -> createParent = parentId },
                             onNewParentCategory = { categoryId -> newParentTarget = graph.nodes[categoryId] },
                             onMoveCategory = { categoryId, newParentId ->
                                 persist(moveCategory(user, categoryId, newParentId))
@@ -296,9 +293,9 @@ internal fun KnowledgeGraphView(
     // ---- 对话框 ----
     val createTarget = createParent
     if (createTarget != null) {
-        val (parentId, isRoot) = createTarget
+        val parentId = createTarget
         GraphTextInputDialog(
-            title = if (isRoot) "新建分类" else "新建子分类",
+            title = "新建子分类",
             label = "分类名",
             confirmLabel = "创建",
             initial = "",
