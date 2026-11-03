@@ -83,7 +83,9 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     var query by remember { mutableStateOf("") }
     var deleteTarget by remember { mutableStateOf<NoteSummary?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
-    var showConcepts by remember { mutableStateOf(false) }
+    // 三个视图页签：笔记 / 概念 / 网络。放页内对象，切到别的导航页回来还停在原 tab。
+    var tab by remember { mutableStateOf(KnowledgeGraphViewState.tab) }
+    val showConcepts = tab == KnowledgeTab.Concepts
     var selectedConcept by remember { mutableStateOf<String?>(null) }
     var conceptDefinition by remember(selectedConcept) {
         mutableStateOf(selectedConcept?.let { metaStore.definition(it) }.orEmpty())
@@ -165,6 +167,15 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         savedAtMs = updated.updatedAt
         notes = store.list()
         runtime.knowledgeNoteId = id
+    }
+
+    /** 切换视图页签：离开笔记时先落盘（网络视图要从文件现算）。 */
+    fun switchTab(next: KnowledgeTab) {
+        if (tab == next) return
+        if (tab == KnowledgeTab.Notes) persistNow()
+        tab = next
+        KnowledgeGraphViewState.tab = next
+        message = null
     }
 
     /**
@@ -336,7 +347,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     fun openConcept(name: String) {
         val display = concepts.firstOrNull { conceptKey(it.name) == conceptKey(name) }?.name
             ?: normalizeConceptName(name)
-        showConcepts = true
+        switchTab(KnowledgeTab.Concepts)
         selectedConcept = display
         message = null
     }
@@ -414,7 +425,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
 
     /** 概念详情里点「来源」：切回笔记并选中正文命中处。 */
     fun locateMention(mention: ConceptMention) {
-        showConcepts = false
+        switchTab(KnowledgeTab.Notes)
         if (selectedId != mention.noteId) selectNote(mention.noteId)
         if (mention.start < 0) {
             message = "这篇笔记只在 frontmatter 里标了这个概念，正文没有出现"
@@ -570,7 +581,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.End,
             ) {
-                if (!showConcepts) {
+                if (tab == KnowledgeTab.Notes) {
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -614,6 +625,24 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                 KnowledgeEmptyState(onCreate = { createNote() })
             } else {
                 Row(Modifier.weight(1f).fillMaxWidth()) {
+                    if (tab == KnowledgeTab.Graph) {
+                        // 网络视图自带左栏/画布/右栏，整块替换「笔记 + 概念」那套布局。
+                        KnowledgeGraphView(
+                            runtime = runtime,
+                            notesVersion = notes.hashCode(),
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                            onOpenNote = { noteId, start, end ->
+                                persistNow()
+                                if (selectedId != noteId) {
+                                    loaded?.id?.takeIf { it != noteId }?.let { previous -> organizeNote(previous) }
+                                    selectedId = noteId
+                                }
+                                pendingReveal = PendingReveal(noteId, start, end)
+                                switchTab(KnowledgeTab.Notes)
+                            },
+                        )
+                    } else {
+
                     // 左栏：笔记列表 / 全局概念索引。可以收成一条窄边。
                     // 和对话页共用 ListSidebar：标题/数量/动作/行样式同一套，宽度可拖。
                     if (leftCollapsed) {
@@ -653,12 +682,18 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                                 KnowledgePaneTab(
                                     label = "笔记",
                                     selected = !showConcepts,
-                                    onClick = { showConcepts = false },
+                                    onClick = { switchTab(KnowledgeTab.Notes) },
                                 )
                                 KnowledgePaneTab(
                                     label = "概念",
                                     selected = showConcepts,
-                                    onClick = { showConcepts = true },
+                                    onClick = { switchTab(KnowledgeTab.Concepts) },
+                                )
+
+                                KnowledgePaneTab(
+                                    label = "网络",
+                                    selected = tab == KnowledgeTab.Graph,
+                                    onClick = { switchTab(KnowledgeTab.Graph) },
                                 )
                             }
                             Spacer(Modifier.height(8.dp))
@@ -857,7 +892,8 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                             }
                         }
                     }
-                }
+                                    }
+}
             }
         }
         if (shortcutsOpen) {

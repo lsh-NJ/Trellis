@@ -2,7 +2,7 @@
 
 > 这份文件只做一件事：**让你在 10 分钟内知道这个项目是什么、代码在哪、改一件事该动哪个文件。**
 > 细节不在这一份里——每个主题都有对应文档，见文末索引。
-> 最后更新：2026-10-31。若与代码冲突，以代码为准，并顺手把这份文件改对。
+> 最后更新：2026-11-03。若与代码冲突，以代码为准，并顺手把这份文件改对。
 
 ---
 
@@ -120,6 +120,7 @@ Set-Location C:\Users\breakM\Desktop\work\Trellis
 | 会话记录读写 | `app/desktop/.../ChatStore.kt`（`<home>/chat/<id>.json`） |
 | 会话页 UI（气泡/过程折叠/三动作/输入条） | `app/desktop/.../ChatScreen.kt` |
 | 会话消息 Markdown 解析与渲染 | `app/desktop/.../MarkdownText.kt` |
+| 知识网络（知识库第三个 tab「网络」：分类树 + 聚焦关系、概念归属、分类 CRUD） | `app/desktop/.../KnowledgeGraphScreen.kt`（视图：现算图→布局→画布、相机 fit、布局缓存、分类写回、定位回调）→ `KnowledgeGraphBuild.kt`（笔记 + `concepts.json` + 两个 graph json → `KnowledgeGraph`，含派生关系边/诊断/统计）→ `KnowledgeGraphLayout.kt`（确定性分区布局、折叠、warm/cold、hitTest、zoomToFit）→ `KnowledgeGraphCanvas.kt`（宿主 Canvas 绘制 + 点阵背景 + 缩放平移；只读不回写）→ `KnowledgeGraphPanels.kt`（左栏筛选/图例/统计、工具条、右栏详情与分类编辑）；DTO/几何/哈希在 `KnowledgeGraphModel.kt`，`graph.user.json`/`graph.cache.json` 读写与 `.bak`/`.bad-*` 在 `KnowledgeGraphStore.kt`，分类 CRUD/校验修复/墓碑是 `KnowledgeGraphTaxonomy.kt` 的纯函数，页内状态（tab/相机/聚焦/折叠）在 `KnowledgeGraphViewState.kt`；只改 `KnowledgeScreen.kt`（三 tab 分支 + 定位）与 `KnowledgeStore.kt`（暴露 `home`）；设计见 `docs/knowledge-graph-design.md`（G0 已落地，G1 AI 归类/关系建议未接，AI 缓存参数已预留）；测试 `KnowledgeGraph{Store,Taxonomy,Build,Layout}Test` + 两个离屏渲染测试 |
 | 知识库页 / Markdown 编辑器 / 概念抽取与点亮 / AI 补全空位（笔记列表、编辑/预览、自动保存、概念详情追溯、搜索、`标签：。。。` 补全、`{{…}}` 绿引号） | `app/desktop/.../KnowledgeScreen.kt`（页面 + 焦点离开正文时自动抽取/补全，正文真变了才调模型；左栏与对话页共用 `ListSidebar.kt`）→ `KnowledgePanels.kt`（面板）→ `MarkdownEditor.kt`（编辑器入口 / 页头「目录」「导出」「菜单」/ 菜单浮层与焦点 helper；**没有编辑·预览切换**）→ `MarkdownDocumentEditor.kt`（整篇单字段编辑器：一个 `BasicTextField` + VisualTransformation；光标处行内标记展开、其它位置显示样式；Enter 分段 / Shift+Enter 软换行 / 列表续号；斜杠菜单、`[[` 补全、快捷键、失焦回调；代码/表格/公式/AI 块只显示样式化源码，笔记页不设预览态）→ `MarkdownDocumentEdit.kt`（扫描行 + 投影 + 光标映射的纯函数；`breakParagraphAt`/`splitListLineAt`）→ `MarkdownEdit.kt`（纯函数编辑操作）→ `MarkdownText.kt`（渲染：`[[…]]` 标注才加下划线、普通出现的本文概念只染色；AI 内容绿色大引号 + 公式块 + 标题字号阶梯 + 中文伪粗体（阴影跟随文字色）+ 行内代码圆角芯片；链接只显示 label，光标进入才展开地址）；格式入口不在界面上摆按钮：`MarkdownCommands.kt` 是斜杠命令与快捷键的唯一清单，目录树在 `MarkdownOutline.kt`；笔记读写在 `KnowledgeStore.kt`（含 `conceptIndex/conceptDetail/search`），frontmatter 格式与 `。。。`/`{{…}}`/`:::ai`/`[[…]]` 标注纯函数在 `KnowledgeNote.kt`（标注是「本文概念」的唯一来源，frontmatter 的 `concepts` 只是派生缓存、删掉的进 `removed-concepts` 墓碑），概念匹配在 `ConceptMatch.kt`；概念定义与别名在 `ConceptMetaStore.kt`（`<home>/knowledge/concepts.json`）、抽取/补全提示词与解析在 `KnowledgeExtraction.kt`；`[[` 自动补全（名字/别名 + `=>` 映射项）在 `MarkdownDocumentEdit.kt`/`MarkdownDocumentEditor.kt`；数据在 `<home>/knowledge/notes/<id>.md`；导出入口在页头「导出」chip（`MarkdownExport.kt` + `KnowledgeNote.exportNoteMarkdown`）；约定见 `docs/knowledge-base-draft.md` §11（AI 标记）/ §12（编辑器交互） |
 | 任务数据模型与查询 | `sdk-domain/.../Model.kt`、`PlanService.kt`；实现 `features/plan-core/.../KvPlanService.kt` |
 | 学习计划后端（版本/承诺/occurrence/结算/复盘） | `sdk-domain/.../plan/Contract.kt` → `features/learning-process/.../SqliteLearningPlanService.kt`、`PlanCommands.kt`、`PlanQueries.kt`、`PlanRhythm.kt`；语义见 `docs/plan-backend.md` |
@@ -161,6 +162,8 @@ Set-Location C:\Users\breakM\Desktop\work\Trellis
 | `diag/screenshots/` | `take_screenshot` 存的截图 |
 | `knowledge/notes/<id>.md` | 知识库笔记（Markdown 正文 + frontmatter `title/created/updated/concepts`；文件是真相，没有索引库，概念索引每次从文件现算） |
 | `knowledge/concepts.json` | 知识库概念定义（`{"concepts":[{"name","definition"}]}`，用户可改；AI 只填空定义不覆盖） |
+| `knowledge/graph.user.json` | 知识网络用户策展（v2）：分类树 `categories`、概念归属 `assignments`、手动关系 `relations`、墓碑 `removed`、`mergedInto`；**权威数据**，写前 `.bak`、坏文件改 `.bad-<ms>` 留档；删了只是回到「全未分类」，笔记不受影响 |
+| `knowledge/graph.cache.json` | 知识网络 AI 建议缓存（v2）：`noteSuggestions`/`globalCategories`/`globalRelations` + 布局缓存 `layout`；**可删**，删掉只丢 AI 建议与根块顺序 |
 | `plans/plan.db` | 学习计划后端（SQLite）：计划版本、承诺、occurrence、事件；备份在 `plans/plan.db.bak-*` |
 | `plans/categories.json` | 计划分类（左侧列表分组） |
 | `activity/activity.db` | 活动原始事件（SQLite；AW 的窗口/AFK/浏览器标签页事件，schema v2 带 url） |

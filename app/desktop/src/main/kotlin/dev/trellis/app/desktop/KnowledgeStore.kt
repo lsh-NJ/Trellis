@@ -14,7 +14,7 @@ import kotlin.random.Random
  * 时间走注入时钟（`TrellisClock`），和计划/活动一样，测试里可以固定时间。
  * 失败不抛给界面：读坏一个文件就当它不存在，绝不把整个列表带崩。
  */
-internal class KnowledgeStore(private val home: File, private val clock: TrellisClock) {
+internal class KnowledgeStore(internal val home: File, private val clock: TrellisClock) {
 
     /** `<home>/knowledge/notes/`；目录在构造时就建好。 */
     val notesDir: File = File(File(home, "knowledge"), "notes")
