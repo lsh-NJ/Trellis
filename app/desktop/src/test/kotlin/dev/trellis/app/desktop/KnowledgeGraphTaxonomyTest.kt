@@ -194,18 +194,19 @@ class KnowledgeGraphTaxonomyTest {
     fun moveRejectsTooDeep() {
         var current = user()
         var parentId: String? = null
-        for (name in listOf("A", "B", "C", "D", "E")) {
+        for (index in 1..MAX_CATEGORY_DEPTH) {
+            val name = "L$index"
             val result = createCategory(current, name, parentId, now)
-            assertNull(result.error)
+            assertNull(result.error, "第 $index 层应能创建：${result.error}")
             current = result.user
             parentId = result.user.categories.single { it.name == name }.id
         }
         current = createCategory(current, "X", null, now).user
-        val e = current.categories.single { it.name == "E" }
+        val last = current.categories.single { it.name == "L$MAX_CATEGORY_DEPTH" }
         val x = current.categories.single { it.name == "X" }
 
-        // X 移到第 5 层的 E 下 → 会到第 6 层，拒绝
-        val result = moveCategory(current, x.id, e.id)
+        // X 移到最深一层下 → 会超过 32 层安全上限，拒绝
+        val result = moveCategory(current, x.id, last.id)
         assertNotNull(result.error)
         assertTrue(result.error.contains("层"), "错误文案应说明层数：${result.error}")
     }
@@ -452,7 +453,7 @@ class KnowledgeGraphTaxonomyTest {
     fun validateEnforcesMaxDepth() {
         val categories = ArrayList<GraphCategory>()
         var parentId: String? = null
-        for (index in 1..7) {
+        for (index in 1..(MAX_CATEGORY_DEPTH + 2)) {
             val id = "c_d$index"
             categories.add(category(id, "L$index", parentId))
             parentId = id

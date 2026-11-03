@@ -294,32 +294,34 @@ internal data class Camera(
 /** 未分类虚拟框的 key（不是真实分类 id；统计里也不算分类）。 */
 internal const val GRAPH_UNCLASSIFIED_KEY: String = "__unclassified__"
 
-/** 一个概念芯片：key + 世界坐标矩形。 */
-internal data class GraphChipItem(val key: String, val bounds: GraphRect)
-
 /**
- * 一个分类框（含「未分类」虚拟框）。
+ * 树上的一个节点（分类或概念）。
  *
- * [categoryKey] 分类 id；未分类框为 [GRAPH_UNCLASSIFIED_KEY]；
- * [chips] 是直接挂在本分类下、当前可见的概念 key；[children] 是子分类框（递归）。
- * 折叠时 [chips]/[children] 为空，框缩成标题行高度。
+ * [key] 是分类 id 或概念身份键；[kind] 决定画成「虚」分类还是「实」概念；
+ * [depth] 根为 0；[bounds] 是世界坐标；[folded] 表示该分类当前被折叠（子节点不出现）。
  */
-internal data class GraphBox(
-    val categoryKey: String,
+internal data class GraphNodeBox(
+    val key: String,
+    val kind: GraphNodeKind,
     val depth: Int,
-    val collapsed: Boolean,
     val bounds: GraphRect,
-    val headerBounds: GraphRect,
-    val chips: List<String> = emptyList(),
-    val children: List<GraphBox> = emptyList(),
+    val folded: Boolean = false,
 )
 
-/** 一次布局的完整结果；[roots] 按 reading order（含未分类框，排最后）。 */
+/** 树边：父 → 子。设计 v1.2 起画布只画这一种线，其余关系全部收进小浮窗。 */
+internal data class GraphLink(val fromKey: String, val toKey: String)
+
+/**
+ * 一次布局的完整结果：森林。
+ *
+ * [roots] 是每棵树的根（大类分类，未分类虚拟框排最后）；[nodes] 只含当前可见节点；
+ * [links] 只含可见父子边；[collapsed] 是当前折叠的分类集合。
+ */
 internal data class GraphLayout(
     val bounds: GraphRect = GraphRect.Zero,
-    val roots: List<GraphBox> = emptyList(),
-    val boxesByKey: Map<String, GraphBox> = emptyMap(),
-    val chipsByKey: Map<String, GraphChipItem> = emptyMap(),
+    val roots: List<String> = emptyList(),
+    val nodes: Map<String, GraphNodeBox> = emptyMap(),
+    val links: List<GraphLink> = emptyList(),
     val collapsed: Set<String> = emptySet(),
 ) {
     companion object {
@@ -327,13 +329,9 @@ internal data class GraphLayout(
     }
 }
 
-/** 画布点击命中：芯片 / 分类标题行 / 分类框空白区。 */
+/** 画布点击命中：一个节点。 */
 internal sealed interface GraphHit {
-    data class Chip(val key: String) : GraphHit
-
-    data class CategoryHeader(val key: String) : GraphHit
-
-    data class CategoryBox(val key: String) : GraphHit
+    data class Node(val key: String) : GraphHit
 }
 
 // ---- 持久化 DTO（graph.user.json / graph.cache.json 的内存形状；JSON 读写见 KnowledgeGraphStore） ----

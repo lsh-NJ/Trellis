@@ -5,66 +5,60 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 
 /**
- * 知识库「网络」视图的页内状态（设计 §5.1）。
+ * 知识网络视图的页内状态（设计 v1.2：只保留「树 + 聚焦浮窗」需要的东西）。
  *
- * 放成 object 而不是 `remember` 的理由与一期 `MarkdownSidebarState` 一致：
- * 切到别的导航页再回来，视野、选中、折叠状态还在；这些只是**视图状态**，从不落盘
- * （唯一例外是布局指纹缓存，属于 `graph.cache.json` 的可删缓存，不属于这里）。
- *
- * 注意：这里不存「图」本身。图每次从笔记 + 两个 json 现算（设计 §3.1），
- * 视图状态只记「怎么看」。
+ * 跟一期 [MarkdownSidebarState] 一个思路：放 object 里，切到别的 tab 再回来，
+ * 视野、选中节点、折叠状态都还在。**不落盘**，重启回到默认。
  */
 internal object KnowledgeGraphViewState {
-    /** 当前知识库 tab；跨页保留。 */
+    /** 知识页当前 tab（笔记 / 概念 / 网络）。 */
     var tab: KnowledgeTab by mutableStateOf(KnowledgeTab.Notes)
 
-    /** 相机（缩放 + 平移），世界坐标见 [Camera]。 */
+    /** 画布相机（缩放 + 平移）。 */
     var camera: Camera by mutableStateOf(Camera.Default)
 
-    /** 当前聚焦的概念/分类 key；null = 没聚焦（默认视图只画所属关系）。 */
+    /** 当前聚焦节点（分类 id 或概念身份键）；null = 没聚焦。小浮窗跟随它。 */
     var selectedKey: String? by mutableStateOf(null)
 
-    /** 用户手动折叠的分类 id 集合（分类默认展开；「分类默认折叠」筛选打开时这里存展开的反面）。 */
+    /** 手动折叠的分类 id 集合。 */
     var collapsed: Set<String> by mutableStateOf(emptySet())
 
-    /** 「分类默认折叠」筛选开关（左栏）。 */
-    var collapseByDefault: Boolean by mutableStateOf(false)
-
-    /** 默认展开深度（1..5）；分类默认折叠时此值不生效。 */
-    var expandDepth: Int by mutableStateOf(2)
-
-    /** 左栏筛选：是否显示「未分类」虚拟框。 */
+    /** 是否显示「未分类」那类树。 */
     var showUnclassified: Boolean by mutableStateOf(true)
 
-    /** 左栏筛选：聚焦时是否显示其它关系（前置/应用/相关/共现）。 */
-    var showRelationsOnFocus: Boolean by mutableStateOf(true)
-
-    /** 左栏筛选：聚焦时是否连共现边也画（设计 Q5：默认隐藏）。 */
-    var showCoOccurrence: Boolean by mutableStateOf(false)
-
-    /** 左栏筛选：只看某个根分类（null = 全部领域）。 */
-    var domainFilter: String? by mutableStateOf(null)
-
-    /** 左栏搜索词；非空时左栏切成结果列表。 */
+    /** 左栏搜索框内容（搜索时左栏临时换成命中列表）。 */
     var query: String by mutableStateOf("")
 
-    /** 数据变更后自增，用来让画布重新计算构建 + 布局（分类增删改、确认 AI 建议等）。 */
+    /** 递增后让页面重新读盘（笔记变了/手动刷新）。 */
     var refreshToken: Int by mutableStateOf(0)
 
-    /** 一次性操作提示（例如「已新建分类」「AI 建议需要配置模型」）。 */
+    /** 一次性提示（新建分类成功、导入失败等）。 */
     var message: String? by mutableStateOf(null)
 
+    /** 递增后请求「适应窗口」。 */
+    var fitRequests: Int by mutableStateOf(0)
+
     fun requestRefresh(message: String? = null) {
-        this.message = message
         refreshToken++
+        if (message != null) this.message = message
     }
 
     fun clearFocus() {
         selectedKey = null
-        query = ""
+    }
+
+    fun toggleFolded(categoryId: String) {
+        collapsed = if (categoryId in collapsed) collapsed - categoryId else collapsed + categoryId
+    }
+
+    fun expandTo(key: String, graph: KnowledgeGraph) {
+        val ancestors = graph.ancestorsOf(key).map { it.key }.filter { it != key }
+        if (ancestors.isEmpty()) return
+        collapsed = collapsed - ancestors.toSet()
     }
 
     fun fitReset() {
         camera = Camera.Default
+        fitRequests++
     }
 }

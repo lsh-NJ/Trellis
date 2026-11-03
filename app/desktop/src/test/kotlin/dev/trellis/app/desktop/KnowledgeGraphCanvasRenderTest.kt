@@ -1,14 +1,12 @@
 package dev.trellis.app.desktop
 
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.ImageComposeScene
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.Density
-import androidx.compose.ui.unit.dp
 import dev.trellis.ui.ExtraColors
 import dev.trellis.ui.LocalExtraColors
 import java.io.File
@@ -18,9 +16,8 @@ import kotlin.test.assertTrue
 /**
  * 画布的离屏渲染测试（G0-0 的「Compose 能不能量文字 + 画字」验证，兼防画布崩）。
  *
- * 用一张手搭的小布局喂 [KnowledgeGraphCanvas]，不依赖布局模块：
- * 既证明 `rememberTextMeasurer` / `drawText` 在这套 Compose Desktop 上能用，
- * 也保证以后改画布不会在「有分类、有芯片、有聚焦边」时抛异常。
+ * 手搭一棵小树喂 [KnowledgeGraphCanvas]：分类（虚）→ 子分类 → 概念（实），再带一条未分类树。
+ * 两个用例：无选中（默认）和选中一个概念（聚焦 + 淡出其它节点）。
  * 截图写到 `app/desktop/build/ui-shot-graph-canvas.png`，可以直接看。
  */
 class KnowledgeGraphCanvasRenderTest {
@@ -34,100 +31,72 @@ class KnowledgeGraphCanvasRenderTest {
             mentionCount = notes * 2,
             parentKey = parent,
         )
-        val nodes = listOf(
-            GraphNode(key = "c_检索", kind = GraphNodeKind.CATEGORY, name = "检索", sortOrder = 0),
-            GraphNode(key = "c_生成", kind = GraphNodeKind.CATEGORY, name = "生成", sortOrder = 1),
-            concept("嵌入", "嵌入", "c_检索"),
-            concept("向量检索", "向量检索", "c_检索", notes = 3),
-            concept("重排", "重排", "c_检索"),
-            concept("RAG", "RAG", "c_生成", notes = 2),
-            GraphNode(
-                key = "c_ai",
-                kind = GraphNodeKind.CATEGORY,
-                name = "对齐",
-                origin = NodeOrigin.AI,
-                confirmed = false,
-            ),
-            concept("上下文窗口", "上下文窗口", "c_ai"),
-        ).associateBy { it.key }
-        val edges = listOf(
-            GraphEdge("嵌入", "向量检索", GraphEdgeKind.PREREQUISITE, GraphEdgeSource.EXPLICIT, 0.8f),
-            GraphEdge("向量检索", "RAG", GraphEdgeKind.APPLIES, GraphEdgeSource.USER, 1f),
-            GraphEdge("嵌入", "RAG", GraphEdgeKind.RELATED, GraphEdgeSource.HEURISTIC, 0.5f),
+        fun category(key: String, name: String, parent: String?) = GraphNode(
+            key = key,
+            kind = GraphNodeKind.CATEGORY,
+            name = name,
+            parentKey = parent,
         )
+        val nodes = listOf(
+            category("c_检索", "检索", null),
+            category("c_召回", "召回", "c_检索"),
+            concept("嵌入", "嵌入", "c_检索"),
+            concept("向量检索", "向量检索", "c_召回", notes = 3),
+            category("c_生成", "生成", null),
+            concept("RAG", "RAG", "c_生成", notes = 2),
+            concept("上下文窗口", "上下文窗口", null),
+        ).associateBy { it.key }
         return KnowledgeGraph(
             nodes = nodes,
             childrenOf = mapOf(
-                null to listOf("c_检索", "c_生成", "c_ai"),
-                "c_检索" to listOf("嵌入", "向量检索", "重排"),
+                null to listOf("c_检索", "c_生成", "上下文窗口"),
+                "c_检索" to listOf("c_召回", "嵌入"),
+                "c_召回" to listOf("向量检索"),
                 "c_生成" to listOf("RAG"),
-                "c_ai" to listOf("上下文窗口"),
             ),
-            edges = edges,
             stats = GraphStats(
-                conceptCount = 5,
+                conceptCount = 4,
                 categoryCount = 3,
-                rootCategoryCount = 3,
-                maxDepth = 2,
-                classifiedCount = 5,
-                unclassifiedCount = 0,
-                relationEdgeCount = 3,
-                aiSuggestionCount = 1,
+                rootCategoryCount = 2,
+                maxDepth = 3,
+                classifiedCount = 3,
+                unclassifiedCount = 1,
+                relationEdgeCount = 2,
             ),
         )
     }
 
-    private fun sampleLayout(): GraphLayout {
-        fun chip(key: String, left: Float, top: Float): GraphChipItem =
-            GraphChipItem(key, GraphRect(left, top, left + 96f, top + 30f))
+    private fun box(key: String, kind: GraphNodeKind, depth: Int, left: Float, top: Float, width: Float = 96f) =
+        GraphNodeBox(
+            key = key,
+            kind = kind,
+            depth = depth,
+            bounds = GraphRect(left, top, left + width, top + 30f),
+        )
 
-        val unclassified = GraphBox(
-            categoryKey = GRAPH_UNCLASSIFIED_KEY,
-            depth = 1,
-            collapsed = false,
-            bounds = GraphRect(0f, 420f, 520f, 520f),
-            headerBounds = GraphRect(0f, 420f, 520f, 450f),
-            chips = emptyList(),
-        )
-        val aiBox = GraphBox(
-            categoryKey = "c_ai",
-            depth = 2,
-            collapsed = false,
-            bounds = GraphRect(560f, 160f, 800f, 300f),
-            headerBounds = GraphRect(560f, 160f, 800f, 190f),
-            chips = listOf("上下文窗口"),
-        )
-        val generation = GraphBox(
-            categoryKey = "c_生成",
-            depth = 2,
-            collapsed = false,
-            bounds = GraphRect(300f, 160f, 540f, 300f),
-            headerBounds = GraphRect(300f, 160f, 540f, 190f),
-            chips = listOf("RAG"),
-            children = listOf(aiBox),
-        )
-        val retrieval = GraphBox(
-            categoryKey = "c_检索",
-            depth = 2,
-            collapsed = false,
-            bounds = GraphRect(200f, 80f, 560f, 380f),
-            headerBounds = GraphRect(200f, 80f, 560f, 110f),
-            chips = listOf("嵌入", "向量检索", "重排"),
-            children = listOf(generation),
-        )
-        val roots = listOf(retrieval, unclassified)
-        val chips = listOf(
-            chip("嵌入", 220f, 140f),
-            chip("向量检索", 220f, 190f),
-            chip("重排", 220f, 240f),
-            chip("RAG", 320f, 220f),
-            chip("上下文窗口", 580f, 220f),
+    private fun sampleLayout(): GraphLayout {
+        val nodes = listOf(
+            box("c_检索", GraphNodeKind.CATEGORY, 0, 40f, 40f),
+            box("c_召回", GraphNodeKind.CATEGORY, 1, 40f, 110f),
+            box("嵌入", GraphNodeKind.CONCEPT, 1, 40f, 170f),
+            box("向量检索", GraphNodeKind.CONCEPT, 2, 40f, 240f),
+            box("c_生成", GraphNodeKind.CATEGORY, 0, 220f, 40f),
+            box("RAG", GraphNodeKind.CONCEPT, 1, 220f, 110f),
+            box(GRAPH_UNCLASSIFIED_KEY, GraphNodeKind.CATEGORY, 0, 400f, 40f),
+            box("上下文窗口", GraphNodeKind.CONCEPT, 1, 400f, 110f),
+        ).associateBy { it.key }
+        val links = listOf(
+            GraphLink("c_检索", "c_召回"),
+            GraphLink("c_检索", "嵌入"),
+            GraphLink("c_召回", "向量检索"),
+            GraphLink("c_生成", "RAG"),
+            GraphLink(GRAPH_UNCLASSIFIED_KEY, "上下文窗口"),
         )
         return GraphLayout(
-            bounds = GraphRect(0f, 80f, 800f, 520f),
-            roots = roots,
-            boxesByKey = listOf(retrieval, generation, aiBox, unclassified).associateBy { it.categoryKey },
-            chipsByKey = chips.associateBy { it.key },
+            bounds = GraphRect(0f, 0f, 560f, 300f),
+            roots = listOf("c_检索", "c_生成", GRAPH_UNCLASSIFIED_KEY),
+            nodes = nodes,
+            links = links,
         )
     }
 
@@ -141,11 +110,10 @@ class KnowledgeGraphCanvasRenderTest {
                         layout = sampleLayout(),
                         camera = Camera(zoom = 1f, panX = 40f, panY = 20f),
                         selectedKey = selectedKey,
-                        showCoOccurrence = true,
                         modifier = Modifier.fillMaxSize(),
                         onCameraChange = {},
-                        onChipClick = {},
-                        onCategoryClick = {},
+                        onNodeClick = {},
+                        onCategoryToggle = {},
                         onBackgroundClick = {},
                     )
                 }
@@ -157,7 +125,7 @@ class KnowledgeGraphCanvasRenderTest {
     }
 
     @Test
-    fun rendersCanvasWithFocusRelations() {
+    fun rendersTreeWithFocusedNode() {
         val bytes = render(selectedKey = "向量检索")
         val out = File("build/ui-shot-graph-canvas.png")
         out.parentFile?.mkdirs()
@@ -167,7 +135,7 @@ class KnowledgeGraphCanvasRenderTest {
     }
 
     @Test
-    fun rendersCanvasWhenNothingIsSelected() {
+    fun rendersTreeWhenNothingIsSelected() {
         val bytes = render(selectedKey = null)
         assertTrue(bytes.size > 5_000, "默认视图截图太小：" + bytes.size)
     }
