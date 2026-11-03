@@ -20,7 +20,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 
 /**
@@ -73,18 +75,36 @@ internal fun KnowledgeGraphView(
             KnowledgeGraphViewState.collapsed + GRAPH_UNCLASSIFIED_KEY
         }
     }
-    val layout = remember(graph, collapsed, cache.layout) {
-        layoutKnowledgeGraph(graph, collapsed, cache.layout)
+    // 画布世界坐标单位是 px；布局里的字号/尺寸按 density 放大，
+    // 才能和 drawText 的 12sp（px = sp × density）对齐，否则中文会被截成一两个字。
+    val density = LocalDensity.current.density
+    val layoutOptions = remember(density) {
+        LayoutOptions(
+            padding = 32f * density,
+            nodeGapX = 18f * density,
+            rowGapY = 44f * density,
+            treeGapX = 72f * density,
+            minNodeWidth = 64f * density,
+            maxNodeWidth = 260f * density,
+            nodeHeight = 30f * density,
+            categoryHeight = 28f * density,
+            conceptFontPx = 12f * density,
+            categoryFontPx = 12.5f * density,
+            maxCanvasWidth = 3000f * density,
+        )
+    }
+    val layout = remember(graph, collapsed, cache.layout, layoutOptions) {
+        layoutKnowledgeGraph(graph, collapsed, cache.layout, layoutOptions)
     }
 
     // 图变了 / 点了「适应窗口」：重新 fit 相机。
     var lastFittedFingerprint by remember { mutableStateOf<Long?>(null) }
     var lastFitRequest by remember { mutableStateOf(-1) }
-    LaunchedEffect(fingerprint, canvasSize, KnowledgeGraphViewState.fitRequests) {
+    LaunchedEffect(fingerprint, canvasSize, density, KnowledgeGraphViewState.fitRequests) {
         if (canvasSize.isEmpty) return@LaunchedEffect
         val request = KnowledgeGraphViewState.fitRequests
         if (lastFittedFingerprint != fingerprint || request != lastFitRequest) {
-            KnowledgeGraphViewState.camera = fitCamera(layout.bounds, canvasSize)
+            KnowledgeGraphViewState.camera = fitCamera(layout.bounds, canvasSize, padding = 32f * density)
             lastFittedFingerprint = fingerprint
             lastFitRequest = request
         }
@@ -285,6 +305,13 @@ internal fun KnowledgeGraphView(
                             onDeleteCategory = { categoryId -> deleteTarget = graph.nodes[categoryId] },
                         )
                     }
+
+                    // 图例贴在画布右上角（v1.3：从左栏挪过来，左栏留给搜索和统计）。
+                    KnowledgeGraphLegend(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(12.dp),
+                    )
                 }
             }
         }

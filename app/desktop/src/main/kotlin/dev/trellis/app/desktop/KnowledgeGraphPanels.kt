@@ -94,10 +94,6 @@ internal fun KnowledgeGraphLeftPanel(
             }
             KnowledgeHint("未分类 = 还没挂到任何分类下的概念；点浮窗里的「移动到分类…」归档。")
 
-            GraphSectionLabel("图例")
-            LegendRow(solid = true, label = "概念（实）")
-            LegendRow(solid = false, label = "分类（虚）")
-            LegendLineRow("父子连线（所属关系）")
             KnowledgeHint("点节点：其它节点淡出 + 弹出小浮窗；双击分类：折叠/展开；拖动虚节点到其它节点上：把那个节点收为子节点。")
 
             GraphSectionLabel("统计")
@@ -143,6 +139,30 @@ private fun LegendLineRow(label: String) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         Box(Modifier.width(26.dp).height(1.5.dp).background(extra.dataTrack))
         Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface)
+    }
+}
+
+/**
+ * 画布右上角的紧凑图例浮层：概念（实）/ 分类（虚）/ 父子连线。
+ *
+ * v1.3 起从「左栏一段竖排图例」移到这里——图例是看画布时才需要的说明，
+ * 贴着画布右上角比塞在左栏更顺手，也把左栏让给搜索和统计。
+ */
+@Composable
+internal fun KnowledgeGraphLegend(modifier: Modifier = Modifier) {
+    val extra = LocalExtraColors.current
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
+            .border(1.dp, extra.dataTrack.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        LegendRow(solid = true, label = "概念（实）")
+        LegendRow(solid = false, label = "分类（虚）")
+        LegendLineRow("父子连线")
     }
 }
 
