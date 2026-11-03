@@ -3,6 +3,7 @@
 # macOS 一键构建 / 启动（Trellis）
 #
 #   ./build-mac.sh             构建 macOS 安装包（.app + .dmg，默认）
+#   ./build-mac.sh --launch    构建 .app 并直接启动它（验证打包产物）
 #   ./build-mac.sh --run       编译并启动桌面应用
 #   ./build-mac.sh --check     只编译，不启动、不打包
 #   ./build-mac.sh --test      全量测试 + 架构断言 verifyKernelPurity
@@ -25,7 +26,8 @@ usage() {
     cat <<'MSG'
 用法:
   ./build-mac.sh             构建 macOS 安装包（.app + .dmg，默认）
-  ./build-mac.sh --run       编译并启动桌面应用
+  ./build-mac.sh --launch    构建 .app 并直接启动它
+  ./build-mac.sh --run       编译并启动桌面应用（gradlew run，不打包）
   ./build-mac.sh --check     只编译
   ./build-mac.sh --test      全量测试 + 架构断言
   ./build-mac.sh --help      显示这份说明
@@ -36,6 +38,7 @@ MODE="package"
 case "${1:-}" in
     ""|--package|package) MODE="package" ;;
     --run|run)            MODE="run" ;;
+    --launch|launch)      MODE="launch" ;;
     --check|check)        MODE="check" ;;
     --test|test)          MODE="test" ;;
     -h|--help|help)       usage; exit 0 ;;
@@ -154,6 +157,31 @@ case "$MODE" in
         [ "$status" -ne 0 ] && fail_hint
         exit "$status"
         ;;
+    launch)
+        "$PWD/gradlew" :app:desktop:createDistributable --console=plain
+        status=$?
+        if [ "$status" -ne 0 ]; then
+            fail_hint
+            exit "$status"
+        fi
+        app_path="$(ls -d app/desktop/build/compose/binaries/main/app/*.app 2>/dev/null | head -1)"
+        if [ -z "$app_path" ]; then
+            echo "构建成功，但没找到 .app；应该在 app/desktop/build/compose/binaries/main/app/ 下。" >&2
+            exit 1
+        fi
+        echo
+        echo "构建完成：$app_path"
+        echo "启动   ：open \"$app_path\""
+        echo
+        if ! open "$app_path"; then
+            echo "自动启动失败，手动执行上面那条 open 命令。" >&2
+            exit 1
+        fi
+        echo "已启动。"
+        echo "注意：open 不继承当前终端的环境变量（TRELLIS_HOME / TRELLIS_TAB 等）。"
+        echo "      要用演示数据目录：TRELLIS_HOME=/tmp/trellis-demo \"$app_path/Contents/MacOS/Trellis\""
+        echo "      或者继续用 ./build-mac.sh --run（gradlew run，带环境变量）。"
+        ;;
     package)
         "$PWD/gradlew" :app:desktop:createDistributable :app:desktop:packageDmg --console=plain
         status=$?
@@ -169,6 +197,7 @@ case "$MODE" in
         [ -n "$app_path" ] && echo "  .app : $app_path  ($(du -sh "$app_path" | cut -f1))"
         [ -n "$dmg_path" ] && echo "  .dmg : $dmg_path  ($(du -sh "$dmg_path" | cut -f1))"
         [ -n "$dmg_path" ] && echo "  安装 : open \"$dmg_path\""
+        [ -n "$app_path" ] && echo "  启动 : open \"$app_path\""
         echo
         echo "注意：本地构建是 ad-hoc 签名，本机可开；分发到别人的 Mac 需要"
         echo "      Developer ID 签名 + 公证（notarize），否则会被 Gatekeeper 拦。"
