@@ -39,7 +39,7 @@ import androidx.compose.ui.unit.dp
 import dev.trellis.ui.LocalExtraColors
 
 // ---------------------------------------------------------------------------
-// 左栏：搜索 + 筛选 + 图例 + 统计 + 新建分类
+// 左栏：搜索 + 筛选 + 图例 + 统计 + 提示（建节点入口只在工具条，避免重复）
 // ---------------------------------------------------------------------------
 
 @Composable
@@ -51,8 +51,6 @@ internal fun KnowledgeGraphLeftPanel(
     onQueryChange: (String) -> Unit,
     onNodeClick: (String) -> Unit,
     onShowUnclassified: (Boolean) -> Unit,
-    onNewCategory: () -> Unit,
-    onNewVirtualNode: () -> Unit,
 ) {
     val extra = LocalExtraColors.current
     val results = remember(graph, query) {
@@ -108,10 +106,7 @@ internal fun KnowledgeGraphLeftPanel(
 
         HorizontalDivider(color = extra.dataTrack.copy(alpha = 0.6f))
 
-        TextButton(onClick = onNewCategory) { Text("＋ 新建分类", style = MaterialTheme.typography.labelMedium) }
-        TextButton(onClick = onNewVirtualNode) {
-            Text("＋ 添加虚节点（拖到节点上成为父分类）", style = MaterialTheme.typography.labelMedium)
-        }
+        KnowledgeHint("新建分类节点用工具条「＋ 虚节点」；把它拖到某个节点上，那个节点就收进来。")
         TextButton(onClick = {}, enabled = false) {
             Text("✦ AI 整理分类（G1 接入）", style = MaterialTheme.typography.labelMedium)
         }
@@ -160,7 +155,6 @@ internal fun KnowledgeGraphToolbar(
     onExpandAll: () -> Unit,
     onCollapseAll: () -> Unit,
     onFit: () -> Unit,
-    onNewCategory: () -> Unit,
     onNewVirtualNode: () -> Unit,
 ) {
     val extra = LocalExtraColors.current
@@ -169,7 +163,6 @@ internal fun KnowledgeGraphToolbar(
         TextButton(onClick = onExpandAll) { Text("展开全部", style = MaterialTheme.typography.labelMedium) }
         TextButton(onClick = onCollapseAll) { Text("折叠全部", style = MaterialTheme.typography.labelMedium) }
         TextButton(onClick = onFit) { Text("适应窗口", style = MaterialTheme.typography.labelMedium) }
-        TextButton(onClick = onNewCategory) { Text("＋ 新建分类", style = MaterialTheme.typography.labelMedium) }
         TextButton(onClick = onNewVirtualNode) { Text("＋ 虚节点", style = MaterialTheme.typography.labelMedium) }
         Spacer(Modifier.weight(1f))
         Text("点击看浮窗 · 双击折叠 · 拖动虚节点收子节点", style = MaterialTheme.typography.labelSmall, color = extra.dataMuted)
@@ -232,7 +225,7 @@ internal fun KnowledgeGraphEmptyState(hasNotes: Boolean, hasConcepts: Boolean, m
             when {
                 !hasNotes -> "先去「笔记」记一篇：正文里写下概念，AI 整理后会点亮知识点。"
                 !hasConcepts -> "笔记里还没有被点亮的 concept：正文里写下概念名，或手动标注 [[概念]]。"
-                else -> "概念已经就绪，点「＋ 新建分类」搭出第一棵分类树。"
+                else -> "概念已经就绪，点工具条「＋ 虚节点」搭出第一棵分类树，再把它拖到该在的位置。"
             },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
