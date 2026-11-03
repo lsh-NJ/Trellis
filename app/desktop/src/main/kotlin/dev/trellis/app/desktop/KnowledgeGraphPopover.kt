@@ -42,7 +42,7 @@ import kotlin.math.roundToInt
  * 聚焦节点的小浮窗（设计 v1.2：节点信息不画在画布上，全部收进这里）。
  *
  * 内容：所属路径 / 定义（可编辑）/ 来源片段（可点回笔记）/ 直接关联（前置·应用·相关·共现）/
- * 操作（概念：移动到分类；分类：改名、新建子分类、删除）。
+ * 操作（概念：移动到分类；分类：改名、新建子分类、新建上级分类、移动到分类、删除）。
  * 位置贴着节点右上角并自动避让边界；宽度固定 300dp，内容超高时内部滚动。
  */
 @Composable
@@ -60,6 +60,8 @@ internal fun KnowledgeGraphPopover(
     onSaveDefinition: (name: String, definition: String) -> Unit,
     onMoveToCategory: (conceptKey: String, categoryId: String?) -> Unit,
     onNewSubcategory: (parentId: String) -> Unit,
+    onNewParentCategory: (categoryId: String) -> Unit,
+    onMoveCategory: (categoryId: String, newParentId: String?) -> Unit,
     onRenameCategory: (categoryId: String) -> Unit,
     onDeleteCategory: (categoryId: String) -> Unit,
 ) {
@@ -117,7 +119,20 @@ internal fun KnowledgeGraphPopover(
         }
 
         if (isCategory) {
-            CategoryBody(node, children, extra, scheme, onSelectNode, onRenameCategory, onNewSubcategory, onDeleteCategory)
+            CategoryBody(
+                graph = graph,
+                node = node,
+                children = children,
+                categories = categories,
+                extra = extra,
+                scheme = scheme,
+                onSelectNode = onSelectNode,
+                onRenameCategory = onRenameCategory,
+                onNewSubcategory = onNewSubcategory,
+                onNewParentCategory = onNewParentCategory,
+                onMoveCategory = onMoveCategory,
+                onDeleteCategory = onDeleteCategory,
+            )
         } else {
             ConceptBody(
                 graph = graph,
@@ -186,19 +201,52 @@ private fun PopoverPath(
 
 @Composable
 private fun CategoryBody(
+    graph: KnowledgeGraph,
     node: GraphNode,
     children: List<GraphNode>,
+    categories: List<Pair<String, String>>,
     extra: ExtraColors,
     scheme: androidx.compose.material3.ColorScheme,
     onSelectNode: (String) -> Unit,
     onRenameCategory: (String) -> Unit,
     onNewSubcategory: (String) -> Unit,
+    onNewParentCategory: (String) -> Unit,
+    onMoveCategory: (String, String?) -> Unit,
     onDeleteCategory: (String) -> Unit,
 ) {
     Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
         TextButton(onClick = { onRenameCategory(node.key) }) { Text("改名", fontSize = 12.sp) }
         TextButton(onClick = { onNewSubcategory(node.key) }) { Text("新建子分类", fontSize = 12.sp) }
         TextButton(onClick = { onDeleteCategory(node.key) }) { Text("删除", fontSize = 12.sp) }
+    }
+    val forbidden = remember(graph, node.key) { collectCategoryDescendants(graph, node.key) }
+    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+        TextButton(onClick = { onNewParentCategory(node.key) }) { Text("新建上级分类", fontSize = 12.sp) }
+        var moveMenu by remember(node.key) { mutableStateOf(false) }
+        Box {
+            TextButton(onClick = { moveMenu = true }) { Text("移动到分类…", fontSize = 12.sp) }
+            DropdownMenu(expanded = moveMenu, onDismissRequest = { moveMenu = false }) {
+                DropdownMenuItem(
+                    text = { Text("顶层（成为根分类）", fontSize = 12.sp) },
+                    onClick = {
+                        moveMenu = false
+                        onMoveCategory(node.key, null)
+                    },
+                )
+                // 不能挂到自己或自己的后代下（会成环）。
+                categories
+                    .filter { (id, _) -> id !in forbidden }
+                    .forEach { (id, path) ->
+                        DropdownMenuItem(
+                            text = { Text(path, fontSize = 12.sp) },
+                            onClick = {
+                                moveMenu = false
+                                onMoveCategory(node.key, id)
+                            },
+                        )
+                    }
+            }
+        }
     }
     if (children.isNotEmpty()) {
         Text("包含", fontSize = 10.sp, color = extra.dataMuted)
@@ -391,4 +439,19 @@ private fun relationSourceLabel(source: GraphEdgeSource): String = when (source)
     GraphEdgeSource.EXPLICIT -> "标注"
     GraphEdgeSource.HEURISTIC -> "自动"
     GraphEdgeSource.AI -> "AI"
+}
+
+/** 分类自己 + 所有分类后代；用于「移动到分类…」时排除会成环的目标。 */
+private fun collectCategoryDescendants(graph: KnowledgeGraph, key: String): Set<String> {
+    val result = LinkedHashSet<String>()
+    val queue = ArrayDeque<String>()
+    queue.add(key)
+    while (queue.isNotEmpty()) {
+        val current = queue.removeFirst()
+        if (!result.add(current)) continue
+        graph.childrenOf(current).forEach { child ->
+            if (child.kind == GraphNodeKind.CATEGORY) queue.add(child.key)
+        }
+    }
+    return result
 }

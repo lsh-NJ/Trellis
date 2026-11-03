@@ -605,7 +605,9 @@ G0 落地后按反馈简化：画布上只剩节点和父子连线，一棵根�
 
 - **删除右栏 320dp 详情面板**；点击节点时：其它节点淡出（alpha 0.28）、选中节点 spring 放大（约 1.06）、与其直接相连的父子连线加粗高亮，并在节点旁弹出**小浮窗**；点空白 / 再点同一节点 / Esc 清除聚焦。
 - **概念浮窗内容**：类型徽标 + 名字；所属路径（用 ` / ` 连接）；定义（展示，可点「编辑」后保存到 `concepts.json`）；来源（前 3 条笔记标题 + 命中片段，点一条 = 在笔记中定位）；直接关联（按 PREREQUISITE→APPLIES→RELATED→CO_OCCUR 排序，标方向与来源：手动/标注/自动/AI，点一条跳到对端节点）；「移动到分类…」（含「未分类」）。
-- **分类浮窗内容**：改名 / 新建子分类 / 删除（确认弹窗说明「子分类上移一层、概念回未分类、笔记正文不改」）；子节点列表可点直达。
+- **分类浮窗内容**：改名 / 新建子分类 / 新建上级分类 / 移动到分类… / 删除（确认弹窗说明「子分类上移一层、概念回未分类、笔记正文不改」）；子节点列表可点直达。
+  - 「新建上级分类」＝先建一个根分类，再把当前分类挂进去——这是把「检索 / 生成 / 评估」收进一个新大类最顺手的入口；
+  - 「移动到分类…」列出「顶层（成为根分类）」+ 其它分类，**排除自己与自己的后代**（单父、不成环），移动后整棵子树跟着走。
 - **位置**：节点右上角 +14dp；右边放不下翻到左侧；纵向夹在视口内；宽 300dp、最高 420dp、内部滚动。浮窗是画布的覆盖层（不占布局宽度），画布仍铺满。
 - **为什么**：画布只负责「看见结构」；定义/来源/关系都是按需信息，塞进画布就回到「链接太乱」。浮窗跟随节点出现，注意力不会被固定面板拽走。
 
@@ -1362,6 +1364,7 @@ assignLayers(nodes, edges, pins) ->
 | 2026-11-03 | v1.1 补充 | 对齐一期知识库同日升级：`[[原文 => 概念名]]` 标注成为「本文概念」唯一来源（frontmatter `concepts` 是派生缓存、删掉进 `removed-concepts` 墓碑）、`ConceptIdentity.aliases` 别名参与匹配但图仍按规范名建节点、笔记页已无「编辑·预览」切换。同步修正 §3.2/§3.5/§5.1/§5.6/§5.7/Q2/R11/G2-1：**定位 = 跳笔记 tab + 右栏来源片段先预览（`ConceptDetail.mentions` 已带 snippet），不内嵌整篇预览** | 用户问「定位可以用一期检索还是先预览」；同名一期代码已升级，旧表述（`markConceptMentions`、预览态、别名合并前状态）需对齐 |
 | 2026-11-03 | v1.1 | 拍板并进入 G0；实现记录、验收状态与 6 条偏差见附录 E | 用户「认可，可以进行了」 |
 | 2026-11-03 | v1.2 | 画布再简化：只画节点 + 父子连线（分类虚节点/概念实节点）；信息进聚焦小浮窗，删右栏详情；删除分类深度预制（UI 不暴露、`MAX_CATEGORY_DEPTH` 降为 32 层安全上限，深度由 G1 AI 决定） | 用户「仅作简单的分类链接、父子链接即可……信息放小浮窗……深度不需要预制，交给 AI」 |
+| 2026-11-03 | v1.2 补丁 | 分类浮窗加「新建上级分类 / 移动到分类…」：可以把已有分类（如检索/生成/评估）收进新建大类；单父、排除自身与后代，移动整棵子树 | 用户「按理来说检索、生成、评估也可以分进大类中」 |
 
 ---
 
@@ -1402,13 +1405,13 @@ G0 验收（§9.1）状态：`G0-0` 文字测量 spike 通过（`rememberTextMea
 |---|---|---|
 | 布局重写 | `KnowledgeGraphLayout.kt` | 森林式 tidy tree（`GraphNodeBox`/`GraphLink`），根分类各一棵树、未分类虚拟根最后；折叠剪枝、父居中、确定性、warm 只复用 rootOrder；`LayoutOptions` 11 字段；23 条测试 |
 | 画布重写 | `KnowledgeGraphCanvas.kt` | 只画节点 + 父子贝塞尔连线；分类空心虚线、概念实心；点击动效（淡出/放大/相关连线高亮）；本地命中与相机 fit |
-| 浮窗 | `KnowledgeGraphPopover.kt`（新增） | 选中节点旁弹 300dp 浮窗：所属路径/定义编辑/来源前 3 条（可定位）/直接关联（kind+方向+来源）/移动到分类；分类则改名/新建子分类/删除 |
+| 浮窗 | `KnowledgeGraphPopover.kt`（新增） | 选中节点旁弹 300dp 浮窗：所属路径/定义编辑/来源前 3 条（可定位）/直接关联（kind+方向+来源）/移动到分类；分类则改名/新建子分类/新建上级分类/移动到分类/删除 |
 | 面板瘦身 | `KnowledgeGraphPanels.kt` | 删右栏详情、删筛选开关（默认折叠/深度/聚焦显示关联/显示共现/领域）；左栏只剩搜索/显示未分类/图例/统计/新建分类/AI（G1 禁用） |
 | 视图状态 | `KnowledgeGraphViewState.kt` | 字段收敛为 tab/camera/selectedKey/collapsed/showUnclassified/query/refreshToken/message/fitRequests；`toggleFolded/expandTo/fitReset` |
 | 接线 | `KnowledgeGraphScreen.kt` | 去掉右栏；Canvas + Popover；相机 fit 与 layout cache 写回；分隔对话框 |
 | 深度 | `KnowledgeGraphTaxonomy.kt` + 测试 | `MAX_CATEGORY_DEPTH` 5 → 32（安全护栏），测试改为按常量构造深层链 |
 
-验证：`:app:desktop` 共 **509 条测试、0 失败**（graph 相关 98：Store 11 + Taxonomy 36 + Build 25 + Layout 23 + Canvas 2 + Screen 1）；`./gradlew check` 绿；截图（真实 AppTheme 离屏渲染，已随文档归档）[明色视图](assets/knowledge-graph/impl-v1.2-view.png) · [暗色视图](assets/knowledge-graph/impl-v1.2-view-dark.png) · [画布特写](assets/knowledge-graph/impl-v1.2-canvas.png)：树/连线/聚焦淡出/浮窗（所属路径/定义/直接关联/来源）均正常；测试里同时写 `build/ui-shot-*.png`。
+验证：`:app:desktop` 共 **509 条测试、0 失败**（graph 相关 98：Store 11 + Taxonomy 36 + Build 25 + Layout 23 + Canvas 2 + Screen 1）；`./gradlew check` 绿；截图（真实 AppTheme 离屏渲染，已随文档归档）[明色视图](assets/knowledge-graph/impl-v1.2-view.png) · [暗色视图](assets/knowledge-graph/impl-v1.2-view-dark.png) · [分类浮窗](assets/knowledge-graph/impl-v1.2-category.png) · [画布特写](assets/knowledge-graph/impl-v1.2-canvas.png)：树/连线/聚焦淡出/浮窗（所属路径/定义/直接关联/来源/分类操作）均正常，种子已改成「大类 RAG 系统 → 检索 / 生成 / 评估」；测试里同时写 `build/ui-shot-*.png`。
 
 v1.2 明确没做（留 G1/G2）：AI 归类与深度建议（G1）、AI 关系建议（G1）、体系视图（G2）、计划接入（G2）。
 

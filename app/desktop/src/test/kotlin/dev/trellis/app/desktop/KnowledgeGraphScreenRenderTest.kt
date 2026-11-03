@@ -77,17 +77,20 @@ class KnowledgeGraphScreenRenderTest {
         val metaStore = ConceptMetaStore(home)
         seedNotes(store, metaStore)
 
-        // 用户策展：3 个根分类 + 2 个子分类 + 归属；留两个概念在未分类。
+        // 用户策展：1 个大类 + 3 个子分类 + 2 个孙分类 + 归属；留两个概念在未分类。
+        // 「大类 → 小类」可以任意嵌套（v1.2 不预制深度），这里演示「检索/生成/评估」收进「RAG 系统」。
         val now = runtime.clock.nowMs()
+        val ragSystem = "c_ffffffff"
         val retrieval = "c_aaaaaaaa"
         val generation = "c_bbbbbbbb"
         val evaluation = "c_cccccccc"
         val user = GraphUserData(
             updatedAt = now,
             categories = listOf(
-                GraphCategory(id = retrieval, name = "检索", order = 0),
-                GraphCategory(id = generation, name = "生成", order = 1),
-                GraphCategory(id = evaluation, name = "评估", order = 2),
+                GraphCategory(id = ragSystem, name = "RAG 系统", order = 0),
+                GraphCategory(id = retrieval, name = "检索", parentId = ragSystem, order = 0),
+                GraphCategory(id = generation, name = "生成", parentId = ragSystem, order = 1),
+                GraphCategory(id = evaluation, name = "评估", parentId = ragSystem, order = 2),
                 GraphCategory(id = "c_dddddddd", name = "召回", parentId = retrieval, order = 0),
                 GraphCategory(id = "c_eeeeeeee", name = "重排", parentId = retrieval, order = 1),
             ),
@@ -117,6 +120,12 @@ class KnowledgeGraphScreenRenderTest {
         val dark = render(runtime, dark = true)
         File("build/ui-shot-graph-view-dark.png").writeBytes(dark)
         assertTrue(dark.size > 5_000, "深色截图太小了，八成是空白画面：" + dark.size)
+
+        // 分类浮窗：确认「新建上级分类 / 移动到分类…」这些新入口真的在界面上。
+        KnowledgeGraphViewState.selectedKey = generation
+        val categoryShot = render(runtime, dark = false)
+        File("build/ui-shot-graph-category.png").writeBytes(categoryShot)
+        assertTrue(categoryShot.size > 5_000, "分类浮窗截图太小了：" + categoryShot.size)
 
         KnowledgeGraphViewState.clearFocus()
         runBlocking { runtime.shutdown() }
