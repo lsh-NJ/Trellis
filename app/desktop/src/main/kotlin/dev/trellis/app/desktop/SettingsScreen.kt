@@ -278,6 +278,16 @@ private fun DevTimeSection(runtime: AppRuntime) {
                 EditorChip("退出模拟", active = false, onClick = { runtime.applySimulatedToday(null) })
             }
         }
+        // 除了拨日期，还能直接触发一次晨/晚总结：验证文案、建议卡和系统通知，不用等真实时间。
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            EditorChip("触发晨间总结", active = false, onClick = { runtime.debugStewardRitual(morning = true) })
+            EditorChip("触发晚间总结", active = false, onClick = { runtime.debugStewardRitual(morning = false) })
+        }
+        SettingsStatusLine("触发后会跳到管家会话；不消耗当天的仪式机会，可以反复点。")
         note?.let { SettingsStatusLine(it, error = true) }
         if (!runtime.devClockAllowed) {
             SettingsStatusLine(

@@ -1,6 +1,7 @@
 package dev.trellis.app.desktop
 
 import dev.trellis.ai.LlmMessage
+import dev.trellis.ai.steward.StewardRitual
 import java.io.File
 import java.nio.file.Files
 import java.time.LocalDate
@@ -221,5 +222,59 @@ class StewardRuntimeTest {
         assertEquals(1, memory.size)
         assertEquals(StewardMemoryKind.UserReply, memory.single().kind)
         assertEquals("今天先不做，明天再说", memory.single().quote)
+    }
+
+    @Test
+    fun forceRunIgnoresTheClockAndDoesNotBurnCheckpoints() = runTest {
+        val store = StewardStore(home())
+        store.saveCheckpoints(StewardCheckpoints(lastMorningDay = "2026-11-04", lastEveningDay = "2026-11-04"))
+        val ports = FakePorts()
+        val runtime = runtime(store, ports)
+
+        // 真实检查：今天都发过了，什么都不说。
+        assertEquals(StewardRunResult.Nothing, runtime.check())
+
+        // 调试触发：不看时间、不看 checkpoint，可以反复发。
+        assertEquals(StewardRunResult.Morning, runtime.forceRun(StewardRitual.Morning))
+        assertEquals(StewardRunResult.Morning, runtime.forceRun(StewardRitual.Morning))
+        assertEquals(2, ports.appended.size)
+
+        // 调试不占用当天的仪式机会。
+        assertEquals("2026-11-04", store.checkpoints().lastMorningDay)
+        assertEquals("2026-11-04", store.checkpoints().lastEveningDay)
+    }
+
+    @Test
+    fun forceRunCanFireTheEveningRitualBeforeItsTime() = runTest {
+        val store = StewardStore(home())
+        val ports = FakePorts()
+        val runtime = runtime(store, ports)
+
+        // 现在是 09:00，真实晚间要到 22:30；调试可以立刻发。
+        assertEquals(StewardRunResult.Evening, runtime.forceRun(StewardRitual.Evening))
+        assertTrue(ports.appended.single().startsWith("今天结束了。"), ports.appended.single())
+        assertEquals(ports.appended.single(), store.digest("2026-11-04")?.trim())
+        assertNull(store.checkpoints().lastEveningDay)
+    }
+
+    @Test
+    fun forceRunReturnsBusyWithoutTouchingTheStore() = runTest {
+        val store = StewardStore(home())
+        val ports = FakePorts(busy = true)
+        val runtime = runtime(store, ports)
+
+        assertEquals(StewardRunResult.Busy, runtime.forceRun(StewardRitual.Morning))
+        assertTrue(ports.appended.isEmpty())
+        assertNull(store.checkpoints().lastMorningDay)
+        assertTrue(store.recentMemory("2026-11-04", days = 7).isEmpty())
+    }
+
+    @Test
+    fun forceRunNotifiesEvenWhileTheAppIsFocused() = runTest {
+        val ports = FakePorts(focused = true)
+        val runtime = runtime(StewardStore(home()), ports)
+
+        assertEquals(StewardRunResult.Morning, runtime.forceRun(StewardRitual.Morning))
+        assertEquals(1, ports.notifications.size)
     }
 }

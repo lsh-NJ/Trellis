@@ -100,7 +100,7 @@
 | 位置 | 职责 |
 |---|---|
 | `app/desktop/.../StewardStore.kt` | 设置/checkpoints/记忆/摘要落盘，旧 plan-check 迁移 |
-| `app/desktop/.../StewardRuntime.kt` | 仪式编排：check() 幂等与合并、模板/润色、记忆写入、通知 |
+| `app/desktop/.../StewardRuntime.kt` | 仪式编排：check() 幂等与合并、forceRun() 调试触发、模板/润色、记忆写入、通知 |
 | `app/desktop/.../StewardProposal.kt` | 建议模型、变更类型、模板生成规则 |
 | `app/desktop/.../Notifier.kt` | 跨平台系统通知（失败静默） |
 | `ai/.../steward/StewardPrompt.kt` | 人格提示词、事实块、晨/晚/合并模板 |
@@ -120,3 +120,15 @@
 - 通知点击不能直达会话（系统通知 API 限制）；在应用里打开管家会话即已读。
 - 语义检索未做（见 §4 的触发条件）。
 - 用户回复目前只作为记忆文本，不驱动「协商」状态机：协商靠用户直接在对话里说，管家按全量工具处理。
+
+## 10. 调试（开发者）
+
+`TRELLIS_DEV=1` 时，设置页「时间调试（开发者）」卡片里除了拨模拟日期，还有两个按钮：
+
+- **触发晨间总结 / 触发晚间总结**：立刻按该仪式发一条，不看时间、不看今天发过没有，
+  也不写 `checkpoints.json`（同一天可以反复点）。消息、记忆、摘要、建议卡都走真实路径，
+  所以用它验收的是真实链路。
+- 强制触发时**即使应用在前台也会尝试弹系统通知**（正常路径前台不弹），方便验证 `Notifier.kt`；
+  通知开关仍然受设置页「桌面通知」控制。
+- 触发后自动跳到管家会话；日志写在 `<home>/app.log` 的「管家调试：…」行。
+  入口：`AppRuntime.debugStewardRitual(morning: Boolean)` → `StewardRuntime.forceRun(ritual)`。

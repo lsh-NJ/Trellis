@@ -24,6 +24,7 @@ import dev.trellis.ai.tool.DeepSeekMarkup
 import dev.trellis.ai.manager.ManagerPrompt
 import dev.trellis.ai.manager.ManagerRouter
 import dev.trellis.ai.steward.StewardPrompt
+import dev.trellis.ai.steward.StewardRitual
 import dev.trellis.ai.tool.ToolAgent
 import dev.trellis.domain.Plan
 import dev.trellis.domain.PlanService
@@ -882,6 +883,29 @@ class AppRuntime private constructor() {
                 if (result != StewardRunResult.Nothing) appendAppLog("管家：$result")
             }
             .onFailure { appendAppLog("管家仪式失败：$it") }
+    }
+
+    /**
+     * 开发者调试：立刻触发一次晨间 / 晚间仪式，不看时间、不管今天发过没有。
+     *
+     * 只在 `TRELLIS_DEV=1` 的设置页「时间调试」卡片里出现。强制触发不写 checkpoints
+     * （同一天可以反复点），但消息、记忆、摘要、建议卡和系统通知都走真实链路；
+     * 发完自动切到管家会话，省得再去侧栏找。
+     */
+    internal fun debugStewardRitual(morning: Boolean) {
+        if (!::stewardRuntime.isInitialized) return
+        chatScope.launch {
+            val ritual = if (morning) StewardRitual.Morning else StewardRitual.Evening
+            val result = runCatching { stewardRuntime.forceRun(ritual) }
+                .onFailure { appendAppLog("管家调试失败：$it") }
+                .getOrNull() ?: StewardRunResult.Nothing
+            appendAppLog("管家调试：$ritual → $result")
+            if (result != StewardRunResult.Nothing && result != StewardRunResult.Busy) {
+                ensureStewardSession()
+                openChat(StewardRuntime.STEWARD_SESSION_ID)
+                currentTab = TAB_CHAT
+            }
+        }
     }
 
     /**
