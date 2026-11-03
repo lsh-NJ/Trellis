@@ -287,6 +287,16 @@ class KnowledgeGraphStoreTest {
         )
         assertEquals(conceptSetHash(a), conceptSetHash(renamedCategory))
         assertEquals(layoutFingerprint(a), layoutFingerprint(renamedCategory))
+
+        // 分类树结构变化不应让概念集哈希变（否则确认一条归类建议会作废其余全部建议）。
+        val extraCategory = GraphNode(
+            key = "c_two",
+            kind = GraphNodeKind.CATEGORY,
+            name = "生成",
+            sortOrder = 1,
+        )
+        val treeChanged = a.copy(nodes = a.nodes + ("c_two" to extraCategory))
+        assertEquals(conceptSetHash(a), conceptSetHash(treeChanged))
     }
 
     @Test

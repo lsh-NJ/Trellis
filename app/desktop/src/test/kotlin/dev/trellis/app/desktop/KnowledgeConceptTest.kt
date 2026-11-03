@@ -337,6 +337,25 @@ class KnowledgeConceptTest {
         assertTrue(messages[1].content.contains("JSON"))
     }
 
+    @Test
+    fun extractionPromptCarriesHeadingsForGraphBuilding() {
+        // 笔记页「保存并整理」把标题结构一起送进模型：AI 用大标题给父分类拟名（可概括，不要求一字不差）。
+        val messages = buildKnowledgeExtractionMessages(
+            title = "RAG 综述",
+            body = "# RAG 综述\n\n## 关键环节\n\n[[向量检索]] 负责召回。",
+            existing = emptyList(),
+            slots = emptyList(),
+            headings = listOf("RAG 综述", "关键环节"),
+        )
+        val user = messages[1].content
+        assertTrue(user.contains("标题结构"))
+        assertTrue(user.contains("- 关键环节"))
+        assertTrue(user.contains("大标题当父分类名"))
+        // 不给标题列表时不出现「本笔记的标题结构」这一块（兼容旧调用）。
+        val legacy = buildConceptExtractionMessages("标题", "正文内容", emptyList())
+        assertTrue(!legacy[1].content.contains("本笔记的标题结构"))
+    }
+
     // ---- 概念准入：索引合并空白变体、跳过短词 ----
 
     @Test

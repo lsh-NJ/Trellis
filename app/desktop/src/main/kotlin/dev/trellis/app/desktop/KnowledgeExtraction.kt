@@ -53,6 +53,7 @@ internal fun buildKnowledgeExtractionMessages(
     body: String,
     existing: List<String>,
     slots: List<String>,
+    headings: List<String> = emptyList(),
 ): List<LlmMessage> {
     val system = "你是个人知识库的整理助手。任务只有两件：①从笔记里挑出**作者确实讲过**、" +
         "值得长期回查的概念，每个给出规范名、正文里的原词（mention）、可选别名和一句话定义；" +
@@ -68,6 +69,11 @@ internal fun buildKnowledgeExtractionMessages(
     val user = buildString {
         append("笔记标题：").append(title.ifBlank { "（无标题）" }).append("\n\n")
         append("笔记正文：\n").append(body.take(MAX_EXTRACT_BODY_CHARS)).append("\n\n")
+        if (headings.isNotEmpty()) {
+            append("本笔记的标题结构（按出现顺序，仅供建图参考）：\n")
+            headings.forEach { append("- ").append(it).append('\n') }
+            append('\n')
+        }
         if (existing.isNotEmpty()) {
             append("已经标记过的概念（不要重复）：").append(existing.joinToString("、")).append("\n\n")
         }
@@ -97,7 +103,9 @@ internal fun buildKnowledgeExtractionMessages(
             .append(MAX_AI_FILL_CHARS).append(" 字）；没有空位就输出空数组。\n")
         append("8. 顺手给两类「知识网络建议」（拿不准就输出空数组，不要硬凑）：\n")
         append("   categories：给本篇概念建议一个所属分类路径。路径最多 2 层、每层不超过 12 个字，")
-            .append("类似「检索/召回」；优先用常见的大类名，没有合适的分类就别给。最多 12 条。\n")
+            .append("类似「检索/召回」；优先用常见的大类名，没有合适的分类就别给。最多 12 条。")
+            .append("如果笔记有标题结构，优先用大标题当父分类名：可以概括成不超过 12 字的短名，")
+            .append("不必与标题一字不差；同一大标题下的概念尽量归到同一个父分类（这是「按笔记逻辑建图」）。\n")
         append("   relations：本篇概念之间的关系。from/to 必须是上面 concepts 或已标记概念里的名字；")
             .append("kind 只能是 PREREQUISITE（from 是 to 的前置）、APPLIES（from 用于 to）、RELATED（相关）；")
             .append("PREREQUISITE/APPLIES 必须给 evidence，且 evidence 必须是正文里逐字出现的一句原话，")

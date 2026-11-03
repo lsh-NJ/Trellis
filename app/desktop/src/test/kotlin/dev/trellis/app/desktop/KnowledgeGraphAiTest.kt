@@ -283,6 +283,52 @@ class KnowledgeGraphAiTest {
     }
 
     @Test
+    fun globalSuggestionsSurviveConfirmingOneCategory() {
+        // 回归：确认一条归类建议会新建分类；分类树变化不能让 conceptSetHash 变，
+        // 否则其余全图建议会在下一次重组时全部消失（用户 2026-11-03 报的问题）。
+        val before = graphOf("向量检索", "嵌入", "重排")
+        val cache = GraphAiCache(
+            globalCategories = AiGlobalCategories(
+                conceptSetHash = knowledgeConceptSetHash(before),
+                categories = listOf(
+                    AiGlobalCategorySuggestion(
+                        concept = conceptIdentityKey("向量检索"),
+                        categoryPath = listOf("检索"),
+                    ),
+                    AiGlobalCategorySuggestion(
+                        concept = conceptIdentityKey("嵌入"),
+                        categoryPath = listOf("检索"),
+                    ),
+                ),
+            ),
+        )
+        // 确认「向量检索」后：它有了归属，同时图里多出分类「检索」。
+        val after = before.copy(
+            nodes = before.nodes + (
+                "c_retrieval" to GraphNode(
+                    key = "c_retrieval",
+                    kind = GraphNodeKind.CATEGORY,
+                    name = "检索",
+                )
+                ),
+        )
+        assertEquals(knowledgeConceptSetHash(before), knowledgeConceptSetHash(after))
+
+        val user = GraphUserData.Empty.copy(
+            assignments = mapOf(conceptIdentityKey("向量检索") to "c_retrieval"),
+        )
+        val pending = collectPendingSuggestions(
+            cache = cache,
+            user = user,
+            conceptNames = conceptNames("向量检索", "嵌入", "重排"),
+            noteBodyHashes = emptyMap(),
+            globalCategoriesValid = cache.globalCategories.conceptSetHash == knowledgeConceptSetHash(after),
+        )
+        assertEquals(1, pending.categories.size)
+        assertEquals("嵌入", pending.categories.single().conceptName)
+    }
+
+    @Test
     fun hidesAssignedAndTombstonedSuggestions() {
         val path = listOf("检索")
         val tombstone = RemovedSuggestion(

@@ -519,6 +519,9 @@ internal const val GRAPH_HASH_PREFIX: String = "fnv1a64:"
  * 分类改名、排序变化不算（它们不影响建议语义）。
  */
 internal fun conceptSetHash(graph: KnowledgeGraph): Long {
+    // 只取概念集合：这个哈希用来判断「全图归类建议是否还适用于当前概念集」。
+    // 分类树结构 / 归属变化不影响——否则用户确认一条归类建议（会新建分类）就会让
+    // 其余所有建议瞬间失效（2026-11-03 用户报「确认一条后其他建议全消失」）。
     val builder = StringBuilder()
     graph.nodes.values
         .asSequence()
@@ -526,11 +529,6 @@ internal fun conceptSetHash(graph: KnowledgeGraph): Long {
         .map { it.key }
         .sorted()
         .forEach { builder.append("c:").append(it).append('\n') }
-    graph.nodes.values
-        .asSequence()
-        .filter { it.kind == GraphNodeKind.CATEGORY }
-        .sortedBy { it.key }
-        .forEach { builder.append("g:").append(it.key).append('|').append(it.parentKey ?: "").append('\n') }
     return fnv1a64(builder.toString())
 }
 
