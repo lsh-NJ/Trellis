@@ -306,8 +306,8 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                 }
                 if (raw != null) raws += raw
             }
-            extracting = false
             if (raws.isEmpty()) {
+                extracting = false
                 message = if (slots.isEmpty()) {
                     "AI 整理失败，不影响笔记保存；可以稍后重试或在笔记里手动添加概念"
                 } else {
@@ -315,10 +315,30 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                 }
                 return@launch
             }
+            val merged = mergeExtractionResults(raws.map(::parseExtractionResult))
+            // 分段整理时，各段候选再放在一起统一分析一遍：合并同义项、统一别名与定义。
+            // 只整理已有候选、不新增，模型漏掉的候选原样保留（见 applyConsolidatedCandidates）。
+            val candidates = if (chunks.size > 1 && merged.candidates.size > 1) {
+                val consolidatedRaw = try {
+                    client.complete(buildConceptConsolidationMessages(note.title, merged.candidates))
+                } catch (cancelled: CancellationException) {
+                    extracting = false
+                    throw cancelled
+                } catch (failed: Exception) {
+                    null
+                }
+                applyConsolidatedCandidates(
+                    merged.candidates,
+                    consolidatedRaw?.let(::parseConceptCandidates).orEmpty(),
+                )
+            } else {
+                merged.candidates
+            }
+            extracting = false
+            val result = merged.copy(candidates = candidates)
             val current = store.read(id) ?: return@launch
             // 调模型期间人又改了：这轮结果作废，等下次焦点离开再整理（不覆盖新内容）。
             if (bodyForAiComparison(current.body) != bodyForAiComparison(note.body)) return@launch
-            val result = mergeExtractionResults(raws.map(::parseExtractionResult))
             val filled = applyAiFills(current.body, result.fills.associate { it.label to it.text })
             // 抽到的概念在正文第一次出现处包成 [[概念]]：标记才是「本文概念」的唯一来源，
             // frontmatter 的 concepts 只是按标注重算出来的缓存（见 synchronizeConceptMembership）。

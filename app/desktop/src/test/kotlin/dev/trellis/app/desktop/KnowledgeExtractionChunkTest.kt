@@ -41,6 +41,57 @@ class KnowledgeExtractionChunkTest {
     }
 
     @Test
+    fun extractionBodyChunksSplitsAtFirstLevelHeadings() {
+        val body = buildString {
+            repeat(6) { index ->
+                append("# 第").append(index).append("节\n")
+                append("内容".repeat(600)).append("\n")
+            }
+        }
+        assertTrue(body.length > MAX_EXTRACT_BODY_CHARS)
+        val chunks = extractionBodyChunks(body)
+        assertTrue(chunks.size > 1)
+        assertTrue(chunks.all { it.length <= MAX_EXTRACT_BODY_CHARS })
+        assertEquals(body, chunks.joinToString(""))
+        // 每段都从一级标题开始：段过大时按标题切开，而不是从中间断。
+        chunks.forEach { assertTrue(it.startsWith("# "), "chunk should start at a heading: " + it.take(12)) }
+    }
+
+    @Test
+    fun extractionBodyChunksFallsBackToSecondLevelForBigSections() {
+        val body = buildString {
+            append("# 大章节\n")
+            repeat(4) { index ->
+                append("## 小节").append(index).append("\n")
+                append("内容".repeat(900)).append("\n")
+            }
+        }
+        assertTrue(body.length > MAX_EXTRACT_BODY_CHARS)
+        val chunks = extractionBodyChunks(body)
+        assertTrue(chunks.size > 1)
+        assertTrue(chunks.all { it.length <= MAX_EXTRACT_BODY_CHARS })
+        assertEquals(body, chunks.joinToString(""))
+        // 第一段可以从一级标题开始；后面的段都从二级标题开始（降级成功）。
+        chunks.drop(1).forEach { assertTrue(it.startsWith("## "), "chunk should start at an h2: " + it.take(12)) }
+    }
+
+    @Test
+    fun extractionBodyChunksSplitsAtLinesInsideAGiantSection() {
+        val body = buildString {
+            append("# 唯一的大章节\n")
+            repeat(400) { index ->
+                append("第").append(index).append("行：").append("内容".repeat(30)).append("\n")
+            }
+        }
+        assertTrue(body.length > MAX_EXTRACT_BODY_CHARS)
+        val chunks = extractionBodyChunks(body)
+        assertTrue(chunks.size > 1)
+        assertTrue(chunks.all { it.length <= MAX_EXTRACT_BODY_CHARS })
+        assertEquals(body, chunks.joinToString(""))
+        assertTrue(chunks.first().startsWith("# 唯一的大章节"))
+    }
+
+    @Test
     fun extractionBodyChunksCapsTheNumberOfCalls() {
         val body = "行\n".repeat(30000)
         val chunks = extractionBodyChunks(body)
@@ -72,6 +123,62 @@ class KnowledgeExtractionChunkTest {
         )
         val user = messages.first { it.role == LlmRole.User }.content
         assertTrue(!user.contains("段，其余段落这里省略"))
+    }
+
+    @Test
+    fun consolidationPromptAsksForOneMergedListWithoutInventing() {
+        val messages = buildConceptConsolidationMessages(
+            title = "长笔记",
+            candidates = listOf(
+                ConceptCandidate("RAG", "检索增强生成", mention = "检索增强生成"),
+                ConceptCandidate("GraphRAG", "图版本", aliases = listOf("图检索")),
+            ),
+        )
+        val user = messages.first { it.role == LlmRole.User }.content
+        assertTrue(user.contains("RAG"))
+        assertTrue(user.contains("GraphRAG"))
+        assertTrue(user.contains("正文原词"))
+        assertTrue(messages.first { it.role == LlmRole.System }.content.contains("不要新增"))
+    }
+
+    @Test
+    fun consolidationMergesAliasesAndKeepsOriginalMentions() {
+        val applied = applyConsolidatedCandidates(
+            original = listOf(
+                ConceptCandidate("RAG", "短定义", mention = "检索增强生成"),
+                ConceptCandidate("检索生成", "另一段里的叫法", mention = "检索生成"),
+                ConceptCandidate("BM25", "关键词检索", mention = "BM25"),
+            ),
+            consolidated = listOf(
+                ConceptCandidate(
+                    "RAG",
+                    "先检索再让模型回答",
+                    aliases = listOf("检索生成", "检索增强生成"),
+                ),
+            ),
+        )
+        assertEquals(2, applied.size)
+        val rag = applied.first { conceptIdentityKey(it.name) == conceptIdentityKey("RAG") }
+        assertEquals("先检索再让模型回答", rag.definition)
+        // mention 必须用原始候选的正文原词，不能被模型改写。
+        assertEquals("检索增强生成", rag.mention)
+        assertTrue(rag.aliases.any { conceptIdentityKey(it) == conceptIdentityKey("检索生成") })
+        // 模型没提 BM25：原样保留，不丢。
+        assertTrue(applied.any { conceptIdentityKey(it.name) == conceptIdentityKey("BM25") })
+    }
+
+    @Test
+    fun consolidationIgnoresConceptsThatWereNeverExtracted() {
+        val applied = applyConsolidatedCandidates(
+            original = listOf(ConceptCandidate("RAG", "检索增强生成", mention = "检索增强生成")),
+            consolidated = listOf(
+                ConceptCandidate("RAG", "更完整定义", mention = ""),
+                ConceptCandidate("LLM 推理", "编造出来的新概念", mention = ""),
+            ),
+        )
+        assertEquals(1, applied.size)
+        assertEquals("更完整定义", applied.first().definition)
+        assertTrue(applied.none { conceptIdentityKey(it.name) == conceptIdentityKey("LLM 推理") })
     }
 
     @Test
