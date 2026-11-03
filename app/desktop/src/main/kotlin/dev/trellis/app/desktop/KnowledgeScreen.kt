@@ -662,10 +662,13 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                 Row(Modifier.weight(1f).fillMaxWidth()) {
                     if (tab == KnowledgeTab.Graph) {
                         // 网络视图自带左栏/画布/右栏，整块替换「笔记 + 概念」那套布局。
+                        // 顶部的「笔记/概念/网络」三 tab 由 KnowledgeGraphView 自己渲染，
+                        // 保证进来以后仍有入口切回去。
                         KnowledgeGraphView(
                             runtime = runtime,
                             notesVersion = notes.hashCode(),
                             modifier = Modifier.weight(1f).fillMaxHeight(),
+                            onSwitchTab = { switchTab(it) },
                             onOpenNote = { noteId, start, end ->
                                 persistNow()
                                 if (selectedId != noteId) {

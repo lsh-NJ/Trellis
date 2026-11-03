@@ -1,10 +1,19 @@
 package dev.trellis.app.desktop
 
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.ImageComposeScene
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerButtons
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.unit.Density
+import dev.trellis.ui.ExtraColors
+import dev.trellis.ui.LocalExtraColors
+import kotlin.test.assertEquals
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
@@ -171,6 +180,45 @@ class KnowledgeGraphScreenRenderTest {
         KnowledgeGraphViewState.suggestionsOpen = false
 
         KnowledgeGraphViewState.clearFocus()
+        runBlocking { runtime.shutdown() }
+    }
+
+    /**
+     * 回归：网络视图是全屏替换，顶部必须保留「笔记 / 概念」tab。
+     * 否则用户进了图就没有入口切回去（2026-11-03 用户报「进图退不出去」）。
+     */
+    @OptIn(ExperimentalComposeUiApi::class)
+    @Test
+    fun graphViewKeepsTabsToGoBack() {
+        val home = Files.createTempDirectory("trellis-graph-tabs").toFile().apply { deleteOnExit() }
+        val runtime = runBlocking { AppRuntime.create(home) }
+        var switched: KnowledgeTab? = null
+        val scene = ImageComposeScene(width = 1400, height = 900, density = Density(2f)) {
+            CompositionLocalProvider(LocalExtraColors provides ExtraColors()) {
+                MaterialTheme {
+                    KnowledgeGraphView(
+                        runtime = runtime,
+                        notesVersion = 1,
+                        modifier = Modifier.fillMaxSize(),
+                        onSwitchTab = { switched = it },
+                        onOpenNote = { _, _, _ -> },
+                    )
+                }
+            }
+        }
+        scene.render()
+        val pressed = PointerButtons(isPrimaryPressed = true)
+        val tabCenter = Offset(88f, 40f) // density=2：padding 20dp/6dp + 第一个 tab 约 96x52px
+        scene.sendPointerEvent(PointerEventType.Press, tabCenter, type = PointerType.Mouse, buttons = pressed)
+        scene.render()
+        scene.sendPointerEvent(PointerEventType.Release, tabCenter, type = PointerType.Mouse)
+        scene.render()
+        scene.close()
+        assertEquals(
+            KnowledgeTab.Notes,
+            switched,
+            "网络视图顶部应有「笔记」tab 且点击能切回；否则进入图以后就退不出去了",
+        )
         runBlocking { runtime.shutdown() }
     }
 }

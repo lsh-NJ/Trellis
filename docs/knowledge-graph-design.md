@@ -486,6 +486,7 @@ G0 落地后按反馈简化：画布上只剩节点和父子连线，一棵根�
 
 ### 5.1 页面结构
 
+> v1.3 补丁：网络视图是全屏替换，顶部必须常驻「笔记 / 概念 / 网络」三个 tab（`KnowledgeGraphView` 自己渲染），否则用户进了图没有入口切回笔记——对应 2026-11-03 用户反馈「进入图以后就退不出去」。
 > **v1.2 已取代**：右栏详情删除，改为聚焦小浮窗（§5.11）；左栏只剩搜索 / 显示未分类 / 图例 / 统计 / 新建分类。本节与 5.2–5.8 保留作 v1.1 方案记录。
 
 知识页左栏顶部原来只有「笔记 / 概念」两个 tab（`showConcepts: Boolean`），现在加第三个「网络」，变成 `enum class KnowledgeTab { Notes, Concepts, Graph }`。**网络视图只是主区的一种视图**，不新增导航 tab、不动 `AppScreen.kt` 的六项导航、不新增挂载点。
@@ -1496,6 +1497,14 @@ v1.3 没做：AI 归类/命名的真实调用（G1）、拖动时自动滚动画
 验证：`:app:desktop` 共 **533 条测试、0 失败**（graph 相关 122：Store 11 + Taxonomy 36 + Build 25 + Layout 23 + Ai 23 + Canvas 3 + Screen 1）；`./gradlew check` 绿。新增 23 条 AI 测试覆盖：解析/校验/墓碑/过期正文/缓存清理/分批失败跳过/假 LLM 端到端（2 批 2 次调用、确认前不写 user）。截图（真实 AppTheme 离屏渲染）：[网络视图（含未分类）](assets/knowledge-graph/impl-v1.3-view.png) · [分类浮窗](assets/knowledge-graph/impl-v1.3-category.png) · [AI 建议面板](assets/knowledge-graph/impl-v1.3-g1-suggestions.png)。
 
 G1 明确没做（留后续）：真实模型 key 的本机手测；「已忽略建议」恢复列表 UI（墓碑已可恢复，只是没做入口）；自动应用开关（设计上前提是默认关，本期不做）；关系证据的 hover 高亮。
+
+### E.5 v1.3 补丁 3：进入网络视图后切不回去（2026-11-03 晚）
+
+| 问题 | 根因 | 修复 |
+|---|---|---|
+| 进入「网络」tab 后无法切回「笔记 / 概念」 | 三 tab 行渲染在 `KnowledgeScreen` 的 **非网络分支**（左栏 `ListSidebar` 内）；网络视图整块替换该分支，tab 行随之消失 | 三个 `KnowledgePaneTab` 移到 `KnowledgeGraphView` 顶部常驻（新增 `onSwitchTab` 参数，由 `KnowledgeScreen` 传 `::switchTab`）；进入图后仍能一键回笔记/概念 |
+
+回归防护：`KnowledgeGraphScreenRenderTest.graphViewKeepsTabsToGoBack` 离屏渲染网络视图 → 模拟鼠标点击顶部「笔记」tab → 断言 `onSwitchTab` 收到 `KnowledgeTab.Notes`。验证：`:app:desktop` 共 **534 条测试、0 失败**（graph 123，Screen 2）；`./gradlew check` 绿。
 
 ---
 
