@@ -155,7 +155,7 @@ val summary = plan.summary(now, dayEnd)
 | Windows PowerShell（纯 ps1） | `.\run-app.ps1` | 同上，PowerShell 原生写法；`.\run-app.ps1 --check` 只编译 |
 | Windows cmd | `run-app.cmd` | 同上 |
 | Git Bash / WSL bash | `./run-app.sh` | bash 写法；`./run-app.sh --check` 只编译 |
-| macOS（zsh / bash） | `./build-mac.sh --run` | 一键编译并启动；`./build-mac.sh` 不带参数 = 出 .app + .dmg |
+| macOS（zsh / bash） | `./build-mac.sh --run` | 一键编译并启动；`--launch` = 构建 .app 后直接启动；不带参数 = 出 .app + .dmg |
 | 任意 shell | `.\gradlew.bat :app:desktop:run` | 已经配好 `JAVA_HOME` 时最直接 |
 
 **`.sh` 不要交给 Windows 直接执行。** 在 PowerShell 里敲 `run-app.sh`（或双击它），
@@ -177,9 +177,11 @@ Windows / WSL 的启动脚本干的事一样：找到 JDK（`JAVA_HOME` → `%US
 `SKIKO_RENDER_API` 设成 `SOFTWARE_FAST`，并把 `DISPLAY`/`WAYLAND_DISPLAY`/`XDG_RUNTIME_DIR`
 补齐。
 
-macOS 的两个入口：`./build-mac.sh --run` 编译并启动；`./build-mac.sh`（默认）出
-`app/desktop/build/compose/binaries/main/app/Trellis.app` 和同级的
-`dmg/Trellis-1.0.0.dmg`；`build-mac.command` 是 Finder 双击版（默认打包）。
+macOS 的三个入口：`./build-mac.sh --run` 编译并启动（gradlew run）；`./build-mac.sh --launch`
+构建 `.app` 后直接启动它（验证打包产物，构建完也会打印 `启动 : open "<...>.app"` 一行）；
+`./build-mac.sh`（默认）出 `app/desktop/build/compose/binaries/main/app/Trellis.app` 和同级的
+`dmg/Trellis-1.0.0.dmg`，并打印 `安装 : open "<...>.dmg"` / `启动 : open "<...>.app"`；
+`build-mac.command` 是 Finder 双击版（默认打包）。
 脚本自动找 JDK 17（`JAVA_HOME` → 仓库内 `.toolchain/jdk-17*` → Homebrew →
 `/usr/libexec/java_home`），找不到会提示 `brew install --cask temurin@17`。
 （`run-app.sh` 在 macOS 上会报「连不上显示服务」，那是 WSLg 专用脚本。）
