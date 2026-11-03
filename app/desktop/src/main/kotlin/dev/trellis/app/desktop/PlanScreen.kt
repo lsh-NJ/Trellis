@@ -92,7 +92,10 @@ internal data class PlanWeekCard(
 @Composable
 internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     // 进页面才开库：不进计划页的人不该为 SQLite 付启动时间。
-    LaunchedEffect(Unit) { runtime.refreshPlan() }
+    LaunchedEffect(Unit) {
+        runtime.refreshPlan()
+        runtime.refreshAutoCompletions()
+    }
     val dragController = remember { PlanDragController() }
     // 抽屉打开时把内容整块让开：日期格（尤其周五～周日）不能被抽屉盖住，否则拖不过去。
     val panelWidth by animateDpAsState(
@@ -124,6 +127,9 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                         item { PendingDetail(runtime) }
                     } else {
                         item { WeekDetail(runtime, dragController) }
+                        if (runtime.planAutoCompletions.isNotEmpty() || runtime.planAutoCompletionBlockedCount > 0) {
+                            item { PlanAutoCompletionCard(runtime) }
+                        }
                     }
                 }
             }
@@ -262,6 +268,123 @@ private fun PlanRhythmCard(runtime: AppRuntime) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+        }
+    }
+}
+
+/**
+ * 「AI 自动完成」：笔记整理后按知识点判断、自动勾掉的计划节点。
+ *
+ * 放在「当天安排」下面：这些勾是机器改的，得让人看得见、能撤销；
+ * 撤销过的节点会进屏蔽名单，以后不再被自动完成（卡片右上角可一次性解除）。
+ */
+@Composable
+private fun PlanAutoCompletionCard(runtime: AppRuntime) {
+    val entries = runtime.planAutoCompletions
+    if (entries.isEmpty() && runtime.planAutoCompletionBlockedCount == 0) return
+    var expanded by remember { mutableStateOf(false) }
+    PlanCard {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "AI 自动完成",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    " " + entries.size,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.weight(1f))
+                if (runtime.planAutoCompletionBlockedCount > 0) {
+                    TextButton(onClick = { runtime.clearAutoCompletionBlocks() }) {
+                        Text(
+                            "解除屏蔽（" + runtime.planAutoCompletionBlockedCount + "）",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                }
+            }
+            if (entries.isEmpty()) {
+                Text(
+                    "笔记里讲到本周节点时，AI 整理完会自动勾上并记在这里。现在没有记录。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                val shown = if (expanded) entries else entries.take(5)
+                shown.forEach { entry -> AutoCompletionRow(runtime, entry) }
+                if (entries.size > 5) {
+                    TextButton(onClick = { expanded = !expanded }) {
+                        Text(
+                            if (expanded) "收起" else "展开全部 " + entries.size + " 条",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AutoCompletionRow(runtime: AppRuntime, entry: AutoCompletionEntry) {
+    var showEvidence by remember(entry.id) { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f))
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("✔", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(6.dp))
+            Text(entry.title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+            TextButton(onClick = { runtime.undoAutoCompletion(entry.id) }) {
+                Text("撤销", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        entry.day.ifBlank { "未标注日期" },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "来自《" + entry.noteTitle.ifBlank { "未命名笔记" } + "》",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable { runtime.openAutoCompletionNote(entry.id) },
+                    )
+                }
+                if (entry.chapter.isNotBlank()) {
+                    Text(
+                        entry.chapter,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (entry.evidence.isNotBlank()) {
+                Text(
+                    if (showEvidence) "收起证据" else "看证据",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.clickable { showEvidence = !showEvidence },
+                )
+            }
+        }
+        if (showEvidence && entry.evidence.isNotBlank()) {
+            Text(
+                "“" + entry.evidence + "”",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

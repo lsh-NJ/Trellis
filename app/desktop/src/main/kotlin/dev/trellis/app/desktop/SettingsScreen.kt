@@ -59,6 +59,7 @@ fun SettingsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
         item { AppearanceSection(runtime) }
 
         item { DailyBudgetSection(runtime) }
+        item { KnowledgeLinkSection(runtime) }
 
         item { StewardSection(runtime) }
 
@@ -217,6 +218,42 @@ private fun DailyBudgetSection(runtime: AppRuntime) {
             StepChip("+") { runtime.bumpDailyMinutes(STEP_MINUTES) }
         }
         SettingsStatusLine("可调范围 " + MIN_DAILY_MINUTES + "–" + MAX_DAILY_MINUTES + " 分钟")
+    }
+}
+
+/**
+ * 「笔记联动」：笔记整理完自动勾掉计划节点时的桌面通知开关。
+ *
+ * 默认关：自动完成本身已经写在计划页的「AI 自动完成」列表里，通知只是可选的提醒。
+ */
+@Composable
+private fun KnowledgeLinkSection(runtime: AppRuntime) {
+    val prefs = runtime.uiPrefs
+    var message by remember { mutableStateOf("") }
+    SettingsSection(
+        title = "笔记联动",
+        status = if (prefs.notifyAutoCompletion) "通知已开" else "通知已关",
+    ) {
+        SettingsChoiceRow(
+            label = "弹桌面通知",
+            selected = prefs.notifyAutoCompletion,
+            onClick = {
+                val result = runtime.updateUiPrefs(runtime.uiPrefs.copy(notifyAutoCompletion = true))
+                message = if (result.startsWith("界面偏好已更新")) "自动完成时会弹桌面通知" else result
+            },
+        )
+        SettingsChoiceRow(
+            label = "不弹（默认）",
+            selected = !prefs.notifyAutoCompletion,
+            onClick = {
+                val result = runtime.updateUiPrefs(runtime.uiPrefs.copy(notifyAutoCompletion = false))
+                message = if (result.startsWith("界面偏好已更新")) "自动完成不再弹通知" else result
+            },
+        )
+        SettingsStatusLine("笔记整理完若自动完成了计划节点，这里决定要不要弹系统通知；记录始终会出现在计划页「AI 自动完成」里")
+        if (message.isNotBlank()) {
+            SettingsStatusLine(message)
+        }
     }
 }
 

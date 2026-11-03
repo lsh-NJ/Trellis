@@ -94,6 +94,16 @@ internal data class NoteSearchHit(
     val snippet: String? = null,
 )
 
+/**
+ * 别的页请求「打开某篇笔记并选中一段」（计划页「AI 自动完成」点证据用）。
+ * [start]/[end] 传 -1 表示只打开笔记、不选中。
+ */
+internal data class KnowledgeRevealTarget(
+    val noteId: String,
+    val start: Int = -1,
+    val end: Int = -1,
+)
+
 /** 搜索命中：概念和笔记分两组，界面上也分两组显示。 */
 internal data class SearchHits(
     val concepts: List<ConceptSummary>,

@@ -628,6 +628,24 @@ class AppRuntime private constructor() {
     /** 知识库上次打开的笔记 id；切页回来接着看同一篇（只记在内存，不进配置）。 */
     var knowledgeNoteId by mutableStateOf<String?>(null)
 
+    /** 别的页请求「打开某篇笔记并选中一段」；知识库页消费后清空。 */
+    internal var pendingKnowledgeReveal by mutableStateOf<KnowledgeRevealTarget?>(null)
+
+    /** 打开某篇笔记并选中一段（start/end 传 -1 表示只打开）。 */
+    fun openKnowledgeReveal(noteId: String, start: Int, end: Int) {
+        pendingKnowledgeReveal = KnowledgeRevealTarget(noteId, start, end)
+        currentTab = TAB_KNOWLEDGE
+    }
+
+    /** 「AI 自动完成」列表里点来源笔记：打开它并选中当时的证据片段。 */
+    fun openAutoCompletionNote(entryId: String) {
+        val entry = readAutoCompletionLedger().entries.firstOrNull { it.id == entryId } ?: return
+        val note = runCatching { knowledgeStore.read(entry.noteId) }.getOrNull()
+        val start = note?.body?.indexOf(entry.evidence)?.takeIf { it >= 0 } ?: -1
+        val end = if (start >= 0) start + entry.evidence.length else -1
+        openKnowledgeReveal(entry.noteId, start, end)
+    }
+
     private var nextChatLineId = 1L
 
     /**
@@ -2274,6 +2292,18 @@ class AppRuntime private constructor() {
 
     private val planCategoryStore: PlanCategoryStore by lazy { PlanCategoryStore(home) }
 
+    /** 笔记 → 计划联动的账本：机器自动完成的节点 + 用户屏蔽的节点。 */
+    private val autoCompletionStore: AutoCompletionStore by lazy { AutoCompletionStore(home, clock) }
+    private var autoCompletionLedger: AutoCompletionLedger? = null
+
+    /** 计划页「AI 自动完成」列表里的记录（只含还生效的，按完成时间倒序）。 */
+    internal var planAutoCompletions by mutableStateOf<List<AutoCompletionEntry>>(emptyList())
+        private set
+
+    /** 被撤销/屏蔽、以后不再自动完成的节点数。 */
+    internal var planAutoCompletionBlockedCount by mutableStateOf(0)
+        private set
+
     /** 还没被任何一周收进去的单元（节点池）：计划页上灰色的「待安排」。 */
     var planPool by mutableStateOf<List<PoolUnit>>(emptyList())
         private set
@@ -2755,8 +2785,179 @@ class AppRuntime private constructor() {
                 null
             }
         if (result != null && !result.ok) planMessage = result.error?.message
+        // 用户手动改回「没做」的节点，以后不要再被笔记自动勾上。
+        blockAutoCompletion(occurrenceId)
         refreshPlan()
         tick++
+    }
+
+    // ---------------- 笔记 → 计划联动：AI 按笔记自动完成 ----------------
+
+    /**
+     * 笔记整理完后调用：把模型判断变成真正的自动完成，并记账。
+     *
+     * 只会动「本周还没完成、且没被撤销过」的节点；一条笔记最多 3 个。
+     * 写库失败不回滚已经成功的几条——账本里记着的才算数。
+     */
+    internal fun autoCompletePlanNodes(noteId: String, noteTitle: String, completions: List<PlanLinkCompletion>) {
+        if (completions.isEmpty()) return
+        val service = learningPlan() ?: return
+        val planId = learningPlanId ?: return
+        val ledger = readAutoCompletionLedger()
+        val candidates = planLinkWeekCandidates().associateBy { it.occurrenceId }
+        val accepted = completions
+            .filter { completion ->
+                completion.occurrenceId in candidates &&
+                    !ledger.isBlocked(completion.occurrenceId) &&
+                    ledger.activeCompletionFor(completion.occurrenceId) == null
+            }
+            .take(PLAN_LINK_MAX_AUTO_COMPLETIONS)
+        if (accepted.isEmpty()) return
+        var next = ledger
+        val done = ArrayList<AutoCompletionEntry>()
+        var problem: String? = null
+        for (completion in accepted) {
+            val candidate = candidates[completion.occurrenceId] ?: continue
+            val command = CommandEnvelope(
+                commandId = "cmd_" + java.util.UUID.randomUUID().toString().replace("-", ""),
+                actor = Actor.SYSTEM,
+                planId = planId,
+                origin = "knowledge.auto-complete",
+            )
+            val result = runCatching { service.completeOccurrence(command, completion.occurrenceId) }
+                .getOrElse { error ->
+                    problem = error.message ?: "未知原因"
+                    null
+                } ?: continue
+            if (!result.ok) {
+                problem = result.error?.message ?: problem
+                continue
+            }
+            val entry = AutoCompletionEntry(
+                id = nextAutoCompletionEntryId(next),
+                planId = planId,
+                occurrenceId = completion.occurrenceId,
+                title = candidate.title,
+                chapter = candidate.chapter,
+                day = candidate.day,
+                noteId = noteId,
+                noteTitle = noteTitle,
+                evidence = completion.evidence,
+                confidence = completion.confidence,
+                at = clock.nowMs(),
+            )
+            next = next.withCompletion(entry)
+            done += entry
+        }
+        if (done.isNotEmpty()) saveAutoCompletionLedger(next)
+        refreshPlan()
+        tick++
+        if (done.isNotEmpty() && uiPrefs.notifyAutoCompletion) {
+            runCatching {
+                notifier.notify(
+                    "Trellis · 计划自动完成",
+                    "《" + noteTitle.ifBlank { "笔记" } + "》自动完成了 " + done.size + " 个节点：" +
+                        done.take(3).joinToString("、") { it.title },
+                )
+            }
+        }
+        planMessage = if (done.isNotEmpty()) {
+            "AI 根据《" + noteTitle.ifBlank { "笔记" } + "》自动完成了 " + done.size +
+                " 个节点，可在下方「AI 自动完成」里撤销"
+        } else {
+            problem?.let { "AI 想完成计划节点，但没记上：" + it }
+        }
+    }
+
+    /** 撤销一笔 AI 自动完成：改回「没做」，并把这个节点拉进屏蔽名单。 */
+    fun undoAutoCompletion(entryId: String) {
+        val ledger = readAutoCompletionLedger()
+        val entry = ledger.entries.firstOrNull { it.id == entryId } ?: return
+        val service = learningPlan() ?: return
+        val planId = learningPlanId ?: return
+        val command = CommandEnvelope(
+            commandId = "cmd_" + java.util.UUID.randomUUID().toString().replace("-", ""),
+            actor = Actor.USER,
+            planId = planId,
+            origin = "ui.auto-completion",
+        )
+        val result = runCatching { service.uncompleteOccurrence(command, entry.occurrenceId) }
+            .getOrElse { error -> planMessage = "这次没改回来：" + (error.message ?: "未知原因"); null }
+        if (result != null && !result.ok) planMessage = result.error?.message
+        saveAutoCompletionLedger(ledger.withUndone(entryId, clock.nowMs()).withBlocked(entry.occurrenceId))
+        refreshPlan()
+        tick++
+        planMessage = "已撤销「" + entry.title + "」的自动完成；这个节点以后不会再自动勾上"
+    }
+
+    /** 解除全部「不再自动完成」的屏蔽（想重新信任 AI 时用）。 */
+    fun clearAutoCompletionBlocks() {
+        val ledger = readAutoCompletionLedger()
+        if (ledger.blocked.isEmpty()) return
+        saveAutoCompletionLedger(ledger.copy(blocked = emptySet()))
+        planMessage = "已解除全部「不再自动完成」的屏蔽"
+    }
+
+    /** 进计划页/笔记整理后刷新列表。 */
+    fun refreshAutoCompletions() {
+        publishAutoCompletions(readAutoCompletionLedger())
+    }
+
+    /** 本周还没完成、可以参与联动的计划节点（按周视图里 status=planned 的排期算）。 */
+    internal fun planLinkWeekCandidates(): List<PlanLinkCandidate> {
+        val service = learningPlan() ?: return emptyList()
+        val planId = learningPlanId ?: return emptyList()
+        val week = runCatching { service.planState(planId).week }.getOrNull() ?: return emptyList()
+        val view = runCatching { service.week(planId, week) }.getOrNull() ?: return emptyList()
+        val weekEnd = view.days.mapNotNull { it.day.takeIf { day -> day.isNotBlank() } }.maxOrNull()
+        val chapters = weekEnd?.let { end ->
+            runCatching { service.openNodes(planId, end) }
+                .getOrDefault(emptyList())
+                .associate { it.occurrenceId to it.chapter }
+        }.orEmpty()
+        return planLinkCandidates(view, chapters)
+    }
+
+    /** 已被用户屏蔽的节点（判定前先排除，省得白占 3 个名额）。 */
+    internal fun autoCompletionBlocked(): Set<String> = readAutoCompletionLedger().blocked
+
+    private fun readAutoCompletionLedger(): AutoCompletionLedger {
+        autoCompletionLedger?.let { return it }
+        val loaded = autoCompletionStore.load()
+        autoCompletionLedger = loaded
+        publishAutoCompletions(loaded)
+        return loaded
+    }
+
+    private fun saveAutoCompletionLedger(ledger: AutoCompletionLedger) {
+        autoCompletionLedger = ledger
+        autoCompletionStore.save(ledger)
+        publishAutoCompletions(ledger)
+    }
+
+    private fun publishAutoCompletions(ledger: AutoCompletionLedger) {
+        planAutoCompletions = ledger.entries
+            .filter { it.status == AutoCompletionStatus.Auto }
+            .sortedByDescending { it.at }
+        planAutoCompletionBlockedCount = ledger.blocked.size
+    }
+
+    private fun blockAutoCompletion(occurrenceId: String) {
+        if (occurrenceId.isBlank()) return
+        val ledger = readAutoCompletionLedger()
+        if (ledger.isBlocked(occurrenceId)) return
+        saveAutoCompletionLedger(ledger.withBlocked(occurrenceId))
+    }
+
+    private fun nextAutoCompletionEntryId(ledger: AutoCompletionLedger): String {
+        val store = autoCompletionStore
+        var id = store.newEntryId()
+        var guard = 0
+        while (ledger.entries.any { it.id == id } && guard < 20) {
+            id = store.newEntryId()
+            guard++
+        }
+        return id
     }
 
     // ---------------- 逾期项的三种手动处理（计划页「待处理」卡片） ----------------
