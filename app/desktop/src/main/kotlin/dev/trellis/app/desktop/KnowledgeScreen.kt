@@ -263,15 +263,22 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
      * 只在「人写的内容真的变了」时才调模型——比较基准见 [bodyForAiComparison]：
      * AI 补全、删/加 `[[概念]]` 标记都不算正文变化，所以不会反复解析。
      */
-    fun organizeNote(id: String) {
+    fun organizeNote(id: String, force: Boolean = false) {
         val note = store.read(id) ?: return
         if (note.body.isBlank()) return
         val slots = findAiFillSlots(note.body)
-        if (note.body.length < 40 && slots.isEmpty()) return
-        if (bodyForAiComparison(note.body) == aiBaselines[id]) return
+        // force = 用户点了「保存并整理」：不再等「正文真的变过」，也不因正文短就跳过。
+        if (!force && note.body.length < 40 && slots.isEmpty()) return
+        if (!force && bodyForAiComparison(note.body) == aiBaselines[id]) return
         val client = runtime.llmClientOrNull()
         if (client == null) {
-            if (slots.isNotEmpty()) message = "AI 没配置：补全空位需要先在设置里导入模型"
+            message = if (force) {
+                "AI 没配置：先在设置里导入模型，才能整理概念与建图建议"
+            } else if (slots.isNotEmpty()) {
+                "AI 没配置：补全空位需要先在设置里导入模型"
+            } else {
+                null
+            }
             return
         }
         // 同一篇的整理请求后到先得：新请求取消旧的，避免两轮结果互相盖。
@@ -285,6 +292,10 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                         note.body,
                         note.concepts,
                         slots.map { it.label },
+                        headings = parseOutline(note.body)
+                            .filter { it.level <= 2 }
+                            .map { it.text }
+                            .take(8),
                     ),
                 )
             } catch (cancelled: CancellationException) {
@@ -326,22 +337,29 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
             }
             if (!applyExtracted(id, current, markedBody)) return@launch
             // 顺手解析图建议（与概念/补全同一次调用，不额外花钱）；解析失败就当没有建议。
+            val graphSuggestions = parseNoteGraphSuggestions(
+                raw = raw,
+                noteConceptNames = next.concepts,
+                body = markedBody,
+                now = clock.nowMs(),
+            )
             persistGraphSuggestions(
                 noteId = id,
                 bodyHash = noteBodyHash(current.copy(body = markedBody)),
-                suggestions = parseNoteGraphSuggestions(
-                    raw = raw,
-                    noteConceptNames = next.concepts,
-                    body = markedBody,
-                    now = clock.nowMs(),
-                ),
+                suggestions = graphSuggestions,
             )
             val conceptsAdded = next.concepts.size - current.concepts.size
+            val graphNote = if (graphSuggestions.categories.isEmpty() && graphSuggestions.relations.isEmpty()) {
+                ""
+            } else {
+                "；生成了 " + (graphSuggestions.categories.size + graphSuggestions.relations.size) +
+                    " 条建图建议，去「网络」页确认"
+            }
             message = if (filled.applied.isNotEmpty()) {
                 "AI 补全 " + filled.applied.size + " 处（绿引号标记，点 × 可删），整理了 " +
-                    conceptsAdded + " 个概念"
+                    conceptsAdded + " 个概念" + graphNote
             } else {
-                "AI 整理了 " + conceptsAdded + " 个概念（点 × 可删除）"
+                "AI 整理了 " + conceptsAdded + " 个概念（点 × 可删除）" + graphNote
             }
         }
     }
@@ -621,6 +639,14 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        EditorChip(
+                            label = if (extracting) "整理中…" else "保存并整理",
+                            active = extracting,
+                            onClick = {
+                                persistNow()
+                                selectedId?.let { id -> organizeNote(id, force = true) }
+                            },
+                        )
                         EditorChip(
                             label = "目录",
                             active = MarkdownSidebarState.visible,
