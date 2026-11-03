@@ -145,3 +145,10 @@
 - 删掉左栏解释性长文字（未分类说明、点节点/双击/拖动说明、默认 AI 长说明）与统计卡，只留开关 + 一行统计 + AI 入口。
 - 验证：编译绿、渲染测试 2 绿（截图归档 4 张）、全量测试与 `check` 见提交说明；设计见 `knowledge-graph-design.md` §5.1 补丁 5 / 附录 E.7。
 。
+## 0.10 2026-11-03 知识网络补丁 6（概念并入网络 + 一键采纳 + 左栏分类树）
+
+- 用户反馈「AI 建议来一个一键采纳」「网络功能可以替代概念功能了」「把每张图的根节点放在左栏空缺处，依然以 UI 统一为原则」。
+- `KnowledgeTab` 收敛为 `{Notes, Graph}`：概念 tab 下线，概念列表页/详情主区分支删除；搜索结果、本篇概念等概念入口统一 `openConcept` → 切网络 + `selectedKey`/`pendingCenterKey` 选中并居中节点，概念详情只在网络浮窗看。
+- AI 建议加「一键采纳」：左栏「查看 AI 建议」旁，一次确认全部归类+关系建议（`confirmCategorySuggestions` + `confirmRelationSuggestions` 串联，写 `graph.user.json` 并清缓存建议），逐条确认/全部确认/全部忽略仍在建议面板。
+- 左栏空搜索态下半部分列「分类树」：每棵树根分类 + 「未分类」行（复用 `GraphHitRow`），点击选中并把相机居中到该树。
+- 验证：`:app:desktop` 544 条测试 0 失败（graph 124）、`./gradlew check` 绿；渲染测试 2 绿并重生成 4 张 Density(2f) 截图；设计见 `knowledge-graph-design.md` 附录 D/E.8。

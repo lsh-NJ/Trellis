@@ -1433,6 +1433,7 @@ assignLayers(nodes, edges, pins) ->
 | 2026-11-03 | v1.3 | AI 整理重新定义为**图操作**（建节点/命名/链接），与手动操作共用 Taxonomy 纯函数；G1 的 `categoryPath` 只是其紧凑表达 | 用户「AI 整理就是创建节点、命名节点、链接节点，然后将知识点（实点）在图中按类维护」 |
 | 2026-11-03 | v1.3 补丁 4 | 修「确认一条建议后其余全消失」：`conceptSetHash` 只含概念集，分类树变化不再让全图建议失效；笔记页加「保存并整理」按钮并把笔记标题结构送进 prompt（大标题→父分类名，可概括）；全图建议失效条件与概念集解耦 | 用户「AI 建议确认一条以后其他所有建议都会消失…笔记界面添加一个按钮：保存并整理概念…根据大标题对父节点拟名」 |
 | 2026-11-03 | v1.3 补丁 5 | 网络视图与「笔记 / 概念」页统一页面骨架：左栏复用 `ListSidebar`（搜索 + 三个 tab 在左栏内、可收起 36dp），页头右对齐 `EditorChip` 工具条；删掉左栏所有解释性长文字 | 用户「统一网络与笔记、概念的 UI 风格……如类似图三的文字描述，不需要」 |
+| 2026-11-03 | v1.3 补丁 6 | 「概念」tab 并入网络（`KnowledgeTab {Notes, Graph}`；概念入口统一跳网络选中/居中，详情只在网络浮窗）；AI 建议加「一键采纳」；左栏空白处列「分类树」根节点（点击定位该树） | 用户「AI 建议来一个一键采纳」「网络功能可以替代概念功能了」「把每张图的根节点放在如图下方的空缺处，依然以 UI 统一为原则」 |
 
 ---
 
@@ -1555,6 +1556,20 @@ G1 明确没做（留后续）：真实模型 key 的本机手测；「已忽略
 | 回归测试 | `KnowledgeGraphScreenRenderTest.kt` | `graphViewKeepsTabsToGoBack` 的点击坐标改为 `Offset(88f, 270f)`（tab 行现在在左栏标题 + 搜索框下方）；2 tests 绿 |
 
 验证：`:app:desktop:compileKotlin` 绿；`KnowledgeGraphScreenRenderTest` 2 tests 绿，重生成 4 张 Density(2f) 截图（[网络视图](assets/knowledge-graph/impl-v1.3-view.png) · [暗色](assets/knowledge-graph/impl-v1.3-view-dark.png) · [分类浮窗](assets/knowledge-graph/impl-v1.3-category.png) · [AI 建议面板](assets/knowledge-graph/impl-v1.3-g1-suggestions.png)）；全量测试与 `check` 见提交说明。
+
+---
+
+### E.8 v1.3 补丁 6：概念 tab 并入网络 + AI 一键采纳 + 左栏分类树导航（2026-11-03 傍晚）
+
+| 改动 | 文件 | 内容 |
+|---|---|---|
+| 概念 tab 下线 | `KnowledgeGraphModel.kt` · `KnowledgeScreen.kt` · `KnowledgeGraphScreen.kt` | `KnowledgeTab` 由 `{Notes, Concepts, Graph}` 收敛为 `{Notes, Graph}`；笔记页左栏 tab 行与网络视图顶部都只剩「笔记 / 网络」；原概念列表页、概念详情主区分支删除（概念详情只从网络浮窗看）；搜索结果里点概念、右栏「本篇概念」里点概念都走 `openConcept` → 切网络并选中/居中该节点 |
+| 概念跳转 | `KnowledgeGraphViewState.pendingCenterKey` · `KnowledgeGraphScreen.kt` | `openConcept(name)` 设 `selectedKey` + `pendingCenterKey`；网络视图消费后 `expandTo(key, graph)` 展开祖先、`centerKey = key` 把相机移到节点 |
+| AI 一键采纳 | `KnowledgeGraphScreen.kt` · `KnowledgeGraphPanels.kt` | 左栏有建议时，「查看 AI 建议（N 条）」旁加「一键采纳」；`adoptAllSuggestions()` 串联 `confirmCategorySuggestions` + `confirmRelationSuggestions`，一次写 `graph.user.json` 并清掉对应缓存建议；保留逐条确认与「全部确认/全部忽略」面板 |
+| 左栏分类树 | `KnowledgeGraphPanels.kt` | 搜索框为空时左栏下半部分列「分类树」：每棵可展开树的根分类（`childrenOf(null)` 里 kind=CATEGORY）+「未分类」行，样式复用搜索命中的 `GraphHitRow`；点击 `onCenterNode` 选中并居中该树（「每张图的根节点放在左栏空白处」） |
+| 回归测试 | `KnowledgeGraphScreenRenderTest.kt` | `graphViewKeepsTabsToGoBack` 仍点「笔记」切回（tab 少一个后坐标不变仍命中）；2 tests 绿 |
+
+验证：`:app:desktop:compileKotlin` 绿；`KnowledgeGraphScreenRenderTest` 2 tests 绿（重生成 4 张 Density(2f) 截图）；全量 `:app:desktop:test` **544 条 0 失败**、`./gradlew check` 绿。
 
 ---
 

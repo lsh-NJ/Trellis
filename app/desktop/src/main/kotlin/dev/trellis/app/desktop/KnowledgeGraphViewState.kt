@@ -11,7 +11,7 @@ import androidx.compose.runtime.setValue
  * 视野、选中节点、折叠状态都还在。**不落盘**，重启回到默认。
  */
 internal object KnowledgeGraphViewState {
-    /** 知识页当前 tab（笔记 / 概念 / 网络）。 */
+    /** 知识页当前 tab（笔记 / 网络；v1.3 起「概念」并入网络）。 */
     var tab: KnowledgeTab by mutableStateOf(KnowledgeTab.Notes)
 
     /** 画布相机（缩放 + 平移）。 */
@@ -19,6 +19,12 @@ internal object KnowledgeGraphViewState {
 
     /** 当前聚焦节点（分类 id 或概念身份键）；null = 没聚焦。小浮窗跟随它。 */
     var selectedKey: String? by mutableStateOf(null)
+
+    /**
+     * 一次性请求：把画布中心移到这个节点上（从笔记页点概念、点左栏根节点时用）。
+     * 网络视图消费后置回 null；展开祖先由网络视图自己做。
+     */
+    var pendingCenterKey: String? by mutableStateOf(null)
 
     /** 手动折叠的分类 id 集合。 */
     var collapsed: Set<String> by mutableStateOf(emptySet())

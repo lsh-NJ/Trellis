@@ -58,6 +58,8 @@ internal fun KnowledgeGraphLeftPanel(
     suggestionCount: Int = 0,
     onAiOrganize: () -> Unit = {},
     onOpenSuggestions: () -> Unit = {},
+    onAdoptAll: () -> Unit = {},
+    onCenterNode: (String) -> Unit = {},
 ) {
     val extra = LocalExtraColors.current
     val results = remember(graph, query) {
@@ -70,6 +72,13 @@ internal fun KnowledgeGraphLeftPanel(
                 .sortedWith(compareBy({ if (it.kind == GraphNodeKind.CATEGORY) 0 else 1 }, { it.name }))
                 .take(24)
         }
+    }
+    // 左栏下半部分：每棵树的根节点 + 「未分类」，点一下定位到那棵树。
+    val roots = remember(graph) {
+        graph.childrenOf(null).filter { it.kind == GraphNodeKind.CATEGORY }
+    }
+    val unclassified = remember(graph) {
+        graph.childrenOf(null).filter { it.kind == GraphNodeKind.CONCEPT }
     }
     Column(
         modifier = modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
@@ -100,12 +109,45 @@ internal fun KnowledgeGraphLeftPanel(
                 )
             }
             if (suggestionCount > 0) {
-                TextButton(onClick = onOpenSuggestions) {
-                    Text("查看 AI 建议（$suggestionCount 条）", style = MaterialTheme.typography.labelMedium)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = onOpenSuggestions) {
+                        Text("查看 AI 建议（$suggestionCount 条）", style = MaterialTheme.typography.labelMedium)
+                    }
+                    TextButton(onClick = onAdoptAll) {
+                        Text("一键采纳", style = MaterialTheme.typography.labelMedium)
+                    }
                 }
             }
             if (!aiHint.isNullOrBlank()) {
                 KnowledgeHint(aiHint)
+            }
+            if (roots.isNotEmpty() || unclassified.isNotEmpty()) {
+                Spacer(Modifier.height(2.dp))
+                Text("分类树", style = MaterialTheme.typography.labelSmall, color = extra.dataMuted)
+                roots.forEach { root ->
+                    GraphHitRow(node = root, onClick = { onCenterNode(root.key) })
+                }
+                if (unclassified.isNotEmpty()) {
+                    GraphHitRow(
+                        node = GraphNode(
+                            key = GRAPH_UNCLASSIFIED_KEY,
+                            kind = GraphNodeKind.CATEGORY,
+                            name = "未分类",
+                            definition = "",
+                            noteCount = unclassified.size,
+                            mentionCount = unclassified.size,
+                            firstSeenAt = 0L,
+                            lastSeenAt = 0L,
+                            frontmatterOnly = false,
+                            parentKey = null,
+                            origin = NodeOrigin.DERIVED,
+                            description = null,
+                            confirmed = true,
+                            sortOrder = Int.MAX_VALUE,
+                        ),
+                        onClick = { onCenterNode(GRAPH_UNCLASSIFIED_KEY) },
+                    )
+                }
             }
         }
 
