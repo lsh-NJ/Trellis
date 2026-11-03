@@ -285,27 +285,38 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         aiJob?.cancel()
         aiJob = scope.launch {
             extracting = true
-            val raw = try {
-                client.complete(
-                    buildKnowledgeExtractionMessages(
-                        note.title,
-                        note.body,
-                        note.concepts,
-                        slots.map { it.label },
-                        headings = parseOutline(note.body)
-                            .filter { it.level <= 2 }
-                            .map { it.text }
-                            .take(8),
-                    ),
-                )
-            } catch (cancelled: CancellationException) {
-                extracting = false
-                throw cancelled
-            } catch (failed: Exception) {
-                null
+            // 长笔记按段落切成多段分别整理：一次只送 6000 字，后面没看到的段落就永远抽不到概念。
+            val chunks = extractionBodyChunks(note.body)
+            val headings = parseOutline(note.body)
+                .filter { it.level <= 2 }
+                .map { it.text }
+                .take(8)
+            val raws = ArrayList<String>()
+            for ((index, chunk) in chunks.withIndex()) {
+                // 空位只送这一段里的：否则模型会凭标签猜后面几段的空位。
+                val chunkSlots = if (chunks.size == 1) slots else findAiFillSlots(chunk)
+                val raw = try {
+                    client.complete(
+                        buildKnowledgeExtractionMessages(
+                            note.title,
+                            chunk,
+                            note.concepts,
+                            chunkSlots.map { it.label },
+                            headings = headings,
+                            chunkIndex = index,
+                            chunkCount = chunks.size,
+                        ),
+                    )
+                } catch (cancelled: CancellationException) {
+                    extracting = false
+                    throw cancelled
+                } catch (failed: Exception) {
+                    null
+                }
+                if (raw != null) raws += raw
             }
             extracting = false
-            if (raw == null) {
+            if (raws.isEmpty()) {
                 message = if (slots.isEmpty()) {
                     "AI 整理失败，不影响笔记保存；可以稍后重试或在笔记里手动添加概念"
                 } else {
@@ -316,7 +327,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
             val current = store.read(id) ?: return@launch
             // 调模型期间人又改了：这轮结果作废，等下次焦点离开再整理（不覆盖新内容）。
             if (bodyForAiComparison(current.body) != bodyForAiComparison(note.body)) return@launch
-            val result = parseExtractionResult(raw)
+            val result = mergeExtractionResults(raws.map(::parseExtractionResult))
             val filled = applyAiFills(current.body, result.fills.associate { it.label to it.text })
             // 抽到的概念在正文第一次出现处包成 [[概念]]：标记才是「本文概念」的唯一来源，
             // frontmatter 的 concepts 只是按标注重算出来的缓存（见 synchronizeConceptMembership）。
@@ -336,12 +347,16 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                 metaStore.mergeAliases(name, aliases)
             }
             if (!applyExtracted(id, current, markedBody)) return@launch
-            // 顺手解析图建议（与概念/补全同一次调用，不额外花钱）；解析失败就当没有建议。
-            val graphSuggestions = parseNoteGraphSuggestions(
-                raw = raw,
-                noteConceptNames = next.concepts,
-                body = markedBody,
-                now = clock.nowMs(),
+            // 顺手解析图建议（与概念/补全同一次调用，不额外花钱）；分段时逐段解析再合并。
+            val graphSuggestions = mergeNoteGraphSuggestions(
+                raws.map { chunkRaw ->
+                    parseNoteGraphSuggestions(
+                        raw = chunkRaw,
+                        noteConceptNames = next.concepts,
+                        body = markedBody,
+                        now = clock.nowMs(),
+                    )
+                },
             )
             persistGraphSuggestions(
                 noteId = id,
@@ -349,6 +364,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                 suggestions = graphSuggestions,
             )
             val conceptsAdded = next.concepts.size - current.concepts.size
+            val chunkNote = if (chunks.size > 1) "（长笔记分 " + chunks.size + " 段整理）" else ""
             val graphNote = if (graphSuggestions.categories.isEmpty() && graphSuggestions.relations.isEmpty()) {
                 ""
             } else {
@@ -357,9 +373,9 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
             }
             message = if (filled.applied.isNotEmpty()) {
                 "AI 补全 " + filled.applied.size + " 处（绿引号标记，点 × 可删），整理了 " +
-                    conceptsAdded + " 个概念" + graphNote
+                    conceptsAdded + " 个概念" + chunkNote + graphNote
             } else {
-                "AI 整理了 " + conceptsAdded + " 个概念（点 × 可删除）" + graphNote
+                "AI 整理了 " + conceptsAdded + " 个概念（点 × 可删除）" + chunkNote + graphNote
             }
         }
     }
