@@ -116,7 +116,6 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 if (runtime.isSimulatingTime) item { PlanSimulatedBanner(runtime) }
-                if (runtime.planStartsInPast) item { PlanStaleBanner(runtime) }
                 if (runtime.planRhythmHasNews) item { PlanRhythmCard(runtime) }
 
                 if (runtime.planTitle == null) {
@@ -207,25 +206,6 @@ private fun ListRow(text: String, sub: String, selected: Boolean, onClick: () ->
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-    }
-}
-
-@Composable
-private fun PlanStaleBanner(runtime: AppRuntime) {
-    val firstWeek = runtime.planWeekCards.firstOrNull()?.week ?: return
-    PlanCard {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("这份计划的第一周在过去", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    "周次写成了 $firstWeek，所以整页都显示「过去」。可以把它平移到本周起——单元和顺序不变，只是换一份周次正确的计划。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            ChromeButton(label = "挪到本周", onClick = { runtime.repairPastPlan() })
-        }
     }
 }
 

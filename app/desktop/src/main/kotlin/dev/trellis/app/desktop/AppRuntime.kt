@@ -33,10 +33,8 @@ import dev.trellis.domain.Task
 import dev.trellis.domain.TaskId
 import dev.trellis.domain.TaskStatus
 import dev.trellis.domain.plan.Actor
-import dev.trellis.domain.plan.CommitmentDraft
 import dev.trellis.domain.plan.CommandEnvelope
 import dev.trellis.domain.plan.DayView
-import dev.trellis.domain.plan.UnitDraft
 import dev.trellis.domain.plan.LearningPlanService
 import dev.trellis.domain.plan.LearningPlanInfo
 import dev.trellis.domain.plan.OverdueView
@@ -3145,78 +3143,13 @@ class AppRuntime private constructor() {
         origin = "ui.plan.adjust",
     )
 
-    /** 这份计划的第一周早于本周：说明周次写错了（模型曾把 ISO 周写成去年）。 */
-    val planStartsInPast: Boolean
-        get() = planWeekCards.firstOrNull()?.week?.let { it < currentIsoWeek() } == true
-
-    /**
-     * 把「周次写在过去」的计划重排到本周起。
-     *
-     * 为什么不在原地改：plan_version 不可变、occurrence 身份不能改（后端契约），
-     * 所以只能建一份新计划、把单元按原顺序搬过来，再结束旧的。
-     */
+    /** 计划页 UI 发起的命令（计时器开始/结束）：origin 只进审计。 */
     private fun uiCommand(planId: String?): CommandEnvelope = CommandEnvelope(
         commandId = "cmd_" + java.util.UUID.randomUUID().toString().replace("-", ""),
         actor = Actor.USER,
         planId = planId,
-        origin = "ui.plan.repair",
+        origin = "ui.plan",
     )
-
-    fun repairPastPlan() {
-        val service = learningPlan() ?: return
-        val planId = learningPlanId ?: return
-        val cards = planWeekCards
-        if (cards.isEmpty()) return
-        val monday = isoWeekMonday(currentIsoWeek())
-        var failure: String? = null
-        runCatching {
-            requireNotNull(monday) { "算不出本周的周一" }
-            val units = mutableListOf<UnitDraft>()
-            val grouped = mutableListOf<List<Int>>()
-            // 同一个单元可能因为「欠账回池 -> 又被本周收走」出现在多张周卡里（旧计划尤其明显）。
-            // 搬计划时按 (章节, 标题, 时长) 去重，只认第一次出现：重排不是复制历史。
-            val seenUnits = mutableMapOf<String, Int>()
-            cards.forEach { card ->
-                val weekUnits = service.week(planId, card.week).commitment.units
-                if (weekUnits.isEmpty()) return@forEach
-                val indexes = weekUnits.mapNotNull { unit ->
-                    val key = unit.chapter + "\u0000" + unit.title + "\u0000" + unit.estimateMinutes
-                    if (seenUnits.containsKey(key)) return@mapNotNull null
-                    units += UnitDraft(
-                        chapter = unit.chapter,
-                        title = unit.title,
-                        estimateMinutes = unit.estimateMinutes.coerceIn(10, 45),
-                    )
-                    seenUnits[key] = units.lastIndex
-                    units.lastIndex
-                }
-                if (indexes.isNotEmpty()) grouped += indexes
-            }
-            require(units.isNotEmpty()) { "这份计划里没有可搬的单元" }
-            require(grouped.isNotEmpty()) { "这份计划里没有排进任何一周的单元" }
-            val commitments = grouped.mapIndexed { index, unitIndexes ->
-                CommitmentDraft(week = isoWeekOf(monday.plusWeeks(index.toLong())), unitIndexes = unitIndexes)
-            }
-            // 在原计划里出一版新草稿并生效：planId / 标题 / 单元都不变，只把周次平移到本周起。
-            // 不新建计划——用户点「挪到本周」要的是「这份计划回到本周」，不是多一条计划。
-            val saved = service.saveDraft(
-                uiCommand(planId),
-                planId = planId,
-                versionId = null,
-                units = units,
-                commitments = commitments,
-            ).also { require(it.ok) { it.error?.message ?: "存草稿失败" } }.value!!
-            service.acceptDraft(
-                uiCommand(planId),
-                versionId = saved.versionId,
-                firstWeek = isoWeekOf(monday),
-            ).also { require(it.ok) { it.error?.message ?: "确认草稿失败" } }
-            planMessage = "已经挪到本周起：从 ${isoWeekOf(monday)} 这周开始排，之前的完成记录留在上一版里。"
-        }.exceptionOrNull()?.let { error -> failure = "没重排成：" + (error.message ?: "未知原因") }
-        refreshPlan()
-        failure?.let { planMessage = it }
-        tick++
-    }
 
     suspend fun refresh() {
         goal = planService.plans().firstOrNull()
