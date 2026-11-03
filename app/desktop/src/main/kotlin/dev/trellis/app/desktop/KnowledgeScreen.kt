@@ -515,7 +515,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
      */
     fun openSearchHit(hit: NoteSearchHit) {
         val id = hit.summary.id
-        showConcepts = false
+        switchTab(KnowledgeTab.Notes)
         if (selectedId != id) selectNote(id)
         if (hit.start < 0) return
         pendingReveal = PendingReveal(id, hit.start, hit.end)
