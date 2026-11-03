@@ -2,71 +2,58 @@ package dev.trellis.app.desktop
 
 import kotlin.math.ceil
 import kotlin.math.max
-import kotlin.math.min
 
 /**
- * 知识网络 G0 的**确定性分区布局**（设计 §4.2 / §4.6 / §8.3）。
+ * 知识网络 v1.2 的森林式树布局（纯函数、确定性、无 Compose / 无 IO）。
  *
- * 输入 [KnowledgeGraph]（分类树 + 概念节点）、折叠集合与可选的 warm 缓存，输出 [GraphLayout]：
- * 分类框（[GraphBox]，可嵌套）+ 概念芯片（[GraphChipItem]）的世界坐标（单位 dp）。
- * 本文件**不碰 Compose、不读文件、不看时钟**：同一输入两次调用逐位相等，可在 JVM 单测里直接跑。
+ * 设计 v1.2：「像建一颗虚实结合的树，由实（已存在的概念点）和虚（把节点链接在一起的分类），
+ * 然后构成一个大类一颗树」。所以画布上不再有嵌套卡片/芯片，只有节点 + 父 → 子连线：
+ * - 每棵树的根是一个根分类（`parentKey == null`）；未分类概念合成一棵虚拟根树
+ *   [GRAPH_UNCLASSIFIED_KEY]，永远排在最后；
+ * - 分类节点画成空心（虚），概念节点画成实心（实）；只画父 → 子边，其他关系不进画布；
+ * - 折叠只剪枝：`folded = true` 的分类的子树不进 [GraphLayout.nodes] / [GraphLayout.links]；
+ * - 节点宽度只由名字估宽决定（[estimateLabelWidth]），高度按节点类型（概念/分类）。
  *
- * 排布规则（与设计 §4.2 一致，自底向上单遍测量）：
- * 1. 分类框 = 标题行（[LayoutOptions.headerHeight]）+ 直接概念芯片的流式网格
- *    + 子分类框的嵌套堆叠；框内四周留 [LayoutOptions.boxPadding]；
- * 2. 根框宽度 clamp 到 [LayoutOptions.minRootWidth]..[LayoutOptions.maxRootWidth]，
- *    非根框最小 200dp；父框内容宽放不下子框时把子框按更窄的可用宽重新换行（不越界、不重叠）；
- * 3. 根层 masonry 按 reading order 从左到右排，超过 [LayoutOptions.maxCanvasWidth] 换行；
- *    未分类虚拟框 [GRAPH_UNCLASSIFIED_KEY] 永远排最后；
- * 4. 折叠的分类只留标题行，内部芯片/子框不进 [GraphLayout.chipsByKey]/[GraphLayout.boxesByKey]；
- *    折叠是**视图状态**，数据本身不变，删除折叠后重算即恢复；
- * 5. warm 缓存命中（[LayoutCache.fingerprint] == [layoutFingerprint]）时只复用**根块顺序**
- *    （[LayoutCache.rootOrder]，[LayoutCache.anchors] 仅做同序 tie-break），坐标全部重新计算——
- *    复用旧坐标会在归属/折叠变化后叠框。
+ * 算法是经典 tidy tree 的两遍式实现（[ForestLayout]）：
+ * 1. 测量：自底向上算子树的宽（`max(自身宽, 子宽之和 + 间距)`）与树高；
+ * 2. 摆放：父节点水平居中于自己的子树/子节点跨度，同一棵树按层 `y = 行顶 + depth * rowStep`；
+ * 3. 森林：各棵树按根顺序从左往右摆，一行内容宽超过 [LayoutOptions.maxCanvasWidth] 就换行。
  *
- * 确定性：所有顺序都来自显式排序（分类 `(sortOrder, name, key)`、概念 `(noteCount 降序, name, key)`），
- * 不迭代 HashMap 的键顺序；测量是 O(N) 递归（深层框被父框压窄时会按最终宽度重排一次子树，
- * 深度 ≤ 5 时总量仍是常数倍），2000 概念在毫秒级。
+ * 全部用 [LinkedHashMap]/[List] 保持顺序、不迭代 HashMap；每个节点只测一次、摆一次，O(N)。
  */
 
 /**
- * 布局参数（设计 §4.6 的默认值）。
+ * 森林式树布局的参数。
  *
- * @property padding 画布外扩：内容并集四周留白（边缘留白 32dp）。
- * @property categoryGap 分类框之间的间距（子分类框纵向堆叠时使用；根块行间距见 [rootGap]）。
- * @property chipGap 概念芯片间距（同行相邻、行与行之间都用它）。
- * @property maxCanvasWidth 根块 masonry 的最大行宽，超过换行。
- * @property headerHeight 分类标题行高（折叠框只剩这一行）。
- * @property chipHeight 概念芯片高度。
- * @property boxPadding 框内四周留白。
- * @property columnGap 根块 masonry 的列间距（同一行相邻根框的水平间距，设计 §4.6 列间距 32dp）。
- * @property minRootWidth 根框最小宽度（clamp 下限；非根框不受它约束）。
- * @property maxRootWidth 任意分类框宽度上限。
- * @property chipFontPx 芯片文字估算字号（px）。
- * @property headerFontPx 分类标题文字估算字号（px）。
- * @property maxChipColumns 每行芯片列数上限（窄框 4 / 宽框 8）。
- * @property rootGap 根块 masonry 的行间距（行与行之间的垂直间距，设计 §4.6 根框间距 24dp）。
+ * @property padding 内容到画布边缘的留白（[GraphLayout.bounds] 会再按它 inflate）。
+ * @property nodeGapX 同一父节点下相邻子树的水平间距。
+ * @property rowGapY 层间距（父行底到子行顶；行高按 `max(nodeHeight, categoryHeight)` 算）。
+ * @property treeGapX 森林里相邻两棵树的水平间距；换行后的行间距也以它为基准。
+ * @property minNodeWidth 节点最小宽度（短名字不会缩得太窄）。
+ * @property maxNodeWidth 节点最大宽度（超长名字截断估宽）。
+ * @property nodeHeight 概念节点高度。
+ * @property categoryHeight 分类节点高度。
+ * @property conceptFontPx 概念名估算字号（px）。
+ * @property categoryFontPx 分类名估算字号（px）。
+ * @property maxCanvasWidth 画布最大宽度；一行树宽超过它就换行。
  */
 internal data class LayoutOptions(
     val padding: Float = 32f,
-    val categoryGap: Float = 24f,
-    val chipGap: Float = 8f,
-    val maxCanvasWidth: Float = 2600f,
-    val headerHeight: Float = 30f,
-    val chipHeight: Float = 30f,
-    val boxPadding: Float = 10f,
-    val columnGap: Float = 32f,
-    val minRootWidth: Float = 240f,
-    val maxRootWidth: Float = 720f,
-    val chipFontPx: Float = 12f,
-    val headerFontPx: Float = 13f,
-    val maxChipColumns: Int = 8,
-    val rootGap: Float = 24f,
+    val nodeGapX: Float = 18f,
+    val rowGapY: Float = 44f,
+    val treeGapX: Float = 72f,
+    val minNodeWidth: Float = 64f,
+    val maxNodeWidth: Float = 260f,
+    val nodeHeight: Float = 30f,
+    val categoryHeight: Float = 28f,
+    val conceptFontPx: Float = 12f,
+    val categoryFontPx: Float = 12.5f,
+    val maxCanvasWidth: Float = 3000f,
 )
 
 /**
- * 估算一行标签的宽度（dp）：CJK / 全角按 1.0em、ASCII 按 0.55em，向上取整后再留 6% 余量。
- * 空串（或字号非正）返回 0。只用于算盒子宽度；绘制时 Canvas 会再用实测字体截断（设计 §4.5）。
+ * 估算一行标签的宽度（px）：CJK / 全角按 1.0em、ASCII 按 0.55em，向上取整后再留 6% 余量。
+ * 空串（或字号非正）返回 0。只用于算节点宽度；绘制时 Canvas 会再用实测字体截断（设计 §4.5）。
  */
 internal fun estimateLabelWidth(text: String, fontPx: Float): Float {
     if (text.isEmpty() || fontPx <= 0f) return 0f
@@ -81,119 +68,24 @@ internal fun estimateLabelWidth(text: String, fontPx: Float): Float {
 }
 
 /**
- * [estimateLabelWidth] 的 `sp × density` 调用形式：Canvas 里字号常以 sp 记，这里折算成 px 再估宽。
- */
-internal fun estimateLabelWidth(text: String, fontSizeSp: Float, density: Float): Float =
-    estimateLabelWidth(text, fontSizeSp * density)
-
-/**
- * 计算知识网络的分区布局。
+ * 计算知识网络的森林式树布局。
  *
- * @param graph 结构化知识网络（分类 + 概念；不看 [KnowledgeGraph.childrenOf] 的顺序，自己排）。
- * @param collapsed 折叠的分类 key 集合（含「分类默认折叠」由 UI 算好传进来；未分类框用
- *   [GRAPH_UNCLASSIFIED_KEY] 表示）。不在图里的 key 会被忽略。
- * @param warm 上次布局缓存；只有 [LayoutCache.fingerprint] 与 [layoutFingerprint] 相同才采信根顺序，
- *   否则完全冷算（坐标永远重算，不复用旧坐标）。
+ * @param graph 结构化知识网络（分类 + 概念）。根分类按 [KnowledgeGraph.childrenOf] 的顺序（Build 已按
+ *   `sortOrder → name → key` 排好；缺失时布局层兜底从 `nodes` 里筛根分类并按同一顺序补在后面）；未分类
+ *   概念合成虚拟根 [GRAPH_UNCLASSIFIED_KEY] 排最后。
+ * @param collapsed 折叠的分类 key 集合；只有存在可见子节点的分类会生效（`folded = true`），
+ *   它的子树不进 `nodes` / `links`。不在图里或不是分类的 key 忽略。
+ * @param warm 上次布局缓存；只有 [LayoutCache.fingerprint] 与 [layoutFingerprint] 相同才采信
+ *   [LayoutCache.rootOrder]（重排根树顺序，新根接在后面，未分类永远最后），坐标全部重新计算。
  * @param options 布局参数。
- * @return [GraphLayout]；空图返回 [GraphLayout.Empty]（bounds = [GraphRect.Zero]）。
+ * @return [GraphLayout]；没有任何可见节点时返回 [GraphLayout.Empty]（bounds = [GraphRect.Zero]）。
  */
 internal fun layoutKnowledgeGraph(
     graph: KnowledgeGraph,
-    collapsed: Set<String>,
-    warm: LayoutCache?,
+    collapsed: Set<String> = emptySet(),
+    warm: LayoutCache? = null,
     options: LayoutOptions = LayoutOptions(),
-): GraphLayout {
-    if (graph.nodes.isEmpty()) return GraphLayout.Empty
-    // warm 只认指纹：图变了（归属 / 排序 / 折叠结构变了）就整体冷算，避免旧顺序看起来「没刷新」。
-    val hit = warm?.takeIf { it.fingerprint == layoutFingerprint(graph) }
-    return PartitionLayout(graph, collapsed, hit, options).layout()
-}
-
-/**
- * 命中测试：芯片优先，其次分类标题行（由深到浅），最后分类框（由深到浅）；空白返回 null。
- *
- * 芯片区域也在框内部，所以顺序必须是芯片 → 标题 → 框，否则点芯片会先报成框。
- */
-internal fun GraphLayout.hitTest(point: GraphPoint): GraphHit? {
-    for (key in chipsByKey.keys.sorted()) {
-        val chip = chipsByKey.getValue(key)
-        if (chip.bounds.contains(point)) return GraphHit.Chip(key)
-    }
-    val deepFirst = boxesByKey.values.sortedWith(
-        compareByDescending<GraphBox> { it.depth }.thenBy { it.categoryKey },
-    )
-    for (box in deepFirst) {
-        if (box.headerBounds.contains(point)) return GraphHit.CategoryHeader(box.categoryKey)
-    }
-    for (box in deepFirst) {
-        if (box.bounds.contains(point)) return GraphHit.CategoryBox(box.categoryKey)
-    }
-    return null
-}
-
-/** 取一个 key 的中心点：芯片优先，其次分类框；不存在返回 null（用于选中项的相机锚点）。 */
-internal fun GraphLayout.centerOf(key: String): GraphPoint? =
-    chipsByKey[key]?.bounds?.center ?: boxesByKey[key]?.bounds?.center
-
-/**
- * zoom-to-fit：让 [bounds] 完整落进 [viewport]（四周留 [padding]），并把中心对齐到视口中心。
- *
- * `scale = min((vw - 2p) / bw, (vh - 2p) / bh, maxZoom)`，下限 [minZoom]；
- * bounds / 视口为空（宽或高 ≤ 0）返回 [Camera.Default]（换算不了，交给调用方保持原状）。
- */
-internal fun zoomToFit(
-    bounds: GraphRect,
-    viewport: GraphSize,
-    padding: Float = 32f,
-    maxZoom: Float = 1.5f,
-    minZoom: Float = 0.25f,
-): Camera {
-    if (bounds.isEmpty || viewport.isEmpty) return Camera.Default
-    val availableWidth = viewport.width - padding * 2f
-    val availableHeight = viewport.height - padding * 2f
-    val scale = min(
-        min(availableWidth / bounds.width, availableHeight / bounds.height),
-        maxZoom,
-    ).coerceAtLeast(minZoom)
-    val panX = viewport.width / 2f - bounds.centerX * scale
-    val panY = viewport.height / 2f - bounds.centerY * scale
-    return Camera(zoom = scale, panX = panX, panY = panY)
-}
-
-/**
- * [zoomToFit] 的 `GraphLayout` 扩展形式：把画布上的一块世界矩形拟合成相机（Canvas/Panels 用）。
- */
-internal fun GraphLayout.zoomToFit(
-    bounds: GraphRect,
-    canvas: GraphSize,
-    padding: Float = 32f,
-    maxZoom: Float = 1.5f,
-): Camera = zoomToFit(bounds = bounds, viewport = canvas, padding = padding, maxZoom = maxZoom)
-
-/**
- * 聚焦某个分类：把分类框拟合成相机；[categoryKey] 为 null（或 key 不存在）时拟合全图（设计 §4.4）。
- */
-internal fun fitCategory(
-    layout: GraphLayout,
-    categoryKey: String?,
-    viewport: GraphSize,
-): Camera {
-    val target = categoryKey?.let { layout.boxesByKey[it]?.bounds } ?: layout.bounds
-    return zoomToFit(target, viewport)
-}
-
-/**
- * [fitCategory] 的 `GraphLayout` 扩展形式：key 不存在时返回 null（让调用方决定回退到全图）。
- */
-internal fun GraphLayout.fitCategory(
-    categoryKey: String,
-    canvas: GraphSize,
-    padding: Float = 32f,
-    maxZoom: Float = 2f,
-): Camera? {
-    val box = boxesByKey[categoryKey] ?: return null
-    return zoomToFit(box.bounds, canvas, padding, maxZoom)
-}
+): GraphLayout = ForestLayout(graph, collapsed, warm, options).layout()
 
 /**
  * 按「缩放 + 概念数 + 视口面积」选 LOD 档位（设计 §4.3）：
@@ -209,445 +101,286 @@ internal fun lodFor(zoom: Float, conceptCount: Int, viewportArea: Float): LodLev
     val safeZoom = if (zoom.isFinite() && zoom > 0f) zoom else 0f
     if (conceptCount > LOD_AGGREGATE_CONCEPTS || safeZoom < LOD_AGGREGATE_ZOOM) return LodLevel.Aggregate
     val count = max(1, conceptCount)
-    val perNodeArea = viewportArea.toDouble() * safeZoom.toDouble() * safeZoom.toDouble() / count.toDouble()
+    val safeArea = if (viewportArea.isFinite() && viewportArea > 0f) viewportArea.toDouble() else 0.0
+    val perNodeArea = safeArea * safeZoom.toDouble() * safeZoom.toDouble() / count.toDouble()
     if (perNodeArea < LOD_FULL_PER_NODE_AREA || safeZoom < LOD_COMPACT_ZOOM) return LodLevel.Compact
     return LodLevel.Full
 }
 
 // ---------------------------------------------------------------------------------------------
-// 内部实现：测量 → 排布 → 写坐标。全部 private，不污染同包其它文件。
+// 内部实现：测量 → 摆树 → 摆森林。全部 private，不污染同包其它文件。
 // ---------------------------------------------------------------------------------------------
 
-/** 芯片左右内边距合计：芯片宽度 = 估宽 + 它（设计 §4.2）。 */
-private const val CHIP_HORIZONTAL_PADDING = 20f
+/**
+ * 一次布局的构建器：先量出每棵树的骨架（[MeasuredTree]），再写世界坐标。
+ *
+ * 两遍式做法保证：父节点居中于子节点跨度、同层节点不重叠、每个节点只算一次（O(N)）。
+ */
+private class ForestLayout(
+    private val graph: KnowledgeGraph,
+    private val collapsed: Set<String>,
+    private val warm: LayoutCache?,
+    private val options: LayoutOptions,
+) {
+    private val padding: Float = options.padding.coerceAtLeast(0f)
+    private val nodeGapX: Float = options.nodeGapX.coerceAtLeast(0f)
+    private val treeGapX: Float = options.treeGapX.coerceAtLeast(0f)
+    private val rowGapY: Float = options.rowGapY.coerceAtLeast(0f)
+    private val nodeHeight: Float = options.nodeHeight.coerceAtLeast(1f)
+    private val categoryHeight: Float = options.categoryHeight.coerceAtLeast(1f)
+    private val minNodeWidth: Float = options.minNodeWidth.coerceAtLeast(1f)
+    private val maxNodeWidth: Float = options.maxNodeWidth.coerceAtLeast(minNodeWidth)
+
+    /** 一层的纵向步长：`max(概念高, 分类高) + 层间距`（设计：`y = padding + depth * rowStep`）。 */
+    private val rowStep: Float = max(nodeHeight, categoryHeight) + rowGapY
+
+    /** 一行可用的内容宽（扣掉左右 edge padding）。 */
+    private val maxContentWidth: Float = (options.maxCanvasWidth - padding * 2f).coerceAtLeast(0f)
+
+    /** 防御 childrenOf 成环：当前递归链上的分类 key（正常 Build 不会给环）。 */
+    private val visiting: MutableSet<String> = HashSet()
+
+    fun layout(): GraphLayout {
+        val roots = measureForest()
+        if (roots.isEmpty()) return GraphLayout.Empty
+        val orderedRoots = applyWarmRootOrder(roots)
+
+        val nodes = LinkedHashMap<String, GraphNodeBox>()
+        val links = ArrayList<GraphLink>()
+        val foldedKeys = LinkedHashSet<String>()
+        var penX = padding
+        var rowTop = padding
+        var rowBottom = padding
+        for (root in orderedRoots) {
+            // 一行总宽（含树间距）超过 maxCanvasWidth 就换行；一行至少放一棵树。
+            if (penX > padding && (penX - padding) + root.subtreeWidth > maxContentWidth) {
+                penX = padding
+                rowTop = rowBottom + rowGapY
+                rowBottom = rowTop
+            }
+            placeTree(root, subtreeLeft = penX, rowTop = rowTop, depth = 0, nodes = nodes, links = links, foldedKeys = foldedKeys)
+            penX += root.subtreeWidth + treeGapX
+            rowBottom = max(rowBottom, rowTop + root.treeHeight)
+        }
+
+        var bounds = nodes.values.first().bounds
+        for (box in nodes.values) bounds = bounds.union(box.bounds)
+        return GraphLayout(
+            bounds = bounds.inflate(padding),
+            roots = orderedRoots.map { it.key },
+            nodes = nodes,
+            links = links,
+            collapsed = foldedKeys,
+        )
+    }
+
+    // ---- 测量 ----
+
+    /** 森林的骨架（根树列表，未分类虚拟根最后）。 */
+    private fun measureForest(): List<MeasuredTree> {
+        val rootKeys = ArrayList<String>()
+        val listedRoots = HashSet<String>()
+        for (node in graph.childrenOf(null)) {
+            if (node.kind == GraphNodeKind.CATEGORY && listedRoots.add(node.key)) rootKeys.add(node.key)
+        }
+        // 兜底：childrenOf[null] 没列根分类时（手工构造的图 / Build 契约变化），从 nodes 里补齐并按确定性顺序排。
+        for (node in graph.nodes.values.filter { it.kind == GraphNodeKind.CATEGORY && it.parentKey == null && it.key !in listedRoots }
+            .sortedWith(CATEGORY_ORDER)) {
+            rootKeys.add(node.key)
+        }
+
+        val looseConceptKeys = LinkedHashSet<String>()
+        for (node in graph.childrenOf(null)) {
+            if (node.kind == GraphNodeKind.CONCEPT) looseConceptKeys.add(node.key)
+        }
+        // 兜底：childrenOf[null] 没列散概念时，从 nodes 里筛 parentKey == null 的概念并确定性排序。
+        for (node in graph.nodes.values.filter { it.kind == GraphNodeKind.CONCEPT && it.parentKey == null && it.key !in looseConceptKeys }
+            .sortedWith(CONCEPT_ORDER)) {
+            looseConceptKeys.add(node.key)
+        }
+
+        val trees = ArrayList<MeasuredTree>(rootKeys.size + 1)
+        for (key in rootKeys) {
+            val node = graph.nodes[key] ?: continue
+            trees.add(measureCategory(node))
+        }
+        val looseConcepts = looseConceptKeys.mapNotNull(graph.nodes::get).filter { it.kind == GraphNodeKind.CONCEPT }
+        if (looseConcepts.isNotEmpty()) {
+            val folded = GRAPH_UNCLASSIFIED_KEY in collapsed
+            val children = if (folded) emptyList() else looseConcepts.map(::measureConcept)
+            trees.add(
+                buildMeasured(
+                    key = GRAPH_UNCLASSIFIED_KEY,
+                    kind = GraphNodeKind.CATEGORY,
+                    name = UNCLASSIFIED_LABEL,
+                    folded = folded,
+                    children = children,
+                ),
+            )
+        }
+        return trees
+    }
+
+    private fun measureCategory(node: GraphNode): MeasuredTree {
+        visiting.add(node.key)
+        try {
+            val childNodes = graph.childrenOf(node.key)
+            val folded = node.key in collapsed && childNodes.isNotEmpty()
+            val children = ArrayList<MeasuredTree>(childNodes.size)
+            if (!folded) {
+                for (child in childNodes) {
+                    when (child.kind) {
+                        GraphNodeKind.CATEGORY -> {
+                            // 成环防御：递归链上已有的分类不再展开，避免无限递归（Build 正常不会给环）。
+                            if (child.key !in visiting) children.add(measureCategory(child))
+                        }
+                        GraphNodeKind.CONCEPT -> children.add(measureConcept(child))
+                    }
+                }
+            }
+            return buildMeasured(node.key, GraphNodeKind.CATEGORY, node.name, folded, children)
+        } finally {
+            visiting.remove(node.key)
+        }
+    }
+
+    private fun measureConcept(node: GraphNode): MeasuredTree =
+        buildMeasured(node.key, GraphNodeKind.CONCEPT, node.name, folded = false, children = emptyList())
+
+    /** 自底向上算：节点宽高、子树宽（`max(自身, 子宽和 + 间距)`）、树高。 */
+    private fun buildMeasured(
+        key: String,
+        kind: GraphNodeKind,
+        name: String,
+        folded: Boolean,
+        children: List<MeasuredTree>,
+    ): MeasuredTree {
+        val fontPx = if (kind == GraphNodeKind.CONCEPT) options.conceptFontPx else options.categoryFontPx
+        val height = if (kind == GraphNodeKind.CONCEPT) nodeHeight else categoryHeight
+        val width = (estimateLabelWidth(name, fontPx) + NODE_HORIZONTAL_PADDING).coerceIn(minNodeWidth, maxNodeWidth)
+        var childrenWidth = 0f
+        children.forEachIndexed { index, child ->
+            if (index > 0) childrenWidth += nodeGapX
+            childrenWidth += child.subtreeWidth
+        }
+        var below = 0f
+        for (child in children) below = max(below, rowStep + child.treeHeight)
+        return MeasuredTree(
+            key = key,
+            kind = kind,
+            folded = folded,
+            width = width,
+            height = height,
+            children = children,
+            subtreeWidth = max(width, childrenWidth),
+            treeHeight = max(height, below),
+        )
+    }
+
+    // ---- warm 根序 ----
+
+    /** 指纹命中时按缓存里的根顺序重排（新根接在后面，未分类永远最后）；坐标照常全部重算。 */
+    private fun applyWarmRootOrder(roots: List<MeasuredTree>): List<MeasuredTree> {
+        val cached = warm?.takeIf { it.fingerprint == layoutFingerprint(graph) } ?: return roots
+        if (cached.rootOrder.isEmpty()) return roots
+        val byKey = roots.associateBy { it.key }
+        val ordered = ArrayList<MeasuredTree>(roots.size)
+        val used = HashSet<String>(roots.size)
+        for (key in cached.rootOrder) {
+            if (key == GRAPH_UNCLASSIFIED_KEY) continue
+            val root = byKey[key] ?: continue
+            if (used.add(key)) ordered.add(root)
+        }
+        for (root in roots) {
+            if (root.key != GRAPH_UNCLASSIFIED_KEY && used.add(root.key)) ordered.add(root)
+        }
+        byKey[GRAPH_UNCLASSIFIED_KEY]?.let(ordered::add)
+        return ordered
+    }
+
+    // ---- 摆放 ----
+
+    /**
+     * 递归摆一棵树：节点中心 = 子树中心（于是父节点居中于子节点跨度），子节点按顺序从左往右排。
+     */
+    private fun placeTree(
+        tree: MeasuredTree,
+        subtreeLeft: Float,
+        rowTop: Float,
+        depth: Int,
+        nodes: MutableMap<String, GraphNodeBox>,
+        links: MutableList<GraphLink>,
+        foldedKeys: MutableSet<String>,
+    ) {
+        val centerX = subtreeLeft + tree.subtreeWidth / 2f
+        val nodeLeft = centerX - tree.width / 2f
+        val nodeTop = rowTop + depth * rowStep
+        nodes[tree.key] = GraphNodeBox(
+            key = tree.key,
+            kind = tree.kind,
+            depth = depth,
+            bounds = GraphRect(nodeLeft, nodeTop, nodeLeft + tree.width, nodeTop + tree.height),
+            folded = tree.folded,
+        )
+        if (tree.folded) foldedKeys.add(tree.key)
+        if (tree.children.isEmpty()) return
+
+        var childrenWidth = 0f
+        tree.children.forEachIndexed { index, child ->
+            if (index > 0) childrenWidth += nodeGapX
+            childrenWidth += child.subtreeWidth
+        }
+        var childLeft = centerX - childrenWidth / 2f
+        for (child in tree.children) {
+            links.add(GraphLink(fromKey = tree.key, toKey = child.key))
+            placeTree(child, subtreeLeft = childLeft, rowTop = rowTop, depth = depth + 1, nodes = nodes, links = links, foldedKeys = foldedKeys)
+            childLeft += child.subtreeWidth + nodeGapX
+        }
+    }
+}
+
+/** 测量结果：一棵可见子树的骨架。宽高在构建时算好，摆放时只读。 */
+private data class MeasuredTree(
+    val key: String,
+    val kind: GraphNodeKind,
+    val folded: Boolean,
+    val width: Float,
+    val height: Float,
+    val children: List<MeasuredTree>,
+    val subtreeWidth: Float,
+    val treeHeight: Float,
+)
+
+/** 分类兜底顺序：与 Build 契约一致（sortOrder → name → key）。 */
+private val CATEGORY_ORDER: Comparator<GraphNode> =
+    compareBy<GraphNode>({ it.sortOrder }, { it.name }, { it.key })
+
+/** 散概念兜底顺序：与 Build 契约一致（noteCount 降序 → name → key）。 */
+private val CONCEPT_ORDER: Comparator<GraphNode> =
+    compareByDescending<GraphNode> { it.noteCount }.thenBy { it.name }.thenBy { it.key }
+
+/** 节点左右内边距合计：宽度 = 估宽 + 它（节点画成圆角胶囊，名字两侧各留 10dp）。 */
+private const val NODE_HORIZONTAL_PADDING = 20f
+
 /** ASCII 字符的宽度系数（em）。 */
 private const val ASCII_EM = 0.55
-/** 估宽余量：取整后再 ×1.06（设计 §4.5 ±15% 的一半，宁可留宽）。 */
+
+/** 估宽余量：向上取整后再 ×1.06（设计 §4.5 的 ±15% 误差内取宽）。 */
 private const val LABEL_WIDTH_MARGIN = 1.06
-/** 非根分类框的最小宽度（设计 §4.2 建议 max(200, 内容宽)）。 */
-private const val MIN_NON_ROOT_WIDTH = 200f
-/** 折叠框内容区最小宽度（设计 §4.2：max(160, headerW)）。 */
-private const val MIN_COLLAPSED_CONTENT_WIDTH = 160f
-/** 内容区宽度兜底，避免极端参数（父框被压得极窄）算出负宽。 */
-private const val MIN_CONTENT_WIDTH = 40f
-/** 未分类虚拟框标题。 */
+
+/** 未分类虚拟根树的标题（真名由 Canvas 兜底；布局只拿它估宽）。 */
 private const val UNCLASSIFIED_LABEL = "未分类"
+
 private const val LOD_TOO_LARGE_CONCEPTS = 5000
 private const val LOD_AGGREGATE_CONCEPTS = 2000
 private const val LOD_AGGREGATE_ZOOM = 0.3f
 private const val LOD_COMPACT_ZOOM = 0.55f
 private const val LOD_FULL_PER_NODE_AREA = 180.0
 
-/** 分类排序：sortOrder 升序 → name → key（确定性，不迭代 HashMap）。 */
-private val CATEGORY_ORDER: Comparator<GraphNode> =
-    compareBy<GraphNode>({ it.sortOrder }, { it.name }, { it.key })
-
-/** 概念排序：noteCount 降序 → name → key（笔记越多的概念越靠前）。 */
-private val CONCEPT_ORDER: Comparator<GraphNode> =
-    compareByDescending<GraphNode> { it.noteCount }.thenBy { it.name }.thenBy { it.key }
-
-/** 量完的一颗芯片；[x]/[y] 是相对所属框**内容区原点**（框内 padding 之后）的偏移。 */
-private class MeasuredChip(
-    val key: String,
-    val width: Float,
-    val height: Float,
-    val x: Float,
-    val y: Float,
-)
-
-/** 量完的子框 + 相对父框内容区原点的偏移。 */
-private class MeasuredChild(
-    val box: MeasuredBox,
-    val x: Float,
-    val y: Float,
-)
-
-/** 量完的分类框（相对坐标系，尚未落到世界坐标）。 */
-private class MeasuredBox(
-    val categoryKey: String,
-    val depth: Int,
-    val collapsed: Boolean,
-    val width: Float,
-    val height: Float,
-    val headerHeight: Float,
-    val contentWidth: Float,
-    val chips: List<MeasuredChip>,
-    val children: List<MeasuredChild>,
-)
-
-/** 流式排布前的芯片草稿。 */
-private class ChipDraft(
-    val key: String,
-    val width: Float,
-)
-
-/** 芯片流式网格（行优先，行高 = chipHeight）。 */
-private class ChipFlow(
-    val rows: List<List<ChipDraft>>,
-    val width: Float,
-    val height: Float,
-)
-
-/** 子框嵌套排布结果（[children] 里的 y 是相对子框块的偏移，[height] 是块高）。 */
-private class PackedChildren(
-    val children: List<MeasuredChild>,
-    val width: Float,
-    val height: Float,
-)
-
 /**
- * 一次布局计算的上下文：建树 → 测量 → 排布 → 写世界坐标。
- * 所有排序都在 [init] 里定死，[layout] 只做确定性遍历。
+ * 判断一个 code point 是否按「全角 / 1em」估算（CJK、假名、Hangul、全角标点、emoji 等）。
+ * 覆盖范围与设计 §4.5 的估宽口径一致；宁可估宽不可估窄。
  */
-private class PartitionLayout(
-    private val graph: KnowledgeGraph,
-    private val collapsed: Set<String>,
-    private val warm: LayoutCache?,
-    private val options: LayoutOptions,
-) {
-    /** 分类 → 直接子分类（已排序；键为父分类 key，null = 根）。 */
-    private val categoryChildren: Map<String?, List<GraphNode>>
-
-    /** 概念 → 所属分类（已排序；键为分类 key，[GRAPH_UNCLASSIFIED_KEY] = 未分类）。 */
-    private val conceptChildren: Map<String, List<GraphNode>>
-
-    /** 实际用到的折叠 key（图里存在的分类 + 有内容的未分类框）。 */
-    private val usedCollapsed: Set<String>
-
-    init {
-        val nodesByKey = graph.nodes
-        val categoryNodes = nodesByKey.values
-            .filter { it.kind == GraphNodeKind.CATEGORY }
-            .sortedBy { it.key }
-
-        // 有效父分类：父节点存在、是分类、且不是自己；否则回退成根（防御数据异常）。
-        val effectiveParent = HashMap<String, String?>(categoryNodes.size)
-        for (node in categoryNodes) {
-            effectiveParent[node.key] = node.parentKey?.takeIf { parentKey ->
-                parentKey != node.key && nodesByKey[parentKey]?.kind == GraphNodeKind.CATEGORY
-            }
-        }
-        // 断环：父链上再次遇到同一节点就把它提到根，保证递归一定收敛（Build 已保证深度 ≤5，这里兜底）。
-        for (node in categoryNodes) {
-            val seen = HashSet<String>()
-            var current: String? = node.key
-            while (current != null) {
-                if (!seen.add(current)) {
-                    effectiveParent[current] = null
-                    break
-                }
-                current = effectiveParent[current]
-            }
-        }
-
-        val categories = HashMap<String?, MutableList<GraphNode>>(categoryNodes.size)
-        val concepts = HashMap<String, MutableList<GraphNode>>(categoryNodes.size)
-        for (node in nodesByKey.values.sortedBy { it.key }) {
-            when (node.kind) {
-                GraphNodeKind.CATEGORY -> {
-                    categories.getOrPut(effectiveParent[node.key]) { ArrayList() }.add(node)
-                }
-                GraphNodeKind.CONCEPT -> {
-                    // 概念父节点必须是存在的分类，否则一律进未分类虚拟框。
-                    val parentKey = node.parentKey?.takeIf { nodesByKey[it]?.kind == GraphNodeKind.CATEGORY }
-                        ?: GRAPH_UNCLASSIFIED_KEY
-                    concepts.getOrPut(parentKey) { ArrayList() }.add(node)
-                }
-            }
-        }
-        categoryChildren = categories.mapValues { (_, list) -> list.sortedWith(CATEGORY_ORDER) }
-        conceptChildren = concepts.mapValues { (_, list) -> list.sortedWith(CONCEPT_ORDER) }
-        usedCollapsed = collapsed.filter { key ->
-            if (key == GRAPH_UNCLASSIFIED_KEY) {
-                conceptChildren[GRAPH_UNCLASSIFIED_KEY].orEmpty().isNotEmpty()
-            } else {
-                nodesByKey[key]?.kind == GraphNodeKind.CATEGORY
-            }
-        }.toSet()
-    }
-
-    /** 计算完整布局：根块 masonry + 递归落坐标 + 算 bounds。 */
-    fun layout(): GraphLayout {
-        val rootKeys = orderedRootKeys()
-        if (rootKeys.isEmpty()) return GraphLayout.Empty
-        val measuredRoots = rootKeys.map { key -> measure(key, labelOf(key), depth = 0, maxOuterWidth = options.maxRootWidth) }
-
-        val boxes = LinkedHashMap<String, GraphBox>(measuredRoots.size)
-        val chips = LinkedHashMap<String, GraphChipItem>()
-        val roots = ArrayList<GraphBox>(measuredRoots.size)
-        var union: GraphRect? = null
-        var x = 0f
-        var y = 0f
-        var rowHeight = 0f
-        for (root in measuredRoots) {
-            if (x > 0f && x + root.width > options.maxCanvasWidth) {
-                y += rowHeight + options.rootGap
-                x = 0f
-                rowHeight = 0f
-            }
-            val box = place(root, options.padding + x, options.padding + y, boxes, chips)
-            roots.add(box)
-            union = union?.union(box.bounds) ?: box.bounds
-            x += root.width + options.columnGap
-            rowHeight = max(rowHeight, root.height)
-        }
-        val bounds = (union ?: GraphRect.Zero).inflate(options.padding)
-        return GraphLayout(
-            bounds = bounds,
-            roots = roots,
-            boxesByKey = boxes,
-            chipsByKey = chips,
-            collapsed = usedCollapsed,
-        )
-    }
-
-    /** 根块顺序：用户分类自然序；warm 命中时按 rootOrder 复原（新出现的接后面）；未分类永远最后。 */
-    private fun orderedRootKeys(): List<String> {
-        val roots = categoryChildren[null].orEmpty()
-        val result = ArrayList<String>(roots.size + 1)
-        val cached = warm
-        if (cached != null) {
-            val rootKeys = roots.map { it.key }.toHashSet()
-            val used = HashSet<String>()
-            for (key in cached.rootOrder) {
-                if (key in rootKeys && used.add(key)) result.add(key)
-            }
-            val fallback = roots
-                .filter { it.key !in used }
-                .sortedWith(warmFallbackOrder(cached))
-            for (node in fallback) result.add(node.key)
-        } else {
-            for (node in roots) result.add(node.key)
-        }
-        if (conceptChildren[GRAPH_UNCLASSIFIED_KEY].orEmpty().isNotEmpty()) {
-            result.add(GRAPH_UNCLASSIFIED_KEY)
-        }
-        return result
-    }
-
-    /** warm 命中后新根块的排序：仍按 (sortOrder, name)，旧坐标只做同序 tie-break（不用于摆放）。 */
-    private fun warmFallbackOrder(cached: LayoutCache): Comparator<GraphNode> =
-        compareBy<GraphNode> { it.sortOrder }
-            .thenBy { it.name }
-            .thenBy { node -> cached.anchors[node.key]?.y ?: Float.POSITIVE_INFINITY }
-            .thenBy { node -> cached.anchors[node.key]?.x ?: Float.POSITIVE_INFINITY }
-            .thenBy { it.key }
-
-    private fun labelOf(key: String): String =
-        if (key == GRAPH_UNCLASSIFIED_KEY) UNCLASSIFIED_LABEL else graph.nodes[key]?.name ?: key
-
-    /**
-     * 测量一个分类框（[maxOuterWidth] 是父容器允许给它的最大外宽）。
-     * 先按「可能的最大内容宽」量一遍得到自然宽，再按 clamp 后的最终内容宽重排被压窄的芯片/子框。
-     */
-    private fun measure(key: String, name: String, depth: Int, maxOuterWidth: Float): MeasuredBox {
-        val padding = options.boxPadding
-        val maxContentWidth = max(MIN_CONTENT_WIDTH, maxOuterWidth - padding * 2f)
-
-        if (key in usedCollapsed) {
-            val headerWidth = estimateLabelWidth(name, options.headerFontPx)
-            val contentWidth = max(MIN_COLLAPSED_CONTENT_WIDTH, headerWidth).coerceAtMost(maxContentWidth)
-            val width = (contentWidth + padding * 2f).coerceAtMost(maxOuterWidth)
-            return MeasuredBox(
-                categoryKey = key,
-                depth = depth,
-                collapsed = true,
-                width = width,
-                height = options.headerHeight + padding * 2f,
-                headerHeight = options.headerHeight,
-                contentWidth = width - padding * 2f,
-                chips = emptyList(),
-                children = emptyList(),
-            )
-        }
-
-        val chipNodes = conceptChildren[key].orEmpty()
-        val childNodes = categoryChildren[key].orEmpty()
-        val headerWidth = estimateLabelWidth(name, options.headerFontPx)
-
-        // 第一遍：按本框内容宽上界测量（子框宽 ≤ 本框内容宽上界）。
-        val childrenFirstPass = childNodes.map { child ->
-            measure(child.key, labelOf(child.key), depth + 1, maxContentWidth)
-        }
-        val chipsFirstPass = flowChips(chipNodes, maxContentWidth)
-        val widestChild = childrenFirstPass.maxOfOrNull { it.width } ?: 0f
-        val rawContentWidth = max(max(headerWidth, chipsFirstPass.width), widestChild)
-        val minWidth = if (depth == 0) options.minRootWidth else MIN_NON_ROOT_WIDTH
-        var width = (rawContentWidth + padding * 2f)
-            .coerceAtLeast(minWidth)
-            .coerceAtMost(options.maxRootWidth)
-            .coerceAtMost(maxOuterWidth)
-        var contentWidth = width - padding * 2f
-        if (contentWidth < MIN_CONTENT_WIDTH) {
-            contentWidth = MIN_CONTENT_WIDTH
-            width = contentWidth + padding * 2f
-        }
-
-        // 第二遍：框被 maxRootWidth / 父框内容宽压窄时，按最终内容宽重新换行 / 重量子框。
-        val chips = if (chipsFirstPass.width > contentWidth) flowChips(chipNodes, contentWidth) else chipsFirstPass
-        val children = if (widestChild > contentWidth) {
-            childrenFirstPass.mapIndexed { index, child ->
-                if (child.width > contentWidth) {
-                    measure(childNodes[index].key, labelOf(childNodes[index].key), depth + 1, contentWidth)
-                } else {
-                    child
-                }
-            }
-        } else {
-            childrenFirstPass
-        }
-
-        // 纵向布局：header → (chipGap + 芯片网格) → (categoryGap + 子框块) → padding。
-        val chipBlockHeight = if (chips.rows.isEmpty()) 0f else options.chipGap + chips.height
-        val packed = packChildren(children, contentWidth, options.categoryGap)
-        val childrenBlockHeight = if (children.isEmpty()) 0f else options.categoryGap + packed.height
-        val height = padding * 2f + options.headerHeight + chipBlockHeight + childrenBlockHeight
-
-        // 芯片相对内容区原点的坐标（内容区原点 = 框内 padding 之后）。
-        val measuredChips = ArrayList<MeasuredChip>(chipNodes.size)
-        var chipY = options.headerHeight + options.chipGap
-        for (row in chips.rows) {
-            var chipX = 0f
-            for (draft in row) {
-                measuredChips.add(
-                    MeasuredChip(
-                        key = draft.key,
-                        width = draft.width,
-                        height = options.chipHeight,
-                        x = chipX,
-                        y = chipY,
-                    ),
-                )
-                chipX += draft.width + options.chipGap
-            }
-            chipY += options.chipHeight + options.chipGap
-        }
-
-        // 子框相对内容区原点的坐标：芯片块之后，隔 categoryGap。
-        val childrenTop = options.headerHeight + chipBlockHeight
-        val measuredChildren = packed.children.map { child ->
-            MeasuredChild(
-                box = child.box,
-                x = child.x,
-                y = childrenTop + options.categoryGap + child.y,
-            )
-        }
-
-        return MeasuredBox(
-            categoryKey = key,
-            depth = depth,
-            collapsed = false,
-            width = width,
-            height = height,
-            headerHeight = options.headerHeight,
-            contentWidth = contentWidth,
-            chips = measuredChips,
-            children = measuredChildren,
-        )
-    }
-
-    /** 芯片流式换行：每行最多 [LayoutOptions.maxChipColumns] 列，且行宽不超过 [maxWidth]。 */
-    private fun flowChips(nodes: List<GraphNode>, maxWidth: Float): ChipFlow {
-        if (nodes.isEmpty()) return ChipFlow(emptyList(), 0f, 0f)
-        val maxColumns = options.maxChipColumns.coerceAtLeast(1)
-        val rows = ArrayList<List<ChipDraft>>()
-        var row = ArrayList<ChipDraft>()
-        var rowWidth = 0f
-        for (node in nodes) {
-            var chipWidth = estimateLabelWidth(node.name, options.chipFontPx) + CHIP_HORIZONTAL_PADDING
-            if (chipWidth > maxWidth) chipWidth = maxWidth
-            if (row.isNotEmpty()) {
-                val nextWidth = rowWidth + options.chipGap + chipWidth
-                if (row.size >= maxColumns || nextWidth > maxWidth) {
-                    rows.add(row)
-                    row = ArrayList()
-                    rowWidth = 0f
-                }
-            }
-            row.add(ChipDraft(node.key, chipWidth))
-            rowWidth = if (row.size == 1) chipWidth else rowWidth + options.chipGap + chipWidth
-        }
-        if (row.isNotEmpty()) rows.add(row)
-        val flowWidth = rows.maxOfOrNull { singleRow ->
-            singleRow.fold(0f) { acc, chip -> acc + chip.width } + options.chipGap * (singleRow.size - 1)
-        } ?: 0f
-        val flowHeight = rows.size * options.chipHeight + (rows.size - 1) * options.chipGap
-        return ChipFlow(rows, flowWidth, flowHeight)
-    }
-
-    /** 子框嵌套排布：按顺序放到父框内容宽内，放不下换行（行高 = 该行最高子框）。 */
-    private fun packChildren(children: List<MeasuredBox>, maxWidth: Float, gap: Float): PackedChildren {
-        if (children.isEmpty()) return PackedChildren(emptyList(), 0f, 0f)
-        val placed = ArrayList<MeasuredChild>(children.size)
-        var x = 0f
-        var y = 0f
-        var rowHeight = 0f
-        var blockWidth = 0f
-        for (child in children) {
-            if (x > 0f && x + child.width > maxWidth) {
-                y += rowHeight + gap
-                x = 0f
-                rowHeight = 0f
-            }
-            placed.add(MeasuredChild(child, x, y))
-            x += child.width + gap
-            rowHeight = max(rowHeight, child.height)
-            blockWidth = max(blockWidth, x - gap)
-        }
-        return PackedChildren(placed, blockWidth, y + rowHeight)
-    }
-
-    /** 递归落世界坐标：父框坐标 + 相对偏移，并顺手登记 boxesByKey / chipsByKey。 */
-    private fun place(
-        measured: MeasuredBox,
-        left: Float,
-        top: Float,
-        boxes: MutableMap<String, GraphBox>,
-        chips: MutableMap<String, GraphChipItem>,
-    ): GraphBox {
-        val padding = options.boxPadding
-        val contentLeft = left + padding
-        val contentTop = top + padding
-
-        val childBoxes = ArrayList<GraphBox>(measured.children.size)
-        for (child in measured.children) {
-            childBoxes.add(place(child.box, contentLeft + child.x, contentTop + child.y, boxes, chips))
-        }
-
-        val chipKeys = ArrayList<String>(measured.chips.size)
-        for (chip in measured.chips) {
-            chips[chip.key] = GraphChipItem(
-                key = chip.key,
-                bounds = GraphRect(
-                    left = contentLeft + chip.x,
-                    top = contentTop + chip.y,
-                    right = contentLeft + chip.x + chip.width,
-                    bottom = contentTop + chip.y + chip.height,
-                ),
-            )
-            chipKeys.add(chip.key)
-        }
-
-        val box = GraphBox(
-            categoryKey = measured.categoryKey,
-            depth = measured.depth,
-            collapsed = measured.collapsed,
-            bounds = GraphRect(left, top, left + measured.width, top + measured.height),
-            headerBounds = GraphRect(
-                left = contentLeft,
-                top = contentTop,
-                right = left + measured.width - padding,
-                bottom = contentTop + measured.headerHeight,
-            ),
-            chips = chipKeys,
-            children = childBoxes,
-        )
-        boxes[measured.categoryKey] = box
-        return box
-    }
-}
-
-/** 判断一个 code point 是否按「全角 / 1em」估算（CJK、假名、Hangul、全角标点、emoji 等）。 */
 private fun isWideCodePoint(codePoint: Int): Boolean = when (codePoint) {
     // Hangul Jamo 初声 / CJK 部首·标点·假名·注音 / 假名·CJK 兼容·带圈字符
     in 0x1100..0x115F, in 0x2E80..0x303E, in 0x3041..0x33FF,

@@ -20,8 +20,13 @@ package dev.trellis.app.desktop
  * 所有函数都返回新对象（data class copy），从不原地改传入的 [GraphUserData]。
  */
 
-/** 分类树深度上限（根分类算第 1 层，设计 §3.3）。 */
-internal const val MAX_CATEGORY_DEPTH: Int = 5
+/**
+ * 分类树深度安全上限（根分类算第 1 层）。
+ *
+ * 设计 v1.2 起**不再预制分类深度**：深度由 AI 归类时决定（G1），UI 没有深度开关。
+ * 这里保留一个 32 层的纯逻辑护栏，只为防坏数据/死循环，正常使用远碰不到。
+ */
+internal const val MAX_CATEGORY_DEPTH: Int = 32
 
 /** 分类名字符上限（设计 §3.3 / §7.2）。 */
 internal const val MAX_CATEGORY_NAME_LENGTH: Int = 40

@@ -1,20 +1,454 @@
 package dev.trellis.app.desktop
 
+import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertNotNull
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * [KnowledgeGraphLayout] 的纯逻辑单测：不碰 Compose、不读文件、不用时钟。
+ * 知识网络 v1.2 森林式树布局的纯逻辑单测：不碰 Compose、不读文件、不用时钟。
+ *
  * 图数据全部在用例里直接构造（分类 = [GraphNodeKind.CATEGORY]，概念 = [GraphNodeKind.CONCEPT]，
- * 概念 `parentKey` 指向所属分类，`null` 表示未分类）。
+ * 概念 `parentKey` 指向所属分类，`null` 表示未分类；[graphOf] 会按 Build 的规则派生 `childrenOf`）。
+ *
+ * 覆盖：每类一棵树、父居中于子跨度、同层不重叠、森林换行、折叠剪枝、未分类最后、
+ * 确定性、warm 根序、bounds、估宽与 LOD 工具函数。
  */
 class KnowledgeGraphLayoutTest {
 
+    // ------------------------------------------------------------------ 空图 / 单树
+
+    @Test
+    fun noNodesYieldsEmpty() {
+        val layout = layoutOf(KnowledgeGraph.Empty)
+        assertEquals(GraphLayout.Empty, layout)
+        assertEquals(GraphRect.Zero, layout.bounds)
+        assertTrue(layout.nodes.isEmpty())
+        assertTrue(layout.roots.isEmpty())
+        assertTrue(layout.links.isEmpty())
+        assertTrue(layout.collapsed.isEmpty())
+    }
+
+    @Test
+    fun singleConceptUnderRoot() {
+        val graph = graphOf(
+            category("c_root", "根"),
+            concept("k_1", "概念", parentKey = "c_root"),
+        )
+        val layout = layoutOf(graph)
+
+        assertEquals(listOf("c_root"), layout.roots)
+        assertEquals(2, layout.nodes.size)
+        val root = layout.nodes.getValue("c_root")
+        val child = layout.nodes.getValue("k_1")
+        assertEquals(0, root.depth)
+        assertEquals(1, child.depth)
+        assertEquals(GraphNodeKind.CATEGORY, root.kind)
+        assertEquals(GraphNodeKind.CONCEPT, child.kind)
+        assertEquals(root.bounds.centerX, child.bounds.centerX, 0.01f)
+        assertEquals(rowStep, child.bounds.top - root.bounds.top, 0.01f)
+        assertEquals(listOf(GraphLink("c_root", "k_1")), layout.links)
+        assertTrue(layout.bounds.contains(root.bounds.topLeft))
+        assertTrue(layout.bounds.contains(GraphPoint(child.bounds.right, child.bounds.bottom)))
+    }
+
+    @Test
+    fun singleCategoryWithTwoConcepts() {
+        val graph = graphOf(
+            category("c_root", "根"),
+            // 概念顺序按 (noteCount 降序, name, key)：显式给 noteCount，避免中文 codepoint 顺序影响断言。
+            concept("k_a", "甲", parentKey = "c_root", noteCount = 5),
+            concept("k_b", "乙", parentKey = "c_root", noteCount = 3),
+        )
+        val layout = layoutOf(graph)
+
+        assertEquals(listOf(GraphLink("c_root", "k_a"), GraphLink("c_root", "k_b")), layout.links)
+        val a = layout.nodes.getValue("k_a").bounds
+        val b = layout.nodes.getValue("k_b").bounds
+        assertTrue(a.right < b.left)
+        assertEquals(18f, b.left - a.right, 0.01f) // 默认 nodeGapX
+        assertEquals(a.top, b.top, 0.01f)
+        val root = layout.nodes.getValue("c_root").bounds
+        // 父节点水平居中于两个子节点的跨度
+        assertEquals((a.centerX + b.centerX) / 2f, root.centerX, 0.01f)
+        assertTrue(root.top < a.top)
+    }
+
+    @Test
+    fun siblingsDoNotOverlap() {
+        val nodes = arrayOf<GraphNode>(
+            category("c_root", "根"),
+            concept("k_0", "甲", parentKey = "c_root"),
+            concept("k_1", "乙", parentKey = "c_root"),
+            concept("k_2", "丙", parentKey = "c_root"),
+            concept("k_3", "丁", parentKey = "c_root"),
+            concept("k_4", "戊", parentKey = "c_root"),
+        )
+        val layout = layoutOf(graphOf(*nodes))
+
+        val children = layout.links
+            .filter { it.fromKey == "c_root" }
+            .map { layout.nodes.getValue(it.toKey).bounds }
+        assertEquals(5, children.size)
+        for (i in children.indices) {
+            for (j in i + 1 until children.size) assertNoOverlap(children[i], children[j])
+        }
+    }
+
+    // ------------------------------------------------------------------ 顺序 / 折叠 / 未分类
+
+    @Test
+    fun categoriesAndConceptsOrdering() {
+        val graph = KnowledgeGraph(
+            nodes = linkedMapOf(
+                "c_root" to category("c_root", "根"),
+                "c_sub" to category("c_sub", "子类", parentKey = "c_root", sortOrder = 1),
+                "k_1" to concept("k_1", "概念", parentKey = "c_root", noteCount = 9),
+            ),
+            childrenOf = mapOf<String?, List<String>>(
+                null to listOf("c_root"),
+                "c_root" to listOf("c_sub", "k_1"),
+            ),
+        )
+        val layout = layoutOf(graph)
+
+        // Build 契约：同一父节点下子分类在前、概念在后。
+        assertEquals(listOf(GraphLink("c_root", "c_sub"), GraphLink("c_root", "k_1")), layout.links)
+        assertEquals(1, layout.nodes.getValue("c_sub").depth)
+        assertEquals(1, layout.nodes.getValue("k_1").depth)
+        assertTrue(centerOf(layout, "c_sub").x < centerOf(layout, "k_1").x)
+    }
+
+    @Test
+    fun collapsedCategoryHidesChildren() {
+        val graph = graphOf(
+            category("c_root", "根"),
+            category("c_mid", "中类", parentKey = "c_root"),
+            concept("k_1", "概念", parentKey = "c_mid"),
+        )
+        val expanded = layoutOf(graph)
+        val collapsed = layoutOf(graph, collapsed = setOf("c_mid"))
+
+        assertTrue(expanded.nodes.containsKey("k_1"))
+        assertFalse(collapsed.nodes.containsKey("k_1"))
+        assertEquals(2, collapsed.nodes.size)
+        assertTrue(collapsed.nodes.getValue("c_mid").folded)
+        assertFalse(collapsed.nodes.getValue("c_root").folded)
+        assertEquals(setOf("c_mid"), collapsed.collapsed)
+        assertEquals(listOf(GraphLink("c_root", "c_mid")), collapsed.links)
+        assertTrue(collapsed.bounds.height < expanded.bounds.height)
+    }
+
+    @Test
+    fun collapsingRootLeavesOneNode() {
+        val graph = graphOf(
+            category("c_root", "根"),
+            category("c_mid", "中类", parentKey = "c_root"),
+            concept("k_1", "概念", parentKey = "c_mid"),
+        )
+        val layout = layoutOf(graph, collapsed = setOf("c_root"))
+
+        assertEquals(listOf("c_root"), layout.roots)
+        assertEquals(1, layout.nodes.size)
+        assertTrue(layout.nodes.getValue("c_root").folded)
+        assertTrue(layout.links.isEmpty())
+        assertEquals(setOf("c_root"), layout.collapsed)
+        assertTrue(layout.bounds.contains(layout.nodes.getValue("c_root").bounds.topLeft))
+    }
+
+    @Test
+    fun unclassifiedIsLastRoot() {
+        val graph = graphOf(
+            category("c_a", "甲类", sortOrder = 0),
+            concept("k_a", "甲概念", parentKey = "c_a"),
+            category("c_b", "乙类", sortOrder = 1),
+            concept("k_b", "乙概念", parentKey = "c_b"),
+            concept("k_loose1", "散一"),
+            concept("k_loose2", "散二"),
+        )
+        val layout = layoutOf(graph)
+
+        assertEquals(listOf("c_a", "c_b", GRAPH_UNCLASSIFIED_KEY), layout.roots)
+        val unclassified = layout.nodes.getValue(GRAPH_UNCLASSIFIED_KEY)
+        assertEquals(GraphNodeKind.CATEGORY, unclassified.kind)
+        assertEquals(0, unclassified.depth)
+        assertFalse(unclassified.folded)
+        assertEquals(1, layout.nodes.getValue("k_loose1").depth)
+        assertEquals(1, layout.nodes.getValue("k_loose2").depth)
+        assertTrue(layout.links.contains(GraphLink(GRAPH_UNCLASSIFIED_KEY, "k_loose1")))
+        assertTrue(layout.links.contains(GraphLink(GRAPH_UNCLASSIFIED_KEY, "k_loose2")))
+        assertTrue(unclassified.bounds.left > layout.nodes.getValue("c_b").bounds.left)
+    }
+
+    // ------------------------------------------------------------------ 森林 / 换行 / 深树
+
+    @Test
+    fun multipleTreesAreSeparated() {
+        val graph = graphOf(
+            // 根顺序按 (sortOrder, name, key)：显式给 sortOrder，避免中文 codepoint 顺序影响断言。
+            category("c_a", "甲类", sortOrder = 0),
+            concept("k_a1", "甲一", parentKey = "c_a"),
+            concept("k_a2", "甲二", parentKey = "c_a"),
+            category("c_b", "乙类", sortOrder = 1),
+            concept("k_b1", "乙一", parentKey = "c_b"),
+            concept("k_b2", "乙二", parentKey = "c_b"),
+        )
+        val layout = layoutOf(graph)
+
+        val firstTree = boundsUnder(layout, "c_a")
+        val secondTree = boundsUnder(layout, "c_b")
+        assertEquals(72f, secondTree.left - firstTree.right, 0.01f) // 默认 treeGapX
+        assertEquals(firstTree.top, secondTree.top, 0.01f)
+        assertTrue(firstTree.right < secondTree.left)
+    }
+
+    @Test
+    fun deepChainTenLevels() {
+        val nodes = ArrayList<GraphNode>()
+        nodes.add(category("c_0", "第0层"))
+        for (level in 1 until 10) {
+            nodes.add(category("c_$level", "第${level}层", parentKey = "c_${level - 1}"))
+        }
+        nodes.add(concept("k_deep", "叶子", parentKey = "c_9"))
+        val layout = layoutOf(graphOf(*nodes.toTypedArray()))
+
+        assertEquals(11, layout.nodes.size)
+        assertEquals(10, layout.links.size)
+        for (level in 0 until 10) assertEquals(level, layout.nodes.getValue("c_$level").depth)
+        assertEquals(10, layout.nodes.getValue("k_deep").depth)
+        for (level in 1 until 10) {
+            val parent = layout.nodes.getValue("c_${level - 1}").bounds
+            val child = layout.nodes.getValue("c_$level").bounds
+            assertTrue(child.top > parent.top)
+            // 单链：每层父节点都居中于唯一的子节点
+            assertEquals(parent.centerX, child.centerX, 0.01f)
+        }
+    }
+
+    @Test
+    fun wideForestWrapsRows() {
+        val nodes = ArrayList<GraphNode>()
+        for (index in 0 until 6) {
+            nodes.add(category("c_$index", "a$index"))
+            nodes.add(concept("k_$index", "b$index", parentKey = "c_$index"))
+        }
+        val options = LayoutOptions(maxCanvasWidth = 400f)
+        val layout = layoutOf(graphOf(*nodes.toTypedArray()), options = options)
+
+        assertEquals(6, layout.roots.size)
+        val rootTops = layout.roots.map { layout.nodes.getValue(it).bounds.top }
+        val rows = rootTops.distinct()
+        assertEquals(2, rows.size) // 一行放 3 棵，共两行
+        assertEquals(listOf(3, 3), rows.map { rowTop -> rootTops.count { abs(it - rowTop) < 0.01f } })
+        assertEquals(32f, rows.first(), 0.01f) // 第一行从 padding 起
+        assertTrue(rows.last() > rows.first())
+    }
+
+    // ------------------------------------------------------------------ 确定性 / warm
+
+    @Test
+    fun deterministic() {
+        val graph = sampleGraph()
+        val first = layoutOf(graph, collapsed = setOf("c_a_sub"))
+        val second = layoutOf(graph, collapsed = setOf("c_a_sub"))
+
+        assertEquals(first, second)
+        assertEquals(first.nodes.keys.toList(), second.nodes.keys.toList())
+        assertEquals(first.roots, second.roots)
+        assertEquals(first.links, second.links)
+        assertEquals(first.bounds, second.bounds)
+        assertEquals(first.collapsed, second.collapsed)
+    }
+
+    @Test
+    fun inputOrderIrrelevant() {
+        val nodes = arrayOf<GraphNode>(
+            category("c_a", "甲", sortOrder = 0),
+            concept("k_a", "甲概念", parentKey = "c_a"),
+            category("c_b", "乙", sortOrder = 1),
+            concept("k_b", "乙概念", parentKey = "c_b"),
+            concept("k_loose", "散概念"),
+        )
+        val forward = layoutOf(graphOf(*nodes))
+        val reversed = layoutOf(graphOf(*nodes.reversedArray()))
+
+        assertEquals(forward.roots, reversed.roots)
+        assertEquals(forward.links, reversed.links)
+        assertEquals(forward.nodes, reversed.nodes)
+        assertEquals(forward.bounds, reversed.bounds)
+    }
+
+    @Test
+    fun warmRootOrderIsRespected() {
+        val graph = graphOf(
+            category("c_a", "甲", sortOrder = 0),
+            category("c_b", "乙", sortOrder = 1),
+            category("c_c", "丙", sortOrder = 2),
+            concept("k_a", "甲概念", parentKey = "c_a"),
+        )
+        val cold = layoutOf(graph)
+        assertEquals(listOf("c_a", "c_b", "c_c"), cold.roots)
+
+        // 指纹命中：按缓存顺序重排根，未知 key 忽略，新根接在后面。
+        val warm = LayoutCache(
+            fingerprint = layoutFingerprint(graph),
+            rootOrder = listOf("c_c", "c_a", "c_missing"),
+        )
+        val warmed = layoutOf(graph, warm = warm)
+        assertEquals(listOf("c_c", "c_a", "c_b"), warmed.roots)
+        assertEquals(cold.nodes.keys, warmed.nodes.keys)
+        assertTrue(warmed.nodes.getValue("c_c").bounds.left < warmed.nodes.getValue("c_a").bounds.left)
+
+        // 指纹不匹配：退回冷计算的确定性顺序（sortOrder → name → key）。
+        val stale = LayoutCache(
+            fingerprint = layoutFingerprint(graph) xor 1L,
+            rootOrder = listOf("c_c", "c_a"),
+        )
+        assertEquals(listOf("c_a", "c_b", "c_c"), layoutOf(graph, warm = stale).roots)
+    }
+
+    @Test
+    fun warmKeepsUnclassifiedLast() {
+        val graph = graphOf(
+            category("c_a", "甲", sortOrder = 0),
+            category("c_b", "乙", sortOrder = 1),
+            concept("k_loose", "散概念"),
+        )
+        val warm = LayoutCache(
+            fingerprint = layoutFingerprint(graph),
+            rootOrder = listOf(GRAPH_UNCLASSIFIED_KEY, "c_b"),
+        )
+        assertEquals(
+            listOf("c_b", "c_a", GRAPH_UNCLASSIFIED_KEY),
+            layoutOf(graph, warm = warm).roots,
+        )
+    }
+
+    // ------------------------------------------------------------------ bounds / 可见性
+
+    @Test
+    fun boundsContainAllNodes() {
+        val layout = layoutOf(sampleGraph())
+        assertTrue(layout.nodes.isNotEmpty())
+
+        for (box in layout.nodes.values) {
+            assertTrue(layout.bounds.contains(box.bounds.topLeft), "bounds 应包含节点 ${box.key} 的左上角")
+            assertTrue(
+                layout.bounds.contains(GraphPoint(box.bounds.right, box.bounds.bottom)),
+                "bounds 应包含节点 ${box.key} 的右下角",
+            )
+        }
+        val minLeft = layout.nodes.values.minOf { it.bounds.left }
+        val minTop = layout.nodes.values.minOf { it.bounds.top }
+        val maxRight = layout.nodes.values.maxOf { it.bounds.right }
+        val maxBottom = layout.nodes.values.maxOf { it.bounds.bottom }
+        assertEquals(32f, minLeft - layout.bounds.left, 0.01f) // padding
+        assertEquals(32f, minTop - layout.bounds.top, 0.01f)
+        assertEquals(32f, layout.bounds.right - maxRight, 0.01f)
+        assertEquals(32f, layout.bounds.bottom - maxBottom, 0.01f)
+    }
+
+    @Test
+    fun linksOnlyBetweenVisibleNodes() {
+        val graph = sampleGraph()
+        val layout = layoutOf(graph, collapsed = setOf("c_a_sub"))
+
+        for (link in layout.links) {
+            assertTrue(link.fromKey in layout.nodes, "link 起点应在可见节点里：$link")
+            assertTrue(link.toKey in layout.nodes, "link 终点应在可见节点里：$link")
+        }
+        val incoming = layout.links.groupingBy { it.toKey }.eachCount()
+        for (key in layout.roots) assertFalse(incoming.containsKey(key), "根节点不应有入边：$key")
+        for (key in layout.nodes.keys) {
+            if (key !in layout.roots) assertEquals(1, incoming[key], "非根节点应恰好一条入边：$key")
+        }
+    }
+
+    @Test
+    fun collapsedKeysOutsideGraphIgnored() {
+        val graph = sampleGraph()
+        val baseline = layoutOf(graph)
+        val ignored = layoutOf(graph, collapsed = setOf("missing_category", "k_loose"))
+
+        // 不存在的分类、概念 key 都不产生折叠（概念本来就没有子节点）。
+        assertEquals(baseline, ignored)
+        assertTrue(ignored.collapsed.isEmpty())
+    }
+
+    @Test
+    fun emptyCategoryIsLeaf() {
+        val layout = layoutOf(graphOf(category("c_empty", "空分类")))
+        assertEquals(listOf("c_empty"), layout.roots)
+        assertEquals(1, layout.nodes.size)
+        assertTrue(layout.links.isEmpty())
+        assertFalse(layout.nodes.getValue("c_empty").folded)
+        assertEquals(0, layout.nodes.getValue("c_empty").depth)
+    }
+
+    // ------------------------------------------------------------------ 工具函数：估宽 / LOD / 节点宽
+
+    @Test
+    fun estimateLabelWidthCjkWiderThanAscii() {
+        assertTrue(estimateLabelWidth("概念树", 12f) > estimateLabelWidth("abc", 12f))
+        assertEquals(0f, estimateLabelWidth("", 12f))
+        assertEquals(0f, estimateLabelWidth("概念", 0f))
+        assertTrue(estimateLabelWidth("Ａ", 12f) > estimateLabelWidth("A", 12f)) // 全角 > 半角
+        assertTrue(estimateLabelWidth("abc", 14f) > estimateLabelWidth("abc", 12f))
+    }
+
+    @Test
+    fun estimateLabelWidthMonotonic() {
+        val widths = listOf("概", "概念", "概念树", "概念树布局").map { estimateLabelWidth(it, 12f) }
+        for (index in 1 until widths.size) {
+            assertTrue(widths[index] > widths[index - 1], "更长的名字应估得更宽：$widths")
+        }
+        assertTrue(estimateLabelWidth("a", 12f) > 0f)
+    }
+
+    @Test
+    fun lodForThresholds() {
+        val viewportArea = 960_000f
+        assertEquals(LodLevel.Full, lodFor(1f, 100, viewportArea))
+        assertEquals(LodLevel.Compact, lodFor(0.54f, 100, viewportArea))
+        assertEquals(LodLevel.Compact, lodFor(1f, 100, 1000f))
+        assertEquals(LodLevel.Aggregate, lodFor(0.2f, 100, viewportArea))
+        assertEquals(LodLevel.Aggregate, lodFor(1f, 2001, viewportArea))
+        assertEquals(LodLevel.Aggregate, lodFor(1f, 5000, viewportArea))
+        assertEquals(LodLevel.TooLarge, lodFor(1f, 5001, viewportArea))
+        assertEquals(LodLevel.Aggregate, lodFor(Float.NaN, 100, viewportArea))
+        assertEquals(LodLevel.Full, lodFor(1f, 100, 18_000f))
+        assertEquals(LodLevel.Compact, lodFor(1f, 100, 17_999f))
+    }
+
+    @Test
+    fun nodeWidthClamped() {
+        val longName = "超长名字".repeat(40)
+        val graph = graphOf(
+            category("c_root", "根"),
+            concept("k_long", longName, parentKey = "c_root"),
+            concept("k_short", "a", parentKey = "c_root"),
+        )
+        val layout = layoutOf(graph)
+        assertEquals(260f, layout.nodes.getValue("k_long").bounds.width, 0.01f) // 默认 maxNodeWidth
+        assertEquals(64f, layout.nodes.getValue("k_short").bounds.width, 0.01f) // 默认 minNodeWidth
+
+        val custom = layoutOf(graph, options = LayoutOptions(minNodeWidth = 40f, maxNodeWidth = 100f))
+        assertEquals(100f, custom.nodes.getValue("k_long").bounds.width, 0.01f)
+        assertEquals(40f, custom.nodes.getValue("k_short").bounds.width, 0.01f)
+    }
+
     // ------------------------------------------------------------------ 构造工具
+
+    /** 一层的纵向步长（与实现同口径：`max(概念高, 分类高) + 层间距`）。 */
+    private val rowStep: Float = maxOf(LayoutOptions().nodeHeight, LayoutOptions().categoryHeight) + LayoutOptions().rowGapY
+
+    private fun layoutOf(
+        graph: KnowledgeGraph,
+        collapsed: Set<String> = emptySet(),
+        warm: LayoutCache? = null,
+        options: LayoutOptions = LayoutOptions(),
+    ): GraphLayout = layoutKnowledgeGraph(graph, collapsed, warm, options)
 
     private fun category(
         key: String,
@@ -43,565 +477,81 @@ class KnowledgeGraphLayoutTest {
         noteCount = noteCount,
     )
 
-    /** 用节点列表拼图；childrenOf 只是占位（布局层按 parentKey 建树，不依赖它的顺序）。 */
+    /**
+     * 按 Build 的 `childrenOf` 规则建图：根分类在前、未分类概念在后；同一父节点下子分类在前、概念在后。
+     * （[layoutKnowledgeGraph] 也做了兜底，但测试里保持与生产构建同形，避免测的路径不一致。）
+     */
     private fun graphOf(vararg nodes: GraphNode): KnowledgeGraph {
-        val nodesByKey = LinkedHashMap<String, GraphNode>()
+        val nodesByKey = LinkedHashMap<String, GraphNode>(nodes.size)
         for (node in nodes) nodesByKey[node.key] = node
-        val children = LinkedHashMap<String?, MutableList<String>>()
-        for (node in nodes) children.getOrPut(node.parentKey) { ArrayList() }.add(node.key)
-        return KnowledgeGraph(
-            nodes = nodesByKey,
-            childrenOf = children.mapValues { (_, value) -> value.toList() },
-        )
+        val categoriesAt = LinkedHashMap<String?, MutableList<GraphNode>>()
+        val conceptsAt = LinkedHashMap<String?, MutableList<GraphNode>>()
+        for (node in nodesByKey.values) {
+            when (node.kind) {
+                GraphNodeKind.CATEGORY -> categoriesAt.getOrPut(node.parentKey) { ArrayList() }.add(node)
+                GraphNodeKind.CONCEPT -> conceptsAt.getOrPut(node.parentKey) { ArrayList() }.add(node)
+            }
+        }
+        val childrenOf = LinkedHashMap<String?, List<String>>()
+        val rootCategories = categoriesAt[null].orEmpty().sortedWith(CATEGORY_ORDER)
+        val rootConcepts = conceptsAt[null].orEmpty().sortedWith(CONCEPT_ORDER)
+        if (rootCategories.isNotEmpty() || rootConcepts.isNotEmpty()) {
+            childrenOf[null] = rootCategories.map { it.key } + rootConcepts.map { it.key }
+        }
+        for (categoryKey in nodesByKey.values.filter { it.kind == GraphNodeKind.CATEGORY }.map { it.key }) {
+            val subCategories = categoriesAt[categoryKey].orEmpty().sortedWith(CATEGORY_ORDER)
+            val concepts = conceptsAt[categoryKey].orEmpty().sortedWith(CONCEPT_ORDER)
+            if (subCategories.isEmpty() && concepts.isEmpty()) continue
+            childrenOf[categoryKey] = subCategories.map { it.key } + concepts.map { it.key }
+        }
+        return KnowledgeGraph(nodes = nodesByKey, childrenOf = childrenOf)
     }
 
-    /** 多宽度芯片 + 两层嵌套分类的样例图，供多数用例复用。 */
+    /** 一棵稍微复杂的样图：两个根分类、一层子分类、一个未分类散概念。 */
     private fun sampleGraph(): KnowledgeGraph = graphOf(
-        category("c_retrieval", "检索", sortOrder = 0),
-        category("c_chunking", "分块", parentKey = "c_retrieval", sortOrder = 0),
-        category("c_embedding", "向量", sortOrder = 1),
-        concept("k_chunk", "文本分块", parentKey = "c_chunking", noteCount = 3),
-        concept("k_rerank", "重排序", parentKey = "c_retrieval", noteCount = 2),
-        concept("k_recall", "召回率", parentKey = "c_retrieval", noteCount = 1),
-        concept("k_vector", "向量数据库", parentKey = "c_embedding", noteCount = 4),
-        concept("k_ann", "近似最近邻 ANN", parentKey = "c_embedding", noteCount = 1),
+        category("c_a", "甲类", sortOrder = 0),
+        category("c_a_sub", "甲子类", parentKey = "c_a", sortOrder = 0),
+        concept("k_a1", "甲一", parentKey = "c_a"),
+        concept("k_a2", "甲二", parentKey = "c_a_sub"),
+        category("c_b", "乙类", sortOrder = 1),
+        concept("k_b1", "乙一", parentKey = "c_b"),
+        concept("k_loose", "散概念"),
     )
 
-    private fun assertRectContains(outer: GraphRect, inner: GraphRect) {
-        assertTrue(outer.left < inner.left, "内框 left 应在外框内：$outer / $inner")
-        assertTrue(outer.top < inner.top, "内框 top 应在外框内：$outer / $inner")
-        assertTrue(outer.right > inner.right, "内框 right 应在外框内：$outer / $inner")
-        assertTrue(outer.bottom > inner.bottom, "内框 bottom 应在外框内：$outer / $inner")
-    }
+    private fun centerOf(layout: GraphLayout, key: String): GraphPoint =
+        layout.nodes.getValue(key).bounds.center
 
-    private fun assertNoOverlap(rects: List<GraphRect>) {
-        for (first in rects.indices) {
-            for (second in first + 1 until rects.size) {
-                val overlap = rects[first].intersect(rects[second])
-                assertTrue(overlap.isEmpty, "两个矩形重叠：${rects[first]} / ${rects[second]}")
-            }
+    /** 从根沿 links 做 BFS，收集该树里的所有 key。 */
+    private fun keysUnder(layout: GraphLayout, rootKey: String): Set<String> {
+        val children = layout.links.groupBy({ it.fromKey }, { it.toKey })
+        val visited = LinkedHashSet<String>()
+        val pending = ArrayDeque<String>()
+        pending.add(rootKey)
+        while (pending.isNotEmpty()) {
+            val key = pending.removeFirst()
+            if (!visited.add(key)) continue
+            children[key]?.forEach { pending.add(it) }
         }
+        return visited
     }
 
-    private fun assertScreenRectInside(camera: Camera, rect: GraphRect, viewport: GraphSize) {
-        val topLeft = camera.worldToScreen(rect.topLeft)
-        val bottomRight = camera.worldToScreen(GraphPoint(rect.right, rect.bottom))
-        assertTrue(topLeft.x >= -EPS && topLeft.y >= -EPS, "左上角越界：$topLeft")
-        assertTrue(bottomRight.x <= viewport.width + EPS && bottomRight.y <= viewport.height + EPS, "右下角越界：$bottomRight")
+    private fun boundsUnder(layout: GraphLayout, rootKey: String): GraphRect {
+        var bounds = layout.nodes.getValue(rootKey).bounds
+        for (key in keysUnder(layout, rootKey)) bounds = bounds.union(layout.nodes.getValue(key).bounds)
+        return bounds
     }
 
-    // ------------------------------------------------------------------ 空图与基础测量
-
-    @Test
-    fun emptyGraphProducesEmptyLayout() {
-        val layout = layoutKnowledgeGraph(KnowledgeGraph.Empty, emptySet(), null)
-        assertEquals(GraphLayout.Empty, layout)
-        assertEquals(GraphRect.Zero, layout.bounds)
-        assertTrue(layout.roots.isEmpty())
-        assertTrue(layout.boxesByKey.isEmpty())
-        assertTrue(layout.chipsByKey.isEmpty())
-    }
-
-    @Test
-    fun singleCategoryKeepsAllChipsInsideBox() {
-        val graph = graphOf(
-            category("c_a", "分类甲"),
-            concept("k_1", "文本分块", parentKey = "c_a"),
-            concept("k_2", "重排序", parentKey = "c_a"),
-            concept("k_3", "RAG 检索增强", parentKey = "c_a"),
-        )
-        val layout = layoutKnowledgeGraph(graph, emptySet(), null)
-        assertEquals(1, layout.roots.size)
-        val box = assertNotNull(layout.boxesByKey["c_a"])
-        assertEquals(3, box.chips.size)
-        assertEquals(3, layout.chipsByKey.size)
-        assertFalse(box.collapsed)
-        for (chipKey in box.chips) {
-            val chip = assertNotNull(layout.chipsByKey[chipKey])
-            assertTrue(box.bounds.contains(chip.bounds.topLeft), "芯片左上角应在框内：$chip")
-            assertTrue(
-                box.bounds.contains(GraphPoint(chip.bounds.right, chip.bounds.bottom)),
-                "芯片右下角应在框内：$chip",
-            )
-            assertTrue(chip.bounds.left >= box.bounds.left + 10f - EPS, "芯片应在框内 padding 之后：$chip")
-            assertTrue(chip.bounds.top >= box.headerBounds.bottom - EPS, "芯片应在标题行下方：$chip")
-        }
-        assertTrue(layout.bounds.contains(box.bounds.topLeft))
-        assertTrue(layout.bounds.contains(GraphPoint(box.bounds.right, box.bounds.bottom)))
-    }
-
-    @Test
-    fun nestedChildBoxStaysInsideParentBox() {
-        val graph = graphOf(
-            category("c_root", "领域"),
-            category("c_child", "子领域", parentKey = "c_root"),
-            concept("k_root", "根概念", parentKey = "c_root"),
-            concept("k_child", "子概念", parentKey = "c_child"),
-        )
-        val layout = layoutKnowledgeGraph(graph, emptySet(), null)
-        val root = assertNotNull(layout.boxesByKey["c_root"])
-        val child = assertNotNull(layout.boxesByKey["c_child"])
-        assertEquals(0, root.depth)
-        assertEquals(1, child.depth)
-        assertEquals(listOf("c_child"), root.children.map { it.categoryKey })
-        assertEquals(listOf("k_child"), child.chips)
-        assertRectContains(root.bounds, child.bounds)
-        assertRectContains(root.bounds, child.headerBounds)
-        assertTrue(layout.bounds.contains(GraphPoint(child.bounds.right, child.bounds.bottom)))
-    }
-
-    @Test
-    fun chipsDoNotOverlap() {
-        val layout = layoutKnowledgeGraph(sampleGraph(), emptySet(), null)
-        assertNoOverlap(layout.chipsByKey.values.map { it.bounds })
-    }
-
-    @Test
-    fun siblingBoxesDoNotOverlap() {
-        val graph = graphOf(
-            category("c_1", "一", sortOrder = 0),
-            category("c_2", "二", sortOrder = 1),
-            category("c_11", "一甲", parentKey = "c_1", sortOrder = 0),
-            category("c_12", "一乙", parentKey = "c_1", sortOrder = 1),
-            category("c_21", "二甲", parentKey = "c_2", sortOrder = 0),
-            concept("k_11", "概念一一", parentKey = "c_11"),
-            concept("k_12", "概念一二", parentKey = "c_12"),
-            concept("k_21", "概念二一", parentKey = "c_21"),
-        )
-        val layout = layoutKnowledgeGraph(graph, emptySet(), null)
-        assertNoOverlap(layout.roots.map { it.bounds })
-        val firstRoot = assertNotNull(layout.boxesByKey["c_1"])
-        assertEquals(2, firstRoot.children.size)
-        assertNoOverlap(firstRoot.children.map { it.bounds })
-        for (child in firstRoot.children) assertRectContains(firstRoot.bounds, child.bounds)
-    }
-
-    // ------------------------------------------------------------------ 确定性
-
-    @Test
-    fun layoutIsDeterministic() {
-        val graph = sampleGraph()
-        val collapsed = setOf("c_retrieval")
-        val first = layoutKnowledgeGraph(graph, collapsed, null)
-        val second = layoutKnowledgeGraph(graph, collapsed, null)
-        assertEquals(first, second)
-    }
-
-    @Test
-    fun layoutIgnoresInputMapOrder() {
-        val nodes = listOf(
-            category("c_a", "甲"),
-            category("c_b", "乙", sortOrder = 1),
-            category("c_a1", "甲一", parentKey = "c_a"),
-            concept("k_1", "概念一", parentKey = "c_a", noteCount = 3),
-            concept("k_2", "概念二", parentKey = "c_a1", noteCount = 1),
-            concept("k_3", "概念三", parentKey = "c_b", noteCount = 2),
-        )
-        val forward = layoutKnowledgeGraph(graphOf(*nodes.toTypedArray()), emptySet(), null)
-        val backward = layoutKnowledgeGraph(graphOf(*nodes.reversed().toTypedArray()), emptySet(), null)
-        assertEquals(forward, backward)
-    }
-
-    // ------------------------------------------------------------------ 折叠
-
-    @Test
-    fun collapsingCategoryHidesChipsAndShrinksBox() {
-        val graph = graphOf(
-            category("c_a", "分类甲"),
-            category("c_a1", "子类", parentKey = "c_a"),
-            category("c_b", "分类乙"),
-            concept("k_1", "概念一", parentKey = "c_a"),
-            concept("k_2", "概念二", parentKey = "c_a"),
-            concept("k_3", "概念三", parentKey = "c_a1"),
-            concept("k_4", "概念四", parentKey = "c_b"),
-        )
-        val expanded = layoutKnowledgeGraph(graph, emptySet(), null)
-        val folded = layoutKnowledgeGraph(graph, setOf("c_a"), null)
-
-        assertEquals(setOf("c_a"), folded.collapsed)
-        assertEquals(3, expanded.boxesByKey.size)
-        assertEquals(2, folded.boxesByKey.size)
-        assertNull(folded.boxesByKey["c_a1"])
-
-        val foldedBox = assertNotNull(folded.boxesByKey["c_a"])
-        assertTrue(foldedBox.collapsed)
-        assertTrue(foldedBox.chips.isEmpty())
-        assertTrue(foldedBox.children.isEmpty())
-        assertEquals(30f + 2f * 10f, foldedBox.bounds.height, EPS)
-
-        val expandedBox = assertNotNull(expanded.boxesByKey["c_a"])
-        assertFalse(expandedBox.collapsed)
-        assertTrue(foldedBox.bounds.height < expandedBox.bounds.height)
-        // 被折叠的子树里的芯片不出现；没折叠的兄弟分类芯片保留。
-        assertEquals(setOf("k_4"), folded.chipsByKey.keys)
-        assertTrue(expanded.chipsByKey.keys.containsAll(setOf("k_1", "k_2", "k_3", "k_4")))
-    }
-
-    @Test
-    fun expandingAgainRestoresLayout() {
-        val graph = sampleGraph()
-        val expanded = layoutKnowledgeGraph(graph, emptySet(), null)
-        layoutKnowledgeGraph(graph, setOf("c_chunking"), null)
-        assertEquals(expanded, layoutKnowledgeGraph(graph, emptySet(), null))
-    }
-
-    // ------------------------------------------------------------------ warm 缓存
-
-    @Test
-    fun warmCacheKeepsRootOrderWhenFingerprintMatches() {
-        val graph = graphOf(
-            category("c_a", "甲", sortOrder = 0),
-            category("c_b", "乙", sortOrder = 1),
-            category("c_c", "丙", sortOrder = 2),
-            concept("k_1", "概念", parentKey = "c_a"),
-        )
-        val cold = layoutKnowledgeGraph(graph, emptySet(), null)
-        assertEquals(listOf("c_a", "c_b", "c_c"), cold.roots.map { it.categoryKey })
-
-        val warm = LayoutCache(
-            fingerprint = layoutFingerprint(graph),
-            rootOrder = listOf("c_c", "c_a"),
-        )
-        val warmed = layoutKnowledgeGraph(graph, emptySet(), warm)
-        // rootOrder 里仍存在的 key 按缓存顺序；新出现的 key（c_b）按自然顺序追加。
-        assertEquals(listOf("c_c", "c_a", "c_b"), warmed.roots.map { it.categoryKey })
-        assertEquals(cold.boxesByKey.keys, warmed.boxesByKey.keys)
-        // 坐标必须重新算（不能复用旧坐标导致重叠）。
-        assertNoOverlap(warmed.roots.map { it.bounds })
-        assertEquals(setOf("c_a", "c_b", "c_c"), warmed.boxesByKey.keys)
-    }
-
-    @Test
-    fun warmCacheWithStaleFingerprintFallsBackToColdOrder() {
-        val graph = graphOf(
-            category("c_a", "甲", sortOrder = 2),
-            category("c_b", "乙", sortOrder = 1),
-            category("c_c", "丙", sortOrder = 3),
-        )
-        val stale = LayoutCache(
-            fingerprint = layoutFingerprint(graph) + 1L,
-            rootOrder = listOf("c_c", "c_b", "c_a"),
-        )
-        val layout = layoutKnowledgeGraph(graph, emptySet(), stale)
-        // 指纹不匹配 → 忽略 rootOrder，按 (sortOrder, name, key) 冷算。
-        assertEquals(listOf("c_b", "c_a", "c_c"), layout.roots.map { it.categoryKey })
-        assertEquals(layoutKnowledgeGraph(graph, emptySet(), null), layout)
-    }
-
-    // ------------------------------------------------------------------ bounds
-
-    @Test
-    fun boundsContainEveryBoxAndChip() {
-        val layout = layoutKnowledgeGraph(sampleGraph(), setOf("c_chunking"), null)
-        assertFalse(layout.bounds.isEmpty)
-        // 内容并集再外扩 padding：最左/最上从 0 开始。
-        assertEquals(0f, layout.bounds.left, EPS)
-        assertEquals(0f, layout.bounds.top, EPS)
-        for (box in layout.boxesByKey.values) {
-            assertTrue(layout.bounds.contains(box.bounds.topLeft), "bounds 应包含框：$box")
-            assertTrue(layout.bounds.contains(GraphPoint(box.bounds.right, box.bounds.bottom)), "bounds 应包含框：$box")
-        }
-        for (chip in layout.chipsByKey.values) {
-            assertTrue(layout.bounds.contains(chip.bounds.topLeft), "bounds 应包含芯片：$chip")
-            assertTrue(layout.bounds.contains(GraphPoint(chip.bounds.right, chip.bounds.bottom)), "bounds 应包含芯片：$chip")
-        }
-    }
-
-    // ------------------------------------------------------------------ 命中测试
-
-    @Test
-    fun hitTestFindsChipHeaderBoxAndEmptySpace() {
-        val graph = graphOf(
-            category("c_a", "分类甲"),
-            category("c_a1", "子类", parentKey = "c_a"),
-            concept("k_1", "概念一", parentKey = "c_a1"),
-            concept("k_2", "概念二", parentKey = "c_a"),
-        )
-        val layout = layoutKnowledgeGraph(graph, emptySet(), null)
-
-        val chip = assertNotNull(layout.chipsByKey["k_1"])
-        assertEquals(GraphHit.Chip("k_1"), layout.hitTest(chip.bounds.center))
-
-        val child = assertNotNull(layout.boxesByKey["c_a1"])
-        // 子框标题比父框深：先报子框标题。
-        assertEquals(GraphHit.CategoryHeader("c_a1"), layout.hitTest(child.headerBounds.center))
-
-        val root = assertNotNull(layout.boxesByKey["c_a"])
-        assertEquals(GraphHit.CategoryHeader("c_a"), layout.hitTest(root.headerBounds.center))
-
-        // 框内 padding 区域（左下角留白）→ 命中父框本身。
-        assertEquals(
-            GraphHit.CategoryBox("c_a"),
-            layout.hitTest(GraphPoint(root.bounds.left + 4f, root.bounds.bottom - 4f)),
-        )
-
-        // 空白区域。
-        assertNull(layout.hitTest(GraphPoint(layout.bounds.right + 100f, layout.bounds.bottom + 100f)))
-
-        // 折叠后只剩标题行，标题仍可命中。
-        val folded = layoutKnowledgeGraph(graph, setOf("c_a"), null)
-        val foldedRoot = assertNotNull(folded.boxesByKey["c_a"])
-        assertEquals(GraphHit.CategoryHeader("c_a"), folded.hitTest(foldedRoot.headerBounds.center))
-    }
-
-    // ------------------------------------------------------------------ 相机
-
-    @Test
-    fun zoomToFitFitsBoundsIntoViewport() {
-        val layout = layoutKnowledgeGraph(sampleGraph(), emptySet(), null)
-        val viewport = GraphSize(1200f, 800f)
-        val camera = zoomToFit(layout.bounds, viewport)
-
-        assertTrue(camera.zoom >= 0.25f - EPS && camera.zoom <= 1.5f + EPS, "zoom 应被 clamp：${camera.zoom}")
-        assertScreenRectInside(camera, layout.bounds, viewport)
-        assertEquals(viewport.width / 2f, camera.worldToScreen(layout.bounds.center).x, EPS)
-        assertEquals(viewport.height / 2f, camera.worldToScreen(layout.bounds.center).y, EPS)
-        // GraphLayout 扩展形式与顶层函数等价。
-        assertEquals(camera, layout.zoomToFit(layout.bounds, viewport))
-    }
-
-    @Test
-    fun zoomToFitEmptyInputsReturnDefaultCamera() {
-        assertEquals(Camera.Default, zoomToFit(GraphRect.Zero, GraphSize(1200f, 800f)))
-        assertEquals(Camera.Default, zoomToFit(GraphRect(10f, 10f, 110f, 60f), GraphSize.Zero))
-    }
-
-    @Test
-    fun fitCategoryFocusesCategoryBoxAndFallsBackToWholeGraph() {
-        val graph = graphOf(
-            category("c_root", "根", sortOrder = 0),
-            category("c_child", "子", parentKey = "c_root", sortOrder = 0),
-            category("c_other", "另", sortOrder = 1),
-            concept("k_1", "概念一", parentKey = "c_child"),
-            concept("k_2", "概念二", parentKey = "c_child"),
-            concept("k_3", "概念三", parentKey = "c_other"),
-        )
-        val layout = layoutKnowledgeGraph(graph, emptySet(), null)
-        val viewport = GraphSize(1000f, 700f)
-
-        val child = assertNotNull(layout.boxesByKey["c_child"])
-        val camera = fitCategory(layout, "c_child", viewport)
-        assertScreenRectInside(camera, child.bounds, viewport)
-        assertEquals(viewport.width / 2f, camera.worldToScreen(child.bounds.center).x, EPS)
-
-        // null / 不存在的 key → 拟合全图。
-        assertEquals(zoomToFit(layout.bounds, viewport), fitCategory(layout, null, viewport))
-        assertEquals(zoomToFit(layout.bounds, viewport), fitCategory(layout, "missing", viewport))
-
-        // GraphLayout 扩展形式：存在返回相机，不存在返回 null。
-        assertEquals(camera, layout.fitCategory("c_child", viewport, maxZoom = 1.5f))
-        assertNull(layout.fitCategory("missing", viewport))
-    }
-
-    // ------------------------------------------------------------------ LOD
-
-    @Test
-    fun lodForDistinguishesFourLevels() {
-        val area = 1200f * 800f
-        assertEquals(LodLevel.Full, lodFor(zoom = 1f, conceptCount = 100, viewportArea = area))
-        assertEquals(LodLevel.Full, lodFor(zoom = 0.55f, conceptCount = 10, viewportArea = area))
-        assertEquals(LodLevel.Compact, lodFor(zoom = 0.54f, conceptCount = 10, viewportArea = area))
-        assertEquals(LodLevel.Compact, lodFor(zoom = 1f, conceptCount = 100, viewportArea = 1000f))
-        assertEquals(LodLevel.Aggregate, lodFor(zoom = 0.2f, conceptCount = 100, viewportArea = area))
-        assertEquals(LodLevel.Full, lodFor(zoom = 1f, conceptCount = 2000, viewportArea = area))
-        assertEquals(LodLevel.Aggregate, lodFor(zoom = 1f, conceptCount = 2001, viewportArea = area))
-        assertEquals(LodLevel.Aggregate, lodFor(zoom = 1f, conceptCount = 5000, viewportArea = area))
-        assertEquals(LodLevel.TooLarge, lodFor(zoom = 1f, conceptCount = 5001, viewportArea = area))
-        assertEquals(LodLevel.Aggregate, lodFor(zoom = Float.NaN, conceptCount = 10, viewportArea = area))
-    }
-
-    // ------------------------------------------------------------------ 估宽
-
-    @Test
-    fun estimateLabelWidthUnderstandsWideCharacters() {
-        val cjk = estimateLabelWidth("知识", 12f)
-        val ascii = estimateLabelWidth("ab", 12f)
-        assertTrue(cjk > ascii, "同字符数 CJK 应比 ASCII 宽：$cjk vs $ascii")
-        assertEquals(0f, estimateLabelWidth("", 12f))
-        assertEquals(0f, estimateLabelWidth("知识", 0f))
-        assertTrue(estimateLabelWidth("，", 12f) > estimateLabelWidth(",", 12f), "全角标点应比半角宽")
-        assertTrue(estimateLabelWidth("知识网络", 12f) > estimateLabelWidth("知识", 12f))
-        // sp × density 的调用形式与 px 形式等价。
-        assertEquals(estimateLabelWidth("知识", 12f), estimateLabelWidth("知识", 6f, 2f))
-    }
-
-    // ------------------------------------------------------------------ 未分类
-
-    @Test
-    fun unclassifiedBoxComesLastAndHoldsLooseConcepts() {
-        val graph = graphOf(
-            category("c_a", "分类甲"),
-            category("c_b", "分类乙"),
-            concept("k_1", "概念一", parentKey = "c_a"),
-            concept("k_free_2", "散落二", noteCount = 1),
-            concept("k_free_5", "散落五", noteCount = 5),
-        )
-        val layout = layoutKnowledgeGraph(graph, emptySet(), null)
-        assertEquals(3, layout.roots.size)
-        assertEquals(GRAPH_UNCLASSIFIED_KEY, layout.roots.last().categoryKey)
-
-        val unclassified = assertNotNull(layout.boxesByKey[GRAPH_UNCLASSIFIED_KEY])
-        // 芯片按 noteCount 降序。
-        assertEquals(listOf("k_free_5", "k_free_2"), unclassified.chips)
-
-        // 折叠未分类：只留标题，只有普通分类的芯片还在。
-        val folded = layoutKnowledgeGraph(graph, setOf(GRAPH_UNCLASSIFIED_KEY), null)
-        val foldedBox = assertNotNull(folded.boxesByKey[GRAPH_UNCLASSIFIED_KEY])
-        assertTrue(foldedBox.collapsed)
-        assertTrue(foldedBox.chips.isEmpty())
-        assertEquals(setOf("k_1"), folded.chipsByKey.keys)
-    }
-
-    @Test
-    fun graphWithOnlyLooseConceptsHasSingleUnclassifiedRoot() {
-        val graph = graphOf(
-            concept("k_1", "概念一", noteCount = 2),
-            concept("k_2", "概念二", noteCount = 1),
-        )
-        val layout = layoutKnowledgeGraph(graph, emptySet(), null)
-        assertEquals(1, layout.roots.size)
-        val root = layout.roots.single()
-        assertEquals(GRAPH_UNCLASSIFIED_KEY, root.categoryKey)
-        assertEquals(listOf("k_1", "k_2"), root.chips)
-        assertEquals(2, layout.chipsByKey.size)
-        assertFalse(layout.bounds.isEmpty)
-    }
-
-    // ------------------------------------------------------------------ 深层嵌套
-
-    @Test
-    fun fiveLevelTreeNestsStrictly() {
-        val nodes = ArrayList<GraphNode>()
-        var parentKey: String? = null
-        for (level in 0 until 5) {
-            val key = "c_$level"
-            nodes.add(category(key, "第${level}层分类", parentKey = parentKey, sortOrder = 0))
-            parentKey = key
-        }
-        nodes.add(concept("k_0", "概念零", parentKey = "c_0"))
-        nodes.add(concept("k_4a", "概念四甲", parentKey = "c_4"))
-        nodes.add(concept("k_4b", "概念四乙", parentKey = "c_4"))
-
-        val layout = layoutKnowledgeGraph(graphOf(*nodes.toTypedArray()), emptySet(), null)
-        assertEquals(5, layout.boxesByKey.size)
-        for (level in 0 until 5) {
-            val box = assertNotNull(layout.boxesByKey["c_$level"])
-            assertEquals(level, box.depth)
-        }
-        // 相邻两层严格嵌套（每层都有 padding，不会贴边）。
-        for (level in 0 until 4) {
-            val outer = assertNotNull(layout.boxesByKey["c_$level"])
-            val inner = assertNotNull(layout.boxesByKey["c_${level + 1}"])
-            assertRectContains(outer.bounds, inner.bounds)
-            assertRectContains(outer.bounds, inner.headerBounds)
-        }
-        val innermost = assertNotNull(layout.boxesByKey["c_4"])
-        assertEquals(2, innermost.chips.size)
-        for (chipKey in innermost.chips) {
-            val chip = assertNotNull(layout.chipsByKey[chipKey])
-            assertTrue(innermost.bounds.contains(chip.bounds.topLeft))
-        }
-    }
-
-    // ------------------------------------------------------------------ masonry / 流式换行
-
-    @Test
-    fun rootMasonryWrapsWhenCanvasWidthExceeded() {
-        val nodes = ArrayList<GraphNode>()
-        for (index in 0 until 4) nodes.add(category("c_$index", "分类$index", sortOrder = index))
-        val options = LayoutOptions(maxCanvasWidth = 400f)
-        val layout = layoutKnowledgeGraph(graphOf(*nodes.toTypedArray()), emptySet(), null, options)
-
-        assertEquals(4, layout.roots.size)
-        val lefts = layout.roots.map { it.bounds.left }.distinct()
-        assertEquals(1, lefts.size)
-        assertEquals(options.padding, lefts.single(), EPS)
-        // 一个 240 宽的框都放不下第二个 → 每个根框各占一行。
-        for (index in 1 until layout.roots.size) {
-            assertTrue(
-                layout.roots[index].bounds.top > layout.roots[index - 1].bounds.top,
-                "换行后 top 应递增",
-            )
-        }
-        // bounds = 内容并集外扩 padding。
-        assertEquals(0f, layout.bounds.left, EPS)
-        assertEquals(options.padding + options.minRootWidth + options.padding, layout.bounds.right, EPS)
-    }
-
-    @Test
-    fun chipsWrapWithinContentWidthAndColumnLimit() {
-        val nodes = ArrayList<GraphNode>()
-        nodes.add(category("c_a", "分类甲"))
-        for (index in 0 until 18) {
-            nodes.add(concept("k_$index", "概念名称第${index}号", parentKey = "c_a"))
-        }
-        val options = LayoutOptions(maxChipColumns = 4)
-        val layout = layoutKnowledgeGraph(graphOf(*nodes.toTypedArray()), emptySet(), null, options)
-
-        val box = assertNotNull(layout.boxesByKey["c_a"])
-        assertEquals(18, box.chips.size)
-        val chips = box.chips.map { layout.chipsByKey.getValue(it) }
-        val contentLeft = box.bounds.left + options.boxPadding
-        val contentRight = box.bounds.right - options.boxPadding
-        for (chip in chips) {
-            assertTrue(chip.bounds.left >= contentLeft - EPS, "芯片应在内容区内：$chip")
-            assertTrue(chip.bounds.right <= contentRight + EPS, "芯片应在内容区内：$chip")
-        }
-        val rows = chips.groupBy { it.bounds.top }
-        assertEquals(5, rows.size)
-        for (row in rows.values) {
-            assertTrue(row.size <= 4, "每行最多 4 列：$row")
-            assertNoOverlap(row.map { it.bounds })
-        }
-        assertNoOverlap(chips.map { it.bounds })
-    }
-
-    // ------------------------------------------------------------------ 规模
-
-    @Test
-    fun largeGraphLaysOutEveryConcept() {
-        // 40 个分类 × 50 个概念 = 2000 概念；结构正确即说明没有 O(N²) 的嵌套遍历（测试不做计时断言）。
-        val nodes = ArrayList<GraphNode>()
-        for (categoryIndex in 0 until 40) {
-            val categoryKey = "c_$categoryIndex"
-            nodes.add(category(categoryKey, "分类$categoryIndex", sortOrder = categoryIndex))
-            for (conceptIndex in 0 until 50) {
-                nodes.add(
-                    concept(
-                        key = "k_${categoryIndex}_$conceptIndex",
-                        name = "概念$categoryIndex-$conceptIndex",
-                        parentKey = categoryKey,
-                        noteCount = conceptIndex,
-                    ),
-                )
-            }
-        }
-        val layout = layoutKnowledgeGraph(graphOf(*nodes.toTypedArray()), emptySet(), null)
-        assertEquals(2000, layout.chipsByKey.size)
-        assertEquals(40, layout.roots.size)
-        for (chip in layout.chipsByKey.values) {
-            assertTrue(layout.bounds.contains(chip.bounds.topLeft), "bounds 应包含芯片：$chip")
-            assertTrue(layout.bounds.contains(GraphPoint(chip.bounds.right, chip.bounds.bottom)))
-        }
-    }
-
-    // ------------------------------------------------------------------ 中心点
-
-    @Test
-    fun centerOfResolvesChipsAndBoxes() {
-        val layout = layoutKnowledgeGraph(
-            graphOf(category("c_a", "分类甲"), concept("k_1", "概念一", parentKey = "c_a")),
-            emptySet(),
-            null,
-        )
-        val chip = assertNotNull(layout.chipsByKey["k_1"])
-        assertEquals(chip.bounds.center, layout.centerOf("k_1"))
-        val box = assertNotNull(layout.boxesByKey["c_a"])
-        assertEquals(box.bounds.center, layout.centerOf("c_a"))
-        assertNull(layout.centerOf("missing"))
-    }
-
-    private companion object {
-        private const val EPS = 0.01f
+    private fun assertNoOverlap(first: GraphRect, second: GraphRect) {
+        val overlap = first.left < second.right && second.left < first.right &&
+            first.top < second.bottom && second.top < first.bottom
+        assertFalse(overlap, "节点不应重叠：$first / $second")
     }
 }
+
+/** 分类排序（Build 契约：sortOrder → name → key）。 */
+private val CATEGORY_ORDER: Comparator<GraphNode> =
+    compareBy<GraphNode>({ it.sortOrder }, { it.name }, { it.key })
+
+/** 概念排序（Build 契约：noteCount 降序 → name → key）。 */
+private val CONCEPT_ORDER: Comparator<GraphNode> =
+    compareByDescending<GraphNode> { it.noteCount }.thenBy { it.name }.thenBy { it.key }
