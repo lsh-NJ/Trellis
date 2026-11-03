@@ -12,8 +12,13 @@ package dev.trellis.app.desktop
  *   默认不画，只在聚焦某个概念时临时展开（见设计 §3.3/§4.4）。
  */
 
-/** 知识库页的三个视图：笔记 / 概念 / 网络（`showConcepts: Boolean` 升级为三态）。 */
-internal enum class KnowledgeTab { Notes, Concepts, Graph }
+/**
+ * 知识库页的视图：笔记 / 网络。
+ *
+ * v1.3 起「概念」tab 下线——网络视图承担概念浏览（搜索、浮窗、分类树），
+ * 概念详情从网络节点的小浮窗看，不再单独维护一页。
+ */
+internal enum class KnowledgeTab { Notes, Graph }
 
 /** 节点类型：概念（叶子）或分类（父节点/领域）。 */
 internal enum class GraphNodeKind { CONCEPT, CATEGORY }

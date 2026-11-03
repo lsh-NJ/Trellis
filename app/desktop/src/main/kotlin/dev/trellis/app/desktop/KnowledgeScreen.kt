@@ -85,14 +85,8 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     var query by remember { mutableStateOf("") }
     var deleteTarget by remember { mutableStateOf<NoteSummary?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
-    // 三个视图页签：笔记 / 概念 / 网络。放页内对象，切到别的导航页回来还停在原 tab。
+    // 两个视图页签：笔记 / 网络（v1.3 起「概念」并入网络）。放页内对象，切导航页回来还停在原 tab。
     var tab by remember { mutableStateOf(KnowledgeGraphViewState.tab) }
-    val showConcepts = tab == KnowledgeTab.Concepts
-    var selectedConcept by remember { mutableStateOf<String?>(null) }
-    var conceptDefinition by remember(selectedConcept) {
-        mutableStateOf(selectedConcept?.let { metaStore.definition(it) }.orEmpty())
-    }
-    var definitionStatus by remember(selectedConcept) { mutableStateOf("") }
     var revealRange by remember { mutableStateOf<TextRange?>(null) }
     var revealToken by remember { mutableStateOf(0) }
     var shortcutsOpen by remember { mutableStateOf(false) }
@@ -130,9 +124,6 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
 
     // 概念详情 / 搜索要认识别名，所以身份表算在前面（概念库 + 索引现算）。
     val identities = remember(notes, loaded) { currentIdentities() }
-    val conceptDetail = remember(selectedConcept, notes, loaded) {
-        selectedConcept?.let { store.conceptDetail(it, identities = identities) }
-    }
     val searchHits = remember(notes, query, loaded) {
         if (query.isBlank()) null else store.search(query, identities = identities)
     }
@@ -412,12 +403,17 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         }
     }
 
-    /** 打开概念详情（名字按索引里的最新写法统一，避免大小写/空白变体分成两条）。 */
+    /**
+     * 打开一个概念：切到「网络」并选中/居中那个节点（v1.3 起概念详情只在网络浮窗里看）。
+     */
     fun openConcept(name: String) {
         val display = concepts.firstOrNull { conceptKey(it.name) == conceptKey(name) }?.name
             ?: normalizeConceptName(name)
-        switchTab(KnowledgeTab.Concepts)
-        selectedConcept = display
+        val key = conceptIdentityKey(display)
+        KnowledgeGraphViewState.selectedKey = key
+        KnowledgeGraphViewState.pendingCenterKey = key
+        KnowledgeGraphViewState.suggestionsOpen = false
+        switchTab(KnowledgeTab.Graph)
         message = null
     }
 
@@ -492,21 +488,10 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         message = "已删除「" + name + "」的标注（原文保留，可在已删除里恢复）"
     }
 
-    /** 概念详情里点「来源」：切回笔记并选中正文命中处。 */
-    fun locateMention(mention: ConceptMention) {
-        switchTab(KnowledgeTab.Notes)
-        if (selectedId != mention.noteId) selectNote(mention.noteId)
-        if (mention.start < 0) {
-            message = "这篇笔记只在 frontmatter 里标了这个概念，正文没有出现"
-            return
-        }
-        pendingReveal = PendingReveal(mention.noteId, mention.start, mention.end)
-    }
-
     /**
      * 搜索结果里点一篇笔记：切到这篇；正文里命中就选中命中处并滚动过去（标题命中只打开）。
      *
-     * 复用概念详情的「定位」管线：设 pendingReveal，等笔记载入后交给编辑器。
+     * 复用「定位」管线：设 pendingReveal，等笔记载入后交给编辑器。
      */
     fun openSearchHit(hit: NoteSearchHit) {
         val id = hit.summary.id
@@ -571,15 +556,6 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     // 切页/关窗口时兜底：正在打的字不能留在内存里。
     DisposableEffect(Unit) {
         onDispose { saveCurrent() }
-    }
-
-    // 概念定义的防抖保存：只写 concepts.json，不动笔记文件。
-    LaunchedEffect(selectedConcept, conceptDefinition) {
-        val name = selectedConcept ?: return@LaunchedEffect
-        if (conceptDefinition == metaStore.definition(name).orEmpty()) return@LaunchedEffect
-        delay(600)
-        val ok = metaStore.saveDefinition(name, conceptDefinition)
-        definitionStatus = if (ok) "定义已保存" else "定义写不进 " + metaStore.filePath
     }
 
     val dirty = loaded != null && (loaded!!.title != title || loaded!!.body != body)
@@ -739,8 +715,8 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                         }
                     } else {
                         ListSidebar(
-                            title = if (showConcepts) "概念" else "笔记",
-                            count = if (showConcepts) concepts.size else filteredNotes.size,
+                            title = "笔记",
+                            count = filteredNotes.size,
                             actionLabel = "新建笔记",
                             onAction = { createNote() },
                             trailing = {
@@ -761,18 +737,12 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                 KnowledgePaneTab(
                                     label = "笔记",
-                                    selected = !showConcepts,
+                                    selected = true,
                                     onClick = { switchTab(KnowledgeTab.Notes) },
                                 )
                                 KnowledgePaneTab(
-                                    label = "概念",
-                                    selected = showConcepts,
-                                    onClick = { switchTab(KnowledgeTab.Concepts) },
-                                )
-
-                                KnowledgePaneTab(
                                     label = "网络",
-                                    selected = tab == KnowledgeTab.Graph,
+                                    selected = false,
                                     onClick = { switchTab(KnowledgeTab.Graph) },
                                 )
                             }
@@ -782,19 +752,10 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                                 KnowledgeSearchResults(
                                     hits = hits,
                                     selectedNoteId = selectedId,
-                                    selectedConceptName = selectedConcept,
+                                    selectedConceptName = null,
                                     zone = clock.zone,
                                     onOpenNote = { openSearchHit(it) },
                                     onOpenConcept = { openConcept(it) },
-                                    modifier = Modifier.fillMaxSize(),
-                                )
-                            } else if (showConcepts) {
-                                ConceptListPanel(
-                                    concepts = concepts,
-                                    selectedName = selectedConcept,
-                                    zone = clock.zone,
-                                    emptyHint = "还没有概念。保存笔记后 AI 会自动整理，也可以在笔记里手动添加。",
-                                    onSelect = { openConcept(it) },
                                     modifier = Modifier.fillMaxSize(),
                                 )
                             } else {
@@ -811,22 +772,8 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                         }
                     }
                     ListSidebarSplitter()
-                    // 主区：概念详情，或者「标题 + 正文」一整块可滚动内容。
-                    if (showConcepts) {
-                        ConceptDetailPanel(
-                            detail = conceptDetail,
-                            definition = conceptDefinition,
-                            definitionStatus = definitionStatus,
-                            zone = clock.zone,
-                            onDefinitionChange = {
-                                conceptDefinition = it
-                                definitionStatus = ""
-                            },
-                            onLocate = { locateMention(it) },
-                            onOpenRelated = { openConcept(it) },
-                            modifier = Modifier.weight(1f).fillMaxHeight().padding(start = 18.dp, end = 20.dp),
-                        )
-                    } else {
+                    // 主区：「标题 + 正文」一整块可滚动内容（v1.3 起概念详情改从网络浮窗看）。
+                    run {
                         Column(
                             Modifier.weight(1f).fillMaxHeight().padding(
                                 start = 18.dp,

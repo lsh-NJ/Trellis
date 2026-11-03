@@ -130,6 +130,15 @@ internal fun KnowledgeGraphView(
         centerKey = null
     }
 
+    // 从笔记页点概念 / 左栏点根节点：展开祖先、选中，等布局重算后把相机挪过去。
+    LaunchedEffect(KnowledgeGraphViewState.pendingCenterKey, graph) {
+        val key = KnowledgeGraphViewState.pendingCenterKey ?: return@LaunchedEffect
+        KnowledgeGraphViewState.pendingCenterKey = null
+        KnowledgeGraphViewState.expandTo(key, graph)
+        KnowledgeGraphViewState.selectedKey = key
+        centerKey = key
+    }
+
     // 布局稳定后把指纹/根序/锚点写进缓存（可删，下次打开直接 warm）。
     LaunchedEffect(layout, fingerprint) {
         if (layout.nodes.isEmpty()) return@LaunchedEffect
@@ -267,6 +276,39 @@ internal fun KnowledgeGraphView(
         graphStore.saveUser(user)
         saveCacheAndRefresh(cacheWithoutRelationSuggestions(cache, listOf(item)))
         KnowledgeGraphViewState.message = "已反向确认一条关系建议"
+    }
+
+    /** 一键采纳：把所有待确认的归类 + 关系建议一次确认（等价逐条点「确认」）。 */
+    fun adoptAllSuggestions() {
+        val categories = pendingSuggestions.categories
+        val relations = pendingSuggestions.relations
+        if (categories.isEmpty() && relations.isEmpty()) return
+        val now = runtime.clock.nowMs()
+        var next = user
+        if (categories.isNotEmpty()) {
+            val result = confirmCategorySuggestions(next, categories, now)
+            if (result.error != null) {
+                KnowledgeGraphViewState.message = result.error
+                return
+            }
+            next = result.user
+        }
+        if (relations.isNotEmpty()) {
+            next = confirmRelationSuggestions(next, relations, now)
+        }
+        user = next
+        graphStore.saveUser(user)
+        var nextCache = cache
+        if (categories.isNotEmpty()) nextCache = cacheWithoutCategorySuggestions(nextCache, categories)
+        if (relations.isNotEmpty()) nextCache = cacheWithoutRelationSuggestions(nextCache, relations)
+        saveCacheAndRefresh(nextCache)
+        KnowledgeGraphViewState.message = buildString {
+            append("已采纳 ")
+            if (categories.isNotEmpty()) append("${categories.size} 条归类")
+            if (categories.isNotEmpty() && relations.isNotEmpty()) append("、")
+            if (relations.isNotEmpty()) append("${relations.size} 条关系")
+            append("建议")
+        }
     }
 
     fun startAiOrganize(batches: List<List<String>>) {
@@ -425,11 +467,6 @@ internal fun KnowledgeGraphView(
                             onClick = { onSwitchTab(KnowledgeTab.Notes) },
                         )
                         KnowledgePaneTab(
-                            label = "概念",
-                            selected = false,
-                            onClick = { onSwitchTab(KnowledgeTab.Concepts) },
-                        )
-                        KnowledgePaneTab(
                             label = "网络",
                             selected = true,
                             onClick = {},
@@ -454,6 +491,11 @@ internal fun KnowledgeGraphView(
                         suggestionCount = pendingSuggestions.total,
                         onAiOrganize = { requestAiOrganize() },
                         onOpenSuggestions = { KnowledgeGraphViewState.suggestionsOpen = true },
+                        onAdoptAll = { adoptAllSuggestions() },
+                        onCenterNode = { key ->
+                            KnowledgeGraphViewState.selectedKey = key
+                            centerKey = key
+                        },
                     )
                 }
             }
