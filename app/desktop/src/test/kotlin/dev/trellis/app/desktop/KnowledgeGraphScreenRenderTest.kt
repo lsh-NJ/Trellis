@@ -1,0 +1,124 @@
+package dev.trellis.app.desktop
+
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.ImageComposeScene
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.Density
+import java.io.File
+import java.nio.file.Files
+import kotlin.test.Test
+import kotlin.test.assertTrue
+import kotlinx.coroutines.runBlocking
+
+/**
+ * 「网络」视图的离屏渲染测试（设计 §10.3）。
+ *
+ * 走真实 [AppTheme] + 真实 [KnowledgeGraphView]：种子 3 篇笔记 → 图构建 → 布局 → 画布，
+ * 产出 `build/ui-shot-graph-view.png` 供人工看「分类树默认视图 + 聚焦关联」长什么样。
+ * 只在没有显示器也能跑的软件光栅化里执行，不碰真实用户数据。
+ */
+class KnowledgeGraphScreenRenderTest {
+
+    @OptIn(ExperimentalComposeUiApi::class)
+    private fun render(runtime: AppRuntime, dark: Boolean): ByteArray {
+        val scene = ImageComposeScene(width = 1400, height = 900, density = Density(1f)) {
+            AppTheme(
+                prefs = runtime.uiPrefs,
+                themeScheme = runtime.themeScheme(dark),
+                dark = dark,
+                chrome = runtime.chromeStyle(),
+                extra = runtime.extraColors(dark),
+            ) {
+                KnowledgeGraphView(
+                    runtime = runtime,
+                    notesVersion = 1,
+                    modifier = Modifier.fillMaxSize(),
+                    onOpenNote = { _, _, _ -> },
+                )
+            }
+        }
+        scene.render() // 第一帧让布局/LaunchedEffect 先跑一轮
+        val image = scene.render()
+        scene.close()
+        return image.encodeToData()?.bytes ?: error("PNG 编码失败")
+    }
+
+    private fun seedNotes(store: KnowledgeStore, metaStore: ConceptMetaStore) {
+        fun note(title: String, body: String, concepts: List<String>) {
+            val created = store.create(title)
+            store.save(created.copy(body = body, concepts = concepts))
+            metaStore.ensureConcepts(concepts)
+        }
+        note(
+            "RAG 综述",
+            "# RAG 综述\n\n[[RAG 检索增强生成]] 把 [[向量检索]] 与 [[提示工程]] 串起来：先检索再生成。\n\n" +
+                "## 关键环节\n\n[[向量检索]] 负责召回，[[提示工程]] 决定模型怎么用上下文。\n",
+            listOf("RAG 检索增强生成", "向量检索", "提示工程"),
+        )
+        note(
+            "检索与嵌入",
+            "# 检索与嵌入\n\n[[嵌入]] 把文本变成向量，[[向量检索]] 按相似度找回片段，[[重排]] 再精排。\n\n" +
+                "## 顺序\n\n[[嵌入]] → [[向量检索]] → [[重排]]。\n",
+            listOf("嵌入", "向量检索", "重排"),
+        )
+        note(
+            "评估与对齐",
+            "# 评估与对齐\n\n[[RAG 检索增强生成]] 要配 [[基准测试]] 与 [[评估]]；[[提示工程]] 影响答案质量。\n",
+            listOf("RAG 检索增强生成", "基准测试", "评估", "提示工程"),
+        )
+    }
+
+    @Test
+    fun rendersGraphViewOffscreen() {
+        val home = Files.createTempDirectory("trellis-graph-ui").toFile().apply { deleteOnExit() }
+        val runtime = runBlocking { AppRuntime.create(home) }
+        val store = runtime.knowledgeStore
+        val metaStore = ConceptMetaStore(home)
+        seedNotes(store, metaStore)
+
+        // 用户策展：3 个根分类 + 2 个子分类 + 归属；留两个概念在未分类。
+        val now = runtime.clock.nowMs()
+        val retrieval = "c_aaaaaaaa"
+        val generation = "c_bbbbbbbb"
+        val evaluation = "c_cccccccc"
+        val user = GraphUserData(
+            updatedAt = now,
+            categories = listOf(
+                GraphCategory(id = retrieval, name = "检索", order = 0),
+                GraphCategory(id = generation, name = "生成", order = 1),
+                GraphCategory(id = evaluation, name = "评估", order = 2),
+                GraphCategory(id = "c_dddddddd", name = "召回", parentId = retrieval, order = 0),
+                GraphCategory(id = "c_eeeeeeee", name = "重排", parentId = retrieval, order = 1),
+            ),
+            assignments = mapOf(
+                conceptIdentityKey("嵌入") to "c_dddddddd",
+                conceptIdentityKey("向量检索") to "c_dddddddd",
+                conceptIdentityKey("重排") to "c_eeeeeeee",
+                conceptIdentityKey("RAG 检索增强生成") to generation,
+                conceptIdentityKey("提示工程") to generation,
+                conceptIdentityKey("基准测试") to evaluation,
+                conceptIdentityKey("评估") to evaluation,
+            ),
+        )
+        KnowledgeGraphStore(home, runtime.clock).saveUser(user)
+
+        KnowledgeGraphViewState.tab = KnowledgeTab.Graph
+        KnowledgeGraphViewState.selectedKey = conceptIdentityKey("RAG 检索增强生成")
+        KnowledgeGraphViewState.camera = Camera(zoom = 0.9f, panX = 20f, panY = 20f)
+
+        val light = render(runtime, dark = false)
+        val out = File("build/ui-shot-graph-view.png")
+        out.parentFile?.mkdirs()
+        out.writeBytes(light)
+        println("  网络视图截图已写出: " + out.absolutePath + "  (" + light.size + " 字节)")
+        assertTrue(light.size > 5_000, "PNG 太小了，八成是空白画面：" + light.size)
+
+        val dark = render(runtime, dark = true)
+        File("build/ui-shot-graph-view-dark.png").writeBytes(dark)
+        assertTrue(dark.size > 5_000, "深色截图太小了，八成是空白画面：" + dark.size)
+
+        KnowledgeGraphViewState.clearFocus()
+        runBlocking { runtime.shutdown() }
+    }
+}

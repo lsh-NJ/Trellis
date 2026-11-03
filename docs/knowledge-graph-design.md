@@ -2,7 +2,7 @@
 
 > 对应 [pluginization-plan-2026-10-29.md](pluginization-plan-2026-10-29.md) 第 2 条：「把软件当做一个学习终端，构建知识库体系」。
 > 接续 [knowledge-base-draft.md](knowledge-base-draft.md)（P0 已落地：笔记、概念抽取、点亮、追溯、搜索）。
-> 状态：设计稿 v1.1（2026-11-02，待拍板）。v1.0 是「关系图 + 依赖分层」；同日晚上用户看完示意图后提出：**链接太乱，默认只保留最直接的关系，没有合适父节点就创建父节点，像分类一样划分；其它关联只在聚焦某个点时显示**——v1.1 据此把默认视图改成分类树，v1.0 的依赖分层降级为可选「体系视图」（G2）。变更记录见附录 D。
+> 状态：设计稿 v1.1（2026-11-02 拍板；**G0 已于 2026-11-03 落地，实现记录见附录 E**）。v1.0 是「关系图 + 依赖分层」；同日晚上用户看完示意图后提出：**链接太乱，默认只保留最直接的关系，没有合适父节点就创建父节点，像分类一样划分；其它关联只在聚焦某个点时显示**——v1.1 据此把默认视图改成分类树，v1.0 的依赖分层降级为可选「体系视图」（G2）。变更记录见附录 D。
 > 配图：[页面示意图 v2](assets/knowledge-graph/page-mockup.svg) · [分类树示例](assets/knowledge-graph/taxonomy-sample.svg) · [数据流 v2](assets/knowledge-graph/data-flow.svg) · [依赖分层示例（G2 体系视图）](assets/knowledge-graph/algorithm-sample.svg)。
 
 ---
@@ -1310,7 +1310,38 @@ assignLayers(nodes, edges, pins) ->
 | 2026-11-02 | v1.0 | 审查修订 5 阻塞 + 6 应当修（key 契约、自有几何类型、`createdAt` 可空、AI 确认门与分层、性能用例、验收措辞、指纹基数、AI 置信度、`LayoutStats`、段落过滤、ViewState 归属、data-flow.svg） | design-reviewer 只读审查 |
 | 2026-11-02 | v1.1 | **结构重写**：默认视图改为「分类树 + 分区画布」，父节点=所属；默认只画归属（嵌套表达），其余关系只在聚焦时出现；依赖分层降级为 G2 可选「体系视图」；存储升 v2（`categories`/`assignments`/`mergedInto`）；AI 改为「归类建议 + 关系建议，全部建议门」；新增分类 CRUD/合并/墓碑；新增配置图 | 用户反馈「链接太乱，只保留最直接关系，没有父节点就创建父节点，其余关联聚焦时显示」 |
 | 2026-11-03 | v1.1 补充 | 对齐一期知识库同日升级：`[[原文 => 概念名]]` 标注成为「本文概念」唯一来源（frontmatter `concepts` 是派生缓存、删掉进 `removed-concepts` 墓碑）、`ConceptIdentity.aliases` 别名参与匹配但图仍按规范名建节点、笔记页已无「编辑·预览」切换。同步修正 §3.2/§3.5/§5.1/§5.6/§5.7/Q2/R11/G2-1：**定位 = 跳笔记 tab + 右栏来源片段先预览（`ConceptDetail.mentions` 已带 snippet），不内嵌整篇预览** | 用户问「定位可以用一期检索还是先预览」；同名一期代码已升级，旧表述（`markConceptMentions`、预览态、别名合并前状态）需对齐 |
-| 待定 | v1.1 | 拍板后冻结版本号，进入 G0 | 设计稿状态 |
+| 2026-11-03 | v1.1 | 拍板并进入 G0；实现记录、验收状态与 6 条偏差见附录 E | 用户「认可，可以进行了」 |
+
+---
+
+## 附录 E：G0 实现记录（2026-11-03）
+
+按 §9.1 落地，代码全在 `app/desktop`（不碰 kernel / sdk-domain / features / ui-kernel / AppRuntime / 主界面外壳）。
+
+| 文件 | 内容 | 测试 |
+|---|---|---|
+| `KnowledgeGraphModel.kt` | 枚举、节点/边/统计/诊断、几何（不 import Compose）、持久化 DTO、`fnv1a64` 与三种指纹 | —（被下列测试覆盖） |
+| `KnowledgeGraphStore.kt` | `graph.user.json` / `graph.cache.json` 原子读写、`.bak`、坏文件 `.bad-*`、未知字段保留、分类 id | `KnowledgeGraphStoreTest` 11 |
+| `KnowledgeGraphTaxonomy.kt` | 分类 CRUD/校验修复/合并/墓碑/归属（纯函数，`now` 外部传） | `KnowledgeGraphTaxonomyTest` 36 |
+| `KnowledgeGraphBuild.kt` | 概念/分类节点、归属、派生关系边、墓碑过滤、诊断与统计 | `KnowledgeGraphBuildTest` 25 |
+| `KnowledgeGraphLayout.kt` | 确定性分区布局、warm/cold、折叠、LOD、hitTest、zoomToFit/fitCategory、估宽 | `KnowledgeGraphLayoutTest` 25 |
+| `KnowledgeGraphCanvas.kt` | 宿主 Canvas：分类框、概念芯片、聚焦边、缩放平移、点阵背景 | `KnowledgeGraphCanvasRenderTest` 2（离屏截图） |
+| `KnowledgeGraphPanels.kt` | 左栏筛选/图例/统计、工具条、右栏详情与分类编辑 | 由截图与手动清单覆盖 |
+| `KnowledgeGraphScreen.kt` | 网络视图组合：构建→布局→画布、相机 fit、布局缓存、分类写回 | `KnowledgeGraphScreenRenderTest` 1（真实 AppTheme 离屏截图） |
+| `KnowledgeGraphViewState.kt` | 页内视图状态（tab/相机/聚焦/折叠/筛选），跨页保留、不落盘 | — |
+
+接线只改了两处已有文件：`KnowledgeScreen.kt`（三 tab、网络视图分支、`onOpenNote` 定位回调）与 `KnowledgeStore.kt`（暴露 `internal val home`）。`./gradlew check` 绿；`:app:desktop` 共 510 条测试、0 失败。
+
+G0 验收（§9.1）状态：`G0-0` 文字测量 spike 通过（`rememberTextMeasurer`/`drawText`/滚轮事件在 CMP 1.7.3 可用，不需要 Skia 备选）；分类树 CRUD/归属/墓碑/合并、默认只画所属、聚焦显示直接关联、定位跳笔记、删两个 json 只退化不崩、同输入同坐标、2000 概念冷布局 5.73ms（<30ms）均达成。
+
+实现与设计稿的偏差（都向后兼容）：
+
+1. **未分类框 `depth = 0`**（布局层按「虚拟根」处理；画布只认 `GRAPH_UNCLASSIFIED_KEY`，画虚线框）。
+2. **分类折叠没有画布内箭头命中**：G0 用工具条「展开全部/折叠全部」+ 左栏「分类默认折叠 + 深度」实现；点分类标题第一次选中、再点一次折叠/展开。箭头 hit 区域留到 G1。
+3. **左栏「领域筛选」字段已在 ViewState，但 G0 左栏面板未接**（分类树 + 搜索已够用）。
+4. **warm 只复用根块顺序**，坐标每次重算（不存在坐标漂移风险）。
+5. **AI 归类/关系建议（G1）未接**：`buildKnowledgeGraph` 保留 `cache` 参数，网络视图左栏的 AI 按钮显示「G0 不做 AI 归类」。
+6. 布局缓存只在网络视图打开时写 `graph.cache.json`；删缓存不丢任何用户数据。
 
 ---
 
