@@ -39,8 +39,48 @@ internal data class ExtractionResult(
     val fills: List<FillSuggestion> = emptyList(),
 )
 
-/** 正文送进模型的上限：再长就不是「这篇笔记在讲什么」而是「整本书」。 */
-private const val MAX_EXTRACT_BODY_CHARS: Int = 6000
+/** 单次送进模型的正文上限：再长就按段落切成多段分别整理（见 [extractionBodyChunks]）。 */
+internal const val MAX_EXTRACT_BODY_CHARS: Int = 6000
+
+/** 一次整理最多分这么多段（≈ [MAX_EXTRACT_BODY_CHARS] × 8 字）；再长只整理前面这几段。 */
+internal const val MAX_EXTRACT_CHUNKS: Int = 8
+
+/**
+ * 把长正文按行切成不超过 [MAX_EXTRACT_BODY_CHARS] 的段。
+ *
+ * 优先在行尾断开（Markdown 的段落/列表本来按行组织），单行超长时硬切；
+ * 最多返回 [MAX_EXTRACT_CHUNKS] 段，太长的笔记尾部不再送模型（避免一次整理打十几个请求）。
+ * 短正文原样返回一段。
+ */
+internal fun extractionBodyChunks(body: String): List<String> {
+    if (body.length <= MAX_EXTRACT_BODY_CHARS) return listOf(body)
+    val chunks = ArrayList<String>()
+    val current = StringBuilder()
+    fun flush() {
+        if (current.isNotEmpty()) {
+            chunks += current.toString()
+            current.clear()
+        }
+    }
+    fun hardSplit(text: String) {
+        var rest = text
+        while (rest.length > MAX_EXTRACT_BODY_CHARS) {
+            flush()
+            chunks += rest.substring(0, MAX_EXTRACT_BODY_CHARS)
+            rest = rest.substring(MAX_EXTRACT_BODY_CHARS)
+        }
+        current.append(rest)
+    }
+    val lines = body.split('\n')
+    for ((index, line) in lines.withIndex()) {
+        val piece = if (index == lines.lastIndex) line else line + "\n"
+        if (current.length + piece.length > MAX_EXTRACT_BODY_CHARS && current.isNotEmpty()) flush()
+        if (piece.length > MAX_EXTRACT_BODY_CHARS) hardSplit(piece) else current.append(piece)
+        if (chunks.size >= MAX_EXTRACT_CHUNKS) break
+    }
+    flush()
+    return if (chunks.size <= MAX_EXTRACT_CHUNKS) chunks else chunks.take(MAX_EXTRACT_CHUNKS)
+}
 
 /**
  * 让模型从笔记里抽概念、顺便补用户留的空位。
@@ -54,6 +94,8 @@ internal fun buildKnowledgeExtractionMessages(
     existing: List<String>,
     slots: List<String>,
     headings: List<String> = emptyList(),
+    chunkIndex: Int = 0,
+    chunkCount: Int = 1,
 ): List<LlmMessage> {
     val system = "你是个人知识库的整理助手。任务只有两件：①从笔记里挑出**作者确实讲过**、" +
         "值得长期回查的概念，每个给出规范名、正文里的原词（mention）、可选别名和一句话定义；" +
@@ -68,7 +110,13 @@ internal fun buildKnowledgeExtractionMessages(
         "编造的名字/路径会直接被丢弃）。只输出 JSON 对象，不输出解释。"
     val user = buildString {
         append("笔记标题：").append(title.ifBlank { "（无标题）" }).append("\n\n")
-        append("笔记正文：\n").append(body.take(MAX_EXTRACT_BODY_CHARS)).append("\n\n")
+        val chunkHint = if (chunkCount > 1) {
+            "（这是整篇正文的第 " + (chunkIndex + 1) + "/" + chunkCount +
+                " 段，其余段落这里省略；概念与空位都只看这一段）\n\n"
+        } else {
+            ""
+        }
+        append("笔记正文").append(chunkHint).append("：\n").append(body.take(MAX_EXTRACT_BODY_CHARS)).append("\n\n")
         if (headings.isNotEmpty()) {
             append("本笔记的标题结构（按出现顺序，仅供建图参考）：\n")
             headings.forEach { append("- ").append(it).append('\n') }
@@ -207,6 +255,40 @@ private fun parseFillsFrom(element: JsonElement?): List<FillSuggestion> {
             .distinctBy { conceptKey(it.label) }
             .take(MAX_AI_FILL_SLOTS)
     }.getOrElse { emptyList() }
+}
+
+/**
+ * 长笔记分段整理后的合并：概念按身份键去重（定义取信息更全的那份、别名取并集、mention 取首个非空），
+ * 补全按标签去重（保留先出现的那份）。
+ */
+internal fun mergeExtractionResults(results: List<ExtractionResult>): ExtractionResult {
+    if (results.isEmpty()) return ExtractionResult()
+    val candidates = LinkedHashMap<String, ConceptCandidate>()
+    for (result in results) {
+        for (candidate in result.candidates) {
+            val key = conceptIdentityKey(candidate.name)
+            val existing = candidates[key]
+            if (existing == null) {
+                candidates[key] = candidate
+            } else {
+                candidates[key] = existing.copy(
+                    definition = if (candidate.definition.length > existing.definition.length) {
+                        candidate.definition
+                    } else {
+                        existing.definition
+                    },
+                    mention = existing.mention.ifBlank { candidate.mention },
+                    aliases = (existing.aliases + candidate.aliases)
+                        .distinctBy(::conceptIdentityKey),
+                )
+            }
+        }
+    }
+    val fills = LinkedHashMap<String, FillSuggestion>()
+    for (result in results) {
+        for (fill in result.fills) fills.putIfAbsent(conceptKey(fill.label), fill)
+    }
+    return ExtractionResult(candidates = candidates.values.toList(), fills = fills.values.toList())
 }
 
 /** 合并已有概念与候选：保留原顺序，按 [conceptKey] 去重。 */

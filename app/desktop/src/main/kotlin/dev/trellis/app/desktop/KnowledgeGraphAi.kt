@@ -152,6 +152,52 @@ internal fun parseNoteGraphSuggestions(
     return NoteGraphSuggestions(categories = categories, relations = relations, dropped = dropped)
 }
 
+/**
+ * 长笔记分段整理后合并各段的图建议。
+ *
+ * 分类按「概念 + 路径」去重；关系按「from → to + 类型」去重（RELATED 是双向的，按身份键排序后再比），
+ * 重复时保留置信度更高的那条；合并后再夹一次单篇上限。
+ */
+internal fun mergeNoteGraphSuggestions(parts: List<NoteGraphSuggestions>): NoteGraphSuggestions {
+    if (parts.isEmpty()) return NoteGraphSuggestions()
+    val categories = LinkedHashMap<String, AiCategorySuggestion>()
+    for (part in parts) {
+        for (suggestion in part.categories) {
+            val key = conceptIdentityKey(suggestion.name) + "|" + suggestion.categoryPath.joinToString("/")
+            val existing = categories[key]
+            if (existing == null) {
+                categories[key] = suggestion
+            } else if (existing.reason.isNullOrBlank() && !suggestion.reason.isNullOrBlank()) {
+                categories[key] = existing.copy(reason = suggestion.reason)
+            }
+        }
+    }
+    val relations = LinkedHashMap<String, AiRelationSuggestion>()
+    for (part in parts) {
+        for (suggestion in part.relations) {
+            val fromKey = conceptIdentityKey(suggestion.from)
+            val toKey = conceptIdentityKey(suggestion.to)
+            val endpoints = if (suggestion.kind.isSymmetric()) {
+                listOf(fromKey, toKey).sorted().joinToString(">")
+            } else {
+                fromKey + ">" + toKey
+            }
+            val key = endpoints + ">" + suggestion.kind.name
+            val existing = relations[key]
+            relations[key] = if (existing == null || suggestion.confidence > existing.confidence) {
+                suggestion
+            } else {
+                existing
+            }
+        }
+    }
+    return NoteGraphSuggestions(
+        categories = categories.values.take(MAX_NOTE_CATEGORY_SUGGESTIONS).toList(),
+        relations = relations.values.take(MAX_NOTE_RELATION_SUGGESTIONS).toList(),
+        dropped = parts.flatMap { it.dropped }.distinct(),
+    )
+}
+
 /** 分类路径：接受 `大类/小类`、`大类 > 小类`、`大类｜小类`；最多 [MAX_SUGGESTION_PATH_DEPTH] 层。 */
 internal fun parseSuggestionCategoryPath(raw: String?): List<String>? {
     val text = raw?.trim().orEmpty()
