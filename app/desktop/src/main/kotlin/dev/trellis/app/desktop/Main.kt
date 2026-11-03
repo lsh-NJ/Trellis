@@ -130,12 +130,16 @@ fun main() {
                 size = initialWindowSize(),
             ),
         ) {
-            // 主窗口重新获得焦点 = 用户可能刚回到椅子前：触发一次计划检查。
+            // 主窗口重新获得焦点 = 用户可能刚回到椅子前：让管家看看晨/夜仪式是否该说话。
             // 监听器挂在 AWT 窗口上：焦点事件不经过 Compose 的 composition。
             DisposableEffect(window) {
                 val listener = object : java.awt.event.WindowAdapter() {
                     override fun windowGainedFocus(e: java.awt.event.WindowEvent?) {
                         holder.runtime?.onWindowFocused()
+                    }
+
+                    override fun windowLostFocus(e: java.awt.event.WindowEvent?) {
+                        holder.runtime?.onWindowLostFocus()
                     }
                 }
                 window.addWindowFocusListener(listener)

@@ -307,7 +307,7 @@ private fun NavRailItem(runtime: AppRuntime, icon: ChromeIcon, label: String, ta
     ) {
         Box {
             ChromeIconGlyph(icon, content, Modifier.size(16.dp))
-            // 只有「对话」有主动消息红点：计划检查把话留在了那段会话里。
+            // 只有「对话」有主动消息红点：管家的晨/夜仪式把话留在了那段会话里。
             if (tab == TAB_CHAT && runtime.hasUnreadChat) {
                 Box(
                     Modifier.align(Alignment.TopEnd).size(6.dp)

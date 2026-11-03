@@ -60,6 +60,8 @@ fun SettingsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
 
         item { DailyBudgetSection(runtime) }
 
+        item { StewardSection(runtime) }
+
         // 时间调试：只有开发者模式（TRELLIS_DEV=1）才出现。
         // 拨「应用内今天」而不是改系统时间——跨周/结算/复盘这些逻辑才需要它。
         if (runtime.devModeEnabled) item { DevTimeSection(runtime) }
@@ -286,6 +288,99 @@ private fun DevTimeSection(runtime: AppRuntime) {
         SettingsStatusLine(
             "提醒：模拟日期下活动页、计时器仍是真实数据；拨动后计划会立刻按新日期结算/补周，数据目录请用演示副本",
         )
+    }
+}
+
+/**
+ * 管家：早晚两次主动问候的时间，以及要不要弹桌面通知。
+ *
+ * 不摆「开关 AI」这种大词 —— 关掉某个仪式就是关掉那一条消息；通知关了
+ * 会话里的未读红点仍在。打开管家会话走普通对话页，人格和工具与管理员共用一套。
+ */
+@Composable
+private fun StewardSection(runtime: AppRuntime) {
+    val settings = runtime.stewardSettings
+    val status = buildString {
+        append(if (settings.morningEnabled) "晨 " + settings.morningTime else "晨 关")
+        append(" · ")
+        append(if (settings.eveningEnabled) "晚 " + settings.eveningTime else "晚 关")
+    }
+    SettingsSection(title = "管家", status = status) {
+        SettingsSubLabel("晨间问候")
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            for (time in listOf("07:30", "08:00", "08:30", "09:00", "10:00")) {
+                EditorChip(
+                    label = time,
+                    active = settings.morningEnabled && settings.morningTime == time,
+                    onClick = {
+                        runtime.updateStewardSettings(
+                            settings.copy(morningEnabled = true, morningTime = time),
+                        )
+                    },
+                )
+            }
+            EditorChip(
+                label = "关",
+                active = !settings.morningEnabled,
+                onClick = { runtime.updateStewardSettings(settings.copy(morningEnabled = false)) },
+            )
+        }
+
+        Spacer(Modifier.height(6.dp))
+        SettingsSubLabel("晚间收尾")
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            for (time in listOf("21:30", "22:00", "22:30", "23:00")) {
+                EditorChip(
+                    label = time,
+                    active = settings.eveningEnabled && settings.eveningTime == time,
+                    onClick = {
+                        runtime.updateStewardSettings(
+                            settings.copy(eveningEnabled = true, eveningTime = time),
+                        )
+                    },
+                )
+            }
+            EditorChip(
+                label = "关",
+                active = !settings.eveningEnabled,
+                onClick = { runtime.updateStewardSettings(settings.copy(eveningEnabled = false)) },
+            )
+        }
+
+        Spacer(Modifier.height(6.dp))
+        SettingsSubLabel("桌面通知")
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            EditorChip(
+                label = "开",
+                active = settings.notifyDesktop,
+                onClick = { runtime.updateStewardSettings(settings.copy(notifyDesktop = true)) },
+            )
+            EditorChip(
+                label = "关",
+                active = !settings.notifyDesktop,
+                onClick = { runtime.updateStewardSettings(settings.copy(notifyDesktop = false)) },
+            )
+        }
+        SettingsStatusLine("应用在后台时才弹系统通知；前台只留会话里的未读红点。")
+
+        Spacer(Modifier.height(6.dp))
+        SettingsLinkRow(label = "打开管家会话", status = "每天早晚问候") {
+            runtime.ensureStewardSession()
+            runtime.openChat(StewardRuntime.STEWARD_SESSION_ID)
+            runtime.currentTab = TAB_CHAT
+        }
     }
 }
 

@@ -94,8 +94,8 @@ class ChatStoreTest {
     @Test
     fun theUnreadMarkSurvivesAReloadAndOldFilesDefaultToRead() {
         val home = tempHome()
-        ChatStore(home).save(session("plan-check", "计划检查", 1_000L).copy(unread = true))
-        assertTrue(ChatStore(home).read("plan-check")!!.unread, "主动消息的未读应该能落盘")
+        ChatStore(home).save(session("steward", "管家", 1_000L).copy(unread = true))
+        assertTrue(ChatStore(home).read("steward")!!.unread, "主动消息的未读应该能落盘")
 
         // 旧会话文件没有 unread 字段：默认已读。升级后不该凭空冒出一排红点。
         File(File(home, "chat"), "chat-legacy.json").writeText(
@@ -103,5 +103,61 @@ class ChatStoreTest {
             Charsets.UTF_8,
         )
         assertEquals(false, ChatStore(home).read("chat-legacy")!!.unread)
+    }
+
+    @Test
+    fun theStewardKindSurvivesAReloadAndOldFilesDefaultToManager() {
+        val home = tempHome()
+        ChatStore(home).save(session("steward", "管家", 1_000L).copy(kind = SessionKind.Steward))
+
+        // 换实例读：kind 要能落盘（否则重启后管家变成普通会话，人格和主动消息入口就断了）。
+        assertEquals(SessionKind.Steward, ChatStore(home).read("steward")!!.kind)
+        // 普通会话是默认值，旧文件没有 kind 字段时按 Manager 处理。
+        ChatStore(home).save(session("chat-1", "普通对话", 2_000L))
+        assertEquals(SessionKind.Manager, ChatStore(home).read("chat-1")!!.kind)
+        File(File(home, "chat"), "chat-legacy.json").writeText(
+            """{"id":"chat-legacy","title":"旧的","createdAt":1,"updatedAt":2,"lines":[]}""",
+            Charsets.UTF_8,
+        )
+        assertEquals(SessionKind.Manager, ChatStore(home).read("chat-legacy")!!.kind)
+    }
+
+    @Test
+    fun aProposalAndItsDecisionSurviveAReload() {
+        val home = tempHome()
+        val proposal = StewardProposal(
+            id = "prop-1",
+            title = "把 1 件没做完的挪到明天",
+            detail = "本周还有 1 件没做。",
+            changes = listOf(
+                StewardChange.Move("网络层", "occ_1", "2026-11-05"),
+                StewardChange.Place("运输层", "unit_9", "2026-11-06"),
+            ),
+        )
+        val lines = listOf(
+            ChatLine(1, ChatRole.User, "今天做什么？", 1_000L),
+            ChatLine(
+                id = 2,
+                role = ChatRole.Assistant,
+                text = "早上好。",
+                atMs = 1_001L,
+                proposal = proposal,
+                proposalState = ProposalState.Dismissed,
+            ),
+        )
+        ChatStore(home).save(
+            ChatSession(
+                id = "steward",
+                title = "管家",
+                createdAt = 1_000L,
+                updatedAt = 1_001L,
+                lines = lines,
+                kind = SessionKind.Steward,
+            ),
+        )
+
+        val again = ChatStore(home).read("steward")!!.lines[1]
+        assertEquals(proposal, again.proposal)
+        assertEquals(ProposalState.Dismissed, again.proposalState)
     }
 }

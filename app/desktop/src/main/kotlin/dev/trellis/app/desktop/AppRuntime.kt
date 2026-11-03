@@ -23,6 +23,8 @@ import dev.trellis.ai.manager.ManagerAgent
 import dev.trellis.ai.tool.DeepSeekMarkup
 import dev.trellis.ai.manager.ManagerPrompt
 import dev.trellis.ai.manager.ManagerRouter
+import dev.trellis.ai.steward.StewardPrompt
+import dev.trellis.ai.tool.ToolAgent
 import dev.trellis.domain.Plan
 import dev.trellis.domain.PlanService
 import dev.trellis.domain.PlanSummary
@@ -106,6 +108,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * 界面上**真的**渲染了的挂载点。
@@ -643,16 +646,36 @@ class AppRuntime private constructor() {
 
     private lateinit var chatStore: ChatStore
 
-    /** 「计划检查」主动消息的「今天已经发过」标记（`<home>/plan-check.json`）。 */
-    private lateinit var planCheckStore: PlanCheckStore
-
     /** 会话列表里有没有没看过的主动消息：导航「对话」和对应会话行据此显示红点。 */
     val hasUnreadChat: Boolean get() = chatSessions.any { it.unread }
 
-    private var planCheckJob: Job? = null
+    /** 管家的落盘：设置、checkpoint、记忆、摘要（`<home>/steward/`）。 */
+    internal lateinit var stewardStore: StewardStore
+        private set
 
-    /** 计划检查串行化：启动那一次和焦点触发可能同时到，别把同一条消息发两遍。 */
-    private val planCheckMutex = Mutex()
+    /** 管家仪式引擎：决定该不该说话、组织事实、润色、落盘。 */
+    internal lateinit var stewardRuntime: StewardRuntime
+        private set
+
+    /** 每分钟 tick：应用一直开着时晚间仪式也能到点说话（关着就没办法）。 */
+    private var stewardJob: Job? = null
+
+    /** 主窗口有没有焦点：失焦时才弹系统通知，前台只用未读红点。 */
+    private var windowFocused = true
+
+    /** 系统通知实现；测试里换成 [Notifier.silent]。 */
+    internal var notifier: Notifier = Notifier.silent
+
+    /** 管家设置（界面可改；落盘在 [StewardStore]）。 */
+    internal var stewardSettings by mutableStateOf(StewardSettings())
+        private set
+
+    internal fun updateStewardSettings(settings: StewardSettings) {
+        if (!::stewardStore.isInitialized) return
+        stewardStore.saveSettings(settings)
+        stewardSettings = stewardStore.settings()
+        tick += 1
+    }
 
     /** 知识库笔记：文件是真相，以后加的索引只是从这些文件重建的投影。 */
     internal lateinit var knowledgeStore: KnowledgeStore
@@ -820,87 +843,230 @@ class AppRuntime private constructor() {
     }
 
     /**
-     * 主窗口重新获得焦点：检查一次计划，需要时往「计划检查」会话里留一条主动消息。
+     * 主窗口重新获得焦点：管家检查一次「晨间 / 晚间仪式」是否该说话了。
      *
-     * 触发是**状态事件**不是定时器：应用启动、从别的窗口切回来都会走这里；
-     * 每天最多一次（[PlanCheckStore]），没逾期就什么都不发。重活在后端查询，
-     * 这里不调模型——文案是确定的，免得「AI 提醒」变成又一段需要读的长篇。
+     * 触发是**状态事件**不是一次性定时器：应用启动、从别的窗口切回来都会走这里；
+     * 是否真的发由管家的 checkpoints 决定（同一个应用内日期最多一次）。
+     * 这一点继承自被删掉的「计划检查」：主动消息只在用户回到应用时出现，
+     * 不装独立闹钟、不自动扣模型。
      */
     fun onWindowFocused() {
-        if (planCheckJob?.isActive == true) return
-        planCheckJob = chatScope.launch {
-            runCatching { maybePostPlanCheck() }
-                .onFailure { appendAppLog("计划检查失败：" + it) }
+        windowFocused = true
+        triggerStewardCheck()
+    }
+
+    fun onWindowLostFocus() {
+        windowFocused = false
+    }
+
+    /** 回到应用时检查一次：该发就发，不该发由 checkpoint 决定。 */
+    private fun triggerStewardCheck() {
+        if (!::stewardRuntime.isInitialized) return
+        chatScope.launch { runStewardCheck() }
+    }
+
+    /** 每分钟 tick：应用一直开着的时候，晚间仪式不用等用户切窗口。 */
+    private fun startStewardTicker() {
+        if (stewardJob?.isActive == true) return
+        stewardJob = chatScope.launch {
+            while (true) {
+                delay(60_000)
+                runStewardCheck()
+            }
         }
+    }
+
+    private suspend fun runStewardCheck() {
+        runCatching { stewardRuntime.check() }
+            .onSuccess { result ->
+                if (result != StewardRunResult.Nothing) appendAppLog("管家：$result")
+            }
+            .onFailure { appendAppLog("管家仪式失败：$it") }
     }
 
     /**
-     * 计划检查：读后端事实 → 需要时往全局「计划检查」会话追加一条普通 Assistant 行。
+     * 把管家的主动消息写进那段常驻会话。
      *
-     * 只提示、不动数据：真正的重排/补做仍由用户回话后走工具与确认。
-     * 不自动切页、不打断正在跑的一轮（`chatBusy` 时直接跳过，焦点下次再来）。
+     * 会话正忙（用户在对话里、模型正在回）时返回 false：这次不消耗 checkpoint，
+     * 一分钟后再试 —— 不能在用户说话说到一半时往上面插一条系统发言。
      */
-    internal suspend fun maybePostPlanCheck() {
-        planCheckMutex.withLock { postPlanCheckIfDue() }
-    }
-
-    private suspend fun postPlanCheckIfDue() {
-        if (chatBusy) return
-        if (!::planCheckStore.isInitialized) return
-        val today = clock.today().toString()
-        if (planCheckStore.lastDay() == today) return
-        val service = learningPlan() ?: return
-        val planId = service.activePlanId() ?: return
-        val view = service.overdue(planId, today)
-        if (view.thisWeek.isEmpty() && view.backlog.isEmpty()) return
-        val planTitle = service.plans().firstOrNull { it.id == planId }?.title ?: "学习计划"
+    private fun appendStewardLine(sessionId: String, text: String, proposal: StewardProposal?): Boolean {
+        if (chatBusy) return false
         val now = clock.nowMs()
-        val existing = chatStore.read(PLAN_CHECK_SESSION_ID)
-        val lines = (existing?.lines ?: emptyList()) + ChatLine(
-            id = (existing?.lines?.maxOfOrNull { it.id } ?: 0L) + 1,
-            role = ChatRole.Assistant,
-            text = buildPlanCheckText(planTitle, view),
-            atMs = now,
+        val existing = chatStore.read(sessionId) ?: ChatSession(
+            id = sessionId,
+            title = StewardRuntime.STEWARD_TITLE,
+            createdAt = now,
+            updatedAt = now,
+            lines = emptyList(),
+            kind = SessionKind.Steward,
         )
+        val line = ChatLine(nextChatLineId++, ChatRole.Assistant, text, now, proposal = proposal)
+        val viewing = currentChatId == sessionId
         chatStore.save(
-            ChatSession(
-                id = PLAN_CHECK_SESSION_ID,
-                title = PLAN_CHECK_TITLE,
-                createdAt = existing?.createdAt ?: now,
+            existing.copy(
+                title = StewardRuntime.STEWARD_TITLE,
                 updatedAt = now,
-                lines = lines,
-                unread = true,
+                lines = existing.lines + line,
+                kind = SessionKind.Steward,
+                unread = !viewing,
             ),
         )
-        planCheckStore.save(today)
+        if (viewing) chat += line
         loadChatSessions()
-        appendAppLog(
-            "计划检查：$today 留下主动消息（本周隔日 ${view.thisWeek.size} 项，欠账 ${view.backlog.size} 项）",
-        )
+        return true
     }
 
-    /** 计划检查的确定性文案：不靠模型数数，也和工具循环无关，用户回什么都行。 */
-    private fun buildPlanCheckText(planTitle: String, view: OverdueView): String {
-        val out = StringBuilder()
-        out.append("🔔 计划检查「").append(planTitle).append("」\n")
-        if (view.thisWeek.isNotEmpty()) {
-            out.append("\n本周有 ").append(view.thisWeek.size).append(" 个排期没做完：")
-            view.thisWeek.groupBy { it.day }.forEach { (day, items) ->
-                out.append("\n- ").append(day.removePrefix(view.week.substring(0, 4) + "-"))
-                    .append("：")
-                    .append(items.joinToString("、") { it.title })
+    /**
+     * 采纳一条管家建议：逐条走计划后端已有命令。
+     *
+     * 不让模型来执行：建议是模板生成的、改动是明确的，直接调命令比再跑一轮模型
+     * 便宜也更可预测；失败条数照实说，成功的不会因为旁边失败而回滚。
+     */
+    internal suspend fun adoptStewardProposal(lineId: Long) {
+        val index = chat.indexOfFirst { it.id == lineId }
+        if (index < 0) return
+        val line = chat[index]
+        val proposal = line.proposal ?: return
+        if (line.proposalState != ProposalState.Open) return
+        val service = learningPlan() ?: return
+        val planId = planFocusId ?: service.activePlanId() ?: return
+        var moved = 0
+        var placed = 0
+        var failed = 0
+        proposal.changes.forEach { change ->
+            val result = when (change) {
+                is StewardChange.Move -> service.moveOccurrence(
+                    planAdjustCommand(planId),
+                    change.occurrenceId,
+                    change.day,
+                    "管家建议",
+                )
+                is StewardChange.Place -> service.placeUnit(
+                    planAdjustCommand(planId),
+                    planId,
+                    isoWeekOf(java.time.LocalDate.parse(change.day)),
+                    change.unitId,
+                    change.day,
+                )
             }
-            out.append("\n")
+            if (result.ok) {
+                if (change is StewardChange.Move) moved++ else placed++
+            } else {
+                failed++
+            }
         }
-        if (view.backlog.isNotEmpty()) {
-            out.append("\n还有 ").append(view.backlog.size).append(" 个在未安排桶里：")
-            out.append(view.backlog.take(5).joinToString("、") { it.title })
-            if (view.backlog.size > 5) out.append(" 等")
-            out.append("\n")
+        chat[index] = line.copy(proposalState = ProposalState.Adopted)
+        val summary = buildString {
+            append("已采纳管家建议：")
+            if (moved > 0) append("挪 $moved 件")
+            if (placed > 0) {
+                if (moved > 0) append("、")
+                append("补排 $placed 个")
+            }
+            if (failed > 0) append("，$failed 条没成")
+            append("。")
         }
-        out.append("\n今天到周日还剩约 ").append(view.remainingMinutes).append(" 分钟。")
-        out.append("\n想怎么处理？回我就行：补做、顺延、少排一点，或者这周先放过。")
-        return out.toString()
+        addChatLine(ChatRole.Status, "—— " + summary)
+        refreshPlan()
+        runCatching { stewardRuntime.rememberProposalDecision(clock.today(), adopted = true, summary = summary) }
+        persistChat()
+        appendAppLog(summary)
+    }
+
+    /** 界面按钮点「一键采纳」：采纳要在协程里跑（落盘 + 刷新计划）。 */
+    internal fun launchAdoptStewardProposal(lineId: Long) {
+        chatScope.launch { adoptStewardProposal(lineId) }
+    }
+
+    /** 「先这样」：计划不动，只记下这次没采纳 —— 下次别老推同一条。 */
+    internal fun dismissStewardProposal(lineId: Long) {
+        val index = chat.indexOfFirst { it.id == lineId }
+        if (index < 0) return
+        val line = chat[index]
+        val proposal = line.proposal ?: return
+        if (line.proposalState != ProposalState.Open) return
+        chat[index] = line.copy(proposalState = ProposalState.Dismissed)
+        runCatching {
+            stewardRuntime.rememberProposalDecision(clock.today(), adopted = false, summary = proposal.title)
+        }
+        persistChat()
+    }
+
+    /** 「调整一下」：把协商的话带进输入框，用户补完后半句再发。 */
+    internal fun negotiateStewardProposal(lineId: Long) {
+        val line = chat.firstOrNull { it.id == lineId } ?: return
+        if (line.proposal == null) return
+        askInChat("这条建议我想调整一下：")
+    }
+
+    /** 确保「管家」那段常驻会话存在：可以删，但下次启动会再建一个空壳。 */
+    internal fun ensureStewardSession() {
+        if (!::chatStore.isInitialized) return
+        if (chatStore.read(StewardRuntime.STEWARD_SESSION_ID) != null) return
+        val now = clock.nowMs()
+        chatStore.save(
+            ChatSession(
+                id = StewardRuntime.STEWARD_SESSION_ID,
+                title = StewardRuntime.STEWARD_TITLE,
+                createdAt = now,
+                updatedAt = now,
+                lines = emptyList(),
+                kind = SessionKind.Steward,
+            ),
+        )
+        loadChatSessions()
+    }
+
+    /** 管家的端口实现：计划事实、会话写入、模型润色、系统通知。 */
+    private fun stewardPorts(): StewardPorts = object : StewardPorts {
+        override suspend fun planFacts(today: LocalDate): StewardPlanFacts? {
+            val service = learningPlan() ?: return null
+            val planId = planFocusId ?: service.activePlanId() ?: return null
+            val overdue = service.overdue(planId, today.toString())
+            val day = service.today(planId, today.toString())
+            return StewardPlanFacts(
+                planTitle = planTitle,
+                plannedToday = day.occurrences.size,
+                doneToday = day.completed.size,
+                todayMinutes = day.occurrences.sumOf { it.minutes },
+                overdueThisWeek = overdue.thisWeek.groupingBy { it.day }.eachCount(),
+                backlogCount = overdue.backlog.size,
+                remainingMinutesInWeek = overdue.remainingMinutes,
+            )
+        }
+
+        override suspend fun appendProactive(sessionId: String, text: String, proposal: StewardProposal?): Boolean =
+            appendStewardLine(sessionId, text, proposal)
+
+        override suspend fun proposal(today: LocalDate): StewardProposal? {
+            val service = learningPlan() ?: return null
+            val planId = planFocusId ?: service.activePlanId() ?: return null
+            val overdue = service.overdue(planId, today.toString())
+            val weekEnd = today.with(java.time.temporal.TemporalAdjusters.nextOrSame(java.time.DayOfWeek.SUNDAY))
+            return StewardProposals.build(
+                today = today,
+                weekEnd = weekEnd,
+                overdue = overdue.thisWeek.map { StewardOverdueItem(it.occurrenceId, it.title, it.day) },
+                backlog = overdue.backlog.map { StewardBacklogItem(it.unitId, it.title) },
+                id = "prop-" + clock.nowMs(),
+            )
+        }
+
+        override suspend fun polish(messages: List<LlmMessage>): String? {
+            val config = LlmConfigLoader.load(home) ?: return null
+            return runCatching {
+                withTimeoutOrNull(8_000) {
+                    (llmOverride ?: HttpLlmClient(config)).complete(messages)
+                }
+            }.getOrNull()?.trim()?.takeIf { it.isNotBlank() }
+        }
+
+        override fun notify(title: String, body: String) {
+            runCatching { notifier.notify(title, body) }
+        }
+
+        override fun appFocused(): Boolean = windowFocused
     }
 
     /**
@@ -915,11 +1081,20 @@ class AppRuntime private constructor() {
         val id = currentChatId ?: ("chat-" + now)
         currentChatId = id
         val existing = chatStore.read(id)
-        // 全局「计划检查」会话是一段常驻的检查线程：标题不跟着用户回的那句话改。
-        val title = existing?.title?.takeIf { it == PLAN_CHECK_TITLE }
+        // 管家会话是常驻线程：标题固定，不跟着用户回的那句话改。
+        val title = existing?.title?.takeIf { it.isNotBlank() && it != "新对话" }
             ?: chat.firstOrNull { it.role == ChatRole.User }
                 ?.text?.trim()?.take(24)?.takeIf { it.isNotBlank() } ?: "新对话"
-        chatStore.save(ChatSession(id, title, existing?.createdAt ?: now, now, chat.toList()))
+        chatStore.save(
+            ChatSession(
+                id = id,
+                title = title,
+                createdAt = existing?.createdAt ?: now,
+                updatedAt = now,
+                lines = chat.toList(),
+                kind = existing?.kind ?: SessionKind.Manager,
+            ),
+        )
         loadChatSessions()
     }
 
@@ -1654,7 +1829,33 @@ class AppRuntime private constructor() {
             // 提示词里。以前是把整套工具和整段前缀一股脑塞进去，模型总会挑一个
             // 「看起来像在干活」的 —— 「我要速通操作系统」变成装插件就是这么来的。
             // 静态前缀按意图缓存：同一意图的多轮请求逐字节一致，前缀缓存仍能命中。
-            val router = ManagerRouter(catalog, allTools, guidance)
+            // 管家会话换人格：同一套工具、同一个审批闸门，但每轮都给全量工具，
+            // 静态前缀换成管家自己的（克制、只基于事实、一次只给一条建议）。
+            val stewardSession = currentChatId
+                ?.let { id -> chatSessions.firstOrNull { it.id == id }?.kind } == SessionKind.Steward
+            if (stewardSession && ::stewardRuntime.isInitialized) {
+                // 用户回管家的话原样记一条：下次仪式能读到「上次他怎么说」，
+                // 不用再靠模型从上下文里猜。
+                runCatching { stewardRuntime.rememberUserReply(clock.today(), text) }
+            }
+            val router = if (stewardSession) {
+                val base = buildString {
+                    append(StewardPrompt.systemPrompt())
+                    append("\n\n")
+                    append(ToolAgent.catalogueOf(allTools))
+                    if (guidance.isNotBlank()) {
+                        append("\n\n")
+                        append(guidance)
+                    }
+                }
+                ManagerRouter(
+                    prompt = ManagerPrompt(base = base, stableTools = true),
+                    allTools = allTools,
+                    stableTools = true,
+                )
+            } else {
+                ManagerRouter(catalog, allTools, guidance)
+            }
             val agent = ManagerAgent(
                 llm = llm,
                 router = router,
@@ -2664,7 +2865,7 @@ class AppRuntime private constructor() {
         val planId = learningPlanId ?: return
         val overdue = planOverdue ?: return
         val clean = extraMinutes.coerceIn(0, MAX_CATCH_UP_MINUTES)
-        // 偏好先落盘：下次计划检查问「今天能多投入多少」时，默认值就是它。
+        // 偏好先落盘：下次管家问「今天能多投入多少」时，默认值就是它。
         val prefs = studyPrefs.copy(catchUpMinutes = clean).normalized()
         studyPrefs = prefs
         if (::studyPrefsStore.isInitialized) studyPrefsStore.save(prefs)
@@ -3344,13 +3545,27 @@ class AppRuntime private constructor() {
             runtime.pluginStyleStore = PluginStyleStore(home)
             runtime.pluginCardStyles = runtime.pluginStyleStore.load()
             runtime.chatStore = ChatStore(home)
-            runtime.planCheckStore = PlanCheckStore(home)
             runtime.knowledgeStore = KnowledgeStore(home, runtime.clock)
+            runtime.stewardStore = StewardStore(home)
+            // 用户明确说过旧的「计划检查」可以直接删；迁移顺手清掉残留文件。
+            runtime.stewardStore.migrateLegacyPlanCheck()
+            runtime.stewardSettings = runtime.stewardStore.settings()
+            runtime.notifier = Notifier.create()
+            runtime.stewardRuntime = StewardRuntime(
+                store = runtime.stewardStore,
+                ports = runtime.stewardPorts(),
+                clock = { runtime.clock.nowMs() },
+                zone = runtime.clock.zone,
+            )
+            runtime.ensureStewardSession()
             runtime.loadChatSessions()
             // 聊天器的默认行为就是「接着上次说」：启动时把最近一段接回去，
-            // 而不是每次都从空白开始、让人以为记录丢了。
-            runtime.chatSessions.firstOrNull()?.let { runtime.openChat(it.id) }
+            // 而不是每次都从空白开始、让人以为记录丢了。管家那段常驻在列表最上面，
+            // 但不抢默认视图 —— 打开应用先看普通会话。
+            runtime.chatSessions.firstOrNull { it.kind == SessionKind.Manager }
+                ?.let { runtime.openChat(it.id) }
             runtime.onWindowFocused()
+            runtime.startStewardTicker()
             runtime.wireApprovalDialog()
 
             if (plan.plans().isEmpty()) plan.createPlan("我的第一个计划")
