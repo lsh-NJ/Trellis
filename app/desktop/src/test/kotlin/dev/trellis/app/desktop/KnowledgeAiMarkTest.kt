@@ -270,6 +270,10 @@ class KnowledgeAiMarkTest {
         assertTrue(prompt.contains("正文依据"))
         assertTrue(prompt.contains("逐字出现在正文里"))
         assertTrue(prompt.contains("数量不设上限"))
+        // 准入门槛：短词/符号/标题行抽进来会让正文「绿色满天飞」。
+        assertTrue(prompt.contains("准入门槛"))
+        assertTrue(prompt.contains("至少 2 个字"))
+        assertTrue(prompt.contains("标题行/章节名"))
     }
 
     @Test

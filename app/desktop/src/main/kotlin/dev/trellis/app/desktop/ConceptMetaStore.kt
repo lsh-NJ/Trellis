@@ -45,33 +45,47 @@ internal class ConceptMetaStore(home: File) {
         for (element in array) {
             val obj = element.jsonObject
             val name = normalizeConceptName((obj["name"] as? JsonPrimitive)?.content.orEmpty())
-            if (name.isEmpty()) continue
+            // 旧数据里可能有 M / ef / [] 这种「绿色满天飞」的垃圾概念，读的时候就挡掉。
+            if (!isAcceptableConceptName(name)) continue
             val definition = (obj["definition"] as? JsonPrimitive)?.content.orEmpty().trim()
+            val key = conceptIdentityKey(name)
             val aliases = (obj["aliases"] as? kotlinx.serialization.json.JsonArray)
                 ?.mapNotNull { (it as? JsonPrimitive)?.takeIf { primitive -> primitive.isString }?.content }
                 ?.map(::normalizeConceptName)
-                ?.filter { it.isNotBlank() }
-                ?.distinctBy(::conceptKey)
+                ?.filter { isAcceptableConceptName(it) && conceptIdentityKey(it) != key }
+                ?.distinctBy(::conceptIdentityKey)
                 .orEmpty()
-            result[conceptKey(name)] = ConceptMeta(name, definition, aliases)
+            // 同一个概念被 AI 抽成「Matryoshka 表示学习 / Matryoshka表示学习」两条时并成一条。
+            val existing = result[key]
+            result[key] = if (existing == null) {
+                ConceptMeta(name, definition, aliases)
+            } else {
+                ConceptMeta(
+                    existing.name,
+                    existing.definition.ifBlank { definition },
+                    (existing.aliases + aliases).distinctBy(::conceptIdentityKey),
+                )
+            }
         }
         result
     }.getOrElse { emptyMap() }
 
     /** 某条定义；没有/空定义返回 null。 */
-    fun definition(name: String): String? = load()[conceptKey(name)]?.definition?.takeIf { it.isNotBlank() }
+    fun definition(name: String): String? = load()[conceptIdentityKey(name)]?.definition?.takeIf { it.isNotBlank() }
 
     /** 概念库里的全部身份（规范名 + 别名），用于把正文标注解析成规范名。 */
     fun identities(): List<ConceptIdentity> = load().values.map { ConceptIdentity(it.name, it.aliases) }
 
     /** 确保这些概念在库里有个条目（定义/别名可以为空）；已存在的不动。 */
     fun ensureConcepts(names: List<String>): Boolean {
-        val targets = names.map(::normalizeConceptName).filter { it.isNotBlank() }.distinctBy(::conceptKey)
+        val targets = names.map(::normalizeConceptName)
+            .filter(::isAcceptableConceptName)
+            .distinctBy(::conceptIdentityKey)
         if (targets.isEmpty()) return true
         val current = load().toMutableMap()
         var changed = false
         for (name in targets) {
-            val key = conceptKey(name)
+            val key = conceptIdentityKey(name)
             if (current.containsKey(key)) continue
             current[key] = ConceptMeta(normalizeConceptName(name), "")
             changed = true
@@ -81,8 +95,8 @@ internal class ConceptMetaStore(home: File) {
 
     /** 写一条定义（空定义等价于删除）。返回是否真的写成功。 */
     fun saveDefinition(name: String, definition: String): Boolean {
-        val key = conceptKey(name)
-        if (key.isEmpty()) return false
+        if (!isAcceptableConceptName(name)) return false
+        val key = conceptIdentityKey(name)
         val current = load().toMutableMap()
         val text = definition.trim()
         if (text.isEmpty()) {
@@ -95,13 +109,13 @@ internal class ConceptMetaStore(home: File) {
 
     /** 写一个概念的别名（空列表 = 清空）；概念不存在时先建条目。 */
     fun saveAliases(name: String, aliases: List<String>): Boolean {
-        val key = conceptKey(name)
-        if (key.isEmpty()) return false
+        if (!isAcceptableConceptName(name)) return false
+        val key = conceptIdentityKey(name)
         val current = load().toMutableMap()
         val existing = current[key]
         val normalized = aliases.map(::normalizeConceptName)
-            .filter { it.isNotBlank() }
-            .distinctBy(::conceptKey)
+            .filter { isAcceptableConceptName(it) && conceptIdentityKey(it) != key }
+            .distinctBy(::conceptIdentityKey)
         current[key] = ConceptMeta(
             existing?.name ?: normalizeConceptName(name),
             existing?.definition.orEmpty(),
@@ -112,14 +126,14 @@ internal class ConceptMetaStore(home: File) {
 
     /** 合并别名：已有的保留，只追加新的（AI 抽出来的别名不能把用户删掉的又加回来）。 */
     fun mergeAliases(name: String, aliases: List<String>): Boolean {
-        val key = conceptKey(name)
-        if (key.isEmpty() || aliases.isEmpty()) return false
+        if (!isAcceptableConceptName(name) || aliases.isEmpty()) return false
+        val key = conceptIdentityKey(name)
         val current = load().toMutableMap()
         val existing = current[key]
         val merged = (existing?.aliases.orEmpty() + aliases)
             .map(::normalizeConceptName)
-            .filter { it.isNotBlank() }
-            .distinctBy(::conceptKey)
+            .filter { isAcceptableConceptName(it) && conceptIdentityKey(it) != key }
+            .distinctBy(::conceptIdentityKey)
         current[key] = ConceptMeta(
             existing?.name ?: normalizeConceptName(name),
             existing?.definition.orEmpty(),
@@ -134,8 +148,8 @@ internal class ConceptMetaStore(home: File) {
         val current = load().toMutableMap()
         var changed = false
         for ((name, definition) in definitions) {
-            val key = conceptKey(name)
-            if (key.isEmpty() || definition.isBlank()) continue
+            if (!isAcceptableConceptName(name) || definition.isBlank()) continue
+            val key = conceptIdentityKey(name)
             val existing = current[key]
             if (existing != null && existing.definition.isNotBlank()) continue
             current[key] = ConceptMeta(
@@ -154,7 +168,7 @@ internal class ConceptMetaStore(home: File) {
             put(
                 "concepts",
                 buildJsonArray {
-                    for (item in items.sortedBy { conceptKey(it.name) }) {
+                    for (item in items.sortedBy { conceptIdentityKey(it.name) }) {
                         add(
                             buildJsonObject {
                                 put("name", item.name)

@@ -318,4 +318,26 @@ class KnowledgeConceptTest {
         assertTrue(messages[1].content.contains("RRF"))
         assertTrue(messages[1].content.contains("JSON"))
     }
+
+    // ---- 概念准入：索引合并空白变体、跳过短词 ----
+
+    @Test
+    fun conceptIndexMergesWhitespaceVariantsAndSkipsShortNames() {
+        val home = tempHome()
+        val store = store(home)
+        store.save(
+            KnowledgeNote(
+                id = "n_gate",
+                title = "门槛",
+                body = "Matryoshka 表示学习 可以让向量前几维就能用。",
+                createdAt = nowMs,
+                updatedAt = nowMs,
+                concepts = listOf("Matryoshka 表示学习", "Matryoshka表示学习", "M", "ef"),
+            ),
+        )
+        val index = store.conceptIndex()
+        assertEquals(1, index.size)
+        assertEquals(conceptIdentityKey("Matryoshka表示学习"), conceptIdentityKey(index.single().name))
+        assertEquals(1, index.single().noteCount)
+    }
 }

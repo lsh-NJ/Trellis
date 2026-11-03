@@ -42,7 +42,7 @@ import androidx.compose.ui.unit.dp
  *
  * 这个文件只留三件页面级的东西：
  *  - [MarkdownEditor] 很薄的入口，页面不必知道编辑器的细节；
- *  - [EditorChip] / [MarkdownMenuOverlay]：页头的「编辑 / 预览」「目录」「菜单」与菜单浮层；
+ *  - [EditorChip] / [MarkdownMenuOverlay]：页头的「目录」「菜单」与菜单浮层；
  *  - [requestFocusWhenReady]：安全的焦点请求（等布局就绪，失败安静放弃，见函数注释）。
  */
 
@@ -53,7 +53,6 @@ internal fun MarkdownEditor(
     body: String,
     onBodyChange: (String) -> Unit,
     modifier: Modifier = Modifier,
-    preview: Boolean = false,
     conceptNames: List<String> = emptyList(),
     onDeleteAiLine: ((String) -> Unit)? = null,
     reveal: TextRange? = null,
@@ -65,7 +64,6 @@ internal fun MarkdownEditor(
         body = body,
         onBodyChange = onBodyChange,
         modifier = modifier,
-        preview = preview,
         conceptNames = conceptNames,
         onDeleteAiLine = onDeleteAiLine,
         reveal = reveal,

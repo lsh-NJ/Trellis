@@ -80,8 +80,8 @@ import kotlinx.coroutines.launch
  * 移动、段落首尾回车都会在那里出问题）。显示层由 [projectDocument] 投影：
  * 光标不在的地方把 `**`/`#`/`> ` 这类标记藏起来、只留样式；光标进去时标记还原。
  *
- * 代价：代码块、表格、`:::ai` 块、`$$` 公式块在编辑态只显示等宽样式化源码（它们不是
- * 纯文本样式，没法塞进同一个文本框渲染成小部件），完整渲染在「预览」态。
+ * 代价：代码块、表格、`:::ai` 块、`$$` 公式块只显示等宽样式化源码（它们不是纯文本
+ * 样式，没法塞进同一个文本框渲染成小部件）；笔记页因此不设「预览」态，只有这一个编辑面。
  *
  * 参数与页面（[KnowledgeScreen]）对齐：`noteId` 变化时重置编辑状态，`body` 是外部正文
  * （自动保存/抽取的结果），`onBodyChange` 在每次编辑后回写。
@@ -92,24 +92,12 @@ internal fun MarkdownDocumentEditor(
     body: String,
     onBodyChange: (String) -> Unit,
     modifier: Modifier = Modifier,
-    preview: Boolean = false,
     conceptNames: List<String> = emptyList(),
     onDeleteAiLine: ((String) -> Unit)? = null,
     reveal: TextRange? = null,
     revealToken: Int = 0,
     onEditingFinished: (() -> Unit)? = null,
 ) {
-    if (preview) {
-        MarkdownText(
-            body,
-            modifier = modifier.fillMaxWidth(),
-            conceptNames = conceptNames,
-            onDeleteAiBlockLine = onDeleteAiLine,
-            showLinkUrl = false,
-        )
-        return
-    }
-
     val paragraphStyle = MaterialTheme.typography.bodyLarge
     val scheme = MaterialTheme.colorScheme
     val conceptGreen = LocalExtraColors.current.accentText

@@ -5,6 +5,7 @@ import java.time.ZoneId
 import java.time.ZoneOffset
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -207,11 +208,12 @@ class KnowledgeAnnotationTest {
 
     @Test
     fun extractionParsesMentionAndAliases() {
-        val raw = """{"concepts":[{"name":"RAG","mention":"检索增强生成","aliases":["检索增强","rag"],"definition":"先检索再回答"}],"fills":[]}"""
+        // 别名和规范名同身份（大小写/空白不同）的会被并掉，这里用真正不同的写法。
+        val raw = """{"concepts":[{"name":"RAG","mention":"检索增强生成","aliases":["检索增强","检索生成"],"definition":"先检索再回答"}],"fills":[]}"""
         val candidate = parseExtractionResult(raw).candidates.single()
         assertEquals("RAG", candidate.name)
         assertEquals("检索增强生成", candidate.mention)
-        assertEquals(listOf("检索增强", "rag"), candidate.aliases)
+        assertEquals(listOf("检索增强", "检索生成"), candidate.aliases)
     }
 
     @Test
@@ -281,10 +283,11 @@ class KnowledgeAnnotationTest {
         }
         val meta = ConceptMetaStore(home)
         assertTrue(meta.saveAliases("RAG", listOf("检索增强")))
+        // 「rag」和规范名同身份，会被并掉；保留用户已有的、追加新的。
         assertTrue(meta.mergeAliases("RAG", listOf("检索增强", "rag", "RAG 检索")))
         val stored = meta.load()[conceptKey("RAG")]
         assertNotNull(stored)
-        assertEquals(listOf("检索增强", "rag", "RAG 检索"), stored.aliases)
+        assertEquals(listOf("检索增强", "RAG 检索"), stored.aliases)
     }
 
     // ---- 概念库别名 ----
@@ -297,12 +300,12 @@ class KnowledgeAnnotationTest {
         }
         val meta = ConceptMetaStore(home)
         assertTrue(meta.ensureConcepts(listOf("RAG")))
-        assertTrue(meta.saveAliases("RAG", listOf("检索增强生成", "rag", "检索增强生成")))
+        assertTrue(meta.saveAliases("RAG", listOf("检索增强生成", "检索生成", "检索增强生成")))
 
         val stored = meta.load()[conceptKey("RAG")]
         assertNotNull(stored)
         assertEquals("RAG", stored.name)
-        assertEquals(listOf("检索增强生成", "rag"), stored.aliases)
+        assertEquals(listOf("检索增强生成", "检索生成"), stored.aliases)
 
         val identity = meta.identities().firstOrNull { conceptKey(it.name) == conceptKey("RAG") }
         assertNotNull(identity)
@@ -310,7 +313,7 @@ class KnowledgeAnnotationTest {
 
         // 写定义不能把别名冲掉
         assertTrue(meta.saveDefinition("RAG", "先检索再让模型作答"))
-        assertEquals(listOf("检索增强生成", "rag"), meta.load()[conceptKey("RAG")]?.aliases)
+        assertEquals(listOf("检索增强生成", "检索生成"), meta.load()[conceptKey("RAG")]?.aliases)
         assertEquals("先检索再让模型作答", meta.definition("RAG"))
     }
 
@@ -330,5 +333,78 @@ class KnowledgeAnnotationTest {
         }
         val meta = ConceptMetaStore(home)
         assertEquals(listOf("检索增强生成"), meta.load()[conceptKey("RAG")]?.aliases)
+    }
+
+    // ---- 概念准入：短词/符号一律不进库，避免正文「绿色满天飞」 ----
+
+    @Test
+    fun shortOrSymbolicNamesAreNotConcepts() {
+        for (bad in listOf("M", "ef", "en", "[]", " _ ", "123", "..")) {
+            assertFalse(isAcceptableConceptName(bad), bad)
+        }
+        for (good in listOf("RAG", "BM25", "IVF", "集合", "向量检索", "KV 缓存", "ef_construction")) {
+            assertTrue(isAcceptableConceptName(good), good)
+        }
+    }
+
+    @Test
+    fun identityIgnoresWhitespaceAndCase() {
+        assertEquals(conceptIdentityKey("Matryoshka 表示学习"), conceptIdentityKey("Matryoshka表示学习"))
+        assertEquals(conceptIdentityKey("Metadata 过滤"), conceptIdentityKey("metadata过滤"))
+        assertTrue(conceptIdentityKey("Metadata 过滤") != conceptIdentityKey("Metadata 检索"))
+    }
+
+    @Test
+    fun metaStoreDropsGarbageAndMergesWhitespaceVariants() {
+        val home = File.createTempFile("trellis-annotation-gates-", "").apply {
+            delete()
+            mkdirs()
+        }
+        File(File(home, "knowledge"), "concepts.json").apply {
+            parentFile.mkdirs()
+            writeText(
+                """
+                {"concepts":[
+                  {"name":"M","definition":"HNSW 参数"},
+                  {"name":"ef","definition":"候选集"},
+                  {"name":"[]","definition":"符号"},
+                  {"name":"Matryoshka 表示学习","definition":"可截断维度","aliases":["MRL"]},
+                  {"name":"Matryoshka表示学习","definition":"可截断维度（重复一条）","aliases":["MRL"]}
+                ]}
+                """.trimIndent(),
+            )
+        }
+        val meta = ConceptMetaStore(home)
+        val loaded = meta.load()
+        assertNull(loaded[conceptIdentityKey("M")])
+        assertNull(loaded[conceptIdentityKey("ef")])
+        assertEquals(1, loaded.size)
+        val identity = meta.identities().single()
+        assertEquals(conceptIdentityKey("Matryoshka表示学习"), conceptIdentityKey(identity.name))
+    }
+
+    @Test
+    fun extractionDropsGarbageCandidates() {
+        val raw = """{"concepts":[{"name":"M"},{"name":"ef"},{"name":"[]"},{"name":"RAG","mention":"RAG","definition":"检索增强"}],"fills":[]}"""
+        assertEquals(listOf("RAG"), parseExtractionResult(raw).candidates.map { it.name })
+    }
+
+    // ---- 普通出现的高亮只覆盖「本文概念」 ----
+
+    @Test
+    fun plainHighlightOnlyCoversConceptsAnnotatedInThisNote() {
+        assertEquals(
+            listOf("RAG", "检索增强生成", "检索增强"),
+            highlightNamesForNote(listOf("RAG"), library),
+        )
+        // 本文没标注 GraphRAG：它和它的别名都不染色，只在概念库/详情里能找到。
+        assertFalse(highlightNamesForNote(listOf("RAG"), library).contains("GraphRAG"))
+        assertFalse(highlightNamesForNote(listOf("RAG"), library).contains("图检索"))
+        assertTrue(highlightNamesForNote(emptyList(), library).isEmpty())
+    }
+
+    @Test
+    fun plainHighlightSkipsInadmissibleNames() {
+        assertTrue(highlightNamesForNote(listOf("M", "ef", "[]"), library).isEmpty())
     }
 }
