@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,12 +17,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -31,8 +28,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.trellis.kernel.slot.Slots
+import dev.trellis.ui.LocalExtraColors
 import dev.trellis.ui.SlotArea
 
 /**
@@ -41,50 +40,45 @@ import dev.trellis.ui.SlotArea
  * 宿主自己只认一项（[StudyPrefs.dailyMinutes]），其余都交给插件 ——
  * 「设置页分组」这个挂载点（`slot.settings.section`）就是给它们的。
  *
- * 插件管理和诊断也收在这里：两者都不常用（插件交给对话里的 agent 装、停、删），
- * 各占一个导航位不值当，所以导航是 任务 / 计划 / 知识库 / 对话 / 活动 / 设置 六条。
+ * 版式与知识库/网络页同一套：区段标题（[GraphSectionLabel]）＋ 发丝分隔线 ＋ 扁平行，
+ * 去掉了每块标题下的解释性长文案；只保留「当前值 / 安全提示」这类功能信息。
+ * 插件管理和诊断也收在这里：两者都不常用，各占一个导航位不值当，
+ * 所以导航是 任务 / 计划 / 知识库 / 对话 / 活动 / 设置 六条。
  */
 @Composable
 fun SettingsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     var llmOpen by remember { mutableStateOf(false) }
     var llmNote by remember { mutableStateOf<String?>(null) }
 
-    Column(modifier) {
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            item { ModelCard(runtime, llmNote) { llmOpen = true } }
+    LazyColumn(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(20.dp),
+    ) {
+        item { ModelSection(runtime, llmNote) { llmOpen = true } }
 
-            item { AppearanceCard(runtime) }
+        item { AppearanceSection(runtime) }
 
-            item { DailyBudgetCard(runtime) }
+        item { DailyBudgetSection(runtime) }
 
-            // 时间调试：只有开发者模式（TRELLIS_DEV=1）才出现。
-            // 拨「应用内今天」而不是改系统时间——跨周/结算/复盘这些逻辑才需要它。
-            if (runtime.devModeEnabled) item { DevTimeCard(runtime) }
+        // 时间调试：只有开发者模式（TRELLIS_DEV=1）才出现。
+        // 拨「应用内今天」而不是改系统时间——跨周/结算/复盘这些逻辑才需要它。
+        if (runtime.devModeEnabled) item { DevTimeSection(runtime) }
 
-            item {
-                Spacer(Modifier.height(10.dp))
-                PluginsCard(runtime)
-            }
+        item { PluginsSection(runtime) }
 
-            // 插件设置：没有插件贡献时 SlotArea 自己什么都不画，不占位。
-            item {
-                Spacer(Modifier.height(10.dp))
-                SlotArea(
-                    runtime.kernel.extensions,
-                    Slots.SettingsSection,
-                    refreshKey = runtime.tick,
-                    onAction = { owner, action -> runtime.performSlotAction(owner, action) },
-                    layout = runtime.layoutFor(Slots.SettingsSection.id),
-                )
-            }
-
-            // 诊断原本是导航里的一页，现在从这块进去：它只在出事时才打开，
-            // 常年占一个导航位不值当。
-            item {
-                Spacer(Modifier.height(10.dp))
-                DiagnosticsCard(runtime)
-            }
+        // 插件设置：没有插件贡献时 SlotArea 自己什么都不画，不占位。
+        item {
+            SlotArea(
+                runtime.kernel.extensions,
+                Slots.SettingsSection,
+                refreshKey = runtime.tick,
+                onAction = { owner, action -> runtime.performSlotAction(owner, action) },
+                layout = runtime.layoutFor(Slots.SettingsSection.id),
+            )
         }
+
+        // 诊断原先在导航里占一格，现在从这一块进去：它只在出事时才打开。
+        item { DiagnosticsSection(runtime) }
     }
 
     if (llmOpen) {
@@ -107,51 +101,35 @@ fun SettingsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
  * 导入后写的是同一个 `llm.json`，客户端每次发消息按配置新建，所以立刻生效。
  */
 @Composable
-private fun ModelCard(runtime: AppRuntime, note: String?, onImport: () -> Unit) {
+private fun ModelSection(runtime: AppRuntime, note: String?, onImport: () -> Unit) {
     val config = runtime.llmConfig()
     val source = runtime.llmSource()
-    val description = if (config == null) {
-        "还没有配置 —— 粘贴一个 key 就能开始对话。"
+    val status = if (config == null) {
+        "未配置"
     } else {
         val host = config.endpoint.substringAfter("://").substringBefore('/')
-        val suffix = if (source == "环境变量") "（来自环境变量，改文件不生效）" else ""
-        config.model + " @ " + host + suffix
+        config.model + " @ " + host + if (source == "环境变量") " · 环境变量" else ""
     }
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-    ) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
-            Text("模型 API", style = MaterialTheme.typography.titleSmall)
-            Text(description, style = MaterialTheme.typography.labelSmall)
-            Spacer(Modifier.height(10.dp))
-            ChromeButton(
+    SettingsSection(
+        title = "模型 API",
+        status = status,
+        action = {
+            EditorChip(
                 label = if (config == null) "导入" else "重新导入",
+                active = false,
                 onClick = onImport,
-                filled = config == null,
             )
-            if (!note.isNullOrBlank()) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    note,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+        },
+    ) {
+        if (!note.isNullOrBlank()) {
+            SettingsStatusLine(note)
         }
     }
 }
 
-/**
- * 主题与导航。
- *
- * 这两样以前只能靠对话里的 agent 改（`set_theme` / `set_ui`），或者手改 `ui.json`：
- * 用户装完主题插件，插件页明明写着 ACTIVE，界面却没变——因为它只是贡献了主题，
- * 没有被「选中」。设置页现在给两个最常被问到的开关：主题（内置 Bento + 插件贡献的）
- * 和导航位置；点一下走的是和 agent 同一套入口，改完立即落盘。
- */
+/** 主题与导航：两样都走和 agent 同一套入口，改完立即落盘。 */
 @Composable
-private fun AppearanceCard(runtime: AppRuntime) {
+private fun AppearanceSection(runtime: AppRuntime) {
     val prefs = runtime.uiPrefs
     var message by remember { mutableStateOf("") }
 
@@ -163,194 +141,80 @@ private fun AppearanceCard(runtime: AppRuntime) {
     val currentKey = prefs.theme.ifBlank { "builtin" }
     val currentKnown = themes.any { it.first == currentKey }
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-    ) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
-            Text("主题与导航", style = MaterialTheme.typography.titleSmall)
-            Text(
-                "主题由插件贡献（内置 Bento 默认启用）；导航换个位置，整页的顶栏就变成左栏。改了就存，重启还在。",
-                style = MaterialTheme.typography.labelSmall,
-            )
-            Spacer(Modifier.height(10.dp))
-
-            Text(
-                "主题",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(2.dp))
-            for ((key, label) in themes) {
-                ChoiceRow(
-                    label = label,
-                    detail = if (key == "builtin") "builtin · 跟随配色方案" else key,
-                    selected = key == currentKey,
-                    onClick = {
-                        val result = runtime.applyTheme(key)
-                        message = if (result.startsWith("界面偏好已更新")) {
-                            "主题已切到「" + label + "」"
-                        } else {
-                            result
-                        }
-                    },
-                )
-            }
-            if (!currentKnown) {
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "当前存的主题「" + currentKey + "」已经不可用（插件停了或删了），界面回落到配色方案。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-
-            Spacer(Modifier.height(10.dp))
-            Text(
-                "导航",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(2.dp))
-            for ((key, label) in listOf("top" to "顶部标签栏", "left" to "左侧边栏（默认）")) {
-                ChoiceRow(
-                    label = label,
-                    detail = null,
-                    selected = prefs.nav == key,
-                    onClick = {
-                        val result = runtime.updateUiPrefs(runtime.uiPrefs.copy(nav = key))
-                        message = if (result.startsWith("界面偏好已更新")) {
-                            "导航已改成「" + label + "」"
-                        } else {
-                            result
-                        }
-                    },
-                )
-            }
-
-            if (message.isNotBlank()) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    message,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-    }
-}
-
-/** 单选行：一个小方块当标记，整行可点；选中的那行右侧写「当前」。 */
-@Composable
-private fun ChoiceRow(
-    label: String,
-    detail: String?,
-    selected: Boolean,
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(4.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            modifier = Modifier
-                .size(10.dp)
-                .clip(RoundedCornerShape(2.dp))
-                .background(
-                    if (selected) {
-                        MaterialTheme.colorScheme.primary
+    SettingsSection(title = "外观") {
+        SettingsSubLabel("主题")
+        for ((key, label) in themes) {
+            SettingsChoiceRow(
+                label = label,
+                selected = key == currentKey,
+                onClick = {
+                    val result = runtime.applyTheme(key)
+                    message = if (result.startsWith("界面偏好已更新")) {
+                        "主题已切到「" + label + "」"
                     } else {
-                        MaterialTheme.colorScheme.outlineVariant
-                    },
-                ),
-        )
-        Spacer(Modifier.width(8.dp))
-        Column(Modifier.weight(1f)) {
-            Text(label, style = MaterialTheme.typography.bodyMedium)
-            if (!detail.isNullOrBlank()) {
-                Text(
-                    detail,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        if (selected) {
-            Text(
-                "当前",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        result
+                    }
+                },
             )
+        }
+        if (!currentKnown) {
+            SettingsStatusLine(
+                "当前存的主题「" + currentKey + "」已经不可用（插件停了或删了），界面回落到配色方案",
+                error = true,
+            )
+        }
+
+        SettingsSubLabel("导航")
+        for ((key, label) in listOf("top" to "顶部标签栏", "left" to "左侧边栏（默认）")) {
+            SettingsChoiceRow(
+                label = label,
+                selected = prefs.nav == key,
+                onClick = {
+                    val result = runtime.updateUiPrefs(runtime.uiPrefs.copy(nav = key))
+                    message = if (result.startsWith("界面偏好已更新")) {
+                        "导航已改成「" + label + "」"
+                    } else {
+                        result
+                    }
+                },
+            )
+        }
+
+        if (message.isNotBlank()) {
+            SettingsStatusLine(message)
         }
     }
 }
 
 /**
- * 插件页的入口。
+ * 「每天预计投入」。
  *
- * 装插件、看贡献、授权能力这些事现在基本交给对话里的 agent，人只在「怎么没反应了」
- * 的时候来这一页看一眼，所以它不该常年占一个导航位。
+ * 只有一个数：这个数唯一的去处是建计划时的每周容量。
  */
 @Composable
-private fun PluginsCard(runtime: AppRuntime) {
-    val plugins = runtime.pluginInfos
-    val broken = plugins.count { it.errors.isNotEmpty() }
-    val status = when {
-        plugins.isEmpty() -> "还没有装插件"
-        broken > 0 -> plugins.size.toString() + " 个插件 · " + broken + " 个有错误"
-        else -> plugins.size.toString() + " 个插件 · 都在跑"
-    }
-    Card(
-        modifier = Modifier.fillMaxWidth().clickable { runtime.currentTab = TAB_PLUGINS },
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+private fun DailyBudgetSection(runtime: AppRuntime) {
+    val prefs = runtime.studyPrefs
+    SettingsSection(
+        title = "每日预计投入",
+        status = prefs.describe(),
     ) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
-            Text("插件", style = MaterialTheme.typography.titleSmall)
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            StepChip("−") { runtime.bumpDailyMinutes(-STEP_MINUTES) }
+            Spacer(Modifier.width(10.dp))
             Text(
-                "装了什么、贡献了哪些卡片、拿了哪些能力，都在这一页。",
-                style = MaterialTheme.typography.labelSmall,
+                prefs.dailyMinutes.toString(),
+                style = MaterialTheme.typography.headlineSmall,
+                modifier = Modifier.widthIn(min = 52.dp),
+                textAlign = TextAlign.Center,
             )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                status + " · 点这一块进去 ›",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Text(" 分钟 / 天", style = MaterialTheme.typography.labelMedium)
+            Spacer(Modifier.width(10.dp))
+            StepChip("+") { runtime.bumpDailyMinutes(STEP_MINUTES) }
         }
-    }
-}
-
-/**
- * 诊断的入口。
- *
- * 诊断原先在导航里占一格，可它只在「出事了」的时候才打开 —— 平时白占地方。
- * 挪进设置当一块：整块可点（这一页没有第二个动作，不用再加个按钮）。
- */
-@Composable
-private fun DiagnosticsCard(runtime: AppRuntime) {
-    val errors = runtime.kernelErrors.size
-    Card(
-        modifier = Modifier.fillMaxWidth().clickable { runtime.currentTab = TAB_DIAG },
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-    ) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
-            Text("诊断", style = MaterialTheme.typography.titleSmall)
-            Text(
-                "装插件、停用、删除都留一行记录，内核出过的错也都在这里。" +
-                    "平时不用看，出了问题先来这一页。",
-                style = MaterialTheme.typography.labelSmall,
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                (if (errors == 0) "没有未处理的问题" else errors.toString() + " 条问题记录") + " · 点这一块进去 ›",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        SettingsStatusLine("可调范围 " + MIN_DAILY_MINUTES + "–" + MAX_DAILY_MINUTES + " 分钟")
     }
 }
 
@@ -366,142 +230,227 @@ private fun DiagnosticsCard(runtime: AppRuntime) {
  * 界面只负责拨日期；「真的会写数据」这件事在 AppRuntime.applySimulatedToday 里再拦一次。
  */
 @Composable
-private fun DevTimeCard(runtime: AppRuntime) {
+private fun DevTimeSection(runtime: AppRuntime) {
     var draft by remember(runtime.simulatedToday) {
         mutableStateOf(runtime.simulatedToday?.toString() ?: runtime.clock.today().toString())
     }
     var note by remember { mutableStateOf<String?>(null) }
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-    ) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
-            Text("时间调试（开发者）", style = MaterialTheme.typography.titleSmall)
-            Text(
-                "把应用内的「今天」拨到任意日期，用来看跨天 / 跨周 / 结算 / 结转 / 复盘。" +
-                    "只影响本应用，不改系统时间；计时器和超时仍按真实时间走。",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+    val current = runtime.simulatedToday?.let {
+        "模拟 " + it + "（真实 " + java.time.LocalDate.now() + "）"
+    } ?: ("真实时间（" + runtime.clock.today() + "）")
+
+    SettingsSection(title = "时间调试（开发者）", status = current) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            ChromeTextField(
+                value = draft,
+                onValueChange = { draft = it },
+                placeholder = "YYYY-MM-DD",
+                modifier = Modifier.weight(1f),
             )
-            Spacer(Modifier.height(10.dp))
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                OutlinedTextField(
-                    value = draft,
-                    onValueChange = { draft = it },
-                    singleLine = true,
-                    label = { Text("YYYY-MM-DD") },
-                    modifier = Modifier.weight(1f),
-                )
-                ChromeButton(
-                    label = "应用",
-                    onClick = {
-                        val date = parseSimulatedDate(draft)
-                        if (date == null) {
-                            note = "日期要写成 2026-11-02 这种格式"
-                        } else {
-                            note = null
-                            runtime.applySimulatedToday(date)
-                        }
-                    },
-                    filled = false,
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                ChromeButton(label = "+1 天", onClick = { runtime.jumpSimulatedDays(1) }, filled = false)
-                ChromeButton(label = "+1 周", onClick = { runtime.jumpSimulatedWeeks(1) }, filled = false)
-                if (runtime.simulatedToday != null) {
-                    TextButton(onClick = { runtime.applySimulatedToday(null) }) {
-                        Text("退出模拟", style = MaterialTheme.typography.labelMedium)
+            EditorChip(
+                label = "应用",
+                active = false,
+                onClick = {
+                    val date = parseSimulatedDate(draft)
+                    if (date == null) {
+                        note = "日期要写成 2026-11-02 这种格式"
+                    } else {
+                        note = null
+                        runtime.applySimulatedToday(date)
                     }
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "当前：" + (
-                    runtime.simulatedToday?.let {
-                        "模拟 " + it + "（真实 " + java.time.LocalDate.now() + "）"
-                    } ?: ("真实时间（" + runtime.clock.today() + "）")
-                    ),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                },
             )
-            note?.let {
-                Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            EditorChip("+1 天", active = false, onClick = { runtime.jumpSimulatedDays(1) })
+            EditorChip("+1 周", active = false, onClick = { runtime.jumpSimulatedWeeks(1) })
+            if (runtime.simulatedToday != null) {
+                EditorChip("退出模拟", active = false, onClick = { runtime.applySimulatedToday(null) })
             }
-            if (!runtime.devClockAllowed) {
-                Text(
-                    runtime.devClockRejectedReason ?: "当前数据目录不允许改模拟时间：换一个 TRELLIS_HOME 再试",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-            Text(
-                "提醒：模拟日期下活动页、计时器仍是真实数据；拨动后计划会立刻按新日期结算/补周，数据目录请用演示副本。",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+        }
+        note?.let { SettingsStatusLine(it, error = true) }
+        if (!runtime.devClockAllowed) {
+            SettingsStatusLine(
+                runtime.devClockRejectedReason ?: "当前数据目录不允许改模拟时间：换一个 TRELLIS_HOME 再试",
+                error = true,
             )
+        }
+        SettingsStatusLine(
+            "提醒：模拟日期下活动页、计时器仍是真实数据；拨动后计划会立刻按新日期结算/补周，数据目录请用演示副本",
+        )
+    }
+}
+
+/** 插件页的入口：装插件、看贡献、授权能力这些事基本交给对话里的 agent。 */
+@Composable
+private fun PluginsSection(runtime: AppRuntime) {
+    val plugins = runtime.pluginInfos
+    val broken = plugins.count { it.errors.isNotEmpty() }
+    val status = when {
+        plugins.isEmpty() -> "还没有装插件"
+        broken > 0 -> plugins.size.toString() + " 个 · " + broken + " 个有错误"
+        else -> plugins.size.toString() + " 个 · 都在跑"
+    }
+    SettingsSection(title = "插件") {
+        SettingsLinkRow(label = "打开插件页", status = status) {
+            runtime.currentTab = TAB_PLUGINS
         }
     }
 }
 
-/**
- * 「每天预计投入」。
- *
- * 只有一个数：多问一句「工作日和周末一样吗」就得再给四个开关，而用户此刻只需要
- * 一个能加减的数字。这个数唯一的去处是建计划时的每周容量，界面上也就只解释这件事。
- */
+/** 诊断的入口：装插件、停用、删除都留一行记录，内核出过的错也在这里。 */
 @Composable
-private fun DailyBudgetCard(runtime: AppRuntime) {
-    val prefs = runtime.studyPrefs
-    Card(
-        Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-    ) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
-            Text("每日预计投入", style = MaterialTheme.typography.titleSmall)
-            Text(
-                "每天大概能投多少时间。建学习计划时，这个数乘 7 写进计划的每周容量。",
-                style = MaterialTheme.typography.labelSmall,
-            )
-            Spacer(Modifier.height(10.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                StepButton("−") { runtime.bumpDailyMinutes(-STEP_MINUTES) }
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    prefs.dailyMinutes.toString(),
-                    style = MaterialTheme.typography.headlineSmall,
-                    modifier = Modifier.widthIn(min = 52.dp),
-                    textAlign = TextAlign.Center,
-                )
-                Text("分钟 / 天", style = MaterialTheme.typography.labelSmall)
-                Spacer(Modifier.width(8.dp))
-                StepButton("+") { runtime.bumpDailyMinutes(STEP_MINUTES) }
-            }
-            Spacer(Modifier.height(6.dp))
-            Text(
-                prefs.describe() + " · 可调范围 " + MIN_DAILY_MINUTES + "–" + MAX_DAILY_MINUTES + " 分钟",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+private fun DiagnosticsSection(runtime: AppRuntime) {
+    val errors = runtime.kernelErrors.size
+    val status = if (errors == 0) "没有未处理的问题" else errors.toString() + " 条问题记录"
+    SettingsSection(title = "诊断") {
+        SettingsLinkRow(label = "打开诊断页", status = status) {
+            runtime.currentTab = TAB_DIAG
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// 小部件：区段标题 / 发丝线 / 选项行 / 状态行
+// ---------------------------------------------------------------------------
+
+/** 区段：标题行（右侧可带当前值/动作）＋ 发丝分隔线 ＋ 内容。 */
+@Composable
+private fun SettingsSection(
+    title: String,
+    status: String? = null,
+    action: (@Composable () -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val extra = LocalExtraColors.current
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            GraphSectionLabel(title)
+            Spacer(Modifier.weight(1f))
+            if (status != null) {
+                Text(
+                    status,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = extra.dataMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 420.dp),
+                )
+            }
+            if (action != null) {
+                Spacer(Modifier.width(4.dp))
+                action()
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+        )
+        Spacer(Modifier.height(2.dp))
+        content()
+    }
+}
+
+/** 选项行：7dp 方块当选中标记，整行可点；选中行右侧写「当前」。 */
+@Composable
+private fun SettingsChoiceRow(label: String, selected: Boolean, onClick: () -> Unit) {
+    val extra = LocalExtraColors.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(5.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(7.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(if (selected) extra.accentText else extra.dataTrack),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.weight(1f),
+        )
+        if (selected) {
+            Text("当前", style = MaterialTheme.typography.labelSmall, color = extra.dataMuted)
+        }
+    }
+}
+
+/** 链接行：名称在左、状态在右、末尾一个 ›，整行可点进二级页。 */
+@Composable
+private fun SettingsLinkRow(label: String, status: String, onClick: () -> Unit) {
+    val extra = LocalExtraColors.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(5.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        Text(
+            status,
+            style = MaterialTheme.typography.labelSmall,
+            color = extra.dataMuted,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.width(6.dp))
+        Text("›", style = MaterialTheme.typography.labelMedium, color = extra.dataMuted)
+    }
+}
+
+/** 行内状态/提示：默认弱色，出错时用错误色。 */
+@Composable
+private fun SettingsStatusLine(text: String, error: Boolean = false) {
+    val extra = LocalExtraColors.current
+    Text(
+        text,
+        style = MaterialTheme.typography.labelSmall,
+        color = if (error) MaterialTheme.colorScheme.error else extra.dataMuted,
+        modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+    )
+}
+
+/** 小节内的弱标签（主题 / 导航）。 */
+@Composable
+private fun SettingsSubLabel(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelSmall,
+        color = LocalExtraColors.current.dataMuted,
+        modifier = Modifier.padding(start = 6.dp, top = 8.dp, bottom = 4.dp),
+    )
 }
 
 /** 加减一格。一次 15 分钟：一小时是四格，手感比 5 分钟一档省事。 */
 private const val STEP_MINUTES: Int = 15
 
 @Composable
-private fun StepButton(glyph: String, onClick: () -> Unit) {
+private fun StepChip(glyph: String, onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .size(30.dp)
+            .size(28.dp)
             .clip(RoundedCornerShape(4.dp))
             .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(4.dp))
             .clickable(onClick = onClick),

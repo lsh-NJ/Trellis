@@ -82,6 +82,15 @@ class UiRenderTest {
             write(name, shot)
             assertTrue(shot.size > 5_000, name + " 太小了，八成是空白画面：" + shot.size)
         }
+        // 设置页也留一张：2026-11-03 清理过版式（单列扁平段 + 发丝线，不再套 Material 卡片），
+        // 这是用户最常说的「和其他页不像同一套 UI」的地方，改完要能肉眼核对。
+        for ((dark, name) in listOf(false to "ui-shot-settings.png", true to "ui-shot-settings-dark.png")) {
+            runtime.currentTab = TAB_SETTINGS
+            val shot = render(runtime, dark = dark)
+            write(name, shot)
+            assertTrue(shot.size > 5_000, name + " 太小了，八成是空白画面：" + shot.size)
+        }
+
         runtime.currentTab = TAB_TASKS
 
         runBlocking { runtime.shutdown() }
