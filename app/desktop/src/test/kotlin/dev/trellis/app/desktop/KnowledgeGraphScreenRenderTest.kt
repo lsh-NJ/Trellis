@@ -55,8 +55,8 @@ class KnowledgeGraphScreenRenderTest {
         note(
             "RAG 综述",
             "# RAG 综述\n\n[[RAG 检索增强生成]] 把 [[向量检索]] 与 [[提示工程]] 串起来：先检索再生成。\n\n" +
-                "## 关键环节\n\n[[向量检索]] 负责召回，[[提示工程]] 决定模型怎么用上下文。\n",
-            listOf("RAG 检索增强生成", "向量检索", "提示工程"),
+                "## 关键环节\n\n[[向量检索]] 负责召回，[[提示工程]] 决定模型怎么用上下文，[[上下文窗口]] 决定能塞多少。\n",
+            listOf("RAG 检索增强生成", "向量检索", "提示工程", "上下文窗口"),
         )
         note(
             "检索与嵌入",
@@ -106,7 +106,40 @@ class KnowledgeGraphScreenRenderTest {
                 conceptIdentityKey("评估") to evaluation,
             ),
         )
-        KnowledgeGraphStore(home, runtime.clock).saveUser(user)
+        val graphStore = KnowledgeGraphStore(home, runtime.clock)
+        graphStore.saveUser(user)
+        // AI 缓存种子：一条归类建议（未分类概念「上下文窗口」）+ 一条关系建议。
+        val reviewNote = store.allNotes().first { it.title == "RAG 综述" }
+        graphStore.saveCache(
+            GraphAiCache(
+                promptVersion = GRAPH_PROMPT_VERSION,
+                updatedAt = now,
+                noteSuggestions = mapOf(
+                    reviewNote.id to AiNoteSuggestions(
+                        bodyHash = noteBodyHash(reviewNote),
+                        categories = listOf(
+                            AiCategorySuggestion(
+                                name = "上下文窗口",
+                                categoryPath = listOf("生成"),
+                                reason = "上下文窗口是生成侧的资源上限",
+                                createdAt = now,
+                            ),
+                        ),
+                        relations = listOf(
+                            AiRelationSuggestion(
+                                from = conceptIdentityKey("向量检索"),
+                                to = conceptIdentityKey("重排"),
+                                kind = GraphEdgeKind.RELATED,
+                                confidence = 0.6f,
+                                reason = "检索流程里前后相邻",
+                                evidence = "按相似度找回片段",
+                                createdAt = now,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
 
         KnowledgeGraphViewState.tab = KnowledgeTab.Graph
         KnowledgeGraphViewState.selectedKey = conceptIdentityKey("RAG 检索增强生成")
@@ -128,6 +161,14 @@ class KnowledgeGraphScreenRenderTest {
         val categoryShot = render(runtime, dark = false)
         File("build/ui-shot-graph-category.png").writeBytes(categoryShot)
         assertTrue(categoryShot.size > 5_000, "分类浮窗截图太小了：" + categoryShot.size)
+
+        // AI 建议面板（G1）：面板上能看到「归类建议 / 关系建议」两段与确认/忽略按钮。
+        KnowledgeGraphViewState.selectedKey = null
+        KnowledgeGraphViewState.suggestionsOpen = true
+        val suggestionShot = render(runtime, dark = false)
+        File("build/ui-shot-graph-suggestions.png").writeBytes(suggestionShot)
+        assertTrue(suggestionShot.size > 5_000, "AI 建议面板截图太小了：" + suggestionShot.size)
+        KnowledgeGraphViewState.suggestionsOpen = false
 
         KnowledgeGraphViewState.clearFocus()
         runBlocking { runtime.shutdown() }

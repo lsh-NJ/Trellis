@@ -62,7 +62,9 @@ internal fun buildKnowledgeExtractionMessages(
         "`[[mention => 规范名]]`（mention 与规范名相同时包成 `[[规范名]]`），" +
         "所以 mention 必须是正文里的原词，改写过的词会被丢掉。" +
         "不要抽标题行/章节名、单字母或两三个字母的缩写、纯符号、泛词——这些会在正文里" +
-        "「绿色满天飞」，用户要的是真正被解释过的概念。只输出 JSON 对象，不输出解释。"
+        "「绿色满天飞」，用户要的是真正被解释过的概念。" +
+        "另外顺手给「分类路径」和「概念间关系」的建议（同样是建议：系统会让用户逐条确认，" +
+        "编造的名字/路径会直接被丢弃）。只输出 JSON 对象，不输出解释。"
     val user = buildString {
         append("笔记标题：").append(title.ifBlank { "（无标题）" }).append("\n\n")
         append("笔记正文：\n").append(body.take(MAX_EXTRACT_BODY_CHARS)).append("\n\n")
@@ -93,11 +95,21 @@ internal fun buildKnowledgeExtractionMessages(
         append("6. definition 不超过 40 个字，一句能独立看懂的解释（不是复述名词）。\n")
         append("7. fills 只补上面列出的空位：label 必须和空位标签逐字一致，text 是一句话（不超过 ")
             .append(MAX_AI_FILL_CHARS).append(" 字）；没有空位就输出空数组。\n")
-        append("8. 输出严格 JSON 对象，格式：\n")
+        append("8. 顺手给两类「知识网络建议」（拿不准就输出空数组，不要硬凑）：\n")
+        append("   categories：给本篇概念建议一个所属分类路径。路径最多 2 层、每层不超过 12 个字，")
+            .append("类似「检索/召回」；优先用常见的大类名，没有合适的分类就别给。最多 12 条。\n")
+        append("   relations：本篇概念之间的关系。from/to 必须是上面 concepts 或已标记概念里的名字；")
+            .append("kind 只能是 PREREQUISITE（from 是 to 的前置）、APPLIES（from 用于 to）、RELATED（相关）；")
+            .append("PREREQUISITE/APPLIES 必须给 evidence，且 evidence 必须是正文里逐字出现的一句原话，")
+            .append("找不到原话就别写这条。最多 6 条。\n")
+        append("9. 输出严格 JSON 对象，格式：\n")
         append("```json\n")
         append("{\"concepts\":[{\"name\":\"规范名\",\"mention\":\"正文里的原词\",")
         append("\"aliases\":[\"别名\"],\"definition\":\"一句话定义\"}],")
-        append("\"fills\":[{\"label\":\"空位标签\",\"text\":\"补全的一句话\"}]}\n")
+        append("\"fills\":[{\"label\":\"空位标签\",\"text\":\"补全的一句话\"}],")
+        append("\"categories\":[{\"concept\":\"概念名\",\"categoryPath\":\"大类/小类\",\"reason\":\"一句话\"}],")
+        append("\"relations\":[{\"from\":\"概念A\",\"to\":\"概念B\",\"kind\":\"PREREQUISITE\",")
+        append("\"confidence\":4,\"reason\":\"一句话\",\"evidence\":\"正文原话\"}]}\n")
         append("```")
     }
     return listOf(

@@ -34,7 +34,7 @@
 | [pluginization-plan-2026-10-29.md](pluginization-plan-2026-10-29.md) | 革新插件化计划草记：AGENT 如何核验与定完成标准、学习终端与知识体系图、目标转能力地图 | 构想草记（2026-10-29，未整理） | 讨论产品方向 / 知识体系时 |
 | [plan-rhythm-draft.md](plan-rhythm-draft.md) | 「计划自己推进」（插件化计划第 1 条）的讨论稿：现状解剖（路线只排一部分、第 3 周断流、结算/复盘死代码、核验只有手动勾）、周滚动节奏引擎、完成核验分级、Agent 计划工具、分阶段落地 | 讨论稿（2026-10-29，未定稿） | 讨论「让计划自己推进」/ 接计划工具 / 做周滚动与核验前 |
 | [knowledge-base-draft.md](knowledge-base-draft.md) | 「学习终端 + 知识库」（插件化计划第 2 条）的讨论稿：点亮 = 笔记里出现过的概念、文件为真相/索引可重建、内置 Markdown 编辑器 + 外部导入、不做掌握度与全局图、与计划解耦；已落地导航第三项「知识库」+ Markdown 编辑器 + 概念抽取/点亮/追溯/搜索 + 空位 AI 补全（`标签：。。。`）、AI 内容绿引号标记、整篇单字段 Markdown 编辑器 + 行内 WYSIWYG（点哪落哪、标题/引用前缀在光标行显示源码、链接只显示 label、跨行拖选与全选交给平台，§12）、中文伪粗体 + 行内代码圆角芯片、`[[概念]]` 显式语法 + AI 抽取自动首次打标（概念不设上限；AI 整理只在焦点离开正文时触发，AI 标记/补全不算更新）、导出当前笔记为独立 Markdown | 讨论稿（2026-10-29）；P0 已落地（2026-10-30 两批 + 2026-10-31 第三至七批 + 2026-11-01 排版/概念语法/AI 解析时机补丁 + 2026-11-02 整篇单字段编辑器） | 讨论知识库 / 做笔记与概念索引前 |
-| [knowledge-graph-design.md](knowledge-graph-design.md) | 「知识网络」设计稿（插件化计划第 2 条第二期，v1.1）：默认视图=分类树/分区画布（父节点是概念的所属，分类可嵌套、可新建、可移动），其余关系只在聚焦某概念时出现；「分层」=分类深度，旧的依赖分层降级为 G2 可选「体系视图」（算法与原型保留）；节点/边/证据模型 + 三类事实（笔记派生/用户策展/AI 建议）；分类/关系都由 AI 建议、用户确认；`graph.user.json` + `graph.cache.json` 双文件与墓碑；知识页第三视图（宿主 Canvas 自绘、不碰内核/插件词汇表）；G0/G1/G2 分期、约 50 条纯函数测试、风险与待拍板问题 | **设计稿（2026-11-02，待拍板）** | 讨论/实现知识网络前；接计划节点↔概念、AI 知识工具前 |
+| [knowledge-graph-design.md](knowledge-graph-design.md) | 「知识网络」设计稿（插件化计划第 2 条第二期，v1.3）：默认视图=分类树（父节点是概念的所属；画布只有节点和父子连线，分类=空心虚节点、概念=实节点），聚焦节点弹小浮窗放信息，其它关系只在聚焦时出现；实节点没有上级时用「＋ 虚节点」建节点再拖到目标上建立父子链接；「分层」=分类深度、交给 AI 不预制（旧依赖分层降级为 G2 可选「体系视图」）；节点/边/证据 + 三类事实（笔记派生/用户策展/AI 建议）；AI 归类与关系建议只出建议、用户逐条确认（墓碑/缓存失效/双 json）；知识页第三视图（宿主 Canvas 自绘、不碰内核/插件词汇表）；G0/G1/G2 分期、约 70 条纯函数测试、风险与待拍板问题；附录 E 有 G0/v1.2/v1.3/G1 实现记录 | **设计稿（2026-11-02 拍板；2026-11-03 G0→v1.2→v1.3→G1 已落地）** | 讨论/实现知识网络前；接计划节点↔概念、AI 知识工具前 |
 
 ## 阅读路径
 
@@ -46,7 +46,7 @@
 - **要改计划页**：`plan-page.md`（结构、数据来源、已知缺口）→ `PlanScreen.kt` → `AppRuntime.refreshPlan`。
 - **要让计划自己推进 / 接计划工具**：`plan-rhythm-draft.md`（背景与分阶段方案）→ `plan-backend.md` §8（`advanceRhythm` 契约）→ `PlanAdvance.kt` / `AppRuntime.refreshPlan` / `PlanAdminTools.kt`。
 - **要讨论知识库 / 做笔记与概念索引**：`knowledge-base-draft.md`（口径、数据模型、P0/P1/P2）。
-- **要做知识网络 / 概念间关系**：`knowledge-graph-design.md`（分类树+聚焦关系、三类事实、AI 只建议、双 json 存储、G0/G1/G2、测试与风险）→ `knowledge-base-draft.md` §2/§3（概念/笔记/出处口径）→ `KnowledgeStore.kt`。
+- **要做知识网络 / 概念间关系**：`knowledge-graph-design.md`（分类树+浮窗+拖动链接、三类事实、AI 只建议、双 json 存储、G0/G1/G2、测试与附录 E 实现记录）→ `knowledge-base-draft.md` §2/§3（概念/笔记/出处口径）→ `KnowledgeStore.kt`。
 - **要改活动分类 / 时间汇总**：`activity.md`（规则语义、时间口径、已知缺口）→ `ActivityTaxonomy.kt` / `ActivityAggregator.kt` → `:features:activity:test`。
 - **要碰「今天/本周/跨周/时长/超时」**：`time-conventions.md`（规范，先读 §0 和 §8）→ 计划链路看 `LearningPlanRhythmTest` → 要调试时间推移看 §7（开发者跳日期）。
 - **要改界面/主题/布局**：`../AGENTS.md` §3「按问题找文件」→ `examples/bento-style.md`（三层边界）→ `conversation-redesign.md`（若改会话页）。

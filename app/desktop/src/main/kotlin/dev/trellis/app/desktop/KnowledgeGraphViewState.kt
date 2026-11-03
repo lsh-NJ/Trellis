@@ -38,6 +38,9 @@ internal object KnowledgeGraphViewState {
     /** 递增后请求「适应窗口」。 */
     var fitRequests: Int by mutableStateOf(0)
 
+    /** AI 建议面板是否展开（G1；左侧「查看 AI 建议」打开）。 */
+    var suggestionsOpen: Boolean by mutableStateOf(false)
+
     fun requestRefresh(message: String? = null) {
         refreshToken++
         if (message != null) this.message = message

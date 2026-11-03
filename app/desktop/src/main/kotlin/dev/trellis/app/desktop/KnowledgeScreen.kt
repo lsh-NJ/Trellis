@@ -69,6 +69,8 @@ private data class PendingReveal(val noteId: String, val start: Int, val end: In
 internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     val store = runtime.knowledgeStore
     val metaStore = remember(runtime) { ConceptMetaStore(runtime.home) }
+    // 图建议（G1）与网络视图共用同一个缓存文件；整理完一篇顺手写进去，图那边下次打开就能看到「建议」。
+    val graphStore = remember(runtime) { KnowledgeGraphStore(store.home, runtime.clock) }
     val clock = runtime.clock
     // 页面根保持一个兜底焦点，键盘事件才有接收者；编辑器组成后再把焦点交给它。
     val pageFocus = remember { FocusRequester() }
@@ -234,6 +236,28 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     }
 
     /**
+     * 把「整理这篇笔记」顺带得到的图建议写进 `graph.cache.json`（G1，设计 §6.1）。
+     *
+     * 建议不是事实：不建分类、不改归属；用户在网络视图里确认后才写 `graph.user.json`。
+     * 写失败也不影响笔记整理结果——图那边最多看不见这条建议。
+     */
+    fun persistGraphSuggestions(noteId: String, bodyHash: String, suggestions: NoteGraphSuggestions) {
+        val cache = graphStore.loadCache()
+        val next = cache.noteSuggestions + (noteId to AiNoteSuggestions(
+            bodyHash = bodyHash,
+            categories = suggestions.categories,
+            relations = suggestions.relations,
+        ))
+        graphStore.saveCache(
+            cache.copy(
+                noteSuggestions = next,
+                promptVersion = GRAPH_PROMPT_VERSION,
+                updatedAt = clock.nowMs(),
+            ),
+        )
+    }
+
+    /**
      * 焦点离开正文时整理这一篇：抽概念 + 补空位。
      *
      * 只在「人写的内容真的变了」时才调模型——比较基准见 [bodyForAiComparison]：
@@ -301,6 +325,17 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                 metaStore.mergeAliases(name, aliases)
             }
             if (!applyExtracted(id, current, markedBody)) return@launch
+            // 顺手解析图建议（与概念/补全同一次调用，不额外花钱）；解析失败就当没有建议。
+            persistGraphSuggestions(
+                noteId = id,
+                bodyHash = noteBodyHash(current.copy(body = markedBody)),
+                suggestions = parseNoteGraphSuggestions(
+                    raw = raw,
+                    noteConceptNames = next.concepts,
+                    body = markedBody,
+                    now = clock.nowMs(),
+                ),
+            )
             val conceptsAdded = next.concepts.size - current.concepts.size
             message = if (filled.applied.isNotEmpty()) {
                 "AI 补全 " + filled.applied.size + " 处（绿引号标记，点 × 可删），整理了 " +
