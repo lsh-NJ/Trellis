@@ -6,6 +6,10 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.ImageComposeScene
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerButtons
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.unit.Density
 import dev.trellis.ui.ExtraColors
 import dev.trellis.ui.LocalExtraColors
@@ -138,5 +142,62 @@ class KnowledgeGraphCanvasRenderTest {
     fun rendersTreeWhenNothingIsSelected() {
         val bytes = render(selectedKey = null)
         assertTrue(bytes.size > 5_000, "默认视图截图太小：" + bytes.size)
+    }
+
+    /**
+     * v1.3 拖动链接：把分类「生成」拖到概念「嵌入」上，松手应回调 onLinkDrop(生成, 嵌入)。
+     * 用 ImageComposeScene 发鼠标事件模拟真实指针序列（按下 → 若干次移动 → 松开）。
+     */
+    @OptIn(ExperimentalComposeUiApi::class)
+    @Test
+    fun draggingCategoryOntoNodeReportsLinkDrop() {
+        var dropped: Pair<String, String>? = null
+        val events = mutableListOf<String>()
+        val scene = ImageComposeScene(width = 1100, height = 720, density = Density(1f)) {
+            CompositionLocalProvider(LocalExtraColors provides ExtraColors()) {
+                MaterialTheme {
+                    KnowledgeGraphCanvas(
+                        graph = sampleGraph(),
+                        layout = sampleLayout(),
+                        camera = Camera.Default,
+                        selectedKey = null,
+                        modifier = Modifier.fillMaxSize(),
+                        onCameraChange = { events += "camera" },
+                        onNodeClick = { events += "click:$it" },
+                        onCategoryToggle = { events += "toggle:$it" },
+                        onBackgroundClick = { events += "background" },
+                        onLinkDrop = { dragged, target ->
+                            events += "drop:$dragged->$target"
+                            dropped = dragged to target
+                        },
+                    )
+                }
+            }
+        }
+        scene.render()
+        // sampleLayout：分类「生成」在 (220,40)-(316,70)，概念「嵌入」在 (40,170)-(136,200)。
+        val start = Offset(268f, 55f)
+        val end = Offset(88f, 185f)
+        val pressed = PointerButtons(isPrimaryPressed = true)
+        scene.sendPointerEvent(PointerEventType.Press, start, type = PointerType.Mouse, buttons = pressed)
+        scene.render()
+        repeat(8) { index ->
+            val t = (index + 1) / 8f
+            scene.sendPointerEvent(
+                eventType = PointerEventType.Move,
+                position = Offset(start.x + (end.x - start.x) * t, start.y + (end.y - start.y) * t),
+                type = PointerType.Mouse,
+                buttons = pressed,
+            )
+            scene.render()
+        }
+        scene.render()
+        scene.sendPointerEvent(PointerEventType.Release, end, type = PointerType.Mouse)
+        scene.render()
+        scene.close()
+        assertTrue(
+            dropped == ("c_生成" to "嵌入"),
+            "拖动没有触发预期的链接回调：drop=$dropped events=$events",
+        )
     }
 }

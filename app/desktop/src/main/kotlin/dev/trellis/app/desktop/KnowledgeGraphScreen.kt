@@ -46,6 +46,8 @@ internal fun KnowledgeGraphView(
     var cache by remember { mutableStateOf(graphStore.loadCache()) }
     var dataVersion by remember { mutableStateOf(0) }
     var canvasSize by remember { mutableStateOf(GraphSize.Zero) }
+    // 新建虚节点后把它带到视野中央（否则新节点可能在视野外，用户找不到）。
+    var centerKey by remember { mutableStateOf<String?>(null) }
 
     // 外部触发刷新（比如从笔记页回来、手动刷新）。
     LaunchedEffect(KnowledgeGraphViewState.refreshToken) {
@@ -88,6 +90,21 @@ internal fun KnowledgeGraphView(
         }
     }
 
+    // 新建的虚节点：布局出来之后把相机挪到它身上。
+    LaunchedEffect(centerKey, layout, canvasSize) {
+        val key = centerKey ?: return@LaunchedEffect
+        if (canvasSize.isEmpty) return@LaunchedEffect
+        val box = layout.nodes[key] ?: return@LaunchedEffect
+        val zoom = KnowledgeGraphViewState.camera.zoom.coerceIn(0.9f, 1.5f)
+        val center = box.bounds.center
+        KnowledgeGraphViewState.camera = Camera(
+            zoom = zoom,
+            panX = canvasSize.width / 2f - center.x * zoom,
+            panY = canvasSize.height / 2f - center.y * zoom,
+        )
+        centerKey = null
+    }
+
     // 布局稳定后把指纹/根序/锚点写进缓存（可删，下次打开直接 warm）。
     LaunchedEffect(layout, fingerprint) {
         if (layout.nodes.isEmpty()) return@LaunchedEffect
@@ -126,6 +143,26 @@ internal fun KnowledgeGraphView(
         dataVersion++
     }
 
+    // v1.3：新建一个「虚节点」——先造一个空分类，再拖到某个节点上把它收为子节点。
+    fun addVirtualNode() {
+        val used = user.categories.map { it.name }.toSet()
+        var name = "新分类"
+        var index = 2
+        while (name in used) {
+            name = "新分类 $index"
+            index++
+        }
+        val before = user.categories.map { it.id }.toSet()
+        val result = createCategory(user, name, null, runtime.clock.nowMs())
+        persist(result)
+        if (result.error != null) return
+        val created = result.user.categories.firstOrNull { it.id !in before } ?: return
+        KnowledgeGraphViewState.selectedKey = created.id
+        centerKey = created.id
+        KnowledgeGraphViewState.message =
+            "已添加虚节点「${created.name}」：把它拖到某个节点上，那个节点就会收进来；浮窗里可改名。"
+    }
+
     // 新建 / 重命名 / 删除分类的对话框状态。
     var createParent by remember { mutableStateOf<Pair<String?, Boolean>?>(null) }
     var renameTarget by remember { mutableStateOf<GraphNode?>(null) }
@@ -154,6 +191,7 @@ internal fun KnowledgeGraphView(
             },
             onFit = { KnowledgeGraphViewState.fitReset() },
             onNewCategory = { createParent = null to true },
+            onNewVirtualNode = { addVirtualNode() },
         )
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
@@ -171,6 +209,7 @@ internal fun KnowledgeGraphView(
                     },
                     onShowUnclassified = { KnowledgeGraphViewState.showUnclassified = it },
                     onNewCategory = { createParent = null to true },
+                    onNewVirtualNode = { addVirtualNode() },
                 )
             }
             Spacer(Modifier.width(4.dp))
@@ -196,6 +235,23 @@ internal fun KnowledgeGraphView(
                         },
                         onCategoryToggle = { key -> KnowledgeGraphViewState.toggleFolded(key) },
                         onBackgroundClick = { KnowledgeGraphViewState.clearFocus() },
+                        onLinkDrop = { draggedKey, targetKey ->
+                            val dragged = graph.nodes[draggedKey]
+                            val target = graph.nodes[targetKey]
+                            if (dragged != null && target != null && dragged.kind == GraphNodeKind.CATEGORY) {
+                                val result = if (target.kind == GraphNodeKind.CONCEPT) {
+                                    assignConcept(user, target.key, dragged.key)
+                                } else {
+                                    moveCategory(user, target.key, dragged.key)
+                                }
+                                persist(result)
+                                if (result.error == null) {
+                                    KnowledgeGraphViewState.selectedKey = dragged.key
+                                    KnowledgeGraphViewState.message =
+                                        "已把「${target.name}」收进「${dragged.name}」"
+                                }
+                            }
+                        },
                     )
 
                     val anchor = selectedKey?.let { key ->
