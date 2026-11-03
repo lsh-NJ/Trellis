@@ -703,7 +703,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                             Modifier.weight(1f).fillMaxHeight().padding(
                                 start = 18.dp,
                                 // 右栏可见时正文不需要再留右边距（右栏自己贴到窗口右边界）。
-                                end = if (MarkdownSidebarState.visible) 0.dp else 20.dp,
+                                end = if (MarkdownSidebarState.visible) 0.dp else 4.dp,
                             ),
                         ) {
                             // 标题和正文共用一条滚动轴（需求：标题跟着正文走）。
@@ -775,10 +775,23 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                             }
                         }
                         // 右栏：本篇概念 + 目录。目录宽度可拖（OutlineSplitter 在面板外留了口子），
-                        // 这里先按 MarkdownSidebarState.width 显示，隐藏/展开走页头「目录」。
+                        // 收起/展开走页头「目录」、目录面板自己的「收起」，或这一栏顶部的箭头；
+                        // 收起后留一条窄边（和左栏一致），点箭头再展开。
+                        Spacer(Modifier.width(if (MarkdownSidebarState.visible) 12.dp else 6.dp))
                         if (MarkdownSidebarState.visible) {
-                            Spacer(Modifier.width(12.dp))
                             Column(Modifier.width(MarkdownSidebarState.width).fillMaxHeight()) {
+                                Row(
+                                    Modifier.fillMaxWidth().padding(end = 6.dp),
+                                    horizontalArrangement = Arrangement.End,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    EditorChip(
+                                        label = "›",
+                                        active = false,
+                                        onClick = { MarkdownSidebarState.visible = false },
+                                    )
+                                }
+                                Spacer(Modifier.height(2.dp))
                                 NoteConceptPanel(
                                     concepts = loaded?.concepts.orEmpty(),
                                     removedConcepts = loaded?.removedConcepts.orEmpty(),
@@ -814,6 +827,19 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                                         }
                                     },
                                     onHide = { MarkdownSidebarState.visible = false },
+                                )
+                            }
+                        } else {
+                            // 收起态：留一条窄边，点箭头展开（和左栏收起的样式一致）。
+                            Column(
+                                Modifier.fillMaxHeight().width(36.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                Spacer(Modifier.height(2.dp))
+                                EditorChip(
+                                    label = "‹",
+                                    active = false,
+                                    onClick = { MarkdownSidebarState.visible = true },
                                 )
                             }
                         }
