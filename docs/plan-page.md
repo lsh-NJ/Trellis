@@ -83,17 +83,17 @@
 2. **完成可以改回没做**：已完成行现在可点（行尾提示「点一下可以改回没做」），
    走 `uncompleteOccurrence`：`done → planned` 并把 `completed_at` 清空
    （表 CHECK 要求两者一致），写 `occurrence.uncompleted` 事件。不依赖 5 秒撤销窗口。
-3. **第一周落在过去**：根因是模型把周次写成上一年（`2025-W01`），而工具没拦。
+3. **第一周落在过去**（2026-11-03 已删除，见 §14）：根因是模型把周次写成上一年（`2025-W01`），而工具没拦。
    - `PlanTools.create_learning_plan` 现在拒绝早于本周的 ISO 周，报错里直接给「从本周 Wxx 开始」；
    - 计划页检测到 `planStartsInPast` 时在顶上给一条横幅 + 「挪到本周」按钮：
      不改旧计划（`plan_version` 不可变、occurrence 身份不可改），而是建一份新计划把单元按原顺序
      搬过来、结束旧计划；旧计划保留在库里，历史不丢。
-   - 覆盖测试：`PlanRepairTest`（重排后首周=本周、单元不丢）与
-     `LearningPlanServiceTest.aCompletedOccurrenceCanBeMarkedUndoneOnPurpose`（完成→改回）。
+   - 覆盖测试：`LearningPlanServiceTest.aCompletedOccurrenceCanBeMarkedUndoneOnPurpose`（完成→改回）；
+     `PlanRepairTest` 已于 2026-11-03 随横幅删除。
 
 ## 8. 2026-10-27 夜：挪到本周不再新建计划 + 计划从今天起排
 
-1. **「挪到本周」改成原地修**（用户报：点一下多出一个新计划）
+1. **「挪到本周」改成原地修**（用户报：点一下多出一个新计划；2026-11-03 已删除，见 §14）
    - 旧做法：建一份「（重排）」新计划，再结束旧计划 → 左侧出现两条计划，完成记录留在旧计划里。
    - 新做法：`AppRuntime.repairPastPlan()` 在**原计划**里 `saveDraft → acceptDraft` 出一版周次平移后的版本：
      同一个 `planId`、同一个标题、同一批单元；旧版本作为历史留在库里，不删也不改。
@@ -105,7 +105,7 @@
      `weeks` 还要求按时间递增、不重复。
    - 排期本身早就是「从今天铺」：`materializeWeek` 里 `day = if (today in 本周) today else 周一`。
      之前从下周开始，是模型把 `weeks[0]` 直接写成了下周，工具没拦。
-   - 测试：`PlanToolsTest.aPlanThatStartsNextWeekIsRejected`（新增）、`PlanRepairTest` 断言计划数不变、标题不变。
+   - 测试：`PlanToolsTest.aPlanThatStartsNextWeekIsRejected`（新增；创建时校验保留）。`PlanRepairTest` 已随横幅删除。
 3. **数据清理**：旧逻辑在真实 home 里留下的重复计划已整理为「一条 active、两条 ended」；
    原库备份在 `~/.trellis/plans/plan.db.bak-20261027-2240`。
 
@@ -234,3 +234,18 @@
   `kind=extract` + `kind=planlink candidates=14` → 账本写入 1 条、`plan.db` occurrence 变 `done`、
   计划页卡片刻 1 条；撤销后回 `planned` 且出现「解除屏蔽（1）」；解除后再整理会重新自动完成；
   点「来自笔记」跳回正文并选中证据）。
+
+## 14. 2026-11-03 晚：删掉「第一周在过去 → 挪到本周」的修复机制
+
+用户报：上周创建、本周还在进行的计划，首周必然落在过去，计划页会误弹「这份计划的第一周在过去」横幅
+（这个机制原本是给「模型把周次写成上一年」兜底的，但 `planWeekCards` 会列出当前版本的全部周，含已经过去的周）。
+
+- **删除**：`AppRuntime.planStartsInPast`、`AppRuntime.repairPastPlan()`（连同只给它用的
+  `UnitDraft` / `CommitmentDraft` import）；`PlanScreen` 里的触发行与 `PlanStaleBanner`；测试 `PlanRepairTest`。
+  `uiCommand` 保留（计时器开始/结束还在用），origin 从 `ui.plan.repair` 改为 `ui.plan`。
+- **为什么可以删**：`advanceRhythm`（`features/learning-process/.../PlanAdvance.kt`）每周自动
+  「补本周承诺 → 结算旧周（结转 ≤2 进本周）→ 补下周 → 铺天」；`LearningPlanRhythmTest` 已覆盖
+  「两周没打开应用，本周照样从待安排池补齐」。正常周滚动不再需要用户手动点「挪到本周」。
+- **保留**：`PlanTools.create_learning_plan` 的创建时校验——第一周必须等于本周、拒绝早于本周的 ISO 周；
+  agent 新建计划排错周次时仍会直接报错（`PlanToolsTest.aPlanThatStartsNextWeekIsRejected`）。
+- 验证：删后 `:app:desktop:test` 与全仓 `check` 全绿；grep 无 `planStartsInPast` / `repairPastPlan` / `PlanStaleBanner` 残留。

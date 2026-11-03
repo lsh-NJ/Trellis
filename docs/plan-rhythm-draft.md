@@ -392,7 +392,7 @@ advanceRhythm(env, planId, today) -> RhythmResult
 或「当天安排」整块；新增 `placeUnit` 把欠账单元排进目标周；日视图按路线索引排序；动效与落点提示）；
 加时偏好仍记在 `StudyPrefs.catchUpMinutes`，等 AI 协商重排复用。
 未做：聊天里的 AI 协商重排（单问题 + 读真数据 + 确认执行 + 撤销）；承诺层「这周先不排」；
-真正的依赖图（`depends_on`）；`repairPastPlan` 的旧计划搬迁已有 key 去重兜底（不复制历史/欠账）。
+真正的依赖图（`depends_on`）。（2026-11-03：`repairPastPlan` 已随「挪到本周」横幅一起删除。）
 
 验收：上一周排满没做完 → 打开应用 → 对话页出现未读的「计划检查」摘要，会话行与导航有红点；
 同一天不重复发；打开会话红点消失；短课程跨周后本周有安排。
