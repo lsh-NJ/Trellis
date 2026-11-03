@@ -56,6 +56,14 @@ data class ChatLine(
     /** 清单出来/全部结束的时间，用于「已完成 · 5.6s」和完成 1.5s 后自动收起。 */
     val planStartedMs: Long = 0L,
     val planFinishedMs: Long = 0L,
+    /**
+     * 管家消息附带的模板化建议（渲染成卡片，点「一键采纳」直接执行）。
+     *
+     * 普通对话没有这个字段；管家会话里也可能没有（没有可改的事就不建议）。
+     */
+    val proposal: StewardProposal? = null,
+    /** 建议被采纳/被「先这样」之后记下来，重启后卡片不再显示按钮。 */
+    val proposalState: ProposalState = ProposalState.Open,
 )
 
 /**
@@ -67,12 +75,22 @@ data class ChatLine(
 data class ChatChoice(val label: String, val text: String)
 
 /**
+ * 这段会话是谁。
+ *
+ * 默认是 [Manager]：和插件管理员对话，意图分类器按这句话选工具、拼提示词。
+ * [Steward] 是「管家」那一段常驻会话：人格更克制，主动说话（晨/夜仪式），
+ * 手里是**全量工具集**、同一套审批闸门 —— 界面和普通会话完全一样，
+ * 区别只在提示词、主动消息入口和会话身份。
+ */
+enum class SessionKind { Manager, Steward }
+
+/**
  * 一段会话。对话记录按会话存盘，关掉程序再打开还能接着聊。
  *
  * [title] 取第一句用户发言（截断）；[updatedAt] 用来排序和显示「最近说过话」。
  *
- * [unread] 只表示「这段里有用户还没看过的主动消息」——目前唯一的来源是
- * 计划检查（见 `PlanCheckStore` / `AppRuntime.maybePostPlanCheck`）。
+ * [unread] 只表示「这段里有用户还没看过的主动消息」——目前的来源是
+ * 管家会话的晨/夜仪式（`AppRuntime.stewardRuntime`）。
  * 用户自己发起的一轮不算未读：那时他人就在对话页。打开会话即清掉；
  * 旧会话文件没有这个字段，按已读处理（不要一升级就满屏红点）。
  */
@@ -83,4 +101,6 @@ data class ChatSession(
     val updatedAt: Long,
     val lines: List<ChatLine>,
     val unread: Boolean = false,
+    /** 旧会话文件没有这个字段，默认 [SessionKind.Manager]。 */
+    val kind: SessionKind = SessionKind.Manager,
 )

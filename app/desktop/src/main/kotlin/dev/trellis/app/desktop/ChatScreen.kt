@@ -189,13 +189,9 @@ private fun ChatSessionList(runtime: AppRuntime) {
     var query by remember { mutableStateOf("") }
 
     // 与知识库页左栏同一套骨架（ListSidebar）；搜索也是两边都有。
-    val filtered = if (query.isBlank()) {
-        runtime.chatSessions
-    } else {
-        runtime.chatSessions.filter {
-            it.title.ifBlank { "新对话" }.contains(query.trim(), ignoreCase = true)
-        }
-    }
+    // 管家那段常驻会话置顶：它随时可能有主动消息，不该被普通会话挤下去。
+    val filtered = runtime.chatSessions
+        .filter { query.isBlank() || it.title.ifBlank { "新对话" }.contains(query.trim(), ignoreCase = true) }
 
     ListSidebar(
         title = "会话",
@@ -221,13 +217,33 @@ private fun ChatSessionList(runtime: AppRuntime) {
             )
         }
 
-        val grouped = filtered.groupBy { session ->
+        val steward = filtered.firstOrNull { it.kind == SessionKind.Steward }
+        val grouped = filtered.filter { it.kind != SessionKind.Steward }.groupBy { session ->
             when (chatTimeLabel(session.updatedAt)) {
                 "昨天" -> "昨天"
                 else -> if (isToday(session.updatedAt)) "今天" else "更早"
             }
         }
         LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            if (steward != null) {
+                item(key = "steward-row") {
+                    SessionRow(
+                        session = steward,
+                        selected = steward.id == runtime.currentChatId,
+                        onOpen = { runtime.openChat(steward.id) },
+                        onDelete = { pendingDelete = steward },
+                        enabled = !runtime.chatBusy,
+                    )
+                }
+                item(key = "steward-divider") {
+                    Text(
+                        "普通会话",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        modifier = Modifier.padding(top = 10.dp, bottom = 2.dp),
+                    )
+                }
+            }
             for (title in listOf("今天", "昨天", "更早")) {
                 val sessions = grouped[title] ?: continue
                 item(key = "group-" + title) {
@@ -302,7 +318,11 @@ private fun SessionRow(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                chatTimeLabel(session.updatedAt) + " · " + rounds + " 轮",
+                if (session.kind == SessionKind.Steward) {
+                    "每天早晚问候" + if (rounds > 0) " · $rounds 轮" else ""
+                } else {
+                    chatTimeLabel(session.updatedAt) + " · " + rounds + " 轮"
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
             )
@@ -390,7 +410,7 @@ private fun ChatConversation(
                 }) { block ->
                     when (block) {
                         is ChatBlock.User -> UserBubble(block.line)
-                        is ChatBlock.Orphan -> OrphanSteps(block.lines)
+                        is ChatBlock.Orphan -> OrphanSteps(runtime, block.lines)
                         is ChatBlock.Round -> {
                             RoundView(
                                 runtime = runtime,
@@ -600,15 +620,25 @@ private fun UserBubble(line: ChatLine) {
 }
 
 @Composable
-private fun OrphanSteps(lines: List<ChatLine>) {
-    Column {
+private fun OrphanSteps(runtime: AppRuntime, lines: List<ChatLine>) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         for (line in lines) {
-            Text(
-                line.text,
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (line.role == ChatRole.Assistant) {
+                // 主动消息（管家）没有用户那一句开头，成不了「一轮」；
+                // 但它是正式发言，按正文渲染，建议卡也照常挂在下面。
+                Text(line.text, style = MaterialTheme.typography.bodyMedium)
+                line.proposal?.let { proposal ->
+                    Spacer(Modifier.height(8.dp))
+                    StewardProposalCard(runtime, line, proposal)
+                }
+            } else {
+                Text(
+                    line.text,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
@@ -800,6 +830,11 @@ private fun RoundView(
                 modifier = Modifier.widthIn(max = 527.dp),
                 bodyStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.5.sp, lineHeight = 27.6.sp),
             )
+        }
+
+        round.reply?.proposal?.let { proposal ->
+            Spacer(Modifier.height(10.dp))
+            StewardProposalCard(runtime, round.reply, proposal)
         }
 
         val meta = metaLabel(round)
@@ -1137,6 +1172,72 @@ private fun roundDurationLabel(round: ChatBlock.Round): String {
     if (start <= 0L || end <= start) return ""
     val seconds = (end - start) / 1000.0
     return if (seconds < 60) String.format("%.1fs", seconds) else String.format("%.1fmin", seconds / 60)
+}
+
+/**
+ * 管家建议卡：模板化的一条改动 + 三个动作。
+ *
+ * 采纳是直接执行（走计划后端命令），不是再让模型跑一轮；「调整一下」把话带进输入框；
+ * 「先这样」只记账不动计划 —— 三选一，不猜用户想不想。
+ */
+@Composable
+private fun StewardProposalCard(
+    runtime: AppRuntime,
+    line: ChatLine,
+    proposal: StewardProposal,
+) {
+    val extra = LocalExtraColors.current
+    val decided = line.proposalState != ProposalState.Open
+    Column(
+        modifier = Modifier
+            .widthIn(max = 527.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(10.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            "管家建议",
+            style = MaterialTheme.typography.labelSmall,
+            color = extra.accentText,
+        )
+        Text(proposal.title, style = MaterialTheme.typography.bodyMedium)
+        if (proposal.detail.isNotBlank()) {
+            Text(
+                proposal.detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        proposal.changes.forEach { change ->
+            val verb = if (change is StewardChange.Move) "挪到" else "排到"
+            Text(
+                "· 把「${change.title}」$verb ${change.day.takeLast(5)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+        if (decided) {
+            Text(
+                if (line.proposalState == ProposalState.Adopted) "已采纳" else "这次先不动",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { runtime.launchAdoptStewardProposal(line.id) }) {
+                    Text("一键采纳", style = MaterialTheme.typography.labelSmall)
+                }
+                TextButton(onClick = { runtime.negotiateStewardProposal(line.id) }) {
+                    Text("调整一下", style = MaterialTheme.typography.labelSmall)
+                }
+                TextButton(onClick = { runtime.dismissStewardProposal(line.id) }) {
+                    Text("先这样", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+    }
 }
 
 private fun metaLabel(round: ChatBlock.Round): String {

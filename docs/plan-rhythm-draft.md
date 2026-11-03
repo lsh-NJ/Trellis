@@ -57,6 +57,9 @@ P6（逾期处理：把「没做完」变成可协商的事实，2026-10-31）�
 - 修掉 §6 的短课程死路：池语义把「过去周没做完」也算进来，短课程跨周后会被自动补进本周承诺。
 - 打开应用/重新获得窗口焦点时做一次**计划检查**：有本周隔日或欠账就写一条确定性摘要到全局
   「计划检查」会话，`unread=true`；导航「对话」与会话行显示红点；打开会话即已读；同一天最多一次。
+  - 2026-11-03：这套「计划检查」已被**管家会话**取代（删 `PlanCheckStore` 与 `plan-check` 会话）：
+    每日晨/夜两条主动消息（含合并规则、记忆、建议卡），未读红点与「打开即已读」行为不变；
+    规则与数据见 `docs/steward.md`。
 - 不做：独立定时器、按日自动顺延 / 全自动重排（理由见 §2.4）。
 
 **未做（后续阶段）**：P2 剩余（「让 AI 安排」按钮、复盘卡片入口）、P3 建议完成（session 证据 + done_kind）、
@@ -274,7 +277,8 @@ advanceRhythm(env, planId, today) -> RhythmResult
     `settle_and_review`、`set_plan_pace`（改每天投入）。
 - 提示词加 `<task:plan_manage>`：先读状态再动；一次只动一个计划；完成只写证据能支撑的；
   不确定就问（ask_choices）；改目标要用户确认；文案不羞辱、不用损失框架。
-- **主动消息不做「自动扣 LLM」**：节奏引擎每次推进后，计划页顶部出一条节奏报告
+- **主动消息不做「自动扣 LLM」**（2026-11-03 起由「管家会话」实现晨/夜各一次带兜底模板的润色，
+  见 `docs/steward.md`；其余主动消息仍是确定性模板）：节奏引擎每次推进后，计划页顶部出一条节奏报告
   （「上周完成 3/5 · 本周已排 4 个单元 · 待安排 9 个约 3 天 · 有 2 个节点建议确认完成」），
   对话页插一条系统状态行；按钮「看复盘 / 让 AI 安排」点了才进模型。成本、打扰都可控。
   后续可以在设置里加「自动周复盘」开关（默认关）。
@@ -283,7 +287,8 @@ advanceRhythm(env, planId, today) -> RhythmResult
      将来要加，落点是 `AppRuntime.create()` 尾部起协程 + `lastRun` 持久化 + 启动补跑，
      并且先查 `llmConfigured` / `chatBusy`。
   2. **主动消息今天没有正式入口**：`addChatLine` 是 private，`sendChat` 必写一条 User 行；
-     单插 Assistant 会被渲染成「孤儿过程行」。最省事的做法是新增 `proactiveSend(display, request)`：
+     单插 Assistant 会被渲染成「孤儿过程行」。2026-11-03 已由管家补上入口：`AppRuntime.appendStewardLine`
+     直接把 Assistant 行写成管家会话的一行（`ChatScreen` 的孤儿块按正文 + 建议卡渲染）。最省事的做法是新增 `proactiveSend(display, request)`：
      先插一条标记 User 行（如「（每周计划检查）」）再走 `sendChat`；或加一个 `ChatRole` 独立块
      （`ChatStore` 会丢弃未知 role，旧会话兼容）。
   3. **意图路由有个洞**：「排计划 / 安排每周」这种不含资源词的句子会落到 Chat 或 ArrangeUi，
@@ -371,6 +376,8 @@ advanceRhythm(env, planId, today) -> RhythmResult
 - `app/desktop`：`PlanCheckStore`（`plan-check.json` 记录最后检查日）、`AppRuntime.onWindowFocused` /
   `maybePostPlanCheck`（Mutex 防重复）、全局「计划检查」会话、`ChatSession.unread` 持久化、
   导航与会话行红点、`Main.kt` 主窗口焦点监听。
+  （2026-11-03 起这块换成管家：`StewardStore` 的 checkpoints 替代 lastDay、`StewardRuntime.check()`
+  替代 maybePostPlanCheck，`PlanCheckStore` 与其测试已删除。）
 
 测试：
 
@@ -379,6 +386,7 @@ advanceRhythm(env, planId, today) -> RhythmResult
 - `LearningPlanRhythmTest` 更新长时间缺席 / 周滚动结转数字；
 - `PlanCheckStoreTest` 4 个、`ChatStoreTest` 未读回合 1 个、
   `PlanCheckRuntimeTest` 端到端 1 个（上一周排满没做完 → 打开应用出未读摘要 → 同一天不重复 → 已读）。
+  （2026-11-03：前两个文件已随 PlanCheckStore 删除，由 `StewardStoreTest` / `StewardRuntimeTest` 取代。）
 
 已落地（2026-10-31 同日）：手动重排改成**拖拽**（右侧侧栏：本周逾期 / 更早欠账 / 待安排 → 拖到日期格
 或「当天安排」整块；新增 `placeUnit` 把欠账单元排进目标周；日视图按路线索引排序；动效与落点提示）；
@@ -394,7 +402,7 @@ advanceRhythm(env, planId, today) -> RhythmResult
 ## 4. 明确不做（第一期）
 
 - 不做全屏/他应用截图与录屏（隐私与合规成本 >> 收益）；不做「读屏监控」。
-- 不做自动扣 LLM 的定时任务（成本、打扰、失败隔离都没准备好）；主动消息先走确定性模板。
+- 不做自动扣 LLM 的定时任务：管家只在晨/夜各润色一次（可关、失败/超时退确定性模板，见 `docs/steward.md`）；其余主动消息仍走确定性模板。
 - 不让 AI 自由发明完成判据（判据是数据，白名单枚举 + 插件提供者）。
 - 不做日层加量、不自动改目标、不自动结束计划。
 - 不把「学习时长」当学会的证据（只有弱提示作用），也不把用户自评当完成条件。

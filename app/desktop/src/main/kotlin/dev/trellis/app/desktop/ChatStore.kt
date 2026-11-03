@@ -84,6 +84,10 @@ internal class ChatStore(home: File) {
                 } ?: emptyList(),
                 planStartedMs = line["planStartedMs"]?.jsonPrimitive?.long ?: 0L,
                 planFinishedMs = line["planFinishedMs"]?.jsonPrimitive?.long ?: 0L,
+                proposal = line["proposal"]?.jsonObject?.let { parseProposal(it) },
+                proposalState = ProposalState.entries
+                    .firstOrNull { it.name == line["proposalState"]?.jsonPrimitive?.content }
+                    ?: ProposalState.Open,
             )
         } ?: emptyList()
         ChatSession(
@@ -94,8 +98,32 @@ internal class ChatStore(home: File) {
             lines = lines,
             // 旧文件没有这个字段：默认已读。升级后不该凭空冒出一排红点。
             unread = root["unread"]?.jsonPrimitive?.booleanOrNull == true,
+            // 旧文件没有 kind：默认是普通的管理员会话。
+            kind = SessionKind.entries
+                .firstOrNull { it.name == root["kind"]?.jsonPrimitive?.content }
+                ?: SessionKind.Manager,
         )
     }.getOrNull()
+
+    private fun parseProposal(root: JsonObject): StewardProposal? {
+        val changes = root["changes"]?.jsonArray?.mapNotNull { element ->
+            val change = element.jsonObject
+            val title = change["title"]?.jsonPrimitive?.content ?: return@mapNotNull null
+            val day = change["day"]?.jsonPrimitive?.content ?: return@mapNotNull null
+            when (change["kind"]?.jsonPrimitive?.content) {
+                "move" -> change["occurrenceId"]?.jsonPrimitive?.content?.let { StewardChange.Move(title, it, day) }
+                "place" -> change["unitId"]?.jsonPrimitive?.content?.let { StewardChange.Place(title, it, day) }
+                else -> null
+            }
+        } ?: return null
+        if (changes.isEmpty()) return null
+        return StewardProposal(
+            id = root["id"]?.jsonPrimitive?.content ?: return null,
+            title = root["title"]?.jsonPrimitive?.content.orEmpty(),
+            detail = root["detail"]?.jsonPrimitive?.content.orEmpty(),
+            changes = changes,
+        )
+    }
 
     private fun encode(session: ChatSession): JsonObject = buildJsonObject {
         put("id", session.id)
@@ -104,6 +132,8 @@ internal class ChatStore(home: File) {
         put("updatedAt", session.updatedAt)
         // 只写 true：已读是默认值，不往每份会话里塞一个 false。
         if (session.unread) put("unread", true)
+        // 只写 steward：普通管理员会话是默认值，不写进每份文件。
+        if (session.kind != SessionKind.Manager) put("kind", session.kind.name)
         putJsonArray("lines") {
             session.lines.forEach { line ->
                 add(
@@ -114,6 +144,39 @@ internal class ChatStore(home: File) {
                         put("atMs", line.atMs)
                         if (line.planStartedMs > 0L) put("planStartedMs", line.planStartedMs)
                         if (line.planFinishedMs > 0L) put("planFinishedMs", line.planFinishedMs)
+                        line.proposal?.let { proposal ->
+                            put(
+                                "proposal",
+                                buildJsonObject {
+                                    put("id", proposal.id)
+                                    put("title", proposal.title)
+                                    put("detail", proposal.detail)
+                                    putJsonArray("changes") {
+                                        proposal.changes.forEach { change ->
+                                            add(
+                                                buildJsonObject {
+                                                    when (change) {
+                                                        is StewardChange.Move -> {
+                                                            put("kind", "move")
+                                                            put("occurrenceId", change.occurrenceId)
+                                                        }
+                                                        is StewardChange.Place -> {
+                                                            put("kind", "place")
+                                                            put("unitId", change.unitId)
+                                                        }
+                                                    }
+                                                    put("title", change.title)
+                                                    put("day", change.day)
+                                                },
+                                            )
+                                        }
+                                    }
+                                },
+                            )
+                        }
+                        if (line.proposalState != ProposalState.Open) {
+                            put("proposalState", line.proposalState.name)
+                        }
                         if (line.plan.isNotEmpty()) {
                             putJsonArray("plan") {
                                 line.plan.forEach { step ->
