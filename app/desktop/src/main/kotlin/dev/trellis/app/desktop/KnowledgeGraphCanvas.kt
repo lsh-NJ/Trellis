@@ -1,7 +1,8 @@
 package dev.trellis.app.desktop
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -10,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -48,7 +50,9 @@ import kotlin.math.roundToInt
  * - 分类画成「虚」节点：空心、虚线圆角框；
  * - 概念画成「实」节点：实心圆角框；
  * - 只画树边（父 → 子），其它关系全部收进右下的聚焦小浮窗；
- * - 点击节点选中并聚焦（其它节点淡出 + 选中节点轻微放大），双击分类折叠/展开。
+ * - 点击节点选中并聚焦（其它节点淡出 + 选中节点轻微放大），双击分类折叠/展开；
+ * - v1.3：把虚节点（分类）拖到任意节点上，被拖的虚节点会成为那个节点的父分类——
+ *   用来把「没有上级的实节点」收进新建的大类。
  *
  * 相机、折叠状态都由调用方（[KnowledgeGraphView]）持有，本组件只负责画和发事件。
  */
@@ -65,12 +69,19 @@ internal fun KnowledgeGraphCanvas(
     onNodeClick: (String) -> Unit = {},
     onCategoryToggle: (String) -> Unit = {},
     onBackgroundClick: () -> Unit = {},
+    onLinkDrop: (draggedKey: String, targetKey: String) -> Unit = { _, _ -> },
 ) {
     val extra = LocalExtraColors.current
     val scheme = MaterialTheme.colorScheme
     val density = LocalDensity.current.density
     val measurer = rememberTextMeasurer(cacheSize = 1024)
     var canvasSize by remember { mutableStateOf(GraphSize.Zero) }
+    // 手势回调里不能闭包旧的 camera（一平移就过期）：用 rememberUpdatedState 取最新值。
+    val currentCamera by rememberUpdatedState(camera)
+    // 拖动虚节点：拖起来时记录被拖节点和指针屏幕坐标，松手时把落点节点变成它的子节点。
+    var dragKey by remember { mutableStateOf<String?>(null) }
+    var dragScreen by remember { mutableStateOf<Offset?>(null) }
+    var dropTargetKey by remember { mutableStateOf<String?>(null) }
 
     val colors = remember(extra, scheme) {
         GraphCanvasColors(
@@ -123,12 +134,12 @@ internal fun KnowledgeGraphCanvas(
                 .pointerInput(layout) {
                     detectTapGestures(
                         onTap = { offset ->
-                            val world = camera.screenToWorld(GraphPoint(offset.x, offset.y))
+                            val world = currentCamera.screenToWorld(GraphPoint(offset.x, offset.y))
                             val hit = hitNode(layout, world)
                             if (hit == null) onBackgroundClick() else onNodeClick(hit)
                         },
                         onDoubleTap = { offset ->
-                            val world = camera.screenToWorld(GraphPoint(offset.x, offset.y))
+                            val world = currentCamera.screenToWorld(GraphPoint(offset.x, offset.y))
                             val hit = hitNode(layout, world) ?: return@detectTapGestures
                             if (graph.nodes[hit]?.kind == GraphNodeKind.CATEGORY) {
                                 onCategoryToggle(hit)
@@ -137,9 +148,58 @@ internal fun KnowledgeGraphCanvas(
                     )
                 }
                 .pointerInput(layout) {
-                    detectDragGestures { change, dragAmount ->
-                        change.consume()
-                        onCameraChange(camera.panned(dragAmount.x, dragAmount.y))
+                    // 自己写手势循环：detectDragGestures 的 onDragStart 给的是「穿过 slop 之后」的位置，
+                    // 贴着节点边缘起拖会判不到节点；这里改用按下点做命中，再做 slop 判定。
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val downWorld = currentCamera.screenToWorld(
+                            GraphPoint(down.position.x, down.position.y),
+                        )
+                        val pressedCategory = hitNode(layout, downWorld)?.takeIf { key ->
+                            graph.nodes[key]?.kind == GraphNodeKind.CATEGORY
+                        }
+                        var pointer = down.position
+                        var dragging = false
+                        var target: String? = null
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) break
+                            val delta = change.position - pointer
+                            pointer = change.position
+                            if (!dragging) {
+                                if ((change.position - down.position).getDistance() >
+                                    viewConfiguration.touchSlop
+                                ) {
+                                    dragging = true
+                                    if (pressedCategory != null) {
+                                        dragKey = pressedCategory
+                                        dragScreen = change.position
+                                    }
+                                }
+                            }
+                            if (dragging) {
+                                change.consume()
+                                if (pressedCategory != null) {
+                                    dragScreen = change.position
+                                    val world = currentCamera.screenToWorld(
+                                        GraphPoint(change.position.x, change.position.y),
+                                    )
+                                    target = hitNode(layout, world)?.takeIf { key ->
+                                        canDrop(graph, pressedCategory, key)
+                                    }
+                                    dropTargetKey = target
+                                } else {
+                                    onCameraChange(currentCamera.panned(delta.x, delta.y))
+                                }
+                            }
+                        }
+                        val dragged = dragKey
+                        val dropped = dropTargetKey
+                        dragKey = null
+                        dragScreen = null
+                        dropTargetKey = null
+                        if (dragged != null && dropped != null) onLinkDrop(dragged, dropped)
                     }
                 },
         ) {
@@ -163,15 +223,44 @@ internal fun KnowledgeGraphCanvas(
                         val node = graph.nodes[box.key]
                         val isSelected = box.key == selectedKey
                         val isNeighbor = box.key in neighborKeys
-                        val alpha = if (selectedKey == null) 1f
+                        val baseAlpha = if (selectedKey == null) 1f
                         else if (isSelected || isNeighbor) 1f
                         else 0.28f
+                        val alpha = if (box.key == dragKey) 0.3f else baseAlpha
                         if (isSelected) {
                             scale(selectedScale, pivot = Offset(box.bounds.centerX, box.bounds.centerY)) {
                                 drawTreeNode(colors, node, box, measurer, density, alpha, true)
                             }
                         } else {
                             drawTreeNode(colors, node, box, measurer, density, alpha, false)
+                        }
+                    }
+
+                    // 拖动虚节点：从被拖节点画一条虚线到指针；落点节点画高亮框。
+                    val pointer = dragScreen
+                    val dragged = dragKey
+                    if (pointer != null && dragged != null) {
+                        layout.nodes[dragged]?.let { draggedBox ->
+                            val target = currentCamera.screenToWorld(GraphPoint(pointer.x, pointer.y))
+                            drawLine(
+                                color = colors.accent.copy(alpha = 0.8f),
+                                start = Offset(draggedBox.bounds.centerX, draggedBox.bounds.centerY),
+                                end = Offset(target.x, target.y),
+                                strokeWidth = 1.5.dp.toPx(),
+                                pathEffect = PathEffect.dashPathEffect(floatArrayOf(7f, 6f)),
+                            )
+                        }
+                        dropTargetKey?.let { targetKey ->
+                            layout.nodes[targetKey]?.let { box ->
+                                val pad = 3.dp.toPx()
+                                drawRoundRect(
+                                    color = colors.accent,
+                                    topLeft = Offset(box.bounds.left - pad, box.bounds.top - pad),
+                                    size = Size(box.bounds.width + pad * 2f, box.bounds.height + pad * 2f),
+                                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(9.dp.toPx(), 9.dp.toPx()),
+                                    style = Stroke(width = 2.dp.toPx()),
+                                )
+                            }
                         }
                     }
                 }
@@ -338,6 +427,24 @@ private fun hitNode(layout: GraphLayout, world: GraphPoint): String? =
         .filter { it.value.bounds.contains(world) }
         .minByOrNull { it.value.bounds.width * it.value.bounds.height }
         ?.key
+
+/**
+ * 能不能把 [targetKey] 收成 [draggedKey] 的子节点（v1.3 拖动链接）。
+ *
+ * - 只有分类（虚节点）能被拖；
+ * - 不能拖到自己身上；
+ * - 不能拖到自己的后代上（否则成环）。
+ */
+private fun canDrop(graph: KnowledgeGraph, draggedKey: String, targetKey: String): Boolean {
+    if (draggedKey == targetKey) return false
+    val dragged = graph.nodes[draggedKey] ?: return false
+    if (dragged.kind != GraphNodeKind.CATEGORY) return false
+    if (graph.nodes[targetKey] == null) return false
+    // 不能拖到自己的后代上（成环），也不能拖到自己的祖先上（同样成环）。
+    if (graph.ancestorsOf(targetKey).any { it.key == draggedKey }) return false
+    if (graph.ancestorsOf(draggedKey).any { it.key == targetKey }) return false
+    return true
+}
 
 // ---- 相机工具（Screen 在打开/刷新/点「适应窗口」时用） ----
 

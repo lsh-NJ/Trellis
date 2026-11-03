@@ -52,6 +52,7 @@ internal fun KnowledgeGraphLeftPanel(
     onNodeClick: (String) -> Unit,
     onShowUnclassified: (Boolean) -> Unit,
     onNewCategory: () -> Unit,
+    onNewVirtualNode: () -> Unit,
 ) {
     val extra = LocalExtraColors.current
     val results = remember(graph, query) {
@@ -99,7 +100,7 @@ internal fun KnowledgeGraphLeftPanel(
             LegendRow(solid = true, label = "概念（实）")
             LegendRow(solid = false, label = "分类（虚）")
             LegendLineRow("父子连线（所属关系）")
-            KnowledgeHint("点节点：其它节点淡出 + 弹出小浮窗；双击分类：折叠/展开。")
+            KnowledgeHint("点节点：其它节点淡出 + 弹出小浮窗；双击分类：折叠/展开；拖动虚节点到其它节点上：把那个节点收为子节点。")
 
             GraphSectionLabel("统计")
             KnowledgeGraphStatsCard(graph)
@@ -108,6 +109,9 @@ internal fun KnowledgeGraphLeftPanel(
         HorizontalDivider(color = extra.dataTrack.copy(alpha = 0.6f))
 
         TextButton(onClick = onNewCategory) { Text("＋ 新建分类", style = MaterialTheme.typography.labelMedium) }
+        TextButton(onClick = onNewVirtualNode) {
+            Text("＋ 添加虚节点（拖到节点上成为父分类）", style = MaterialTheme.typography.labelMedium)
+        }
         TextButton(onClick = {}, enabled = false) {
             Text("✦ AI 整理分类（G1 接入）", style = MaterialTheme.typography.labelMedium)
         }
@@ -157,6 +161,7 @@ internal fun KnowledgeGraphToolbar(
     onCollapseAll: () -> Unit,
     onFit: () -> Unit,
     onNewCategory: () -> Unit,
+    onNewVirtualNode: () -> Unit,
 ) {
     val extra = LocalExtraColors.current
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -165,8 +170,9 @@ internal fun KnowledgeGraphToolbar(
         TextButton(onClick = onCollapseAll) { Text("折叠全部", style = MaterialTheme.typography.labelMedium) }
         TextButton(onClick = onFit) { Text("适应窗口", style = MaterialTheme.typography.labelMedium) }
         TextButton(onClick = onNewCategory) { Text("＋ 新建分类", style = MaterialTheme.typography.labelMedium) }
+        TextButton(onClick = onNewVirtualNode) { Text("＋ 虚节点", style = MaterialTheme.typography.labelMedium) }
         Spacer(Modifier.weight(1f))
-        Text("点击节点看浮窗 · 双击分类折叠", style = MaterialTheme.typography.labelSmall, color = extra.dataMuted)
+        Text("点击看浮窗 · 双击折叠 · 拖动虚节点收子节点", style = MaterialTheme.typography.labelSmall, color = extra.dataMuted)
     }
 }
 
