@@ -2,7 +2,7 @@
 
 > 对应 [pluginization-plan-2026-10-29.md](pluginization-plan-2026-10-29.md) 第 2 条：「把软件当做一个学习终端，构建知识库体系」。
 > 接续 [knowledge-base-draft.md](knowledge-base-draft.md)（P0 已落地：笔记、概念抽取、点亮、追溯、搜索）。
-> 状态：设计稿 v1.3（2026-11-02 拍板，2026-11-03 白天 G0 落地、晚上按反馈把画布再简化、深夜加入「虚节点 + 拖动链接」；实现记录见附录 E）。v1.0 是「关系图 + 依赖分层」；11-02 晚用户提出：**链接太乱，默认只保留最直接的关系，没有合适父节点就创建父节点，像分类一样划分；其它关联只在聚焦某个点时显示**——v1.1 据此把默认视图改成分类树。11-03 晚用户又提：**画布只留节点和父子连线、信息放进聚焦小浮窗、分类深度交给 AI 不预制**——v1.2 据此简化（§1.5、§4.9、§5.11）。11-03 深夜用户再提：**实节点不一定有上级，单独做「添加虚节点」入口，拖到节点上建立父子链接；虚节点可改名；AI 整理=建节点/命名/链接，把知识点按「类」维护**——v1.3 加入拖动链接与虚节点入口（§1.6、§4.9、§5.5）。变更记录见附录 D。
+> 状态：设计稿 v1.3（2026-11-02 拍板，2026-11-03 白天 G0 落地、晚上按反馈把画布再简化、深夜加入「虚节点 + 拖动链接」；2026-11-03 下午 G1 落地——AI 归类/关系建议（同一批笔记整理顺带产出 + 全图整理，确认门/墓碑/缓存失效），实现记录见附录 E.4）。v1.0 是「关系图 + 依赖分层」；11-02 晚用户提出：**链接太乱，默认只保留最直接的关系，没有合适父节点就创建父节点，像分类一样划分；其它关联只在聚焦某个点时显示**——v1.1 据此把默认视图改成分类树。11-03 晚用户又提：**画布只留节点和父子连线、信息放进聚焦小浮窗、分类深度交给 AI 不预制**——v1.2 据此简化（§1.5、§4.9、§5.11）。11-03 深夜用户再提：**实节点不一定有上级，单独做「添加虚节点」入口，拖到节点上建立父子链接；虚节点可改名；AI 整理=建节点/命名/链接，把知识点按「类」维护**——v1.3 加入拖动链接与虚节点入口（§1.6、§4.9、§5.5）。变更记录见附录 D。
 > 配图：[页面示意图 v2](assets/knowledge-graph/page-mockup.svg) · [分类树示例](assets/knowledge-graph/taxonomy-sample.svg) · [数据流 v2](assets/knowledge-graph/data-flow.svg) · [依赖分层示例（G2 体系视图）](assets/knowledge-graph/algorithm-sample.svg)。
 
 ---
@@ -1080,6 +1080,8 @@ G0 明确不做：任何 AI 调用、AI 建议 UI、关系编辑、依赖体系�
 | G1-4 | AI 关系建议的确认/忽略（笔记内关系）；已忽略建议的恢复列表（可选） |
 | G1-5 | 缓存与墓碑测试：坏缓存当空、过期提示、模型/提示词版本变化、删除建议后不复活 |
 
+**G1 状态（2026-11-03 下午，已落地）**：G1-1 ~ G1-5 全部实现，见附录 E.4。验收 #1/#2/#4/#6/#7 由单测 + 离屏渲染覆盖；#3 的「请求数」由 `runGlobalCategorySuggestions` 的假 LLM 测试固定（2 批 = 2 次调用；确认前 `graph.user.json` 不动）；#5 的真实 key 路径留给用户手动验（本机未配 key）。
+
 **G1 验收**：
 
 1. 非 LLM 路径完全不受影响：没配模型时网络视图功能不减少（除 AI 按钮禁用）；
@@ -1479,6 +1481,21 @@ v1.3 没做：AI 归类/命名的真实调用（G1）、拖动时自动滚动画
 | 图例占左栏、看着割裂 | 图例是伴随画布的说明，放在左栏属于「固定面板」思路 | 新增 `KnowledgeGraphLegend`，浮在画布右上角（概念实/分类虚/父子连线）；左栏只留搜索/统计/提示/AI |
 
 回归防护：离屏渲染测试（`KnowledgeGraphScreenRenderTest`）改为 `Density(2f)` 渲染——模拟 Retina，文字若再被压窄会立刻在截图里看出来。
+
+### E.4 G1 实现记录（2026-11-03 下午，AI 归类 + 关系建议）
+
+| 改动 | 文件 | 内容 |
+|---|---|---|
+| AI 逻辑（纯函数） | `KnowledgeGraphAi.kt`（新增，约 800 行） | 笔记内解析校验（名字必须在篇内、路径 ≤2 层/每层 ≤12 字、有向关系 evidence 必须是正文逐字子串、confidence 归一）；全图分批（≤40 概念/批、≤20 批）、提示词构造、结果合并（conceptSetHash 变化整体重置）、待确认收集（过滤过期 bodyHash/已归属/墓碑）、确认/忽略/反向、墓碑（`RemovedSuggestion`/`RemovedRelation`）、缓存清理、假 LLM 可测的 `runGlobalCategorySuggestions` |
+| 提示词 | `KnowledgeExtraction.kt` | 同一次「整理笔记」请求顺带要求 `categories`（≤12）+ `relations`（≤6，有向关系必须给逐字 evidence）；JSON schema 增加两段；system 提示词说明编造内容会被丢弃 |
+| 笔记侧写缓存 | `KnowledgeScreen.kt` | `organizeNote` 成功后 `parseNoteGraphSuggestions` → `graph.cache.json` 的 `noteSuggestions[noteId]`；失败不影响一期整理 |
+| 全图整理 | `KnowledgeGraphScreen.kt` | 左栏「✦ AI 整理分类」→ 确认弹窗（概念数 / 批数 / 成本 / 不直接改树）→ 串行分批调模型 → 合并缓存 → 打开建议面板；失败批记 `failed` 并跳过；不自动重试 |
+| 建议面板 | `KnowledgeGraphPanels.kt` | `KnowledgeGraphSuggestionPanel`（画布右侧浮层）：归类建议「确认/忽略」、关系建议「确认/反向/忽略」、`全部确认`/`全部忽略`、来源标签（笔记内/全图）、reason 与 evidence；左栏「查看 AI 建议（N 条）」；没配模型时按钮禁用 + 提示 |
+| 视图状态 | `KnowledgeGraphViewState.kt` | 加 `suggestionsOpen`（面板展开状态；页内 object，不落盘） |
+
+验证：`:app:desktop` 共 **533 条测试、0 失败**（graph 相关 122：Store 11 + Taxonomy 36 + Build 25 + Layout 23 + Ai 23 + Canvas 3 + Screen 1）；`./gradlew check` 绿。新增 23 条 AI 测试覆盖：解析/校验/墓碑/过期正文/缓存清理/分批失败跳过/假 LLM 端到端（2 批 2 次调用、确认前不写 user）。截图（真实 AppTheme 离屏渲染）：[网络视图（含未分类）](assets/knowledge-graph/impl-v1.3-view.png) · [分类浮窗](assets/knowledge-graph/impl-v1.3-category.png) · [AI 建议面板](assets/knowledge-graph/impl-v1.3-g1-suggestions.png)。
+
+G1 明确没做（留后续）：真实模型 key 的本机手测；「已忽略建议」恢复列表 UI（墓碑已可恢复，只是没做入口）；自动应用开关（设计上前提是默认关，本期不做）；关系证据的 hover 高亮。
 
 ---
 

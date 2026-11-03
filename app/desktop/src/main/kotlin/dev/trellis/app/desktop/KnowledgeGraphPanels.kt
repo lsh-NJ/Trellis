@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -51,6 +52,12 @@ internal fun KnowledgeGraphLeftPanel(
     onQueryChange: (String) -> Unit,
     onNodeClick: (String) -> Unit,
     onShowUnclassified: (Boolean) -> Unit,
+    aiEnabled: Boolean = false,
+    aiBusy: Boolean = false,
+    aiHint: String? = null,
+    suggestionCount: Int = 0,
+    onAiOrganize: () -> Unit = {},
+    onOpenSuggestions: () -> Unit = {},
 ) {
     val extra = LocalExtraColors.current
     val results = remember(graph, query) {
@@ -97,16 +104,28 @@ internal fun KnowledgeGraphLeftPanel(
             KnowledgeHint("点节点：其它节点淡出 + 弹出小浮窗；双击分类：折叠/展开；拖动虚节点到其它节点上：把那个节点收为子节点。")
 
             GraphSectionLabel("统计")
-            KnowledgeGraphStatsCard(graph)
+            KnowledgeGraphStatsCard(graph, suggestionCount)
         }
 
         HorizontalDivider(color = extra.dataTrack.copy(alpha = 0.6f))
 
         KnowledgeHint("新建分类节点用工具条「＋ 虚节点」；把它拖到某个节点上，那个节点就收进来。")
-        TextButton(onClick = {}, enabled = false) {
-            Text("✦ AI 整理分类（G1 接入）", style = MaterialTheme.typography.labelMedium)
+
+        TextButton(onClick = onAiOrganize, enabled = aiEnabled && !aiBusy) {
+            Text(
+                if (aiBusy) "✦ AI 整理中…" else "✦ AI 整理分类",
+                style = MaterialTheme.typography.labelMedium,
+            )
         }
-        KnowledgeHint("G1：AI 读笔记建议分类路径 / 关系，你确认后才写入分类树。")
+        if (suggestionCount > 0) {
+            TextButton(onClick = onOpenSuggestions) {
+                Text("查看 AI 建议（$suggestionCount 条）", style = MaterialTheme.typography.labelMedium)
+            }
+        }
+        KnowledgeHint(
+            aiHint
+                ?: "AI 会读笔记给分类路径 / 关系建议；你逐条确认后才写入分类树，忽略过的建议不会再出现。",
+        )
 
         if (!message.isNullOrBlank()) {
             Text(message, style = MaterialTheme.typography.labelSmall, color = extra.accentText)
@@ -194,9 +213,10 @@ internal fun KnowledgeGraphToolbar(
 // ---------------------------------------------------------------------------
 
 @Composable
-internal fun KnowledgeGraphStatsCard(graph: KnowledgeGraph) {
+internal fun KnowledgeGraphStatsCard(graph: KnowledgeGraph, suggestionCount: Int = 0) {
     val extra = LocalExtraColors.current
     val stats = graph.stats
+    val aiCount = maxOf(stats.aiSuggestionCount, suggestionCount)
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -212,7 +232,7 @@ internal fun KnowledgeGraphStatsCard(graph: KnowledgeGraph) {
         }
         Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             StatValue(stats.relationEdgeCount, "关系")
-            StatValue(stats.aiSuggestionCount, "AI 建议")
+            StatValue(aiCount, "AI 建议")
         }
         if (stats.droppedAssignments > 0) {
             Text(
@@ -330,6 +350,162 @@ internal fun ChromeButton2(label: String, enabled: Boolean, onClick: () -> Unit)
     TextButton(onClick = onClick, enabled = enabled) {
         Text(label, style = MaterialTheme.typography.labelMedium)
     }
+}
+
+/**
+ * AI 建议面板（G1）：浮在画布右侧，逐条确认 / 忽略。
+ *
+ * 这是「建议」不是结果：面板上的操作才写 `graph.user.json`；忽略会写墓碑
+ * （同一概念/路径或同一关系不再重复出现）。
+ */
+@Composable
+internal fun KnowledgeGraphSuggestionPanel(
+    pending: PendingGraphSuggestions,
+    busy: Boolean,
+    message: String?,
+    modifier: Modifier = Modifier,
+    onClose: () -> Unit,
+    onConfirmCategory: (PendingCategorySuggestion) -> Unit,
+    onIgnoreCategory: (PendingCategorySuggestion) -> Unit,
+    onConfirmRelation: (PendingRelationSuggestion) -> Unit,
+    onReverseRelation: (PendingRelationSuggestion) -> Unit,
+    onIgnoreRelation: (PendingRelationSuggestion) -> Unit,
+    onConfirmAll: () -> Unit,
+    onIgnoreAll: () -> Unit,
+) {
+    val extra = LocalExtraColors.current
+    Column(
+        modifier = modifier
+            .width(392.dp)
+            .heightIn(max = 560.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.98f))
+            .border(1.dp, extra.dataTrack, RoundedCornerShape(10.dp))
+            .padding(12.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "AI 建议 · ${pending.total} 条",
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onClose) { Text("收起", style = MaterialTheme.typography.labelSmall) }
+        }
+        if (!message.isNullOrBlank()) {
+            Text(message, style = MaterialTheme.typography.labelSmall, color = extra.warning)
+        }
+        if (pending.isEmpty) {
+            KnowledgeHint("暂时没有待确认建议。AI 建议会在整理笔记或点「AI 整理分类」后出现；确认前不会改分类树。")
+        } else {
+            if (pending.categories.isNotEmpty()) {
+                GraphSectionLabel("归类建议（${pending.categories.size}）")
+                pending.categories.forEach { item ->
+                    SuggestionCategoryRow(
+                        item = item,
+                        busy = busy,
+                        onConfirm = { onConfirmCategory(item) },
+                        onIgnore = { onIgnoreCategory(item) },
+                    )
+                }
+            }
+            if (pending.relations.isNotEmpty()) {
+                GraphSectionLabel("关系建议（${pending.relations.size}）")
+                pending.relations.forEach { item ->
+                    SuggestionRelationRow(
+                        item = item,
+                        busy = busy,
+                        onConfirm = { onConfirmRelation(item) },
+                        onReverse = { onReverseRelation(item) },
+                        onIgnore = { onIgnoreRelation(item) },
+                    )
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = onConfirmAll, enabled = !busy) { Text("全部确认", style = MaterialTheme.typography.labelSmall) }
+                TextButton(onClick = onIgnoreAll, enabled = !busy) { Text("全部忽略", style = MaterialTheme.typography.labelSmall) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SuggestionCategoryRow(
+    item: PendingCategorySuggestion,
+    busy: Boolean,
+    onConfirm: () -> Unit,
+    onIgnore: () -> Unit,
+) {
+    val extra = LocalExtraColors.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f))
+            .padding(8.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(item.conceptName, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+            Text("→", style = MaterialTheme.typography.labelSmall, color = extra.dataMuted)
+            Text(item.categoryPath.joinToString(" / "), style = MaterialTheme.typography.labelMedium, color = extra.accentText)
+            Spacer(Modifier.weight(1f))
+            Text(item.origin.label, style = MaterialTheme.typography.labelSmall, color = extra.dataMuted)
+        }
+        if (!item.reason.isNullOrBlank()) {
+            Text(item.reason, style = MaterialTheme.typography.labelSmall, color = extra.dataMuted)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            TextButton(onClick = onConfirm, enabled = !busy) { Text("确认", style = MaterialTheme.typography.labelSmall) }
+            TextButton(onClick = onIgnore, enabled = !busy) { Text("忽略", style = MaterialTheme.typography.labelSmall) }
+        }
+    }
+}
+
+@Composable
+private fun SuggestionRelationRow(
+    item: PendingRelationSuggestion,
+    busy: Boolean,
+    onConfirm: () -> Unit,
+    onReverse: () -> Unit,
+    onIgnore: () -> Unit,
+) {
+    val extra = LocalExtraColors.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f))
+            .padding(8.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(item.fromName, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+            Text(relationLabel(item.kind), style = MaterialTheme.typography.labelSmall, color = extra.dataMuted)
+            Text(item.toName, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+            Spacer(Modifier.weight(1f))
+            Text(item.origin.label, style = MaterialTheme.typography.labelSmall, color = extra.dataMuted)
+        }
+        if (!item.reason.isNullOrBlank()) {
+            Text(item.reason, style = MaterialTheme.typography.labelSmall, color = extra.dataMuted)
+        }
+        if (!item.evidence.isNullOrBlank()) {
+            Text("依据：${item.evidence}", style = MaterialTheme.typography.labelSmall, color = extra.dataMuted, maxLines = 2)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            TextButton(onClick = onConfirm, enabled = !busy) { Text("确认", style = MaterialTheme.typography.labelSmall) }
+            TextButton(onClick = onReverse, enabled = !busy) { Text("反向", style = MaterialTheme.typography.labelSmall) }
+            TextButton(onClick = onIgnore, enabled = !busy) { Text("忽略", style = MaterialTheme.typography.labelSmall) }
+        }
+    }
+}
+
+private fun relationLabel(kind: GraphEdgeKind): String = when (kind) {
+    GraphEdgeKind.PREREQUISITE -> "是的前置"
+    GraphEdgeKind.APPLIES -> "用于"
+    GraphEdgeKind.RELATED -> "相关"
+    GraphEdgeKind.CO_OCCUR -> "共现"
 }
 
 @Composable

@@ -19,11 +19,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 
 /**
  * 知识网络视图（设计 v1.2：简单的「虚实树 + 聚焦浮窗」）。
@@ -163,6 +166,165 @@ internal fun KnowledgeGraphView(
         dataVersion++
     }
 
+    // ---- G1：AI 建议（归类 + 关系） ----
+    // 建议来自两处：①笔记整理时搭便车写进 graph.cache.json 的 noteSuggestions；
+    // ②用户点「AI 整理分类」后分批对未归类概念跑出来的 globalCategories。
+    // 确认前不碰分类树；忽略会写墓碑，AI 不会再提同一条。
+    val scope = rememberCoroutineScope()
+    var aiBusy by remember { mutableStateOf(false) }
+    var aiProgress by remember { mutableStateOf<String?>(null) }
+    var aiConfirmBatches by remember { mutableStateOf<List<List<String>>?>(null) }
+
+    val noteBodyHashes = remember(notes) { notes.associate { it.id to noteBodyHash(it) } }
+    val conceptNamesByKey = remember(graph) {
+        graph.nodes.values
+            .filter { it.kind == GraphNodeKind.CONCEPT }
+            .associate { it.key to it.name }
+    }
+    val globalSuggestionsValid = remember(graph, cache) {
+        val hash = cache.globalCategories.conceptSetHash
+        hash.isNotEmpty() && hash == knowledgeConceptSetHash(graph)
+    }
+    val pendingSuggestions = remember(cache, user, conceptNamesByKey, noteBodyHashes, globalSuggestionsValid) {
+        collectPendingSuggestions(
+            cache = cache,
+            user = user,
+            conceptNames = conceptNamesByKey,
+            noteBodyHashes = noteBodyHashes,
+            globalCategoriesValid = globalSuggestionsValid,
+        )
+    }
+    val unclassifiedConcepts = remember(graph) {
+        graph.childrenOf(null).filter { it.kind == GraphNodeKind.CONCEPT }
+    }
+    val llmReady = remember(runtime) { runtime.llmClientOrNull() != null }
+    val aiHint = when {
+        aiBusy -> aiProgress
+        !llmReady -> "AI 没配置：先去设置页导入模型；也可以手动拖节点整理。"
+        unclassifiedConcepts.isEmpty() && pendingSuggestions.isEmpty ->
+            "没有未归类的概念。整理笔记时会顺带产生归类 / 关系建议，回笔记页写几句再回来。"
+        else -> null
+    }
+    val aiEnabled = llmReady && unclassifiedConcepts.isNotEmpty() && !aiBusy
+
+    fun saveCacheAndRefresh(next: GraphAiCache) {
+        cache = next
+        graphStore.saveCache(next)
+        dataVersion++
+    }
+
+    fun confirmCategories(items: List<PendingCategorySuggestion>) {
+        if (items.isEmpty()) return
+        val result = confirmCategorySuggestions(user, items, runtime.clock.nowMs())
+        if (result.error != null) {
+            KnowledgeGraphViewState.message = result.error
+            return
+        }
+        user = result.user
+        graphStore.saveUser(user)
+        saveCacheAndRefresh(cacheWithoutCategorySuggestions(cache, items))
+        KnowledgeGraphViewState.message = result.changes.firstOrNull() ?: "已确认 ${items.size} 条归类建议"
+    }
+
+    fun ignoreCategories(items: List<PendingCategorySuggestion>) {
+        if (items.isEmpty()) return
+        var next = user
+        items.forEach { next = ignoreCategorySuggestion(next, it) }
+        user = next
+        graphStore.saveUser(user)
+        saveCacheAndRefresh(cacheWithoutCategorySuggestions(cache, items))
+        KnowledgeGraphViewState.message = "已忽略 ${items.size} 条归类建议（同类建议不会再出现）"
+    }
+
+    fun confirmRelations(items: List<PendingRelationSuggestion>) {
+        if (items.isEmpty()) return
+        user = confirmRelationSuggestions(user, items, runtime.clock.nowMs())
+        graphStore.saveUser(user)
+        saveCacheAndRefresh(cacheWithoutRelationSuggestions(cache, items))
+        KnowledgeGraphViewState.message = "已确认 ${items.size} 条关系建议"
+    }
+
+    fun ignoreRelations(items: List<PendingRelationSuggestion>) {
+        if (items.isEmpty()) return
+        var next = user
+        items.forEach { next = ignoreRelationSuggestion(next, it) }
+        user = next
+        graphStore.saveUser(user)
+        saveCacheAndRefresh(cacheWithoutRelationSuggestions(cache, items))
+        KnowledgeGraphViewState.message = "已忽略 ${items.size} 条关系建议（同类建议不会再出现）"
+    }
+
+    fun reverseRelation(item: PendingRelationSuggestion) {
+        val reversed = item.copy(
+            fromKey = item.toKey,
+            toKey = item.fromKey,
+            fromName = item.toName,
+            toName = item.fromName,
+            fingerprint = relationSuggestionFingerprint(item.toKey, item.fromKey, item.kind),
+        )
+        user = confirmRelationSuggestions(user, listOf(reversed), runtime.clock.nowMs())
+        graphStore.saveUser(user)
+        saveCacheAndRefresh(cacheWithoutRelationSuggestions(cache, listOf(item)))
+        KnowledgeGraphViewState.message = "已反向确认一条关系建议"
+    }
+
+    fun startAiOrganize(batches: List<List<String>>) {
+        val client = runtime.llmClientOrNull()
+        if (client == null) {
+            KnowledgeGraphViewState.message = "AI 没配置：先去设置页导入模型。"
+            return
+        }
+        val existingPaths = graph.nodes.values
+            .filter { it.kind == GraphNodeKind.CATEGORY }
+            .map { category -> graph.pathOf(category.key).joinToString(" / ") { it.name } }
+            .distinct()
+            .sorted()
+        aiBusy = true
+        aiProgress = "准备中…"
+        scope.launch {
+            try {
+                val run = runGlobalCategorySuggestions(
+                    client = client,
+                    graph = graph,
+                    batches = batches,
+                    existingPaths = existingPaths,
+                    now = { runtime.clock.nowMs() },
+                    isIgnored = { conceptKey, path ->
+                        isCategorySuggestionIgnored(user.removed.suggestions, conceptKey, path)
+                    },
+                    onProgress = { aiProgress = it },
+                )
+                val next = cache.copy(
+                    globalCategories = run.categories,
+                    promptVersion = GRAPH_PROMPT_VERSION,
+                    updatedAt = runtime.clock.nowMs(),
+                )
+                saveCacheAndRefresh(next)
+                KnowledgeGraphViewState.suggestionsOpen = true
+                val failedNote = if (run.failedCount > 0) "，${run.failedCount} 个概念没给建议" else ""
+                KnowledgeGraphViewState.message =
+                    "AI 建议已生成：${run.answeredCount} 条（共 ${run.callCount} 批$failedNote；你确认后才写入分类树）"
+            } finally {
+                aiBusy = false
+                aiProgress = null
+                aiConfirmBatches = null
+            }
+        }
+    }
+
+    fun requestAiOrganize() {
+        if (!llmReady) {
+            KnowledgeGraphViewState.message = "AI 没配置：先去设置页导入模型。"
+            return
+        }
+        val keys = unclassifiedConcepts.map { it.key }
+        if (keys.isEmpty()) {
+            KnowledgeGraphViewState.message = "没有未归类的概念；AI 建议会在整理笔记时自动出现。"
+            return
+        }
+        aiConfirmBatches = globalCategoryBatches(keys)
+    }
+
     // v1.3：新建一个「虚节点」——先造一个空分类，再拖到某个节点上把它收为子节点。
     fun addVirtualNode() {
         val used = user.categories.map { it.name }.toSet()
@@ -227,6 +389,12 @@ internal fun KnowledgeGraphView(
                         KnowledgeGraphViewState.selectedKey = key
                     },
                     onShowUnclassified = { KnowledgeGraphViewState.showUnclassified = it },
+                    aiEnabled = aiEnabled,
+                    aiBusy = aiBusy,
+                    aiHint = aiHint,
+                    suggestionCount = pendingSuggestions.total,
+                    onAiOrganize = { requestAiOrganize() },
+                    onOpenSuggestions = { KnowledgeGraphViewState.suggestionsOpen = true },
                 )
             }
             Spacer(Modifier.width(4.dp))
@@ -306,6 +474,28 @@ internal fun KnowledgeGraphView(
                         )
                     }
 
+                    if (KnowledgeGraphViewState.suggestionsOpen) {
+                        KnowledgeGraphSuggestionPanel(
+                            pending = pendingSuggestions,
+                            busy = aiBusy,
+                            message = aiProgress,
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(top = 52.dp, end = 12.dp),
+                            onClose = { KnowledgeGraphViewState.suggestionsOpen = false },
+                            onConfirmCategory = { confirmCategories(listOf(it)) },
+                            onIgnoreCategory = { ignoreCategories(listOf(it)) },
+                            onConfirmRelation = { confirmRelations(listOf(it)) },
+                            onReverseRelation = { reverseRelation(it) },
+                            onIgnoreRelation = { ignoreRelations(listOf(it)) },
+                            onConfirmAll = { confirmCategories(pendingSuggestions.categories) },
+                            onIgnoreAll = {
+                                ignoreCategories(pendingSuggestions.categories)
+                                ignoreRelations(pendingSuggestions.relations)
+                            },
+                        )
+                    }
+
                     // 图例贴在画布右上角（v1.3：从左栏挪过来，左栏留给搜索和统计）。
                     KnowledgeGraphLegend(
                         modifier = Modifier
@@ -318,6 +508,30 @@ internal fun KnowledgeGraphView(
     }
 
     // ---- 对话框 ----
+    val confirmBatches = aiConfirmBatches
+    if (confirmBatches != null) {
+        val total = unclassifiedConcepts.size
+        AlertDialog(
+            onDismissRequest = { aiConfirmBatches = null },
+            title = { Text("AI 整理分类？") },
+            text = {
+                Text(
+                    "将把 $total 个未归类概念分 ${confirmBatches.size} 批交给模型" +
+                        "（每批最多 $MAX_GLOBAL_BATCH_CONCEPTS 个）。只会生成建议，不会直接改分类树；" +
+                        "你逐条确认后才写入。每次调用有成本。",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val batches = confirmBatches
+                    aiConfirmBatches = null
+                    startAiOrganize(batches)
+                }) { Text("开始") }
+            },
+            dismissButton = { TextButton(onClick = { aiConfirmBatches = null }) { Text("取消") } },
+        )
+    }
+
     val createTarget = createParent
     if (createTarget != null) {
         val parentId = createTarget

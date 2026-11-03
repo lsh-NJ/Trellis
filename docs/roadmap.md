@@ -117,3 +117,16 @@
 
 
 - 2026-11-03 补丁：节点文字截断（布局尺寸按 density 缩放）、画布溢出左栏（`clipToBounds`）、图例移到画布右上角浮层。
+
+## 0.7 2026-11-03 知识网络 G1（AI 归类 + 关系建议）
+
+按设计 §9.2 接入 AI：AI 只产出建议，用户确认后才写分类树。
+
+- **笔记内（搭便车，零额外调用）**：`organizeNote` 的同一次请求里多输出 `categories`（≤12 条，路径 ≤2 层）与 `relations`（≤6 条；有向关系必须给正文逐字 evidence）；解析校验后写 `graph.cache.json` 的 `noteSuggestions[noteId]`（按 bodyHash 失效）。
+- **全图整理（手动触发）**：左栏「✦ AI 整理分类」→ 确认弹窗（概念数 / 批数 / 成本 / 不直接改树）→ 未归类概念 ≤40 个/批、≤20 批串行调用；失败批记 `failed` 并跳过；结果按 `conceptSetHash` 合并进缓存。
+- **建议面板**：画布右侧浮层，归类建议「确认/忽略」、关系建议「确认/反向/忽略」、`全部确认/全部忽略`、来源（笔记内/全图）与 reason/evidence；左栏「查看 AI 建议（N 条）」。
+- **确认门与墓碑**：确认写 `graph.user.json`（归类走 `applyCategorySuggestions`，关系写 `relations`）；忽略写 `removed.suggestions`/`removed.relations` 墓碑，AI 不再提同一条；处理后从缓存移除。
+- **代码**：新增 `KnowledgeGraphAi.kt`（纯逻辑 + `runGlobalCategorySuggestions`，可注入假 LLM）；`KnowledgeExtraction.kt` 提示词加 categories/relations；`KnowledgeScreen.kt` 整理后写缓存；`KnowledgeGraphScreen.kt` 接全图整理/确认流程；`KnowledgeGraphPanels.kt` 建议面板；`KnowledgeGraphViewState.kt` 加 `suggestionsOpen`。
+- **验证**：`:app:desktop` 共 533 条测试 0 失败（graph 122：Store 11 + Taxonomy 36 + Build 25 + Layout 23 + Ai 23 + Canvas 3 + Screen 1）；`./gradlew check` 绿；假 LLM 端到端覆盖「2 批 2 次调用 / 确认前 user.json 不变 / 失败跳过 / 墓碑过滤」；截图 `docs/assets/knowledge-graph/impl-v1.3-g1-suggestions.png`。
+- **没做（后续）**：真实 key 的本机手测；已忽略建议的恢复列表 UI；自动应用开关（默认关）；关系证据 hover 高亮。
+- **下一步**：G2（合并两个已存在概念 → 体系视图可选只读 → 计划接入 → AI 工具 `KnowledgeTools`）；或先按用户实际试用反馈磨 G0/G1。
