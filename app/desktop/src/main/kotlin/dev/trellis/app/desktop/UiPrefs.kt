@@ -3,6 +3,7 @@ package dev.trellis.app.desktop
 import java.io.File
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.floatOrNull
@@ -49,6 +50,8 @@ data class UiPrefs(
     val theme: String = DEFAULT_THEME,
     /** auto = 跟随系统；light / dark = 明确指定。一整页只认这一个开关。 */
     val appearance: String = "auto",
+    /** 笔记自动完成计划节点时要不要弹桌面通知（默认关，设置页可开）。 */
+    val notifyAutoCompletion: Boolean = false,
 ) {
     fun normalized(): UiPrefs = copy(
         palette = palette.takeIf { it in PALETTES } ?: "default",
@@ -156,6 +159,7 @@ internal class UiPrefsStore(home: File) {
             navTone = str("navTone") ?: "default",
             theme = str("theme") ?: DEFAULT_THEME,
             appearance = str("appearance") ?: "auto",
+            notifyAutoCompletion = obj["notifyAutoCompletion"]?.jsonPrimitive?.booleanOrNull ?: false,
         ).normalized()
     }
 
@@ -173,6 +177,7 @@ internal class UiPrefsStore(home: File) {
             put("navTone", clean.navTone)
             put("theme", clean.theme)
             put("appearance", clean.appearance)
+            put("notifyAutoCompletion", clean.notifyAutoCompletion)
         }
         runCatching {
             file.parentFile?.mkdirs()

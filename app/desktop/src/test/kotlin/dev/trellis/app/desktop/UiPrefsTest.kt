@@ -157,6 +157,16 @@ class UiPrefsTest {
     }
 
     @Test
+    fun autoCompletionNotificationOffByDefaultAndSurvivesAReload() {
+        val home = tempHome()
+        assertFalse(UiPrefsStore(home).load().notifyAutoCompletion)
+
+        UiPrefsStore(home).save(UiPrefs(notifyAutoCompletion = true))
+
+        assertTrue(UiPrefsStore(home).load().notifyAutoCompletion)
+    }
+
+    @Test
     fun loadedPrefsAreAlwaysNormalized() {
         val home = tempHome()
         File(home, "ui.json").writeText("""{"palette":"ocean","radius":999}""", Charsets.UTF_8)

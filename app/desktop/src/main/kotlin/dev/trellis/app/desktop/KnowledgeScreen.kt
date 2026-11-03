@@ -348,15 +348,52 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                 current.copy(body = markedBody),
                 currentIdentities(),
             )
-            if (next.concepts == current.concepts && markedBody == current.body) return@launch
-            // mention 在正文里找不到的候选已经被丢掉了，别在概念库里留下没有出处的定义。
-            val keptCandidates = retainedCandidates(markedBody, result.candidates, currentIdentities())
-            metaStore.fillMissing(
-                candidateDefinitions(keptCandidates) + fillDefinitions(result.fills),
-            )
-            candidateAliases(keptCandidates).forEach { (name, aliases) ->
-                metaStore.mergeAliases(name, aliases)
+            // 概念/正文有没有真的变：没变就不写盘、不发消息；但「笔记能不能完成计划节点」照样判一次
+            // （常见情形：这篇已经有概念了，这次只是又补了几句正文）。
+            val extractedChanged = next.concepts != current.concepts || markedBody != current.body
+            if (extractedChanged) {
+                // mention 在正文里找不到的候选已经被丢掉了，别在概念库里留下没有出处的定义。
+                val keptCandidates = retainedCandidates(markedBody, result.candidates, currentIdentities())
+                metaStore.fillMissing(
+                    candidateDefinitions(keptCandidates) + fillDefinitions(result.fills),
+                )
+                candidateAliases(keptCandidates).forEach { (name, aliases) ->
+                    metaStore.mergeAliases(name, aliases)
+                }
             }
+            // 笔记整理完，顺手判断能不能完成本周的计划节点：失败不影响笔记，没有候选或正文太短就跳过。
+            try {
+                extracting = true
+                val planCandidates = runtime.planLinkWeekCandidates()
+                if (shouldAttemptPlanLink(markedBody, planCandidates)) {
+                    val judgments = parsePlanLinkJudgments(
+                        client.complete(
+                            buildPlanLinkMessages(
+                                noteTitle = note.title,
+                                body = markedBody,
+                                candidates = selectPlanLinkCandidates(markedBody, planCandidates),
+                            ),
+                        ),
+                    )
+                    val completions = validatePlanLinkJudgments(
+                        body = markedBody,
+                        candidates = planCandidates,
+                        judgments = judgments,
+                        blocked = runtime.autoCompletionBlocked(),
+                    )
+                    if (completions.isNotEmpty()) {
+                        runtime.autoCompletePlanNodes(id, note.title, completions)
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                extracting = false
+                throw cancelled
+            } catch (failed: Exception) {
+                // 联动失败不写消息：笔记自身的整理结果照常提示。
+            } finally {
+                extracting = false
+            }
+            if (!extractedChanged) return@launch
             if (!applyExtracted(id, current, markedBody)) return@launch
             // 顺手解析图建议（与概念/补全同一次调用，不额外花钱）；分段时逐段解析再合并。
             val graphSuggestions = mergeNoteGraphSuggestions(
@@ -526,6 +563,15 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     LaunchedEffect(Unit) {
         pageFocus.requestFocusWhenReady()
         selectedId = runtime.knowledgeNoteId?.takeIf { store.exists(it) } ?: notes.firstOrNull()?.id
+    }
+
+    // 别的页（计划页「AI 自动完成」）请求打开某篇笔记并选中证据片段。
+    LaunchedEffect(runtime.pendingKnowledgeReveal, notes) {
+        val target = runtime.pendingKnowledgeReveal ?: return@LaunchedEffect
+        runtime.pendingKnowledgeReveal = null
+        switchTab(KnowledgeTab.Notes)
+        if (selectedId != target.noteId) selectNote(target.noteId)
+        if (target.start >= 0) pendingReveal = PendingReveal(target.noteId, target.start, target.end)
     }
 
     // 切换选中：从文件载入。读不到（被外部删了）就退到下一篇。

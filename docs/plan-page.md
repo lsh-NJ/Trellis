@@ -203,3 +203,34 @@
 - 验收：`PlanRearrangeRuntimeTest` 4 个用例（路线排序、逾期拖到某天、待安排池拖入、过去/跨周拒绝）+
   `LearningPlanPlaceUnitTest` 6 个后端用例；`features:learning-process:jvmTest` 34 个、
   `:app:desktop:test` 276 个全绿。
+
+## 13. 2026-11-03：笔记 → 计划节点自动完成（「AI 自动完成」列表）
+
+笔记里把某个计划节点讲清楚了，就不必再去计划页手动勾一下：知识库「保存并整理」成功后自动判一次，
+满足条件的节点直接标记完成，并在计划页留一条可撤销的记录。
+
+- **候选**：本周（`planState().week`）所有 `status=planned` 的节点，不限今天/逾期；未来周不参与。
+  候选超过 20 个时先按「标题/章节里的二字片段在正文出现的次数」筛，只把最相关的送进请求。
+- **触发**：`KnowledgeScreen.organizeNote` 成功分支末尾（正文 ≥400 字且有候选才发请求）；
+  判定逻辑在 `PlanLink.kt`，提示词要求模型输出
+  `{"completions":[{"occurrenceId","coverage","confidence","evidence","reason"}]}`。
+- **自动完成条件**（全部满足）：`coverage=full`、`confidence ≥ 0.8`、`evidence` 是正文**逐字片段**
+  （长度 ≥8，照 `KnowledgeGraphAi` 的写法在正文里 `contains` 校验）、节点不在屏蔽名单、同一篇笔记最多 3 个。
+- **执行**：`AppRuntime.autoCompletePlanNodes` 逐条 `completeOccurrence`，`Actor.SYSTEM`、
+  `origin = "knowledge.auto-complete"`；结果写账本 `<home>/plans/auto-completions.json`
+  （`entries` + `blocked`，写前 `.bak`、坏文件改 `.bad-<ms>`，语义在 `AutoCompletionStore.kt`）。
+  已完成或已有生效记录的节点会跳过（幂等）。
+- **UI**：计划页「当天安排」卡片下方多一张「AI 自动完成」卡片（有记录或屏蔽数 >0 时才出现）：
+  每条 `✔ 节点标题｜撤销`，第二行 `计划日 · 来自《笔记名》`（点这一行跳回知识库并选中证据句，
+  走 `pendingKnowledgeReveal`）+ 章节 + 「看证据」折叠。发生自动完成时 `planMessage` 提示
+  「AI 根据《note》自动完成了 N 个节点，可在下方「AI 自动完成」里撤销」。
+- **撤销 / 屏蔽**：卡片「撤销」= `uncompleteOccurrence`（改回 planned）+ 把节点写进 `blocked`，
+  以后不再自动勾；在计划页手动把自动完成改回没做，同样会进 `blocked`。「解除屏蔽（N）」清空整批。
+- **桌面通知**：`UiPrefs.notifyAutoCompletion`（默认关；设置页「笔记联动」→「弹桌面通知」），
+  走 `Notifier`，只在本次真的自动完成了节点时发。
+- **限制**：只在笔记整理成功时判一次，不后台轮询；模型判断错了要用户撤销（撤销后该节点永久屏蔽到解除）；
+  跨周节点不参与；判定依赖正文证据，证据被改写后重判会自然失效。
+- 验收：`PlanLinkTest` 8 个 + `AutoCompletionStoreTest` 7 个；mock 端到端（`/tmp/mock_llm5.py`，8983：
+  `kind=extract` + `kind=planlink candidates=14` → 账本写入 1 条、`plan.db` occurrence 变 `done`、
+  计划页卡片刻 1 条；撤销后回 `planned` 且出现「解除屏蔽（1）」；解除后再整理会重新自动完成；
+  点「来自笔记」跳回正文并选中证据）。
