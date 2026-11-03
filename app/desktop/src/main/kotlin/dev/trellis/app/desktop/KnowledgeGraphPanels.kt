@@ -19,7 +19,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -49,6 +48,7 @@ internal fun KnowledgeGraphLeftPanel(
     query: String,
     message: String?,
     showUnclassified: Boolean,
+    modifier: Modifier = Modifier,
     onQueryChange: (String) -> Unit,
     onNodeClick: (String) -> Unit,
     onShowUnclassified: (Boolean) -> Unit,
@@ -72,60 +72,42 @@ internal fun KnowledgeGraphLeftPanel(
         }
     }
     Column(
-        modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        OutlinedTextField(
-            value = query,
-            onValueChange = onQueryChange,
-            modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("搜索概念或分类…", style = MaterialTheme.typography.bodySmall) },
-            singleLine = true,
-            textStyle = MaterialTheme.typography.bodySmall,
-        )
-
         if (query.trim().isNotEmpty()) {
-            Text("搜索结果 ${results.size}", style = MaterialTheme.typography.labelSmall, color = extra.dataMuted)
             if (results.isEmpty()) {
-                KnowledgeHint("没有匹配的节点。试试完整概念名，或先去笔记里记录这个知识点。")
+                KnowledgeHint("没有匹配的节点")
             } else {
                 results.forEach { node ->
                     GraphHitRow(node = node, onClick = { onNodeClick(node.key) })
                 }
             }
         } else {
-            GraphSectionLabel("筛选")
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("显示未分类", style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
                 Switch(checked = showUnclassified, onCheckedChange = onShowUnclassified)
             }
-            KnowledgeHint("未分类 = 还没挂到任何分类下的概念；点浮窗里的「移动到分类…」归档。")
-
-            KnowledgeHint("点节点：其它节点淡出 + 弹出小浮窗；双击分类：折叠/展开；拖动虚节点到其它节点上：把那个节点收为子节点。")
-
-            GraphSectionLabel("统计")
-            KnowledgeGraphStatsCard(graph, suggestionCount)
-        }
-
-        HorizontalDivider(color = extra.dataTrack.copy(alpha = 0.6f))
-
-        KnowledgeHint("新建分类节点用工具条「＋ 虚节点」；把它拖到某个节点上，那个节点就收进来。")
-
-        TextButton(onClick = onAiOrganize, enabled = aiEnabled && !aiBusy) {
             Text(
-                if (aiBusy) "✦ AI 整理中…" else "✦ AI 整理分类",
-                style = MaterialTheme.typography.labelMedium,
+                "${graph.stats.conceptCount} 概念 · ${graph.stats.categoryCount} 分类 · ${graph.stats.unclassifiedCount} 未分类",
+                style = MaterialTheme.typography.labelSmall,
+                color = extra.dataMuted,
             )
-        }
-        if (suggestionCount > 0) {
-            TextButton(onClick = onOpenSuggestions) {
-                Text("查看 AI 建议（$suggestionCount 条）", style = MaterialTheme.typography.labelMedium)
+            TextButton(onClick = onAiOrganize, enabled = aiEnabled && !aiBusy) {
+                Text(
+                    if (aiBusy) "✦ AI 整理中…" else "✦ AI 整理分类",
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
+            if (suggestionCount > 0) {
+                TextButton(onClick = onOpenSuggestions) {
+                    Text("查看 AI 建议（$suggestionCount 条）", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+            if (!aiHint.isNullOrBlank()) {
+                KnowledgeHint(aiHint)
             }
         }
-        KnowledgeHint(
-            aiHint
-                ?: "AI 会读笔记给分类路径 / 关系建议；你逐条确认后才写入分类树，忽略过的建议不会再出现。",
-        )
 
         if (!message.isNullOrBlank()) {
             Text(message, style = MaterialTheme.typography.labelSmall, color = extra.accentText)
@@ -196,62 +178,17 @@ internal fun KnowledgeGraphToolbar(
     onFit: () -> Unit,
     onNewVirtualNode: () -> Unit,
 ) {
-    val extra = LocalExtraColors.current
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("分类树", style = MaterialTheme.typography.labelMedium, color = extra.dataMuted)
-        TextButton(onClick = onExpandAll) { Text("展开全部", style = MaterialTheme.typography.labelMedium) }
-        TextButton(onClick = onCollapseAll) { Text("折叠全部", style = MaterialTheme.typography.labelMedium) }
-        TextButton(onClick = onFit) { Text("适应窗口", style = MaterialTheme.typography.labelMedium) }
-        TextButton(onClick = onNewVirtualNode) { Text("＋ 虚节点", style = MaterialTheme.typography.labelMedium) }
-        Spacer(Modifier.weight(1f))
-        Text("点击看浮窗 · 双击折叠 · 拖动虚节点收子节点", style = MaterialTheme.typography.labelSmall, color = extra.dataMuted)
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+        EditorChip(label = "展开全部", active = false, onClick = onExpandAll)
+        EditorChip(label = "折叠全部", active = false, onClick = onCollapseAll)
+        EditorChip(label = "适应窗口", active = false, onClick = onFit)
+        EditorChip(label = "＋ 虚节点", active = false, onClick = onNewVirtualNode)
     }
 }
 
 // ---------------------------------------------------------------------------
-// 统计 / 空态
+// 空态
 // ---------------------------------------------------------------------------
-
-@Composable
-internal fun KnowledgeGraphStatsCard(graph: KnowledgeGraph, suggestionCount: Int = 0) {
-    val extra = LocalExtraColors.current
-    val stats = graph.stats
-    val aiCount = maxOf(stats.aiSuggestionCount, suggestionCount)
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
-            .padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            StatValue(stats.conceptCount, "概念")
-            StatValue(stats.categoryCount, "分类")
-            StatValue(stats.unclassifiedCount, "未分类")
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            StatValue(stats.relationEdgeCount, "关系")
-            StatValue(aiCount, "AI 建议")
-        }
-        if (stats.droppedAssignments > 0) {
-            Text(
-                "有 ${stats.droppedAssignments} 条归属不合法，已丢进未分类",
-                style = MaterialTheme.typography.labelSmall,
-                color = extra.warning,
-            )
-        }
-    }
-}
-
-@Composable
-private fun StatValue(value: Int, label: String) {
-    val extra = LocalExtraColors.current
-    Column {
-        Text("$value", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Text(label, style = MaterialTheme.typography.labelSmall, color = extra.dataMuted)
-    }
-}
 
 @Composable
 internal fun KnowledgeGraphEmptyState(hasNotes: Boolean, hasConcepts: Boolean, message: String?) {

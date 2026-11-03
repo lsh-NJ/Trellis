@@ -26,6 +26,9 @@ internal object KnowledgeGraphViewState {
     /** 是否显示「未分类」那类树。 */
     var showUnclassified: Boolean by mutableStateOf(true)
 
+    /** 左栏是否收起（和笔记/概念页的列表栏同一套交互，收起后只剩一条窄边）。 */
+    var leftCollapsed: Boolean by mutableStateOf(false)
+
     /** 左栏搜索框内容（搜索时左栏临时换成命中列表）。 */
     var query: String by mutableStateOf("")
 
