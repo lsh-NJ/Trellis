@@ -11,16 +11,24 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.awt.SwingPanel
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.unit.dp
+import dev.trellis.ui.LocalExtraColors
 import javafx.application.Platform
 import javafx.concurrent.Worker
 import javafx.embed.swing.JFXPanel
 import javafx.scene.Scene
 import javafx.scene.web.WebView
+import java.awt.AWTEvent
 import java.awt.BorderLayout
+import java.awt.Toolkit
+import java.awt.event.AWTEventListener
+import java.awt.event.MouseEvent
 import javax.swing.JPanel
 import javax.swing.SwingUtilities
 import netscape.javascript.JSObject
@@ -46,12 +54,29 @@ internal fun MarkdownWebEditor(
     body: String,
     onBodyChange: (String) -> Unit,
     modifier: Modifier = Modifier,
+    conceptNames: List<String> = emptyList(),
     onEditingFinished: (() -> Unit)? = null,
 ) {
     // 只建一个宿主：切笔记时用 setMarkdown 换内容，重建 WebView 会留下空白/重复的面板。
     val host = remember { MarkdownWebHost() }
     val latestChange by rememberUpdatedState(onBodyChange)
     val latestFinished by rememberUpdatedState(onEditingFinished)
+    val scheme = MaterialTheme.colorScheme
+    val conceptGreen = LocalExtraColors.current.accentText
+    val theme = remember(scheme.background, scheme.onBackground, scheme.onSurfaceVariant, conceptGreen) {
+        WebTheme(
+            background = scheme.background.toCss(),
+            onBackground = scheme.onBackground.toCss(),
+            onSurfaceVariant = scheme.onSurfaceVariant.toCss(),
+            accent = conceptGreen.toCss(),
+            accentSoft = conceptGreen.copy(alpha = 0.62f).toCss(),
+            codeBackground = Color(0x2E9E9E9E).toCss(),
+            border = scheme.onSurfaceVariant.copy(alpha = 0.32f).toCss(),
+        )
+    }
+    LaunchedEffect(theme) { host.setTheme(theme) }
+    // `[[` 补全用的概念名（来自本文已有标注 + 概念库），变化时重灌一次。
+    LaunchedEffect(conceptNames) { host.setConcepts(conceptNames) }
     // WebView 自己发上来的正文；记下来避免把它再灌回 WebView（否则每次击键都会 setContent）。
     var applied by remember { mutableStateOf(body) }
 
@@ -94,7 +119,29 @@ private class MarkdownWebHost {
     private var webView: WebView? = null
     private var bridgeInstalled = false
     private var bridge: MarkdownEditorBridge? = null
+    private var pendingTheme: WebTheme? = null
+    private var pendingConcepts: List<String>? = null
     private var pendingMarkdown: String? = null
+
+    /** 上一次鼠标按下时，指针是不是落在 WebView 里（用来判断「点到编辑器外面了」）。 */
+    private var pointerWasInside = false
+
+    /**
+     * Compose 的点击不会让 WebView 的 DOM 失焦（两套焦点系统互不知道），所以「点别处 = 写完了」
+     * 只能在 AWT 层听鼠标：按下点不在 JFXPanel 里，就当编辑器失焦，通知页面跑 AI 整理。
+     */
+    private val globalClickWatcher = AWTEventListener { event ->
+        val mouse = event as? MouseEvent ?: return@AWTEventListener
+        if (mouse.id != MouseEvent.MOUSE_PRESSED) return@AWTEventListener
+        val source = mouse.component ?: return@AWTEventListener
+        val inside = source === fxPanel || SwingUtilities.isDescendingFrom(source, fxPanel)
+        if (inside) {
+            pointerWasInside = true
+        } else if (pointerWasInside) {
+            pointerWasInside = false
+            SwingUtilities.invokeLater { onEditingFinished?.invoke() }
+        }
+    }.also { Toolkit.getDefaultToolkit().addAWTEventListener(it, AWTEvent.MOUSE_EVENT_MASK) }
 
     init {
         Platform.setImplicitExit(false)
@@ -120,7 +167,28 @@ private class MarkdownWebHost {
         }
     }
 
+    fun setTheme(theme: WebTheme) {
+        Platform.runLater {
+            if (!bridgeInstalled) {
+                pendingTheme = theme
+                return@runLater
+            }
+            webView?.engine?.executeScript("window.setTheme(${theme.toJsObject()})")
+        }
+    }
+
+    fun setConcepts(names: List<String>) {
+        Platform.runLater {
+            if (!bridgeInstalled) {
+                pendingConcepts = names
+                return@runLater
+            }
+            webView?.engine?.executeScript("window.setConcepts(${jsStringArray(names)})")
+        }
+    }
+
     fun dispose() {
+        runCatching { Toolkit.getDefaultToolkit().removeAWTEventListener(globalClickWatcher) }
         Platform.runLater {
             webView?.engine?.load(null)
             webView = null
@@ -137,6 +205,14 @@ private class MarkdownWebHost {
         bridge = jxb
         window.setMember("trellisEditorBridge", jxb)
         bridgeInstalled = true
+        pendingTheme?.let { theme ->
+            pendingTheme = null
+            webView?.engine?.executeScript("window.setTheme(${theme.toJsObject()})")
+        }
+        pendingConcepts?.let { names ->
+            pendingConcepts = null
+            webView?.engine?.executeScript("window.setConcepts(${jsStringArray(names)})")
+        }
         pendingMarkdown?.let { markdown ->
             pendingMarkdown = null
             runCatching { webView?.engine?.executeScript("window.setMarkdown(${jsString(markdown)})") }
@@ -196,4 +272,45 @@ private fun jsString(value: String): String = buildString(value.length + 16) {
         }
     }
     append('"')
+}
+
+/** 把字符串列表转成 JS 数组字面量（给 `window.setConcepts([...])` 用）。 */
+private fun jsStringArray(values: List<String>): String =
+    values.joinToString(prefix = "[", postfix = "]", separator = ",") { jsString(it) }
+
+/** 从 Compose 主题带进 WebView 的颜色（CSS 变量）。 */
+private data class WebTheme(
+    val background: String,
+    val onBackground: String,
+    val onSurfaceVariant: String,
+    val accent: String,
+    val accentSoft: String,
+    val codeBackground: String,
+    val border: String,
+) {
+    fun toJsObject(): String = buildString {
+        append('{')
+        append("background:").append(jsString(background)).append(',')
+        append("onBackground:").append(jsString(onBackground)).append(',')
+        append("onSurfaceVariant:").append(jsString(onSurfaceVariant)).append(',')
+        append("accent:").append(jsString(accent)).append(',')
+        append("accentSoft:").append(jsString(accentSoft)).append(',')
+        append("codeBackground:").append(jsString(codeBackground)).append(',')
+        append("border:").append(jsString(border))
+        append('}')
+    }
+}
+
+/** Compose 颜色转 CSS：不透明给 #rrggbb，半透明给 rgba(...)。 */
+private fun Color.toCss(): String {
+    val argb = toArgb()
+    val a = (argb ushr 24) and 0xFF
+    val r = (argb ushr 16) and 0xFF
+    val g = (argb ushr 8) and 0xFF
+    val b = argb and 0xFF
+    return if (a >= 0xFF) {
+        "#%02x%02x%02x".format(r, g, b)
+    } else {
+        "rgba($r, $g, $b, ${"%.3f".format(a / 255f)})"
+    }
 }
