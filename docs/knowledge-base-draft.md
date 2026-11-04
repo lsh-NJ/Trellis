@@ -240,7 +240,7 @@
 - 笔记 → 计划节点的联动：整理成功后还会顺带判断这篇笔记是否把本周某个节点讲完整了，满足条件的节点自动标记完成，记录与撤销在计划页，见 `docs/plan-page.md` §13。
 
 
-## 13. 编辑器实验：WebView + Tiptap（2026-11-04，P1 + P2 第一轮）
+## 13. 编辑器实验：WebView + Tiptap（2026-11-04，P1 + P2 第一轮 + 第二轮）
 
 Compose 的整篇单文本框里，行高由 `textStyle.lineHeight` 统一决定，**空行只能整行占**，所以段间距只有 1 倍（折叠空行）/ 2 倍（保留空行）两档，做不到用户要的 1.25–1.5 倍。
 
@@ -254,8 +254,10 @@ marktext / Typora / Notion 能做到，是因为正文是浏览器里的**块级
 - 主题：CSS 变量 + `window.setTheme({background,onBackground,onSurfaceVariant,accent,accentSoft,codeBackground,border})`，由 Compose 的 `MaterialTheme.colorScheme` 和 `LocalExtraColors.accentText` 注入。
 - 失焦触发 AI 整理：WebView 的 DOM 不会因点 Compose 控件而失焦，所以在 AWT 层挂了全局鼠标监听（`MarkdownWebHost.globalClickWatcher`）——按下点不在 `JFXPanel` 里就当编辑器失焦，回调 `onEditingFinished`；`Esc` 在 JS 里也会主动 `notifyBridge('onBlur')`。
 - gutter：ProseMirror widget decoration 在光标所在段落开头插一个零宽 `span.gutter-glyph`，CSS 挪到左边距，显示 ¶/H1–H6/•/1./▍/{ } 等标记（每次选区变化重算）。
-- `[[` 补全：Compose 把概念名（本文标注 + 概念库）通过 `window.setConcepts([...])` 灌进页面；输入 `[[` 弹候选浮层，**鼠标点选**后插入 concept mark（显示只有概念名，序列化回 `[[名字]]`）。键盘 Enter/Tab 认领还没接上（ProseMirror 的键盘事件时序问题，待补）。
-- 未对齐（后续）：斜杠菜单、快捷键（Cmd+E 等）、AI 定位跳转、代码块/表格/公式的专门渲染、Enter/Tab 认领补全、Windows/Linux 打包与 IME 回归。
+- `[[` 补全：Compose 把概念名（本文标注 + 概念库）通过 `window.setConcepts([...])` 灌进页面；输入 `[[` 弹候选浮层，点选或键盘认领后插入 concept mark（显示只有概念名，序列化回 `[[名字]]`）。
+- 补全键盘认领（P2 第二轮）：新增 Tiptap `TrellisKeys` extension，用 `addKeyboardShortcuts` 把 Enter/Tab/ArrowDown/ArrowUp/Escape 转交页面的 `window.__trellisHandleKey`——`handleKeyDown` 在 ProseMirror 默认处理之前跑，比在 DOM 上抢 `keydown` 可靠。认领不依赖菜单是否渲染：直接从光标前文本解析 `[[query`，↑↓ 在候选里移动、Enter/Tab 插入、Esc 关闭。
+- `/` 斜杠菜单（P2 第二轮）：行首或空白后敲 `/` 弹出（代码块里不触发）；命令用 Tiptap 自带 chain：标题 1/2/3、无序列表、有序列表、引用、代码块、分隔线；↑↓ 选、Enter/Tab 执行、Esc 关闭、也可以鼠标点选；执行前先删掉敲的 `/query` 再 `deleteRange` + `toggle*`。
+- 未对齐（后续）：快捷键（Cmd+E 等）、AI 定位跳转、代码块/表格/公式的专门渲染、Windows/Linux 打包与 IME 回归。
 - 坑：CSS 不能写具体字体名（`"PingFang SC"` 会让 JavaFX WebView 中文变乱码），用 `-apple-system, sans-serif`；程序化 `setContent` 偶尔有重绘不同步；`Box` 在 `verticalScroll` 里高度约束无限，`SwingPanel` 必须显式给最小高度（当前 560dp）。
 
 ## 12. 编辑器交互（2026-11-02 定稿：整篇单字段）

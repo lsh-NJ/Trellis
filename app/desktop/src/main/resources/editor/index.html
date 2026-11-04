@@ -98,6 +98,31 @@
   .concept-item.selected { background: var(--code-bg); }
   .concept-item .concept-name { color: var(--fg); font-size: 14px; }
   .concept-item .concept-hint { color: var(--fg-soft); font-size: 11px; }
+  /* / 斜杠命令浮层：和概念补全同一套外观 */
+  .slash-menu {
+    position: fixed;
+    z-index: 20;
+    display: none;
+    min-width: 220px;
+    max-width: 300px;
+    padding: 4px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  }
+  .slash-item {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 10px;
+    border-radius: 7px;
+    cursor: pointer;
+  }
+  .slash-item.selected { background: var(--code-bg); }
+  .slash-item .slash-label { color: var(--fg); font-size: 14px; }
+  .slash-item .slash-hint { color: var(--fg-soft); font-size: 11px; }
   .ProseMirror p.is-editor-empty:first-child::before { content: attr(data-placeholder); color: var(--fg-soft); opacity: 0.6; float: left; height: 0; pointer-events: none; }
 </style></head>
 <body><div id="editor"></div></body></html>
