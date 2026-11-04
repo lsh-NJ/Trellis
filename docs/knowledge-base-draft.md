@@ -251,6 +251,9 @@
 | 编辑标题/引用 | 光标所在行的 `## ` / `> ` 前缀以暗灰源码显示（能看出几级标题），其它行隐藏；字号按级别放大 | `MarkdownDocumentEdit.kt` |
 | 链接 | 渲染态只显示 label（不显示地址）；光标进入/紧挨链接时展开 `[label](url)` 源码 | `MarkdownText.kt` / `MarkdownDocumentEdit.kt` |
 | 回车 | Enter 分段（段落之间空一行；行首回车在上方开一个空段；列表里回车自动续 `- ` / 递增序号，空项回车退出列表）；Shift+Enter 是段内软换行；代码/表格/公式/AI 块里 Enter 仍只换行 | `MarkdownDocumentEdit.kt` |
+| 点击正文末尾以下 | 点正文最后一行下方的空白 = 直接另起一段（不用先把光标拖到底再按回车） | `MarkdownDocumentEditor.kt` |
+| 段落标记（gutter） | 正文左侧 34dp 窄栏只画**光标所在段落**的标记与一条淡竖线：`¶` 普通段、`H1`–`H6` 标题、`•` 无序列表、`☰` 有序列表、`▍` 引用、`{ }` 代码、`▦` 表格、`∑` 公式、`AI` AI 块；相邻同类型列表算一段 | `MarkdownDocumentEdit.kt`（`groupDocumentParagraphs`/`paragraphMarker`）/ `MarkdownDocumentEditor.kt` |
+| `{{…}}` | 编辑态折叠花括号、内容变绿，并按位置画「左上一颗“、右下一颗”」的大绿引号（跨行时贴首行左上 / 末行右下）；`:::ai` 块同老规则在块左上/右下画引号 | `MarkdownDocumentEdit.kt` / `MarkdownDocumentEditor.kt` |
 | Esc / Ctrl+Enter / 失焦 | Esc 收起斜杠菜单、Ctrl/Cmd+Enter 或点页头「预览」chip 切到预览；焦点离开正文时触发一次 AI 整理（正文真变了才调模型，见 §10 补丁 4） | `MarkdownDocumentEditor.kt` |
 | `/` 斜杠命令 | 行首或空白后唤起斜杠命令菜单（代码围栏里不触发） | `MarkdownCommands.kt` |
 | 快捷键 | `Ctrl/Cmd+B/I/K`、`Shift+X/C/L/O/Q/R/T`、`0–3` 作用在光标所在行或选区 | `MarkdownCommands.kt` |
@@ -268,7 +271,7 @@
 - **中文粗体是「系统字重 + 同色阴影」叠出来的**：不依赖平台字体有没有真正的 Bold 字面，跨平台观感一致；阴影颜色跟随文字色（概念绿字加粗仍是绿的）。行内代码是「等宽 + 自绘圆角芯片」，上下沿按基线算出、不靠 padding。
 - **链接默认只显示 label**（marktext 式）：地址藏在源码里，光标进去才看得到；聊天消息仍显示地址，避免模型给的链接丢了。
 - **编辑态与预览态的差别**：代码块、表格、`$$` 公式块、`:::ai` 块在编辑态只显示「等宽 / 配色的源码」，完整渲染只在预览态（同一个 `BasicTextField` 里不能内嵌小部件）；嵌套列表缩进只按行首空白粗略处理。换路径的动机与代价见 §10 第八批补丁。
-- **空行就是分段**：段落之间空一行；段落内想换行用 Shift+Enter 写一个 `\n`。
+- **空行就是分段**：段落之间空一行；段落内想换行用 Shift+Enter 写一个 `\n`。段间距只能取「一个空行」或「没有空行」两档：整篇是一个 `BasicTextField`，行高由 `textStyle.lineHeight` 统一决定，没法只把空行压到半行（试过 `ParagraphStyle`/`SpanStyle`/零宽空格承载，最小仍是一整行 2 倍行距）。2026-11-04 的决定是保留空行（段间距 = 2 倍行距，marktext 观感），光标段落靠左侧 gutter 标记区分。
 - **标题也是正文行**（`# …`），行内语法同样折叠；目录与笔记列表的标题走同一套 `stripInlineMarkdown`。
 - **概念有显式语法** `[[概念名]]`：预览只显示名字（浅绿下划线），和隐式「按概念表匹配」共存；AI 抽取会把首次出现自动包成这个写法。
 - **AI 只在焦点离开正文时动手**：删/加 `[[概念]]`、AI 补全本身都不算正文变化（比较用 `bodyForAiComparison`），所以不会「人工改完标记又被 AI 盖一轮」；概念数量不设上限，但每个都要有正文依据。

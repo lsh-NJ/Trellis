@@ -1,8 +1,11 @@
 package dev.trellis.app.desktop
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Box
@@ -11,6 +14,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -49,15 +53,22 @@ import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.ParagraphStyle
+import androidx.compose.ui.text.style.LineHeightStyle
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -357,6 +368,18 @@ internal fun MarkdownDocumentEditor(
         }
     }
 
+    // 左侧 gutter：只标光标所在段落（¶ / H1–H6 / • / ☰ / ▍ / { } / ▦ / ∑ / AI）。
+    val gutterWidth = 34.dp
+    val gutterWidthPx = with(density) { gutterWidth.toPx() }
+    val markerMeasurer = rememberTextMeasurer()
+    val markerStyle = remember(scheme) {
+        TextStyle(
+            color = scheme.onSurfaceVariant.copy(alpha = 0.72f),
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+
     // 斜杠菜单贴着光标下方浮起来（和整篇编辑器的命令表是同一份）。
     val menuOffset = remember(editLayout, field.selection, projection, fieldWidth, density) {
         val layout = editLayout
@@ -369,16 +392,50 @@ internal fun MarkdownDocumentEditor(
             val menuWidth = with(density) { 300.dp.roundToPx() }
             val maxX = (fieldWidth - menuWidth).coerceAtLeast(0)
             IntOffset(
-                x = rect.left.roundToInt().coerceIn(0, maxX),
+                x = (rect.left.roundToInt() + gutterWidthPx.roundToInt()).coerceIn(0, maxX),
                 y = (rect.bottom.roundToInt() + with(density) { 4.dp.roundToPx() }).coerceAtLeast(0),
             )
         }
     }
 
-    Box(modifier = modifier.fillMaxWidth()) {
+    Column(modifier = modifier.fillMaxWidth()) {
+    Box(modifier = Modifier.fillMaxWidth()) {
+        // gutter 画在文字左边（Canvas 先画 = 在最底层，文字不会盖住它）。
+        Canvas(Modifier.matchParentSize()) {
+            val layout = editLayout ?: return@Canvas
+            val paragraph = projection.caretParagraph ?: return@Canvas
+            val rawLines = projection.lines
+            if (rawLines.isEmpty()) return@Canvas
+            val firstRaw = rawLines[paragraph.firstLine.coerceIn(0, rawLines.lastIndex)]
+            val lastRaw = rawLines[paragraph.lastLine.coerceIn(0, rawLines.lastIndex)]
+            val firstVisible = projection.mapping.originalToTransformed(firstRaw.start)
+                .coerceIn(0, layout.layoutInput.text.length)
+            val lastVisible = projection.mapping.originalToTransformed(lastRaw.end)
+                .coerceIn(0, layout.layoutInput.text.length)
+            val firstLine = layout.getLineForOffset(firstVisible)
+            val lastLine = layout.getLineForOffset(lastVisible)
+            val top = layout.getLineTop(firstLine)
+            val bottom = layout.getLineBottom(lastLine)
+            drawLine(
+                color = scheme.onSurfaceVariant.copy(alpha = 0.26f),
+                start = Offset(gutterWidthPx - 3.dp.toPx(), top + 2.dp.toPx()),
+                end = Offset(gutterWidthPx - 3.dp.toPx(), bottom - 2.dp.toPx()),
+                strokeWidth = 1.dp.toPx(),
+            )
+            val measured = markerMeasurer.measure(AnnotatedString(paragraph.marker), markerStyle)
+            val lineHeight = layout.getLineBottom(firstLine) - layout.getLineTop(firstLine)
+            drawText(
+                textLayoutResult = measured,
+                topLeft = Offset(
+                    x = 0f,
+                    y = top + ((lineHeight - measured.size.height) / 2f).coerceAtLeast(0f),
+                ),
+            )
+        }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
+                .padding(start = gutterWidth)
                 .onSizeChanged { fieldWidth = it.width }
                 .drawBehind {
                     val layout = editLayout ?: return@drawBehind
@@ -392,6 +449,25 @@ internal fun MarkdownDocumentEditor(
                     .fillMaxWidth()
                     // 空文档 / 正文末尾以下的空白也要能点进去写（不然点页面空白处没反应）。
                     .heightIn(min = 280.dp)
+                    .pointerInput(field.text) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(
+                                requireUnconsumed = false,
+                                pass = PointerEventPass.Initial,
+                            )
+                            val layout = editLayout
+                            val contentBottom = if (layout != null && layout.lineCount > 0) {
+                                layout.getLineBottom(layout.lineCount - 1)
+                            } else {
+                                0f
+                            }
+                            if (down.position.y > contentBottom + 8.dp.toPx()) {
+                                down.consume()
+                                apply(newParagraphAtEnd(field))
+                                focus.requestFocus()
+                            }
+                        }
+                    }
                     .focusRequester(focus)
                     .onFocusChanged { state ->
                         if (state.isFocused) {
@@ -441,6 +517,20 @@ internal fun MarkdownDocumentEditor(
             )
         }
     }
+    // 正文末尾以下的空白：点一下就另起一段（不用再把光标拖到底、按回车）。
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(120.dp)
+            .pointerInput(field.text) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    apply(newParagraphAtEnd(field))
+                    focus.requestFocus()
+                }
+            },
+    )
+    }
 }
 
 /** 这些行的内容本身就是语法，回车只换行。 */
@@ -466,9 +556,9 @@ private fun buildDocumentEditText(
     scheme: androidx.compose.material3.ColorScheme,
     conceptGreen: Color,
 ): AnnotatedString = buildAnnotatedString {
-    append(projection.text)
     if (projection.text.isEmpty()) return@buildAnnotatedString
 
+    append(projection.text)
     fun add(range: IntRange, style: SpanStyle) {
         addStyle(style, range.first, range.last + 1)
     }
@@ -532,6 +622,13 @@ private fun buildDocumentEditText(
             )
             // 普通出现的概念名/别名：只染色，和预览态一致（只有 [[…]] 标注才带下划线）。
             InlineMarkKind.ConceptPlain -> SpanStyle(color = conceptGreen.copy(alpha = 0.62f))
+            // `{{…}}` 里的内容：绿字；两侧折叠时补的绿色大引号。
+            InlineMarkKind.AiInline -> SpanStyle(color = conceptGreen.copy(alpha = 0.62f))
+            InlineMarkKind.AiQuote -> SpanStyle(
+                color = conceptGreen,
+                fontWeight = FontWeight.Bold,
+                fontSize = 26.sp,
+            )
         }
         add(mark.start..(mark.end - 1), style)
     }

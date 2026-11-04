@@ -21,8 +21,24 @@ import androidx.compose.ui.text.input.TextFieldValue
  * 投影只负责「显示成什么 + 光标怎么映射」，样式与绘制在 [MarkdownDocumentEditor] 里套。
  */
 
+internal const val AI_INLINE_QUOTE_OPEN: String = "\u201C"
+internal const val AI_INLINE_QUOTE_CLOSE: String = "\u201D"
+
 /** 行内标记的种类；[MarkdownDocumentEditor] 按它挑样式。 */
-internal enum class InlineMarkKind { Bold, Italic, Code, Strike, Link, Math, Concept, ConceptPlain }
+internal enum class InlineMarkKind {
+    Bold,
+    Italic,
+    Code,
+    Strike,
+    Link,
+    Math,
+    Concept,
+    ConceptPlain,
+    /** `{{…}}` 的内容（折叠花括号后只留绿字）。 */
+    AiInline,
+    /** 折叠 `{{…}}` 时补在两侧的绿色大引号（不是原文，只影响显示）。 */
+    AiQuote,
+}
 
 /** 可见文本里的样式区间（坐标是投影后文本的偏移）。 */
 internal data class InlineMarkRange(val start: Int, val end: Int, val kind: InlineMarkKind)
@@ -72,6 +88,18 @@ internal data class DocumentLine(
 )
 
 /**
+ * 一段（整块）正文：行区间 + 左侧 gutter 里要显示的标记。
+ *
+ * 相邻的同类型列表项算一段（有序/无序分开），整段只在段首显示一次标记；
+ * 空行是段落分隔符，本身不属于任何一段。
+ */
+internal data class DocumentParagraph(
+    val firstLine: Int,
+    val lastLine: Int,
+    val marker: String,
+)
+
+/**
  * 一次投影的结果。
  *
  * - [text]：给 `BasicTextField` 显示的文本（隐藏了标记）
@@ -98,6 +126,10 @@ internal data class DocumentProjection(
     val mathLines: List<IntRange> = emptyList(),
     val chips: List<IntRange> = emptyList(),
     val lines: List<DocumentLine> = emptyList(),
+    /** 段落分组（gutter 标记用）；空行不算段。 */
+    val paragraphs: List<DocumentParagraph> = emptyList(),
+    /** 光标所在段落；光标在空行上时为 null。 */
+    val caretParagraph: DocumentParagraph? = null,
     val hidden: List<IntRange> = emptyList(),
     val caretKind: DocumentLineKind = DocumentLineKind.Paragraph,
     val mapping: OffsetMapping = identityOffsetMapping,
@@ -405,6 +437,35 @@ internal fun projectDocument(
         if (plainMarks.isNotEmpty()) marks.addAll(0, plainMarks)
     }
 
+    // 行内 AI 内容 `{{…}}`：折叠花括号、内容染绿；折叠时在两侧补一对绿色大引号。
+    val aiTokens = mutableListOf<InlineTokenRange>()
+    for (span in aiInlineSpans(body)) {
+        val line = lines.firstOrNull { span.start >= it.start && span.start < it.end } ?: continue
+        if (line.kind in rawContentKinds) continue
+        val token = InlineTokenRange(
+            start = span.start,
+            end = span.end,
+            contentStart = span.start + AI_INLINE_OPEN.length,
+            contentEnd = span.end - AI_INLINE_CLOSE.length,
+            kind = InlineMarkKind.AiInline,
+        )
+        aiTokens += token
+        tokens += token
+        marks += InlineMarkRange(token.contentStart, token.contentEnd, InlineMarkKind.AiInline)
+        applyTokenMarkers(token, selection, hiddenRanges, syntaxRanges)
+    }
+
+    // 折叠态的 AI token 在可见文本里用引号替换花括号；引号不是原文，只参与显示。
+    val collapsedAi = aiTokens.filter { token -> isRangeHidden(hiddenRanges, token.start, token.contentStart) }
+    val quoteBefore = HashMap<Int, String>()
+    val quoteAfter = HashMap<Int, String>()
+    for (token in collapsedAi) {
+        quoteBefore[token.start] = AI_INLINE_QUOTE_OPEN
+        quoteAfter[token.end] = AI_INLINE_QUOTE_CLOSE
+    }
+
+    // 段落之间保留真实空行（一个空行 = 段间距）；不折叠，方便按上下键/点击定位。
+
     val isHidden = BooleanArray(body.length)
     for (range in hiddenRanges) {
         for (index in range.first..range.last) {
@@ -412,12 +473,26 @@ internal fun projectDocument(
         }
     }
 
+    val extraSlots = collapsedAi.size * 2 + 2
     val visible = StringBuilder(body.length)
     val rawToVisible = IntArray(body.length + 1)
-    val visibleToRaw = IntArray(body.length + 1)
-    for (index in body.indices) {
+    val visibleToRaw = IntArray(body.length + extraSlots)
+    val visibleQuoteRanges = mutableListOf<IntRange>()
+    for (index in 0..body.length) {
+        // 光标落到「原文下标 index 之前」时，对应的可见位置（引号插在这个位置之前）。
         rawToVisible[index] = visible.length
+        quoteBefore[index]?.let { quote ->
+            visibleToRaw[visible.length] = index
+            visibleQuoteRanges += visible.length until visible.length + quote.length
+            visible.append(quote)
+        }
+        if (index == body.length) break
         if (isHidden[index]) continue
+        quoteAfter[index]?.let { quote ->
+            visibleToRaw[visible.length] = index
+            visibleQuoteRanges += visible.length until visible.length + quote.length
+            visible.append(quote)
+        }
         visibleToRaw[visible.length] = index
         visible.append(replacements[index] ?: body[index])
     }
@@ -449,12 +524,20 @@ internal fun projectDocument(
         .filter { it.kind == DocumentLineKind.MathContent && it.start < it.end }
         .mapNotNull { line -> toVisible(line.start..(line.end - 1)) }
 
-    val visibleMarks = marks
-        .map { InlineMarkRange(rawToVisible[it.start], rawToVisible[it.end], it.kind) }
-        .filter { it.start < it.end }
+    val visibleMarks = buildList {
+        addAll(
+            marks.map { InlineMarkRange(rawToVisible[it.start], rawToVisible[it.end], it.kind) }
+                .filter { it.start < it.end },
+        )
+        visibleQuoteRanges.forEach {
+            add(InlineMarkRange(it.first, it.last + 1, InlineMarkKind.AiQuote))
+        }
+    }
     val visibleChips = visibleMarks.filter { it.kind == InlineMarkKind.Code }
         .map { it.start..(it.end - 1) }
     val visibleSyntax = mergeRanges(syntaxRanges).mapNotNull(::toVisible)
+    val paragraphs = groupDocumentParagraphs(lines)
+    val caretParagraph = paragraphs.firstOrNull { caretIndex in it.firstLine..it.lastLine }
 
     return DocumentProjection(
         text = visible.toString(),
@@ -469,6 +552,8 @@ internal fun projectDocument(
         mathLines = mathLines,
         chips = visibleChips,
         lines = lines,
+        paragraphs = paragraphs,
+        caretParagraph = caretParagraph,
         hidden = mergeRanges(hiddenRanges),
         caretKind = caretKind,
         mapping = InlineOffsetMapping(rawToVisible, visibleToRaw),
@@ -499,6 +584,79 @@ private fun applyTokenMarkers(
         leftRange?.let(hidden::add)
         rightRange?.let(hidden::add)
         token.innerHidden?.let(hidden::add)
+    }
+}
+
+/** [start]..[endExclusive] 这一段的字符是否全部被 [hidden] 覆盖（用来判断 AI 花括号是不是折叠了）。 */
+private fun isRangeHidden(hidden: List<IntRange>, start: Int, endExclusive: Int): Boolean {
+    if (endExclusive <= start) return false
+    return hidden.any { it.first <= start && it.last >= endExclusive - 1 }
+}
+
+/**
+ * 把行分组成「段落」：标题、引用、代码/表格/AI/公式各自成段，
+ * 相邻的普通行算一段，相邻的同类型列表项算一段（有序/无序分开）。
+ */
+internal fun groupDocumentParagraphs(lines: List<DocumentLine>): List<DocumentParagraph> {
+    val paragraphs = mutableListOf<DocumentParagraph>()
+    var index = 0
+    while (index < lines.size) {
+        val line = lines[index]
+        if (line.start >= line.end) {
+            index++
+            continue
+        }
+        var end = index
+        val mergeable = line.kind != DocumentLineKind.Heading
+        if (mergeable) {
+            val key = paragraphGroupKey(line.kind)
+            while (end + 1 < lines.size) {
+                val next = lines[end + 1]
+                if (next.start >= next.end) break
+                if (next.kind == DocumentLineKind.Heading) break
+                if (paragraphGroupKey(next.kind) != key) break
+                end++
+            }
+        }
+        paragraphs += DocumentParagraph(index, end, paragraphMarker(line))
+        index = end + 1
+    }
+    return paragraphs
+}
+
+private fun paragraphGroupKey(kind: DocumentLineKind): String = when (kind) {
+    DocumentLineKind.Heading -> "heading"
+    DocumentLineKind.Paragraph -> "paragraph"
+    DocumentLineKind.BulletItem -> "bullet"
+    DocumentLineKind.OrderedItem -> "ordered"
+    DocumentLineKind.Quote -> "quote"
+    DocumentLineKind.CodeFence, DocumentLineKind.CodeContent -> "code"
+    DocumentLineKind.AiMarker, DocumentLineKind.AiContent -> "ai"
+    DocumentLineKind.MathFence, DocumentLineKind.MathContent -> "math"
+    DocumentLineKind.Table -> "table"
+}
+
+/** gutter 里显示的段落标记。 */
+internal fun paragraphMarker(line: DocumentLine): String = when (line.kind) {
+    DocumentLineKind.Heading -> "H" + line.headingLevel.coerceIn(1, 6)
+    DocumentLineKind.BulletItem -> "\u2022"
+    DocumentLineKind.OrderedItem -> "\u2630"
+    DocumentLineKind.Quote -> "\u258D"
+    DocumentLineKind.CodeFence, DocumentLineKind.CodeContent -> "{ }"
+    DocumentLineKind.Table -> "\u25A6"
+    DocumentLineKind.AiMarker, DocumentLineKind.AiContent -> "AI"
+    DocumentLineKind.MathFence, DocumentLineKind.MathContent -> "\u2211"
+    DocumentLineKind.Paragraph -> "\u00B6"
+}
+
+/** 点正文末尾以下的空白 / 在文末另起一段：补空行并把光标放到新段开头。 */
+internal fun newParagraphAtEnd(value: TextFieldValue): TextFieldValue {
+    val text = value.text
+    return when {
+        text.isEmpty() -> value
+        text.endsWith("\n\n") -> TextFieldValue(text, TextRange(text.length))
+        text.endsWith("\n") -> TextFieldValue(text + "\n", TextRange(text.length + 1))
+        else -> TextFieldValue(text + "\n\n", TextRange(text.length + 2))
     }
 }
 

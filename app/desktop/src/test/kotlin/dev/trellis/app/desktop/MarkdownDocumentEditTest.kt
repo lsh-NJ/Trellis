@@ -366,4 +366,60 @@ class MarkdownDocumentEditTest {
         assertNull(splitListLineAt(value, scanDocumentLines(value.text)))
     }
 
+    @Test
+    fun aiInlineFoldsTheBracesAndQuotesTheContent() {
+        val projection = project("补充 {{先检索再回答}} 完。", caret = 0)
+        assertEquals("补充 “先检索再回答” 完。", projection.text)
+        assertTrue(hiddenContains(projection, 3..4))
+        assertTrue(hiddenContains(projection, 11..12))
+        assertTrue(projection.marks.any { it.kind == InlineMarkKind.AiInline })
+        assertEquals(2, projection.marks.count { it.kind == InlineMarkKind.AiQuote })
+    }
+
+    @Test
+    fun aiInlineShowsTheBracesWhenTheCaretIsInside() {
+        val body = "补充 {{先检索再回答}} 完。"
+        val projection = project(body, caret = 6)
+        assertEquals(body, projection.text)
+        assertTrue(projection.hidden.isEmpty())
+        assertTrue(projection.syntax.any { it == 3..4 })
+        assertTrue(projection.marks.none { it.kind == InlineMarkKind.AiQuote })
+    }
+
+    @Test
+    fun paragraphsGroupAdjacentListsAndSeparateHeadings() {
+        val projection = project("# 标题\n\n- 一\n- 二\n\n1. 甲\n1. 乙\n\n普通段落", caret = 0)
+        assertEquals(listOf("H1", "•", "☰", "¶"), projection.paragraphs.map { it.marker })
+        assertEquals("H1", projection.caretParagraph?.marker)
+    }
+
+    @Test
+    fun caretInsideAListMarksTheWholeListAsOneParagraph() {
+        val body = "- 一\n- 二\n- 三"
+        val projection = project(body, caret = body.indexOf("二"))
+        assertEquals("•", projection.caretParagraph?.marker)
+    }
+
+    @Test
+    fun blankLinesStayBetweenParagraphs() {
+        val projection = project("一\n\n二", caret = 0)
+        assertEquals("一\n\n二", projection.text)
+        assertTrue(projection.paragraphs.size == 2)
+    }
+
+    @Test
+    fun newParagraphAtTheEndAddsTheBlankLineAndKeepsTheCaretOnANewLine() {
+        val fromText = newParagraphAtEnd(TextFieldValue("正文", TextRange(2)))
+        assertEquals("正文\n\n", fromText.text)
+        assertEquals(4, fromText.selection.min)
+
+        val fromSingle = newParagraphAtEnd(TextFieldValue("正文\n", TextRange(3)))
+        assertEquals("正文\n\n", fromSingle.text)
+        assertEquals(4, fromSingle.selection.min)
+
+        val alreadyDivided = newParagraphAtEnd(TextFieldValue("正文\n\n", TextRange(4)))
+        assertEquals("正文\n\n", alreadyDivided.text)
+        assertEquals(4, alreadyDivided.selection.min)
+    }
+
 }
