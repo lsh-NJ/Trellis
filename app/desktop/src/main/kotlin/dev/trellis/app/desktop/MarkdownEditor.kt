@@ -65,6 +65,7 @@ internal fun MarkdownEditor(
             body = body,
             onBodyChange = onBodyChange,
             modifier = modifier,
+            conceptNames = conceptNames,
             onEditingFinished = onEditingFinished,
         )
     } else {

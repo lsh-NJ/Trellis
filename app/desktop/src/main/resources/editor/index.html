@@ -4,40 +4,100 @@
   /*
    * 笔记编辑页（Tiptap/ProseMirror in JavaFX WebView）。
    *
-   * 这里之所以能用「段间距」而不是「空行」，就是因为内容在浏览器里是块级 DOM：
-   * p 之间用 margin 控制，1.25–1.5 倍行距可以随手调；Compose 的整篇单文本框做不到
-   * （行高由 textStyle 统一决定，空行只能整行占）。
+   * 段间距用 CSS margin（浏览器里正文是块级 DOM，空行本来就不在 DOM 里），
+   * 这样能精确到和 Compose 正文一致的「1.4 倍行距」。
    *
-   * 注意：不要给 body 指定具体字体名（-apple-system / "PingFang SC" 之类），
-   * JavaFX WebView 会把中文的字体映射弄坏、整页变乱码；只写 sans-serif。
+   * 字体/字号/行高对齐 Compose 的 bodyLarge（16sp / 24sp）：
+   *  - 字体用系统 UI 字体（-apple-system）：和 Compose Desktop 的默认字体一致；
+   *  - 不要写 "PingFang SC" 这类具体字体名，JavaFX WebView 会把中文的字形映射弄坏，
+   *    整页变乱码（踩过）。
+   * 颜色留给 window.setTheme(...) 从 Compose 主题灌进来（默认值是浅色主题）。
    */
+  :root {
+    --bg: #faf6ec;
+    --fg: #2b2b2b;
+    --fg-soft: #6b6b6b;
+    --accent: #4f6a12;
+    --accent-soft: rgba(79, 106, 18, 0.62);
+    --code-bg: #eee9dd;
+    --border: #d8d2c4;
+  }
   html, body { margin: 0; padding: 0; height: 100%; }
   body {
-    background: #faf6ec;
-    color: #2b2b2b;
-    font-family: sans-serif;
-    font-size: 20px;
-    line-height: 1.6;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, sans-serif;
+    font-size: 16px;
+    line-height: 1.5;
   }
-  #editor { padding: 24px 40px 120px 64px; outline: none; height: 100%; box-sizing: border-box; overflow-y: auto; }
+  #editor { padding: 20px 32px 120px 40px; outline: none; height: 100%; box-sizing: border-box; overflow-y: auto; }
   .ProseMirror { outline: none; }
-  /* 段落之间只留 margin，DOM 里没有空行——这就是 marktext 的做法。 */
-  .ProseMirror p { margin: 0 0 14px 0; }
-  .ProseMirror h1 { font-size: 32px; margin: 0 0 18px 0; }
-  .ProseMirror h2 { font-size: 26px; margin: 0 0 16px 0; }
-  .ProseMirror h3 { font-size: 22px; margin: 0 0 14px 0; }
-  .ProseMirror ul, .ProseMirror ol { margin: 0 0 14px 0; padding-left: 1.4em; }
+  /* 段落之间只留 margin，DOM 里没有空行。24px 行高 + 10px 间距 ≈ 1.42 倍。 */
+  .ProseMirror p { margin: 0 0 10px 0; }
+  .ProseMirror h1 { font-size: 24px; line-height: 1.32; margin: 18px 0 12px 0; }
+  .ProseMirror h2 { font-size: 21px; line-height: 1.32; margin: 16px 0 10px 0; }
+  .ProseMirror h3 { font-size: 19px; line-height: 1.32; margin: 14px 0 8px 0; }
+  .ProseMirror h4, .ProseMirror h5, .ProseMirror h6 { font-size: 16px; line-height: 1.32; margin: 12px 0 8px 0; }
+  .ProseMirror ul, .ProseMirror ol { margin: 0 0 10px 0; padding-left: 1.4em; }
   .ProseMirror li { margin: 0; }
   .ProseMirror li p { margin: 0; }
-  .ProseMirror pre { background: #eee9dd; border-radius: 8px; padding: 12px 16px; font-family: "SF Mono", Menlo, monospace; font-size: 15px; line-height: 1.5; }
-  .ProseMirror code { font-family: "SF Mono", Menlo, monospace; font-size: 0.92em; background: #eee9dd; border-radius: 4px; padding: 1px 4px; }
-  .ProseMirror blockquote { margin: 0 0 14px 0; padding-left: 14px; border-left: 3px solid #d8d2c4; color: #6b6b6b; }
+  .ProseMirror pre { background: var(--code-bg); border-radius: 8px; padding: 12px 16px; font-family: "SF Mono", Menlo, monospace; font-size: 13px; line-height: 1.5; }
+  .ProseMirror code { font-family: "SF Mono", Menlo, monospace; font-size: 0.92em; background: var(--code-bg); border-radius: 4px; padding: 1px 4px; }
+  .ProseMirror blockquote { margin: 0 0 10px 0; padding-left: 12px; border-left: 3px solid var(--border); color: var(--fg-soft); }
   /* AI 补全：{{…}} 折叠成绿字，左上/右下两颗大引号由伪元素画。 */
-  .ai { color: #4f6a12; }
-  .ai::before { content: "\201C"; font-size: 26px; }
-  .ai::after  { content: "\201D"; font-size: 26px; }
+  .ai { color: var(--accent); }
+  .ai::before { content: "\201C"; font-size: 22px; }
+  .ai::after  { content: "\201D"; font-size: 22px; }
   /* [[概念]]：绿色 + 下划线（和 Compose 编辑器的标注样式保持一致）。 */
-  .concept { color: rgba(79, 106, 18, 0.62); text-decoration: underline; }
-  .ProseMirror p.is-editor-empty:first-child::before { content: attr(data-placeholder); color: #aaa; float: left; height: 0; pointer-events: none; }
+  .concept { color: var(--accent-soft); text-decoration: underline; }
+  /* 段落标记（gutter）：ProseMirror widget decoration 插一个零宽 span，CSS 挪到左边距。 */
+  .gutter-glyph {
+    display: inline-block;
+    width: 0;
+    height: 0;
+    position: relative;
+    overflow: visible;
+  }
+  .gutter-glyph::before {
+    content: attr(data-marker);
+    position: absolute;
+    left: -36px;
+    top: -0.15em;
+    width: 26px;
+    text-align: right;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--fg-soft);
+    opacity: 0.8;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  /* [[概念]] 补全浮层 */
+  .concept-menu {
+    position: fixed;
+    z-index: 20;
+    display: none;
+    min-width: 190px;
+    max-width: 280px;
+    padding: 4px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  }
+  .concept-item {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 10px;
+    border-radius: 7px;
+    cursor: pointer;
+  }
+  .concept-item.selected { background: var(--code-bg); }
+  .concept-item .concept-name { color: var(--fg); font-size: 14px; }
+  .concept-item .concept-hint { color: var(--fg-soft); font-size: 11px; }
+  .ProseMirror p.is-editor-empty:first-child::before { content: attr(data-placeholder); color: var(--fg-soft); opacity: 0.6; float: left; height: 0; pointer-events: none; }
 </style></head>
 <body><div id="editor"></div></body></html>
