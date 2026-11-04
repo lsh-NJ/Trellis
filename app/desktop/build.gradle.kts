@@ -28,6 +28,26 @@ dependencies {
 
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.coroutines.test)
+
+    // 笔记编辑器的 WebView 路线（TRELLIS_EDITOR=webview 时启用）：
+    // Compose 没有 CSS 引擎、段间距只能在 1x/2x 两档里选，所以用 JavaFX WebView 跑
+    // Tiptap（浏览器内核 + CSS margin），段间距才能精确到 1.25–1.5 倍行距。
+    // JavaFX 的 jar 全在 Maven 上，不需要运行时下载；macOS/Linux/Windows 各带一份 natives。
+    val javafxVersion = "21.0.4"
+    val javafxClassifier = run {
+        val os = System.getProperty("os.name").lowercase()
+        val arch = System.getProperty("os.arch").lowercase()
+        when {
+            os.contains("mac") && arch.contains("aarch64") -> "mac-aarch64"
+            os.contains("mac") -> "mac"
+            os.contains("win") -> "win"
+            else -> "linux"
+        }
+    }
+    listOf("base", "graphics", "controls", "web", "media", "swing").forEach { module ->
+        implementation("org.openjfx:javafx-$module:$javafxVersion")
+        implementation("org.openjfx:javafx-$module:$javafxVersion:$javafxClassifier")
+    }
 }
 
 /**

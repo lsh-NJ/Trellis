@@ -240,6 +240,20 @@
 - 笔记 → 计划节点的联动：整理成功后还会顺带判断这篇笔记是否把本周某个节点讲完整了，满足条件的节点自动标记完成，记录与撤销在计划页，见 `docs/plan-page.md` §13。
 
 
+## 13. 编辑器实验：WebView + Tiptap（2026-11-04，P1）
+
+Compose 的整篇单文本框里，行高由 `textStyle.lineHeight` 统一决定，**空行只能整行占**，所以段间距只有 1 倍（折叠空行）/ 2 倍（保留空行）两档，做不到用户要的 1.25–1.5 倍。
+
+marktext / Typora / Notion 能做到，是因为正文是浏览器里的**块级 DOM**：空行不在 DOM 里，段间距就是 CSS `margin`。
+
+所以加了一个实验开关（默认关闭，不影响现有编辑器）：`TRELLIS_EDITOR=webview`。
+
+- 依赖：`app/desktop/build.gradle.kts` 的 JavaFX 21.0.4（base/graphics/controls/web/media/swing，按 os/arch 选 classifier）；jar 全在 Maven，无运行时下载，macOS arm64 约 40MB。
+- 页面：`app/desktop/src/main/resources/editor/index.html` + `editor.js`（esbuild 打包 Tiptap + marked + turndown，约 368KB）；`.ProseMirror p { margin: 0 0 14px 0 }` 控制段间距，`{{…}}`/`[[…]]` 用自定义 mark 往返。
+- 桥接：`MarkdownWebEditor.kt` 里 JFXPanel/WebView 封装；JS 通过 `window.trellisEditorBridge.onUpdate(markdown)` 回推正文、`onBlur()` 通知失焦；Compose 侧只铺 `SwingPanel`，自动保存/AI 整理逻辑不变。
+- 坑：CSS 不能写具体字体名（`-apple-system`/`"PingFang SC"` 会让 JavaFX WebView 中文变乱码），只能 `sans-serif`；程序化 `setContent` 偶尔有重绘不同步；WebView 里编辑时，Compose 侧点其它控件不会让 DOM 失焦，所以「失焦触发 AI 整理」在 P1 里只有在真的切笔记时才可靠（P2 补焦点判断）。
+- 未对齐（P2）：`[[` 补全、gutter 段落标记、斜杠菜单、快捷键、主题色、AI 定位。
+
 ## 12. 编辑器交互（2026-11-02 定稿：整篇单字段）
 
 目标：写笔记时**不用切模式**。整篇正文就是一个文本框，行内标记只在光标进入或紧挨时露出源码，其它位置显示样式；光标、选区、上下键、跨行拖选、全选都由平台输入框负责。页面只留一个滚动区，标题跟着正文走。
