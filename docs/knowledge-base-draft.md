@@ -259,6 +259,7 @@ marktext / Typora / Notion 能做到，是因为正文是浏览器里的**块级
 - `/` 斜杠菜单（P2 第二轮）：行首或空白后敲 `/` 弹出（代码块里不触发）；命令用 Tiptap 自带 chain：标题 1/2/3、无序列表、有序列表、引用、代码块、分隔线；↑↓ 选、Enter/Tab 执行、Esc 关闭、也可以鼠标点选；执行前先删掉敲的 `/query` 再 `deleteRange` + `toggle*`。
 - 未对齐（后续）：快捷键（Cmd+E 等）、AI 定位跳转、代码块/表格/公式的专门渲染、Windows/Linux 打包与 IME 回归。
 - 坑：CSS 不能写具体字体名（`"PingFang SC"` 会让 JavaFX WebView 中文变乱码），用 `-apple-system, sans-serif`；程序化 `setContent` 偶尔有重绘不同步；`Box` 在 `verticalScroll` 里高度约束无限，`SwingPanel` 必须显式给最小高度（当前 560dp）。
+- 坑（gutter 间距，2026-11-04 修）：ProseMirror 的 widget decoration 必须插在**块内第一段文字的行内位置**（段落 `pos + 1`；列表要沿 `firstChild` 下钻到第一项段落）。插在块与块之间时 JavaFX WebView 会给行内 widget 生成一个匿名行，表现是「光标所在段落与上一段的间距突然变成两倍、下方正常」。
 
 ## 12. 编辑器交互（2026-11-02 定稿：整篇单字段）
 
