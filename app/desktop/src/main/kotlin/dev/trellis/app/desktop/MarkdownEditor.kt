@@ -59,18 +59,37 @@ internal fun MarkdownEditor(
     revealToken: Int = 0,
     onEditingFinished: (() -> Unit)? = null,
 ) {
-    MarkdownDocumentEditor(
-        noteId = noteId,
-        body = body,
-        onBodyChange = onBodyChange,
-        modifier = modifier,
-        conceptNames = conceptNames,
-        onDeleteAiLine = onDeleteAiLine,
-        reveal = reveal,
-        revealToken = revealToken,
-        onEditingFinished = onEditingFinished,
-    )
+    if (useWebViewEditor()) {
+        MarkdownWebEditor(
+            noteId = noteId,
+            body = body,
+            onBodyChange = onBodyChange,
+            modifier = modifier,
+            onEditingFinished = onEditingFinished,
+        )
+    } else {
+        MarkdownDocumentEditor(
+            noteId = noteId,
+            body = body,
+            onBodyChange = onBodyChange,
+            modifier = modifier,
+            conceptNames = conceptNames,
+            onDeleteAiLine = onDeleteAiLine,
+            reveal = reveal,
+            revealToken = revealToken,
+            onEditingFinished = onEditingFinished,
+        )
+    }
 }
+
+/**
+ * 是否启用 WebView 编辑器（P1 开关，默认关闭）。
+ *
+ * 用 JavaFX WebView 跑 Tiptap，是为了拿到浏览器 CSS 的段间距（`margin` 可以任意调，
+ * 而 Compose 的整篇单文本框只能 1 倍 / 2 倍两档）。还没对齐的能力见 [MarkdownWebEditor]。
+ */
+private fun useWebViewEditor(): Boolean =
+    System.getenv("TRELLIS_EDITOR")?.equals("webview", ignoreCase = true) == true
 
 /**
  * 安全地请求焦点：焦点节点要等这一帧布局跑完才挂得上，而 LaunchedEffect 在首帧布局之前

@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  /*
+   * 笔记编辑页（Tiptap/ProseMirror in JavaFX WebView）。
+   *
+   * 这里之所以能用「段间距」而不是「空行」，就是因为内容在浏览器里是块级 DOM：
+   * p 之间用 margin 控制，1.25–1.5 倍行距可以随手调；Compose 的整篇单文本框做不到
+   * （行高由 textStyle 统一决定，空行只能整行占）。
+   *
+   * 注意：不要给 body 指定具体字体名（-apple-system / "PingFang SC" 之类），
+   * JavaFX WebView 会把中文的字体映射弄坏、整页变乱码；只写 sans-serif。
+   */
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    background: #faf6ec;
+    color: #2b2b2b;
+    font-family: sans-serif;
+    font-size: 20px;
+    line-height: 1.6;
+  }
+  #editor { padding: 24px 40px 120px 64px; outline: none; height: 100%; box-sizing: border-box; overflow-y: auto; }
+  .ProseMirror { outline: none; }
+  /* 段落之间只留 margin，DOM 里没有空行——这就是 marktext 的做法。 */
+  .ProseMirror p { margin: 0 0 14px 0; }
+  .ProseMirror h1 { font-size: 32px; margin: 0 0 18px 0; }
+  .ProseMirror h2 { font-size: 26px; margin: 0 0 16px 0; }
+  .ProseMirror h3 { font-size: 22px; margin: 0 0 14px 0; }
+  .ProseMirror ul, .ProseMirror ol { margin: 0 0 14px 0; padding-left: 1.4em; }
+  .ProseMirror li { margin: 0; }
+  .ProseMirror li p { margin: 0; }
+  .ProseMirror pre { background: #eee9dd; border-radius: 8px; padding: 12px 16px; font-family: "SF Mono", Menlo, monospace; font-size: 15px; line-height: 1.5; }
+  .ProseMirror code { font-family: "SF Mono", Menlo, monospace; font-size: 0.92em; background: #eee9dd; border-radius: 4px; padding: 1px 4px; }
+  .ProseMirror blockquote { margin: 0 0 14px 0; padding-left: 14px; border-left: 3px solid #d8d2c4; color: #6b6b6b; }
+  /* AI 补全：{{…}} 折叠成绿字，左上/右下两颗大引号由伪元素画。 */
+  .ai { color: #4f6a12; }
+  .ai::before { content: "\201C"; font-size: 26px; }
+  .ai::after  { content: "\201D"; font-size: 26px; }
+  /* [[概念]]：绿色 + 下划线（和 Compose 编辑器的标注样式保持一致）。 */
+  .concept { color: rgba(79, 106, 18, 0.62); text-decoration: underline; }
+  .ProseMirror p.is-editor-empty:first-child::before { content: attr(data-placeholder); color: #aaa; float: left; height: 0; pointer-events: none; }
+</style></head>
+<body><div id="editor"></div></body></html>
