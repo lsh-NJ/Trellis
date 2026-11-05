@@ -437,6 +437,35 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         message = null
     }
 
+    /**
+     * 从外部 Markdown 文件导入笔记：先弹系统面板选文件，再交给 [KnowledgeStore.importNotes]。
+     *
+     * 导入是批操作：一篇坏文件只跳过它自己；成功后选中第一篇，用户能立刻看到结果。
+     */
+    fun importNotes() {
+        val files = runCatching { chooseImportMarkdownFiles() }.getOrElse { error ->
+            message = "导入失败：打不开文件面板（" + (error.message ?: "未知错误") + "）"
+            return
+        }
+        if (files.isEmpty()) return
+        val imported = runCatching { store.importNotes(files) }.getOrElse { error ->
+            message = "导入失败：读不进文件（" + (error.message ?: "未知错误") + "）"
+            return
+        }
+        if (imported.isEmpty()) {
+            message = "导入失败：没有读到可用的 Markdown 文件"
+            return
+        }
+        persistNow()
+        notes = store.list()
+        selectedId = imported.first().id
+        message = if (imported.size == 1) {
+            "已导入「" + displayTitle(imported.first().title) + "」"
+        } else {
+            "已导入 " + imported.size + " 篇笔记"
+        }
+    }
+
     fun selectNote(id: String) {
         if (id == selectedId) return
         persistNow()
@@ -786,6 +815,12 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                             actionLabel = "新建笔记",
                             onAction = { createNote() },
                             trailing = {
+                                EditorChip(
+                                    label = "导入…",
+                                    active = false,
+                                    onClick = { importNotes() },
+                                )
+                                Spacer(Modifier.width(4.dp))
                                 EditorChip(
                                     label = "‹",
                                     active = false,

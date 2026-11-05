@@ -79,4 +79,11 @@ actual object HostPlatform {
             index++
         }
     }
+
+    /**
+     * 手机上没有等价的同步文件面板：SAF 的 `OpenMultipleDocuments` 要
+     * `ActivityResult` 和 Activity 上下文，和这个同步 object 对不上。
+     * 先返回空列表，界面会说明「手机上暂时不能导入」。
+     */
+    actual fun chooseImportFiles(): List<File> = emptyList()
 }
