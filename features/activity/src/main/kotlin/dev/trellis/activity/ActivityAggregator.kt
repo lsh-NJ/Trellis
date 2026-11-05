@@ -187,8 +187,72 @@ class ActivityAggregator(
      */
     fun segments(dayMs: Long): List<Segment> = segmentsOf(snapshot(dayMs))
 
-    private fun segmentsOf(snapshot: Snapshot): List<Segment> =
-        snapshot.pieces.map { it.toSegment(snapshot.tabs) }
+    /**
+     * 一天里按任务归因的总时长（`taskRef` 对 activity 模块是不透明字符串）。
+     *
+     * 只算 [AttributionStatus.APPLIED] 的归因；`#none`（与任务无关）不算任何任务。
+     * 同一任务被多条重叠归因覆盖时，片段上是同一段，不会重复计时。
+     */
+    fun taskTimes(dayMs: Long): List<TaskTime> = taskTimesOf(snapshot(dayMs))
+
+    /** 多天范围里按任务归因的总时长（逐日累加，按 taskRef 合并）。 */
+    fun taskTimes(firstDayMs: Long, lastDayMs: Long): List<TaskTime> {
+        val acc = LinkedHashMap<String, Long>()
+        var cursor = settings.dayStartMs(firstDayMs)
+        val endMs = settings.dayEndMs(lastDayMs)
+        while (cursor < endMs) {
+            for (time in taskTimesOf(snapshot(cursor))) {
+                acc[time.taskRef] = (acc[time.taskRef] ?: 0L) + time.durationMs
+            }
+            cursor = settings.dayEndMs(cursor)
+        }
+        return acc.entries
+            .map { TaskTime(taskRef = it.key, durationMs = it.value) }
+            .sortedByDescending { it.durationMs }
+    }
+
+    /**
+     * 还没归到任务、也没被标记为「与任务无关」的片段 —— 手动归因和 AI 建议的入口。
+     *
+     * 被用户标成无关的区间带 `taskSource`（`taskRef` 为 null），所以不会反复出现在列表里。
+     */
+    fun unattributedSegments(
+        dayMs: Long,
+        minimumMs: Long = DEFAULT_UNATTRIBUTED_MIN_MS,
+    ): List<Segment> = segmentsOf(snapshot(dayMs))
+        .filter { it.taskRef == null && it.taskSource == null && it.durationMs >= minimumMs }
+
+    private fun taskTimesOf(snapshot: Snapshot): List<TaskTime> =
+        segmentsOf(snapshot)
+            .filter { it.taskRef != null }
+            .groupBy { it.taskRef!! }
+            .map { (taskRef, segments) -> TaskTime(taskRef, segments.sumOf { it.durationMs }) }
+            .sortedByDescending { it.durationMs }
+
+    private fun segmentsOf(snapshot: Snapshot): List<Segment> {
+        // 在归因边界处切开片段：一段 40 分钟的窗口如果只有前 25 分钟归到了任务，
+        // 整段都标成任务会多算 15 分钟；切开之后「归因时长」就是区间交集。
+        val cuts = snapshot.attributions
+            .filter { it.status == AttributionStatus.APPLIED }
+            .flatMap { listOf(it.fromMs, it.toMs) }
+            .distinct()
+            .sorted()
+
+        val out = ArrayList<Segment>()
+        for (piece in snapshot.pieces) {
+            var start = piece.fromMs
+            for (cut in cuts) {
+                if (cut <= start) continue
+                if (cut >= piece.toMs) break
+                out += Piece(start, cut, piece.app, piece.title).toSegment(snapshot.tabs, snapshot.attributions)
+                start = cut
+            }
+            if (start < piece.toMs) {
+                out += Piece(start, piece.toMs, piece.app, piece.title).toSegment(snapshot.tabs, snapshot.attributions)
+            }
+        }
+        return out
+    }
 
     /** 一次读库，同时喂 [daySummary] 与 [segments]，避免同一天算两遍。 */
     private fun snapshot(dayMs: Long): Snapshot {
@@ -245,6 +309,7 @@ class ActivityAggregator(
             excludedMs = excludedMs,
             pieces = absorb(net),
             tabs = tabPieces(webBuckets, fromMs, toMs),
+            attributions = store.attributionsInRange(fromMs, toMs),
         )
     }
 
@@ -380,9 +445,10 @@ class ActivityAggregator(
             .sortedByDescending { it.durationMs }
     }
 
-    private fun Piece.toSegment(tabs: List<TabPiece>): Segment {
+    private fun Piece.toSegment(tabs: List<TabPiece>, attributions: List<Attribution>): Segment {
         val url = attachUrl(this, tabs)
         val match = classifier.classify(app, title, url)
+        val attribution = Attributions.best(fromMs, toMs, attributions)
         return Segment(
             fromMs = fromMs,
             toMs = toMs,
@@ -392,6 +458,8 @@ class ActivityAggregator(
             categoryId = match.categoryId,
             category = match.path,
             color = match.color,
+            taskRef = attribution?.taskRef?.takeIf { it != NO_TASK_REF },
+            taskSource = attribution?.source,
         )
     }
 
@@ -404,6 +472,7 @@ class ActivityAggregator(
         val excludedMs: Long,
         val pieces: List<Piece>,
         val tabs: List<TabPiece>,
+        val attributions: List<Attribution>,
     )
 
     companion object {
@@ -415,6 +484,9 @@ class ActivityAggregator(
         const val UNKNOWN_APP: String = "（未知）"
 
         private const val TOP_APPS: Int = 10
+
+        /** 未归因列表里只显示至少这么长的片段（避免几秒钟的切窗口打扰用户）。 */
+        const val DEFAULT_UNATTRIBUTED_MIN_MS: Long = 60_000L
     }
 }
 
@@ -439,6 +511,13 @@ data class Segment(
     val category: List<String>,
     /** 分类颜色（`#RRGGBB`），画时间轴/饼图时直接用。 */
     val color: String,
+    /**
+     * 这段活动归到哪个任务（不透明字符串，如 `occurrence:<id>`）；没有归因时为 null。
+     * 「与任务无关」（[NO_TASK_REF]）也映射成 null，但 [taskSource] 有值，用来区分「没判断过」。
+     */
+    val taskRef: String? = null,
+    /** 归因来源（`manual` / `rule` / `ai`）；没判断过时为 null。 */
+    val taskSource: String? = null,
 ) {
     val durationMs: Long get() = (toMs - fromMs).coerceAtLeast(0)
 
@@ -468,6 +547,17 @@ data class CategorySlice(
 /** 一个进程的时长。 */
 data class AppSlice(
     val app: String,
+    val durationMs: Long,
+)
+
+/**
+ * 一个任务在某天/某范围里被归因到的总时长。
+ *
+ * `taskRef` 对 activity 模块不透明：桌面端把它翻译成「第几周第几天哪个 occurrence」，
+ * 模块只负责按区间求和。`#none`（与任务无关）不会出现在这里。
+ */
+data class TaskTime(
+    val taskRef: String,
     val durationMs: Long,
 )
 

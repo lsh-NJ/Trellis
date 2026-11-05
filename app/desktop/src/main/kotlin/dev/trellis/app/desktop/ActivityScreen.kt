@@ -108,6 +108,7 @@ internal fun ActivityScreen(runtime: AppRuntime, modifier: Modifier = Modifier) 
     var showEndPicker by remember { mutableStateOf(false) }
     var detail by remember { mutableStateOf<Segment?>(null) }
     var classify by remember { mutableStateOf<Segment?>(null) }
+    var assignSegment by remember { mutableStateOf<Segment?>(null) }
 
     // 饼图里是否隐藏「未追踪 / 未分类」：日视图和范围总览共用，切换视图时保持用户选择。
     var hideUntracked by remember { mutableStateOf(false) }
@@ -191,6 +192,12 @@ internal fun ActivityScreen(runtime: AppRuntime, modifier: Modifier = Modifier) 
                 runtime = runtime,
                 onChanged = { reloadTick++ },
             )
+
+            ActivityMode.Task -> ActivityTaskView(
+                runtime = runtime,
+                dayMs = noonOf(selectedDay),
+                onChanged = { reloadTick++ },
+            )
         }
     }
 
@@ -227,6 +234,24 @@ internal fun ActivityScreen(runtime: AppRuntime, modifier: Modifier = Modifier) 
                 classify = segment
                 detail = null
             },
+            onAssignTask = {
+                assignSegment = segment
+                detail = null
+            },
+        )
+    }
+
+    assignSegment?.let { segment ->
+        AssignTaskDialog(
+            runtime = runtime,
+            fromMs = segment.fromMs,
+            toMs = segment.toMs,
+            label = (segment.app ?: UnknownApp) + " · " + formatClock(segment.fromMs) + "-" + formatClock(segment.toMs),
+            onDismiss = { assignSegment = null },
+            onSaved = {
+                assignSegment = null
+                reloadTick++
+            },
         )
     }
 
@@ -243,7 +268,7 @@ internal fun ActivityScreen(runtime: AppRuntime, modifier: Modifier = Modifier) 
     }
 }
 
-private enum class ActivityMode { Day, Range, Rules }
+private enum class ActivityMode { Day, Range, Rules, Task }
 
 /** 页头：标题 + 日/范围切换 + 日期导航 + 同步状态。 */
 @Composable
@@ -283,13 +308,18 @@ private fun ActivityHeader(
                     onClick = { onMode(ActivityMode.Rules) },
                     filled = mode == ActivityMode.Rules,
                 )
+                ChromeButton(
+                    label = "任务时间",
+                    onClick = { onMode(ActivityMode.Task) },
+                    filled = mode == ActivityMode.Task,
+                )
                 ChromeButton(label = "同步", onClick = onSync, filled = false)
             }
         }
 
         Spacer(Modifier.height(12.dp))
 
-        if (mode == ActivityMode.Day) {
+        if (mode == ActivityMode.Day || mode == ActivityMode.Task) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ChromeButton(label = "‹", onClick = { onDay(selectedDay.minusDays(1)) }, filled = false)
                 Text(
@@ -1262,6 +1292,7 @@ private fun SegmentDetailDialog(
     segment: Segment,
     onDismiss: () -> Unit,
     onClassify: () -> Unit,
+    onAssignTask: () -> Unit,
 ) {
     val explanation by produceState<ClassificationExplanation?>(initialValue = null, segment) {
         value = runtime.activityExplain(segment.app, segment.title, segment.url)
@@ -1270,6 +1301,7 @@ private fun SegmentDetailDialog(
         onDismissRequest = onDismiss,
         confirmButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = onAssignTask) { Text("归到任务…") }
                 TextButton(onClick = onClassify) { Text("归到分类…") }
                 TextButton(onClick = onDismiss) { Text("关闭") }
             }

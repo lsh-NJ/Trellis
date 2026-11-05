@@ -59,6 +59,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
+import java.time.LocalDate
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.trellis.domain.plan.DayOccurrence
@@ -945,6 +946,11 @@ private fun DayBody(runtime: AppRuntime, controller: PlanDragController) {
         )
         return
     }
+    // 当天的窗口活动归因到各 occurrence 的时长，用来在行尾显示「归因 N 分钟」徽标。
+    var attributed by remember(view.day) { mutableStateOf<Map<String, Long>>(emptyMap()) }
+    LaunchedEffect(view.day) {
+        attributed = runtime.activityOccurrenceMinutes(LocalDate.parse(view.day))
+    }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(view.headline, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (view.occurrences.isEmpty() && view.completed.isEmpty()) {
@@ -955,7 +961,9 @@ private fun DayBody(runtime: AppRuntime, controller: PlanDragController) {
             )
         }
         view.occurrences.forEach { occurrence ->
-            OccurrenceRow(runtime, controller, occurrence) { runtime.completePlanOccurrence(occurrence.id) }
+            OccurrenceRow(runtime, controller, occurrence, attributed[occurrence.id] ?: 0L) {
+                runtime.completePlanOccurrence(occurrence.id)
+            }
         }
         if (view.completed.isNotEmpty()) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1005,6 +1013,7 @@ private fun OccurrenceRow(
     runtime: AppRuntime,
     controller: PlanDragController,
     occurrence: DayOccurrence,
+    attributedMs: Long,
     onComplete: () -> Unit,
 ) {
     val shape = RoundedCornerShape(6.dp)
@@ -1048,6 +1057,14 @@ private fun OccurrenceRow(
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        val attributedMinutes = (attributedMs + 59_999L) / 60_000L
+        if (attributedMinutes > 0L) {
+            Text(
+                "归因 ${attributedMinutes} 分钟",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
             )
         }
         Text(
