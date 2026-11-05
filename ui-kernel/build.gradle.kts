@@ -1,4 +1,5 @@
 plugins {
+    alias(libs.plugins.androidLibrary)
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.kotlinCompose)
@@ -6,6 +7,7 @@ plugins {
 
 kotlin {
     jvm()
+    androidTarget()
 
     sourceSets {
         commonMain.dependencies {
@@ -19,5 +21,15 @@ kotlin {
         jvmMain.dependencies {
             implementation(compose.desktop.currentOs)
         }
+    }
+}
+
+android {
+    namespace = "dev.trellis.ui"
+    compileSdk = 35
+    defaultConfig { minSdk = 26 }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 }

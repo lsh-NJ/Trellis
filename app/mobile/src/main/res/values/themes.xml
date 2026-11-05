@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      窗口主题只做三件事：去掉 ActionBar、把状态栏/导航栏交给 Compose（edge-to-edge）、
+      给启动瞬间一个和 App 纸底一致的背景色，避免白闪。
+      真正的配色（主题包、暗色、参数化配色）全部由 Compose 里的 TrellisTheme 决定。
+    -->
+    <style name="Theme.Trellis" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/trellis_paper</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

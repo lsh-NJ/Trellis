@@ -1,0 +1,769 @@
+package dev.trellis.app.mobile
+
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextMeasurer
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import dev.trellis.app.desktop.AppRuntime
+import dev.trellis.app.desktop.Camera
+import dev.trellis.app.desktop.ConceptMetaStore
+import dev.trellis.app.desktop.GraphEdgeKind
+import dev.trellis.app.desktop.GraphLayout
+import dev.trellis.app.desktop.GraphNode
+import dev.trellis.app.desktop.GraphNodeKind
+import dev.trellis.app.desktop.GraphPoint
+import dev.trellis.app.desktop.GraphSize
+import dev.trellis.app.desktop.KnowledgeGraph
+import dev.trellis.app.desktop.KnowledgeGraphStore
+import dev.trellis.app.desktop.LayoutOptions
+import dev.trellis.app.desktop.buildKnowledgeGraph
+import dev.trellis.app.desktop.cacheWithoutCategorySuggestions
+import dev.trellis.app.desktop.categorySuggestionFingerprint
+import dev.trellis.app.desktop.collectPendingSuggestions
+import dev.trellis.app.desktop.confirmCategorySuggestions
+import dev.trellis.app.desktop.globalCategoryBatches
+import dev.trellis.app.desktop.ignoreCategorySuggestion
+import dev.trellis.app.desktop.layoutKnowledgeGraph
+import dev.trellis.app.desktop.noteBodyHash
+import dev.trellis.app.desktop.runGlobalCategorySuggestions
+import kotlinx.coroutines.launch
+
+/**
+ * 知识网络：一棵「分类 → 概念」的树，外加 AI 建议与诊断。
+ *
+ * 手机上默认是**结构树**（缩进列表），不是画布：
+ * 一张横向铺开的森林图塞进 390dp，只会得到一排看不清的截断标签。
+ * 画布仍然保留（「总览」），用来一眼看规模与层级；要看内容和关系，用树。
+ *
+ * 数据是**现算**的：每次读盘 build 一遍（纯函数），不维护第二份真相。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun KnowledgeGraphPage(runtime: AppRuntime, startMode: Int = 0, onOpenNote: (String) -> Unit) {
+    val store = remember(runtime) { runtime.knowledgeStore }
+    val metaStore = remember(runtime) { ConceptMetaStore(runtime.home) }
+    val graphStore = remember(runtime) { KnowledgeGraphStore(store.home, runtime.clock) }
+    val scope = rememberCoroutineScope()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    var refreshToken by remember { mutableIntStateOf(0) }
+    var mode by remember { mutableIntStateOf(startMode.coerceIn(0, 1)) } // 0 结构 / 1 总览
+    var collapsed by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var selectedKey by remember { mutableStateOf<String?>(null) }
+    var suggestionsOpen by remember { mutableStateOf(false) }
+    var diagnosticsOpen by remember { mutableStateOf(false) }
+    var organizing by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+
+    val user = remember(refreshToken) { graphStore.loadUser() }
+    val cache = remember(refreshToken) { graphStore.loadCache() }
+    val graph: KnowledgeGraph = remember(refreshToken) {
+        buildKnowledgeGraph(store.allNotes(), metaStore.load(), user, cache)
+    }
+    val treeRows = remember(graph, collapsed) { flattenTree(graph, collapsed) }
+
+    Column(Modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            contentPadding = PaddingValues(start = Gap.l, end = Gap.l, bottom = Gap.l),
+            verticalArrangement = Arrangement.spacedBy(Gap.xs),
+        ) {
+            item {
+                CardBox(padding = Gap.m) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        BigStat(graph.stats.conceptCount.toString(), "概念", Modifier.weight(1f))
+                        BigStat(graph.stats.categoryCount.toString(), "分类", Modifier.weight(1f))
+                        BigStat(graph.stats.relationEdgeCount.toString(), "关系", Modifier.weight(1f))
+                        BigStat(
+                            graph.stats.unclassifiedCount.toString(),
+                            "未归类",
+                            Modifier.weight(1f),
+                            accent = if (graph.stats.unclassifiedCount > 0) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                null
+                            },
+                        )
+                    }
+                    Spacer(Modifier.height(Gap.m))
+                    Segmented(items = listOf("结构", "总览"), selected = mode, onSelect = { mode = it })
+                    Spacer(Modifier.height(Gap.s))
+                    Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {
+                        PhoneButton("AI 建议", { suggestionsOpen = true }, filled = false)
+                        PhoneButton("诊断", { diagnosticsOpen = true }, filled = false)
+                        PhoneButton("刷新", { refreshToken++ }, filled = false)
+                    }
+                }
+            }
+
+            if (graph.nodes.isEmpty()) {
+                item {
+                    EmptyState(
+                        "还没有概念",
+                        "在笔记里点一次「保存并整理」，概念就会长出来；也可以手动写 [[概念]] 标注。",
+                    )
+                }
+            } else if (mode == 0) {
+                // 结构树：分类可折叠，概念点开详情。
+                treeRows.forEachIndexed { index, row ->
+                    item(key = "g" + row.key) {
+                        TreeRow(
+                            node = row.node,
+                            depth = row.depth,
+                            folded = row.key in collapsed,
+                            onToggle = {
+                                collapsed = if (row.key in collapsed) collapsed - row.key else collapsed + row.key
+                            },
+                            onClick = { selectedKey = row.key },
+                        )
+                        if (index < treeRows.lastIndex) DividerLine(Modifier.padding(start = (row.depth * 14 + 18).dp))
+                    }
+                }
+            } else {
+                item {
+                    CardBox(padding = Gap.s) {
+                        GraphCanvas(graph, selectedKey) { selectedKey = it }
+                    }
+                }
+            }
+
+            if (graph.diagnostics.isNotEmpty()) {
+                item {
+                    CardBox(onClick = { diagnosticsOpen = true }) {
+                        SectionLabel("诊断 " + graph.diagnostics.size, action = "看看" to { diagnosticsOpen = true })
+                        Spacer(Modifier.height(Gap.xs))
+                        Text(
+                            graph.diagnostics.take(2).joinToString("；") { it.detail },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+
+            message?.let {
+                item {
+                    Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+        }
+    }
+
+    val selected = selectedKey?.let { graph.nodes[it] }
+    if (selected != null) {
+        ModalBottomSheet(
+            onDismissRequest = { selectedKey = null },
+            sheetState = sheetState,
+            containerColor = MaterialTheme.colorScheme.background,
+        ) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = Gap.xl).padding(bottom = Gap.xxl)) {
+                Text(
+                    if (selected.kind == GraphNodeKind.CATEGORY) "分类" else "概念",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(Gap.xs))
+                Text(selected.name, style = MaterialTheme.typography.headlineSmall)
+                val path = graph.pathOf(selected.key).joinToString(" / ") { it.name }
+                if (path.isNotBlank()) {
+                    Spacer(Modifier.height(Gap.xs))
+                    Text(
+                        path,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (selected.definition.isNotBlank()) {
+                    Spacer(Modifier.height(Gap.m))
+                    Text(selected.definition, style = MaterialTheme.typography.bodyMedium)
+                }
+                Spacer(Modifier.height(Gap.m))
+                Row(horizontalArrangement = Arrangement.spacedBy(Gap.xxl)) {
+                    BigStat(selected.noteCount.toString(), "相关笔记")
+                    BigStat(selected.mentionCount.toString(), "正文提及")
+                }
+                val relations = graph.relationsOf(selected.key)
+                if (relations.isNotEmpty()) {
+                    Spacer(Modifier.height(Gap.m))
+                    SectionLabel("关系 " + relations.size)
+                    Spacer(Modifier.height(Gap.xs))
+                    relations.take(8).forEach { edge ->
+                        val other = graph.nodes[if (edge.fromKey == selected.key) edge.toKey else edge.fromKey]
+                        Text(
+                            "· " + edgeKindLabel(edge.kind) + " " + (other?.name ?: "?"),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(Gap.l))
+                Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {
+                    PhoneButton("在笔记里找", {
+                        // 跳到提到这个概念的第一篇笔记：手机上「看来源」比「看关系图」更有用。
+                        val hit = store.allNotes().firstOrNull { note ->
+                            note.concepts.any { it.equals(selected.name, ignoreCase = true) }
+                        }
+                        if (hit != null) onOpenNote(hit.id) else message = "没有笔记提到它"
+                        selectedKey = null
+                    }, modifier = Modifier.weight(1f))
+                    PhoneButton("关闭", { selectedKey = null }, modifier = Modifier.weight(1f), filled = false)
+                }
+            }
+        }
+    }
+
+    if (suggestionsOpen) {
+        ModalBottomSheet(
+            onDismissRequest = { suggestionsOpen = false },
+            sheetState = sheetState,
+            containerColor = MaterialTheme.colorScheme.background,
+        ) {
+            val notes = remember(refreshToken) { store.allNotes() }
+            val hashes = remember(notes) { notes.associate { it.id to noteBodyHash(it) } }
+            val pending = remember(refreshToken, notes) {
+                collectPendingSuggestions(
+                    cache = cache,
+                    user = user,
+                    conceptNames = graph.nodes.filterValues { it.kind == GraphNodeKind.CONCEPT }
+                        .mapValues { it.value.name },
+                    noteBodyHashes = hashes,
+                    globalCategoriesValid = true,
+                )
+            }
+            Column(Modifier.fillMaxWidth().padding(horizontal = Gap.xl).padding(bottom = Gap.xxl)) {
+                SheetHeading(
+                    "AI 建议",
+                    "都是建议：确认才写进分类树，忽略会记一条墓碑，以后不再提同一件事",
+                )
+                Spacer(Modifier.height(Gap.m))
+                if (pending.isEmpty) {
+                    Text(
+                        "现在没有待确认的建议。整理几篇笔记后，这里会出现「这个概念该归到哪」。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Text(
+                        "待确认 " + pending.total + " 条（分类 " + pending.categories.size +
+                            " · 关系 " + pending.relations.size + "）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.height(Gap.s))
+                pending.categories.take(6).forEach { item ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = Gap.xs),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(item.conceptName, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                item.categoryPath.joinToString(" / "),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text(
+                            "确认",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    val next = confirmCategorySuggestions(user, listOf(item), runtime.clock.nowMs())
+                                    if (next.error == null) {
+                                        graphStore.saveUser(next.user)
+                                        graphStore.saveCache(cacheWithoutCategorySuggestions(cache, listOf(item)))
+                                        refreshToken++
+                                        message = "已归到 " + item.categoryPath.joinToString(" / ")
+                                    } else {
+                                        message = next.error ?: "这条建议不合法，已跳过"
+                                    }
+                                }
+                                .padding(horizontal = 8.dp, vertical = 8.dp),
+                        )
+                        Text(
+                            "忽略",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    graphStore.saveUser(ignoreCategorySuggestion(user, item))
+                                    graphStore.saveCache(cacheWithoutCategorySuggestions(cache, listOf(item)))
+                                    refreshToken++
+                                }
+                                .padding(horizontal = 8.dp, vertical = 8.dp),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(Gap.m))
+                PhoneButton(
+                    if (organizing) "AI 归类中…" else "让 AI 给未归类的概念提建议",
+                    enabled = !organizing,
+                    onClick = {
+                        val client = runtime.llmClientOrNull()
+                        if (client == null) {
+                            message = "AI 没配置：先在「我的 → 模型」导入"
+                            return@PhoneButton
+                        }
+                        val unassigned = graph.nodes.values
+                            .filter { it.kind == GraphNodeKind.CONCEPT && it.parentKey == null }
+                            .map { it.key }
+                        if (unassigned.isEmpty()) {
+                            message = "所有概念都已经归类"
+                            return@PhoneButton
+                        }
+                        organizing = true
+                        scope.launch {
+                            val run = runCatching {
+                                runGlobalCategorySuggestions(
+                                    client = client,
+                                    graph = graph,
+                                    batches = globalCategoryBatches(unassigned),
+                                    existingPaths = graph.nodes.values
+                                        .filter { it.kind == GraphNodeKind.CATEGORY }
+                                        .map { node -> graph.pathOf(node.key).joinToString("/") { it.name } },
+                                    now = { runtime.clock.nowMs() },
+                                    isIgnored = { key, path ->
+                                        categorySuggestionFingerprint(key, path) in
+                                            user.removed.suggestions.map { it.fingerprint }
+                                    },
+                                )
+                            }.getOrNull()
+                            organizing = false
+                            if (run == null) {
+                                message = "AI 归类失败，不影响现有分类"
+                            } else {
+                                graphStore.saveCache(cache.copy(globalCategories = run.categories))
+                                refreshToken++
+                                message = "AI 回了 " + run.answeredCount + " 个概念，确认后才会生效"
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(Gap.xs))
+                Text(
+                    "已归类的概念不会再被建议；分类树的结构在「诊断」里能看到问题项。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+
+    if (diagnosticsOpen) {
+        ModalBottomSheet(
+            onDismissRequest = { diagnosticsOpen = false },
+            sheetState = sheetState,
+            containerColor = MaterialTheme.colorScheme.background,
+        ) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = Gap.xl).padding(bottom = Gap.xxl)) {
+                SheetHeading("网络诊断", "分类树/归属/关系里系统能自己发现的问题")
+                Spacer(Modifier.height(Gap.m))
+                if (graph.diagnostics.isEmpty()) {
+                    Text("没有问题项。", style = MaterialTheme.typography.bodySmall)
+                }
+                graph.diagnostics.take(20).forEach { item ->
+                    Text(
+                        "· " + item.detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(Gap.xs))
+                }
+                Spacer(Modifier.height(Gap.m))
+                Row(horizontalArrangement = Arrangement.spacedBy(Gap.l)) {
+                    BigStat(graph.stats.classifiedCount.toString(), "已归类")
+                    BigStat(graph.stats.unclassifiedCount.toString(), "未归类")
+                    BigStat(graph.stats.maxDepth.toString(), "最大层深")
+                    BigStat(graph.stats.droppedAssignments.toString(), "失效归属")
+                }
+            }
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------- 结构树
+
+private data class TreeRowModel(
+    val key: String,
+    val node: GraphNode,
+    val depth: Int,
+    val hasChildren: Boolean,
+)
+
+/**
+ * 把森林压成「缩进行」。
+ *
+ * 折叠只影响展开，不影响统计：折叠一个分类时子节点不出现，但计数器仍是全量。
+ */
+private fun flattenTree(graph: KnowledgeGraph, collapsed: Set<String>): List<TreeRowModel> {
+    val out = ArrayList<TreeRowModel>()
+
+    fun walk(key: String, depth: Int) {
+        val node = graph.nodes[key] ?: return
+        val children = graph.childrenOf(key)
+        out += TreeRowModel(key, node, depth, children.isNotEmpty())
+        if (key in collapsed) return
+        children.forEach { child -> walk(child.key, depth + 1) }
+    }
+
+    graph.childrenOf(null).forEach { walk(it.key, 0) }
+    return out
+}
+
+@Composable
+private fun TreeRow(
+    node: GraphNode,
+    depth: Int,
+    folded: Boolean,
+    onToggle: () -> Unit,
+    onClick: () -> Unit,
+) {
+    val isCategory = node.kind == GraphNodeKind.CATEGORY
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable { if (isCategory) onToggle() else onClick() }
+            .padding(start = (depth * 14).dp, top = Gap.s, bottom = Gap.s, end = Gap.s),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            if (isCategory) (if (folded) "▸" else "▾") else "·",
+            style = MaterialTheme.typography.labelMedium,
+            color = if (isCategory) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(18.dp),
+        )
+        Text(
+            node.name,
+            style = if (isCategory) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        if (isCategory) {
+            Text(
+                graphCountLabel(node),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(Gap.xs))
+            Text(
+                "详情",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(onClick = onClick)
+                    .padding(horizontal = 6.dp, vertical = 6.dp),
+            )
+        } else if (node.noteCount > 0) {
+            Text(
+                node.noteCount.toString() + " 篇",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+private fun graphCountLabel(node: GraphNode): String = when {
+    node.noteCount > 0 -> node.noteCount.toString() + " 篇"
+    node.mentionCount > 0 -> node.mentionCount.toString() + " 次"
+    else -> ""
+}
+
+// ----------------------------------------------------------------------------- 总览画布
+
+/**
+ * 总览：整棵树缩到一屏，只看规模与层级。
+ *
+ * 手机上的默认缩放给出「能看清轮廓」的下限 0.3；再小就只剩色块。
+ * 想看某个节点叫什么，回结构树。
+ */
+@Composable
+private fun GraphCanvas(graph: KnowledgeGraph, selectedKey: String?, onSelect: (String?) -> Unit) {
+    var camera by remember { mutableStateOf(Camera.Default) }
+    var canvasSize by remember { mutableStateOf(GraphSize(0f, 0f)) }
+    val layout: GraphLayout = remember(graph) {
+        layoutKnowledgeGraph(
+            graph = graph,
+            collapsed = emptySet(),
+            warm = null,
+            options = LayoutOptions(
+                padding = 24f,
+                nodeGapX = 16f,
+                rowGapY = 44f,
+                treeGapX = 64f,
+                minNodeWidth = 64f,
+                maxNodeWidth = 220f,
+                nodeHeight = 34f,
+                categoryHeight = 32f,
+                conceptFontPx = 12f,
+                categoryFontPx = 12.5f,
+            ),
+        )
+    }
+    val textMeasurer = rememberTextMeasurer()
+    val monoStyle = MaterialTheme.typography.labelSmall.copy(fontFamily = PhoneMono, fontWeight = FontWeight.Medium)
+    val linkColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+    val categoryFill = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+    val nodeFill = MaterialTheme.colorScheme.surface
+    val accent = MaterialTheme.colorScheme.primary
+    val outlineColor = MaterialTheme.colorScheme.outline
+    val conceptText = MaterialTheme.colorScheme.onSurface
+
+    // 用**可见节点**的实际外框，而不是 layout.bounds：
+    // bounds 会带上布局留下的空行（虚拟根、换行余量），拿它居中会整体偏上。
+    val contentBounds = remember(layout) {
+        val boxes = layout.nodes.values.map { it.bounds }
+        if (boxes.isEmpty()) {
+            layout.bounds
+        } else {
+            dev.trellis.app.desktop.GraphRect(
+                left = boxes.minOf { it.left },
+                top = boxes.minOf { it.top },
+                right = boxes.maxOf { it.right },
+                bottom = boxes.maxOf { it.bottom },
+            )
+        }
+    }
+
+    /**
+     * 把可见节点装进画布：等比缩放（0.3–1.1）并居中。
+     *
+     * 用 [size] 而不是外部状态 `canvasSize`：`onSizeChanged` 里刚写入的新尺寸
+     * 要等下一次重组才读得到，直接用状态会拿上一帧（甚至 0）来算。
+     */
+    /**
+     * 把可见节点装进画布：等比缩放（0.3–1.1）并居中。
+     *
+     * 用 [size] 而不是外部状态 `canvasSize`：`onSizeChanged` 里刚写入的新尺寸
+     * 要等下一次重组才读得到，直接用状态会拿上一帧（甚至 0）来算。
+     */
+    fun fitFor(size: GraphSize): Camera {
+        if (size.isEmpty || contentBounds.isEmpty) return camera
+        val pad = 12f
+        val scale = minOf(
+            (size.width - pad * 2) / contentBounds.width,
+            (size.height - pad * 2) / contentBounds.height,
+        ).coerceIn(0.3f, 1.1f)
+        val drawnWidth = contentBounds.width * scale
+        val drawnHeight = contentBounds.height * scale
+        val panX = if (drawnWidth < size.width) {
+            (size.width - drawnWidth) / 2f - contentBounds.left * scale
+        } else {
+            pad - contentBounds.left * scale
+        }
+        val panY = if (drawnHeight < size.height) {
+            (size.height - drawnHeight) / 2f - contentBounds.top * scale
+        } else {
+            pad - contentBounds.top * scale
+        }
+        return Camera(zoom = scale, panX = panX, panY = panY)
+    }
+
+    // 在 onSizeChanged 里算，而不是 LaunchedEffect：
+    // 离屏渲染（ImageComposeScene）只跑一帧，LaunchedEffect 可能根本轮不到执行，
+    // 那样相机就停在 zoom=1、pan=0 —— 内容贴在左上角，正是第一版截图的样子。
+    // onSizeChanged 属于布局阶段，一定会在这一帧里发生。
+
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(380.dp)
+            .clipToBounds()
+            .onSizeChanged { size ->
+                val next = GraphSize(size.width.toFloat(), size.height.toFloat())
+                canvasSize = next
+                camera = fitFor(next)
+            }
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
+            .pointerInput(layout) {
+                detectTransformGestures { _, pan, zoom, _ ->
+                    val next = camera.panned(pan.x, pan.y)
+                    camera = if (zoom != 1f) {
+                        next.zoomedAt(
+                            GraphPoint(size.width / 2f, size.height / 2f),
+                            zoom,
+                            minZoom = 0.2f,
+                            maxZoom = 2.4f,
+                        )
+                    } else {
+                        next
+                    }
+                }
+            }
+            .pointerInput(layout) {
+                detectTapGestures { offset ->
+                    val world = camera.screenToWorld(GraphPoint(offset.x, offset.y))
+                    onSelect(hitTest(layout, world))
+                }
+            },
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            translate(camera.panX, camera.panY) {
+                scale(camera.zoom, camera.zoom, pivot = Offset.Zero) {
+                    layout.links.forEach { edge ->
+                        val from = layout.nodes[edge.fromKey]?.bounds ?: return@forEach
+                        val to = layout.nodes[edge.toKey]?.bounds ?: return@forEach
+                        drawLine(
+                            color = linkColor,
+                            start = Offset(from.centerX, from.bottom),
+                            end = Offset(to.centerX, to.top),
+                            strokeWidth = 1.2f,
+                        )
+                    }
+                    layout.nodes.forEach { (key, box) ->
+                        val node = graph.nodes[key] ?: return@forEach
+                        val isCategory = box.kind == GraphNodeKind.CATEGORY
+                        val selected = key == selectedKey
+                        drawRoundRect(
+                            color = if (isCategory) categoryFill else nodeFill,
+                            topLeft = Offset(box.bounds.left, box.bounds.top),
+                            size = Size(box.bounds.width, box.bounds.height),
+                            cornerRadius = CornerRadius(7f),
+                        )
+                        drawRoundRect(
+                            color = if (selected) accent
+                            else outlineColor.copy(alpha = if (isCategory) 0.75f else 0.5f),
+                            topLeft = Offset(box.bounds.left, box.bounds.top),
+                            size = Size(box.bounds.width, box.bounds.height),
+                            cornerRadius = CornerRadius(7f),
+                            style = Stroke(width = if (selected) 2f else 1f),
+                        )
+                        // 缩到名字读不出来时不画字：一堆 6px 的标签只是噪点。
+                        // 放大到 0.75 以上再显示；这条阈值同时也是「总览只看轮廓」的实现。
+                        if (camera.zoom >= 0.75f) {
+                            drawLabel(
+                                text = node.name,
+                                left = box.bounds.left,
+                                top = box.bounds.top,
+                                width = box.bounds.width,
+                                height = box.bounds.height,
+                                style = monoStyle.copy(color = if (isCategory) accent else conceptText),
+                                fontSizePx = if (isCategory) 12.5f else 12f,
+                                measurer = textMeasurer,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Spacer(Modifier.height(Gap.xs))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            "单指拖动 · 双指缩放 · 点节点看详情",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        PhoneButton("适应", { camera = fitFor(canvasSize) }, filled = false)
+    }
+    Spacer(Modifier.height(Gap.xs))
+    Text(
+        "总览只看轮廓；节点名被截断时，回「结构」看全文。",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+/** 世界坐标里命中一个节点（节点不重叠，取面积最小的即可）。 */
+private fun hitTest(layout: GraphLayout, world: GraphPoint): String? = layout.nodes.values
+    .filter { it.bounds.contains(world) }
+    .minByOrNull { it.bounds.width * it.bounds.height }
+    ?.key
+
+private fun edgeKindLabel(kind: GraphEdgeKind): String = when (kind) {
+    GraphEdgeKind.PREREQUISITE -> "前置"
+    GraphEdgeKind.APPLIES -> "应用于"
+    GraphEdgeKind.RELATED -> "相关"
+    GraphEdgeKind.CO_OCCUR -> "共现"
+}
+
+/** 画一个居中的单行标签，超宽就省略。 */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLabel(
+    text: String,
+    left: Float,
+    top: Float,
+    width: Float,
+    height: Float,
+    style: TextStyle,
+    fontSizePx: Float,
+    measurer: TextMeasurer,
+) {
+    // 关键：layout 的字体估算用的是 **px**，绘制时如果直接写 12.sp，
+    // 在 density=2/3 的手机上会变成 24/36px —— 同样的框里只放得下两个字，
+    // 于是所有节点名都成了「拥…」。这里把 px 换算回 sp。
+    val measured = measurer.measure(
+        text = AnnotatedString(text),
+        style = style.copy(fontSize = (fontSizePx / density).sp),
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Ellipsis,
+        constraints = Constraints(maxWidth = (width - 10f).toInt().coerceAtLeast(1)),
+    )
+    drawText(
+        textLayoutResult = measured,
+        topLeft = Offset(
+            left + (width - measured.size.width) / 2f,
+            top + (height - measured.size.height) / 2f,
+        ),
+    )
+}
