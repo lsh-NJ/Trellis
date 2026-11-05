@@ -43,6 +43,19 @@ class SharedSourceCompatibilityTest {
         "Files.writeString(",
     )
 
+    /**
+     * 重载层面的差异：类有、方法名有，但那个**重载**是后来才加的。
+     *
+     * 实测事故：`URLEncoder.encode(value, StandardCharsets.UTF_8)` 是 Java 10 的重载，
+     * 安卓没有；B 站搜索在手机上抛 `NoSuchMethodError`，被 guard 包成「工具自己出错了」，
+     * 模型连试三次都失败，最后只能放弃并让用户选「先修搜索再说」。
+     * 这类错编译器拦不住，只能扫。
+     */
+    private val forbiddenPatterns = listOf(
+        Regex("""URLEncoder\.encode\([^)]*StandardCharsets"""),
+        Regex("""URLDecoder\.decode\([^)]*StandardCharsets"""),
+    )
+
     @Test
     fun `共享源集不引用安卓没有的 JDK 包`() {
         // Gradle 跑测试时的工作目录是模块目录（app/ui）。
@@ -76,6 +89,10 @@ class SharedSourceCompatibilityTest {
                         val badCall = forbiddenCalls.firstOrNull { line.contains(it) }
                         if (badCall != null) {
                             offenders += "$at  调用了 $badCall（安卓 API 级别不够）"
+                        }
+                        val badPattern = forbiddenPatterns.firstOrNull { it.containsMatchIn(line) }
+                        if (badPattern != null) {
+                            offenders += "$at  用了安卓没有的重载：${badPattern.pattern}"
                         }
                     }
                 }

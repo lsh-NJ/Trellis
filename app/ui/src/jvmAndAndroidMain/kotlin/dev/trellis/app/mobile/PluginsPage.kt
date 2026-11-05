@@ -67,7 +67,12 @@ fun PluginsPage(
                     Spacer(Modifier.height(Gap.s))
                     Text(
                         if (onPickArchive != null) {
-                            "选一个插件压缩包（里面有 manifest.json 和入口脚本），装完立刻能用。"
+                            // 安卓上脚本插件的 loader 是刻意不注册的（ScriptLoader.platforms 只有 JVM），
+                            // 所以用户选完压缩包一定会看到「没有可用于 [script] 的 loader」。
+                            // 与其让人白选一次文件，不如在动手前就说清楚能装什么、不能装什么。
+                            "手机上目前只能装「声明式」插件（manifest.json + main.dsl.json）。" +
+                                "带脚本的压缩包（入口是 main.js）需要桌面端 —— 安卓暂不提供脚本沙箱，" +
+                                "硬装会提示「没有可用的 loader」。"
                         } else {
                             "把 manifest.json + main.dsl.json 放进下面这个目录，重启 App 就能看到。"
                         },

@@ -98,7 +98,7 @@ fun PhoneApp(
     /** 只给预览器用：进来就停在某个二级页（插件 / 活动 / 诊断）。 */
     startSubPage: PhoneSubPage? = null,
 ) {
-    PhoneTheme(runtime.uiPrefs.appearance) {
+    PhoneTheme(runtime.uiPrefs.appearance, runtime.uiPrefs.fontScale) {
         var tab by remember { mutableIntStateOf(startTab.coerceIn(0, PhoneTab.entries.size - 1)) }
         var sub by remember { mutableStateOf(startSubPage) }
 
@@ -344,7 +344,9 @@ private fun TimerBar(runtime: AppRuntime) {
             Column(Modifier.fillMaxWidth().padding(horizontal = Gap.xl).padding(bottom = Gap.xxl)) {
                 SheetHeading(
                     if (runtime.timerFinished) "这一轮结束了" else "正在计时",
-                    runtime.timerTaskTitle + " · 已过 " + minutesLabel(runtime.timerElapsedSeconds / 60),
+                    // 用 m:ss 而不是「几分钟」：不到一分钟时分钟档只会显示「—」，
+                    // 看着像计时器没走。
+                    runtime.timerTaskTitle + " · 已过 " + clockText(runtime.timerElapsedSeconds),
                 )
                 Spacer(Modifier.height(Gap.l))
                 Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {

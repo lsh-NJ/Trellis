@@ -11,9 +11,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.trellis.app.desktop.AppFonts
@@ -149,19 +151,26 @@ private val PhoneTypography = Typography(
 )
 
 @Composable
-fun PhoneTheme(appearance: String, content: @Composable () -> Unit) {
+fun PhoneTheme(appearance: String, fontScale: Float = 1f, content: @Composable () -> Unit) {
     val dark = when (appearance) {
         "light" -> false
         "dark" -> true
         else -> isSystemInDarkTheme()
     }
     val scheme = phoneScheme(dark)
+    // 字号要**乘**系统的缩放，和桌面 AppTheme 一个道理：
+    // 手机排版是写死的 sp，不乘的话「小/标准/大/特大」四个档就是四个假开关
+    // （实测：切到「特大」截图逐字节不变）。系统字号本身已经由 density 带着，
+    // 这里只叠加应用自己的偏好。
+    val base = LocalDensity.current
+    val density = Density(base.density, base.fontScale * fontScale)
     CompositionLocalProvider(
         LocalCardColor provides if (dark) NightCard else Card,
         // 手机页自己几乎不用岗位色，但**插件贡献的卡片**（今日盘点、待办清单、UiNode 图表）
         // 读的是 LocalExtraColors。以前这里没提供，它们拿到的是浅色默认值 ——
         // 暗色下靛蓝字压在近黑底上只有 1.6:1，等于没写。
         LocalExtraColors provides phoneExtraColors(dark),
+        LocalDensity provides density,
     ) {
         MaterialTheme(
             colorScheme = scheme,

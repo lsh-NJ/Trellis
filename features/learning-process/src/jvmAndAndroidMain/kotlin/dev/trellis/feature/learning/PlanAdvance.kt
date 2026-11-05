@@ -187,14 +187,7 @@ internal fun SqliteLearningPlanService.pickPoolUnitsForWeek(planId: String, vers
 
 /** 这一周有没有结过账（`plan.settled` 事件）。 */
 internal fun SqliteLearningPlanService.hasSettled(planId: String, week: String): Boolean =
-    connection.prepareStatement(
-        "SELECT 1 FROM event WHERE type = 'plan.settled' AND plan_id = ? " +
-            "AND json_extract(payload_json, '$.week') = ? LIMIT 1",
-    ).use { ps ->
-        ps.setString(1, planId)
-        ps.setString(2, week)
-        ps.executeQuery().use { it.next() }
-    }
+    EventPayloads.of(connection, "plan.settled", planId).any { it.str("week") == week }
 
 /** 某一周「完成数 / 承诺数」；没有该周承诺时返回 null。 */
 internal fun SqliteLearningPlanService.weekCompletion(
@@ -211,15 +204,11 @@ internal fun SqliteLearningPlanService.weekCompletion(
         ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
     }
     if (committed == 0) return null
-    val completed = connection.prepareStatement(
-        "SELECT COUNT(DISTINCT json_extract(payload_json, '$.unitId')) FROM event " +
-            "WHERE type = 'occurrence.completed' AND plan_id = ? " +
-            "AND json_extract(payload_json, '$.week') = ?",
-    ).use { ps ->
-        ps.setString(1, planId)
-        ps.setString(2, week)
-        ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
-    }
+    val completed = EventPayloads.of(connection, "occurrence.completed", planId)
+        .filter { it.str("week") == week }
+        .mapNotNull { it.str("unitId") }
+        .distinct()
+        .size
     return completed to committed
 }
 
