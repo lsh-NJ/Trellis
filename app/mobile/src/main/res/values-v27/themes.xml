@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      刘海屏铺满：`windowLayoutInDisplayCutoutMode` 是 API 27 才有的属性，
+      直接写进 values/themes.xml 会让 lint 在 minSdk 26 上报 NewApi。
+      放进 v27 目录，26 的设备就用上面那份（不铺刘海，也不会崩）。
+    -->
+    <style name="Theme.Trellis" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/trellis_paper</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+</resources>

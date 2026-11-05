@@ -4,17 +4,34 @@ coroutines = "1.9.0"
 compose = "1.7.3"
 serialization = "1.7.3"
 sqlite = "3.46.1.3"
+# 安卓上没有 sqlite-jdbc；这个库把 JDBC 调用翻译成 android.database.sqlite。
+sqldroid = "1.0.3"
+# ES5 脚本插件的引擎；纯 Java，桌面和安卓共用同一坐标。
+rhino = "1.7.15"
+# Android 侧：compileSdk 35 需要 AGP 8.6+；8.6.1 与 Kotlin 2.1.0 的 KMP 插件能对上，
+# 8.7.x 会在 apply 阶段报 "Can't infer current AndroidGradlePluginVersion"。
+agp = "8.6.1"
+androidx-activity = "1.9.3"
 
 [libraries]
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 kotlinx-coroutines-swing = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-swing", version.ref = "coroutines" }
+# 安卓上 Dispatchers.Main 由这个变体提供；只带 core 的话 Compose 里一用
+# rememberCoroutineScope 就会在运行时抛 "Module with the Main dispatcher had failed to initialize"。
+kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
 sqlite-jdbc = { module = "org.xerial:sqlite-jdbc", version.ref = "sqlite" }
+sqldroid = { module = "org.sqldroid:sqldroid", version.ref = "sqldroid" }
+rhino = { module = "org.mozilla:rhino", version.ref = "rhino" }
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidx-activity" }
 
 [plugins]
 kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
 kotlinJvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlinAndroid = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlinSerialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 kotlinCompose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 composeMultiplatform = { id = "org.jetbrains.compose", version.ref = "compose" }
+androidApplication = { id = "com.android.application", version.ref = "agp" }
+androidLibrary = { id = "com.android.library", version.ref = "agp" }

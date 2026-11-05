@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      联网权限：模型 API、B 站工具、ActivityWatch 都要发 HTTP。
+      之前漏了这条，表现为「聊天一按发送就出错」—— 而且报错内容是类的名字，
+      因为缺权限/缺类是两回事，缺权限时是 SecurityException。
+
+      usesCleartextTraffic：模型 endpoint 是用户自己填的，局域网里的 Ollama / LM Studio
+      通常是 http://。不打开这个开关，安卓 9+ 会直接拒绝明文请求，报错还很难懂。
+      应用只访问用户配置的地址和 B 站（https），所以这里放开。
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 管家早晚问候 / 笔记自动完成计划节点时的系统通知（API 33+ 需要用户授权）。 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
+        android:theme="@style/Theme.Trellis">
+
+        <!--
+          configChanges 里带上 orientation / screenSize：
+          旋转屏幕时如果重建 Activity，整个内核会重新 boot 一遍（插件重扫、KV 重读），
+          在手机上那就是一次明显的卡顿和一次闪白。Compose 自己会跟着尺寸重排，
+          不需要靠重建来换布局 —— 这正好也是「自适应」的实现方式。
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

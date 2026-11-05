@@ -1,6 +1,6 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 
-// 只用 Compose 的 application 配置，**不要**再叠加 Gradle 的 `application` 插件 
+// 只用 Compose 的 application 配置，**不要**再叠加 Gradle 的 `application` 插件
 // 两个插件都会注册一个叫 `run` 的任务，直接冲突（"Cannot add task 'run'"）。
 plugins {
     alias(libs.plugins.kotlinJvm)
@@ -8,46 +8,23 @@ plugins {
     alias(libs.plugins.kotlinCompose)
 }
 
+/**
+ * 桌面壳：只剩「开一个窗口」与打包配置。
+ *
+ * 界面与运行时全都在 `:app:ui` 里（和手机共用同一份）。之所以还留着这个模块：
+ * 打包（jpackage / dmg / AppImage）和 `gradlew :app:desktop:run` 是这个仓库一贯的入口，
+ * 换掉它会让文档、脚本和肌肉记忆一起失效。
+ *
+ * `mainClass` 指向的 `MainKt` 在 `:app:ui` 的 jvm 产物里 —— Compose Desktop 的
+ * `run` / `createDistributable` 用的是 runtimeClasspath，依赖里的入口类一样能起来。
+ */
 dependencies {
-    implementation(project(":ai"))
-    implementation(project(":kernel"))
-    implementation(project(":ui-kernel"))
-    implementation(project(":sdk-domain"))
-    implementation(project(":features:plan-core"))
-    // 学习计划后端（SQLite 事件库）。计划页只认 LearningPlanStore 这一句，不摸表结构。
-    implementation(project(":features:learning-process"))
-    // 活动采集/整理（ActivityWatch 原始数据 + 分类树 + 日/范围汇总）。
-    implementation(project(":features:activity"))
-    implementation(project(":plugin-dsl"))
-    implementation(project(":plugin-script"))
+    implementation(project(":app:ui"))
     implementation(compose.desktop.currentOs)
     implementation(compose.material3)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.swing)
     implementation(libs.kotlinx.serialization.json)
-
-    testImplementation(kotlin("test"))
-    testImplementation(libs.kotlinx.coroutines.test)
-
-    // 笔记编辑器的 WebView 路线（TRELLIS_EDITOR=webview 时启用）：
-    // Compose 没有 CSS 引擎、段间距只能在 1x/2x 两档里选，所以用 JavaFX WebView 跑
-    // Tiptap（浏览器内核 + CSS margin），段间距才能精确到 1.25–1.5 倍行距。
-    // JavaFX 的 jar 全在 Maven 上，不需要运行时下载；macOS/Linux/Windows 各带一份 natives。
-    val javafxVersion = "21.0.4"
-    val javafxClassifier = run {
-        val os = System.getProperty("os.name").lowercase()
-        val arch = System.getProperty("os.arch").lowercase()
-        when {
-            os.contains("mac") && arch.contains("aarch64") -> "mac-aarch64"
-            os.contains("mac") -> "mac"
-            os.contains("win") -> "win"
-            else -> "linux"
-        }
-    }
-    listOf("base", "graphics", "controls", "web", "media", "swing").forEach { module ->
-        implementation("org.openjfx:javafx-$module:$javafxVersion")
-        implementation("org.openjfx:javafx-$module:$javafxVersion:$javafxClassifier")
-    }
 }
 
 /**
