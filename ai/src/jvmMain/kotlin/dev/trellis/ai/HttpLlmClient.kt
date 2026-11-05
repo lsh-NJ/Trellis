@@ -336,4 +336,3 @@ class HttpLlmClient(
     }
 }
 
-class LlmException(message: String) : Exception(message)

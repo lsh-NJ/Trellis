@@ -270,6 +270,10 @@ marktext / Typora / Notion 能做到，是因为正文是浏览器里的**块级
 | 点正文 | 光标落在点击位置（marktext 式「点哪落哪」，平台文本框行为）；行内 WYSIWYG：`**`/`~~`/反引号/`[[概念]]`/`[链接](url)` 标记收起，只显示样式 | `MarkdownDocumentEditor.kt` / `MarkdownDocumentEdit.kt` |
 | 光标进入/紧挨行内标记 | 该 token 的原始标记还原显示（暗灰），可编辑；光标离开一格即折叠（`[[概念]]`、`[链接](url)` 同规则） | `MarkdownDocumentEdit.kt` |
 | 编辑标题/引用 | 光标所在行的 `## ` / `> ` 前缀以暗灰源码显示（能看出几级标题），其它行隐藏；字号按级别放大 | `MarkdownDocumentEdit.kt` |
+| 代码块 | 光标不在块内时，整块渲染成一张圆角卡片：围栏 ``` 隐藏、行间不留缝、等宽字体、右上角标语言（```cpp → `C++`），列表里的缩进代码块保持缩进；**按围栏语言做语法高亮**（关键字/字符串/注释/数字/元信息五类，GitHub 固定配色，深浅色各一套），光标进块后围栏以暗灰源码露出，方便改语言标记 | `MarkdownDocumentEdit.kt` / `MarkdownDocumentEditor.kt` / `MarkdownCodeHighlight.kt` |
+| 引用 | 连续的 `>` 行合成一个引用块：光标不在块内时隐藏前缀，左侧画一条 2dp 竖线、文字用次级色 + 斜体；光标进块后前缀露出 | `MarkdownDocumentEdit.kt` / `MarkdownDocumentEditor.kt` |
+| 行内代码 | 反引号里的内容按代码渲染并折叠反引号；**反引号不跨行**（跨行配对会把后面整段吃掉，写读都错）；`[[概念]]` 写在反引号里也按代码渲染（名字可见、方括号隐藏） | `MarkdownText.kt` / `MarkdownDocumentEdit.kt` |
+| 导入笔记 | 左栏「导入…」：系统面板多选 `.md/.markdown/.txt`，标题按 frontmatter `title` → 正文第一个 `# ` → 文件名 取，重名加「 (2)」，导入后选中第一篇；手机上暂时不支持（SAF 要 ActivityResult） | `KnowledgeScreen.kt` / `KnowledgeStore.kt` / `MarkdownImport.kt` / `HostPlatform.kt` |
 | 链接 | 渲染态只显示 label（不显示地址）；光标进入/紧挨链接时展开 `[label](url)` 源码 | `MarkdownText.kt` / `MarkdownDocumentEdit.kt` |
 | 回车 | Enter 分段（段落之间空一行；行首回车在上方开一个空段；列表里回车自动续 `- ` / 递增序号，空项回车退出列表）；Shift+Enter 是段内软换行；代码/表格/公式/AI 块里 Enter 仍只换行 | `MarkdownDocumentEdit.kt` |
 | 点击正文末尾以下 | 点正文最后一行下方的空白 = 直接另起一段（不用先把光标拖到底再按回车） | `MarkdownDocumentEditor.kt` |
@@ -287,11 +291,13 @@ marktext / Typora / Notion 能做到，是因为正文是浏览器里的**块级
 
 几条约定：
 
+- **行内代码一定不跨行**：反引号分组里排除换行，跨行配对会把后面整段的行内代码带偏（2026-11-05 修，回归用例 `inlineCodeNeverSpansLines`）。
+- **代码高亮不引库、认不出就不着色**：`MarkdownCodeHighlight.kt` 是逐行轻量分词（不引第三方高亮库，构建离线、Android 共享同一份）；只认常见语言（cpp/c/kotlin/java/js/ts/python/json/yaml/bash/sql/html/xml/css/markdown/rust/go），认不出的围栏按纯文本，宁可不上色也不要把代码涂花。
 - **整篇一个文本框**：光标/选区/上下键/跨行拖选/全选都交给平台输入框，不再按块拆 `BasicTextField`；行内标记只是投影出来的样式（`projectDocument` + `OffsetMapping`），正文里始终是完整 Markdown。
 - **行内标记只在光标进入或紧挨时出现**（marktext 式）：折叠态看到的是渲染样式，光标进去标记才露出；投影只影响显示与光标映射，Backspace/Delete 按正文偏移删，不会删到看不见的标记。标题 `# `、引用 `> ` 的例外是「光标所在行显示」——用来提示层级。
 - **中文粗体是「系统字重 + 同色阴影」叠出来的**：不依赖平台字体有没有真正的 Bold 字面，跨平台观感一致；阴影颜色跟随文字色（概念绿字加粗仍是绿的）。行内代码是「等宽 + 自绘圆角芯片」，上下沿按基线算出、不靠 padding。
 - **链接默认只显示 label**（marktext 式）：地址藏在源码里，光标进去才看得到；聊天消息仍显示地址，避免模型给的链接丢了。
-- **编辑态与预览态的差别**：代码块、表格、`$$` 公式块、`:::ai` 块在编辑态只显示「等宽 / 配色的源码」，完整渲染只在预览态（同一个 `BasicTextField` 里不能内嵌小部件）；嵌套列表缩进只按行首空白粗略处理。换路径的动机与代价见 §10 第八批补丁。
+- **编辑态与预览态的差别**：代码块、引用块在编辑态就整块渲染（卡片 / 竖线，光标进块才露出围栏与前缀）；表格、`$$` 公式块、`:::ai` 块仍只显示「等宽 / 配色的源码」，完整渲染只在预览态（同一个 `BasicTextField` 里不能内嵌小部件）；嵌套列表缩进只按行首空白粗略处理。换路径的动机与代价见 §10 第八批补丁。
 - **空行就是分段**：段落之间空一行；段落内想换行用 Shift+Enter 写一个 `\n`。段间距只能取「一个空行」或「没有空行」两档：整篇是一个 `BasicTextField`，行高由 `textStyle.lineHeight` 统一决定，没法只把空行压到半行（试过 `ParagraphStyle`/`SpanStyle`/零宽空格承载，最小仍是一整行 2 倍行距）。2026-11-04 的决定是保留空行（段间距 = 2 倍行距，marktext 观感），光标段落靠左侧 gutter 标记区分。
 - **标题也是正文行**（`# …`），行内语法同样折叠；目录与笔记列表的标题走同一套 `stripInlineMarkdown`。
 - **概念有显式语法** `[[概念名]]`：预览只显示名字（浅绿下划线），和隐式「按概念表匹配」共存；AI 抽取会把首次出现自动包成这个写法。

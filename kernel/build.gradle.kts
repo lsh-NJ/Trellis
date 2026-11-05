@@ -1,9 +1,11 @@
 plugins {
+    alias(libs.plugins.androidLibrary)
     alias(libs.plugins.kotlinMultiplatform)
 }
 
 kotlin {
     jvm()
+    androidTarget()
 
     sourceSets {
         commonMain.dependencies {
@@ -82,4 +84,13 @@ val verifyKernelPurity by tasks.registering {
 
 tasks.named("check") {
     dependsOn(verifyKernelPurity)
+}
+android {
+    namespace = "dev.trellis.kernel"
+    compileSdk = 35
+    defaultConfig { minSdk = 26 }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
 }

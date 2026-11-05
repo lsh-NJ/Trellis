@@ -20,7 +20,8 @@
 | 会话系统：落盘恢复、Markdown、过程折叠、撤销 | 完成 | `:app:desktop` |
 | 主题包（插件贡献配色、宿主校验对比度）+ 参数化配色 | 完成 | `:app:desktop` `:kernel` |
 | 设置页：主题与导航（主题选择器 / 导航位置）、每日预计投入（×7 进学习计划的每周容量）、插件设置分组、插件页与诊断页的入口 | 完成 | `:app:desktop` |
-| 原子更新管线 + 快照回滚 / 数据绑定刷新 / 插件市场 / 移动端 | 未做 | 见 `docs/roadmap.md` |
+| 手机端：五页签原生界面 + 知识网络 + 管家 + AI 自动完成 + 通知 | 完成（debug APK 可装） | `:app:ui` 的 `jvmAndAndroidMain`、`:app:mobile`，见 `docs/mobile.md` |
+| 原子更新管线 + 快照回滚 / 数据绑定刷新 / 插件市场 | 未做 | 见 `docs/roadmap.md` |
 
 ## 模块
 
@@ -34,7 +35,11 @@
 | `:plugin-script` | 轨道 B：ES5 脚本插件（Rhino 沙箱），可带状态、按钮、输入框 |
 | `:ui-kernel` | Compose 渲染层：把插件贡献画到界面上 |
 | `:ai` | AI 层：提示词、管理器、工具循环、模型客户端 |
-| `:app:desktop` | 桌面应用（真实可用的那个）：装配、界面、AI 工具、会话、主题 |
+| `:net` | 最小的 HTTP GET 出口：桌面 `java.net.http`、安卓 `HttpURLConnection` |
+| `:app:ui` | 共享运行时 + 两套界面：装配、AI 工具、会话、主题、桌面页、手机页（jvm + android 编同一份） |
+| `:app:desktop` | 桌面壳：一个窗口 + 打包配置 |
+| `:app:mobile` | 安卓壳：Activity、清单、图标、edge-to-edge、通知注入 |
+| `:app:mobile-preview` | 手机界面预览器：390×844 / 834×1112 出图或开窗 |
 | `:demo` | 控制台演示，跑 `.\gradlew.bat :demo:run` |
 
 依赖方向：`:features:plan-core -> :sdk-domain -> :kernel`，而**内核绝不依赖领域**（`verifyKernelPurity` 守着）。
@@ -144,6 +149,21 @@ val summary = plan.summary(now, dayEnd)
 ```
 
 所以将来把底层的 KV 换成 SQLite，所有调用方一行都不用改。
+
+## 跑手机端
+
+手机界面和桌面**共用同一份运行时**，只是排版自己一套（五页签、单列、48dp 控件）。
+
+```bat
+.\build-mobile.cmd              # 出 debug APK，打印路径
+.\build-mobile.cmd install      # 连上手机后 adb 安装
+.\preview-mobile.cmd            # 电脑上开 390×844 窗口，能真的点
+.\preview-mobile.cmd --seed     # 先灌演示数据（空界面看不出排版问题）
+.\preview-mobile.cmd --shots    # 不开窗，页面 × 手机/平板 渲染 PNG 到 build/preview
+```
+
+产物：`app/mobile/build/outputs/apk/debug/mobile-debug.apk`（约 13 MB，debug 未签名发布）。
+设计规范、平台差异、踩过的坑都在 [docs/mobile.md](docs/mobile.md)。
 
 ## 跑桌面应用
 

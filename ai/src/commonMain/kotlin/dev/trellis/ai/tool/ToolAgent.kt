@@ -143,10 +143,10 @@ class ToolAgent(
                 is AgentStep.Reply -> {
                     val complaint = beforeFinishing()
                     if (complaint != null) {
-                        note("第 " + step + " 步：它说完了，但 " + complaint)
+                        note("第 " + step + " 步：还要补：" + complaint)
                         conversation += LlmMessage(LlmRole.User, complaint)
                     } else {
-                        note("第 " + step + " 步：它说完了")
+                        // 结论看正文：不再为「说完了」单独记一行过程。
                         return ToolRun(true, parsed.text, transcript)
                     }
                 }
