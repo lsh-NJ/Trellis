@@ -13,8 +13,10 @@ import java.sql.Statement
  * 谁也不直连 aw-server —— 这样 AW 没开、AW 升级改了 schema、或者哪天换一个采集器，
  * 都只影响 `ActivitySync` 这一个文件。
  *
- * 表只有两张（bucket 元信息 + 原始事件），刻意**不存分类结果**：
- * 分类规则会反复改，但原始事件不能因为改规则而需要重新采集。
+ * 表分三块：bucket 元信息 + 原始事件 + **区间归因**（哪段时间在做哪个任务）。
+ * 刻意**不存分类结果**：分类规则会反复改，但原始事件不能因为改规则而需要重新采集。
+ * 归因单独一张表，是因为它既不是采集数据、也不是分类规则 —— 是用户/AI 对时间的判断，
+ * 必须独立于原始事件重算（见 [Attribution] 的注释）。
  */
 class ActivityStore private constructor(val connection: Connection) : AutoCloseable {
 
@@ -189,6 +191,83 @@ class ActivityStore private constructor(val connection: Connection) : AutoClosea
             ps.executeUpdate()
         }
 
+    // ---------------------------------------------------------------------
+    // 区间归因：哪段时间在做哪个任务
+    // ---------------------------------------------------------------------
+
+    /** 写入一条归因，返回新行 id；[Attribution.createdAt] / [Attribution.updatedAt] 为 0 时用当前时间。 */
+    fun insertAttribution(row: Attribution): Long {
+        val now = System.currentTimeMillis()
+        connection.prepareStatement(
+            """
+            INSERT INTO activity_attribution(from_ms, to_ms, task_ref, source, confidence, status, reason, created_at, updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?)
+            """.trimIndent(),
+            Statement.RETURN_GENERATED_KEYS,
+        ).use { ps ->
+            ps.setLong(1, row.fromMs)
+            ps.setLong(2, row.toMs)
+            ps.setString(3, row.taskRef)
+            ps.setString(4, row.source)
+            ps.setDouble(5, row.confidence)
+            ps.setString(6, row.status)
+            ps.setString(7, row.reason)
+            ps.setLong(8, row.createdAt.takeIf { it > 0 } ?: now)
+            ps.setLong(9, row.updatedAt.takeIf { it > 0 } ?: now)
+            ps.executeUpdate()
+            ps.generatedKeys.use { keys -> return if (keys.next()) keys.getLong(1) else 0L }
+        }
+    }
+
+    /** 改状态：AI 建议 → 接受（applied）/ 忽略（rejected）。返回是否真的改到行。 */
+    fun updateAttributionStatus(id: Long, status: String): Boolean =
+        connection.prepareStatement(
+            "UPDATE activity_attribution SET status = ?, updated_at = ? WHERE id = ?",
+        ).use { ps ->
+            ps.setString(1, status)
+            ps.setLong(2, System.currentTimeMillis())
+            ps.setLong(3, id)
+            ps.executeUpdate() > 0
+        }
+
+    fun deleteAttribution(id: Long): Boolean =
+        connection.prepareStatement("DELETE FROM activity_attribution WHERE id = ?").use { ps ->
+            ps.setLong(1, id)
+            ps.executeUpdate() > 0
+        }
+
+    /** 与给定区间有交集的归因（含 proposed / rejected，AI 靠它判断哪些时间已经分析过）。 */
+    fun attributionsInRange(fromMs: Long, toMs: Long): List<Attribution> =
+        connection.prepareStatement(
+            "SELECT * FROM activity_attribution WHERE from_ms < ? AND to_ms > ? ORDER BY from_ms, id",
+        ).use { ps ->
+            ps.setLong(1, toMs)
+            ps.setLong(2, fromMs)
+            val out = ArrayList<Attribution>()
+            ps.executeQuery().use { rs -> while (rs.next()) out += rs.toAttribution() }
+            out
+        }
+
+    fun allAttributions(): List<Attribution> =
+        connection.prepareStatement("SELECT * FROM activity_attribution ORDER BY from_ms, id").use { ps ->
+            val out = ArrayList<Attribution>()
+            ps.executeQuery().use { rs -> while (rs.next()) out += rs.toAttribution() }
+            out
+        }
+
+    private fun java.sql.ResultSet.toAttribution(): Attribution = Attribution(
+        id = getLong("id"),
+        fromMs = getLong("from_ms"),
+        toMs = getLong("to_ms"),
+        taskRef = getString("task_ref"),
+        source = getString("source"),
+        confidence = getDouble("confidence"),
+        status = getString("status"),
+        reason = getString("reason"),
+        createdAt = getLong("created_at"),
+        updatedAt = getLong("updated_at"),
+    )
+
     override fun close() = connection.close()
 
     companion object {
@@ -236,6 +315,31 @@ class ActivityStore private constructor(val connection: Connection) : AutoClosea
             "CREATE INDEX IF NOT EXISTS idx_raw_event_ts ON raw_event(ts_ms)",
             "CREATE INDEX IF NOT EXISTS idx_raw_event_bucket_ts ON raw_event(bucket, ts_ms)",
         )
+
+        /**
+         * V3：区间归因表。
+         *
+         * 单独一张表而不是塞进 raw_event：归因是「人对时间的判断」，不是采集数据；
+         * 原始事件重拉、分类规则改了都不该动它。区间用 `[from_ms, to_ms)` 表示，
+         * 与片段边界无关，所以缓存/重算后归因依然落在正确的时间上。
+         */
+        private val SCHEMA_V3: List<String> = listOf(
+            """
+            CREATE TABLE IF NOT EXISTS activity_attribution(
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_ms    INTEGER NOT NULL,
+                to_ms      INTEGER NOT NULL,
+                task_ref   TEXT    NOT NULL,
+                source     TEXT    NOT NULL,
+                confidence REAL    NOT NULL DEFAULT 1.0,
+                status     TEXT    NOT NULL DEFAULT 'applied',
+                reason     TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+            "CREATE INDEX IF NOT EXISTS idx_attribution_range ON activity_attribution(from_ms, to_ms)",
+        )
     }
 
     private fun apply() {
@@ -268,6 +372,10 @@ class ActivityStore private constructor(val connection: Connection) : AutoClosea
                 st.execute("ALTER TABLE raw_event ADD COLUMN url TEXT")
             }
             record(st, 2)
+        }
+        if (version < 3) {
+            SCHEMA_V3.forEach { sql -> st.execute(sql) }
+            record(st, 3)
         }
     }
 

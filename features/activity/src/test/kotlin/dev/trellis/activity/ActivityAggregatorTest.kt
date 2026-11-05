@@ -301,4 +301,69 @@ class ActivityAggregatorTest {
             assertTrue(range.topApps.isEmpty())
         }
     }
+
+    @Test
+    fun `归因在边界处切开片段，只算区间内那部分时长`() {
+        // 10 分钟 Code.exe，只有前 5 分钟归到任务。
+        store(win(1, noon, 600_000, "Code.exe")).use { store ->
+            store.insertAttribution(Attribution(noon, noon + 300_000, "occurrence:1"))
+
+            val aggregator = ActivityAggregator(store)
+            val segments = aggregator.segments(noon)
+
+            assertEquals(2, segments.size, "归因边界要把片段切开")
+            assertEquals(300_000L, segments.first { it.taskRef != null }.durationMs)
+            assertNull(segments.first { it.taskRef == null }.taskSource, "没归因的那半段是「没判断过」")
+
+            assertEquals(300_000L, aggregator.taskTimes(noon).single().durationMs)
+            assertEquals(listOf(300_000L), aggregator.unattributedSegments(noon).map { it.durationMs })
+        }
+    }
+
+    @Test
+    fun `与任务无关的归因让片段离开未归因列表，但不进任务时长`() {
+        store(win(1, noon, 600_000, "chrome.exe", "刷视频")).use { store ->
+            store.insertAttribution(Attribution(noon, noon + 600_000, NO_TASK_REF, source = AttributionSource.MANUAL))
+
+            val aggregator = ActivityAggregator(store)
+            val segments = aggregator.segments(noon)
+
+            assertEquals(1, segments.size)
+            assertNull(segments.single().taskRef, "与任务无关不算任何任务")
+            assertEquals(AttributionSource.MANUAL, segments.single().taskSource, "但要记住「已经判断过」")
+            assertTrue(aggregator.taskTimes(noon).isEmpty())
+            assertTrue(aggregator.unattributedSegments(noon).isEmpty(), "判断过的区间不再出现在未归因列表里")
+        }
+    }
+
+    @Test
+    fun `手动归因比 AI 归因优先，同一片段只跟一个任务`() {
+        store(win(1, noon, 600_000, "Code.exe")).use { store ->
+            store.insertAttribution(Attribution(noon, noon + 600_000, "ai-task", source = AttributionSource.AI))
+            store.insertAttribution(Attribution(noon, noon + 600_000, "manual-task", source = AttributionSource.MANUAL))
+
+            val segments = ActivityAggregator(store).segments(noon)
+
+            assertEquals(listOf("manual-task"), segments.mapNotNull { it.taskRef }.distinct())
+            assertEquals(600_000L, ActivityAggregator(store).taskTimes(noon).single().durationMs)
+        }
+    }
+
+    @Test
+    fun `范围里的任务时长逐日累加并按任务合并`() {
+        val nextNoon = at(day.plusDays(1), 12)
+        store(
+            win(1, noon, 300_000, "Code.exe"),
+            win(2, nextNoon, 600_000, "Code.exe"),
+        ).use { store ->
+            store.insertAttribution(Attribution(noon, noon + 300_000, "occurrence:1"))
+            store.insertAttribution(Attribution(nextNoon, nextNoon + 600_000, "occurrence:1"))
+
+            val times = ActivityAggregator(store).taskTimes(noon, nextNoon)
+
+            assertEquals(1, times.size)
+            assertEquals("occurrence:1", times.single().taskRef)
+            assertEquals(900_000L, times.single().durationMs)
+        }
+    }
 }

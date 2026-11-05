@@ -137,4 +137,42 @@ class ActivityStoreTest {
             assertEquals("https://a.com", store.eventsByRange(0, 10_000, "aw-watcher-web-chrome_TEST").single().url)
         }
     }
+
+    @Test
+    fun `归因能存能取，状态可改、可删`() {
+        ActivityStore.inMemory().use { store ->
+            val id = store.insertAttribution(
+                Attribution(fromMs = 0, toMs = 60_000, taskRef = "occurrence:1", source = AttributionSource.MANUAL),
+            )
+            assertTrue(id > 0)
+
+            val stored = store.attributionsInRange(0, 60_000).single()
+            assertEquals("occurrence:1", stored.taskRef)
+            assertEquals(AttributionSource.MANUAL, stored.source)
+            assertEquals(AttributionStatus.APPLIED, stored.status)
+            assertTrue(stored.createdAt > 0)
+
+            assertTrue(store.updateAttributionStatus(id, AttributionStatus.REJECTED))
+            assertEquals(AttributionStatus.REJECTED, store.allAttributions().single().status)
+
+            assertTrue(store.deleteAttribution(id))
+            assertTrue(store.allAttributions().isEmpty())
+        }
+    }
+
+    @Test
+    fun `归因按区间重叠查询，proposed 与 rejected 也查得到`() {
+        ActivityStore.inMemory().use { store ->
+            store.insertAttribution(Attribution(0, 10_000, "a", status = AttributionStatus.PROPOSED))
+            store.insertAttribution(Attribution(20_000, 30_000, "b", status = AttributionStatus.REJECTED))
+            store.insertAttribution(Attribution(40_000, 50_000, "c"))
+
+            assertEquals(
+                listOf("a", "b"),
+                store.attributionsInRange(5_000, 25_000).map { it.taskRef },
+                "AI 需要看到所有「已经判断过」的区间，不分状态",
+            )
+            assertTrue(store.attributionsInRange(50_000, 60_000).isEmpty())
+        }
+    }
 }

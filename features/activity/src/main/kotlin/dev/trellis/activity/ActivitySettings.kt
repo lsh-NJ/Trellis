@@ -56,6 +56,15 @@ data class ActivitySettings(
     val titleRedactions: List<String> = emptyList(),
     /** 给 AI 看多少。默认只给聚合数字，标题一律不出门。 */
     val aiExposure: AiExposure = AiExposure.AGGREGATES_ONLY,
+    /**
+     * 任务归因的 AI 分析开关（与 [aiExposure] 相互独立）。
+     *
+     * 归因必须看窗口标题才判得准，「只给聚合数字」在这里没有意义；所以单独一个开关，
+     * 默认开、但只发进程名 + 窗口标题，**标签页 URL 一律不发**（用户 2026-11-05 定的隐私口径）。
+     */
+    val attributionAiEnabled: Boolean = true,
+    /** AI 归因时是否发送窗口标题；关掉后只用进程名猜，准确率会明显下降。 */
+    val attributionAiSendTitles: Boolean = true,
 ) {
 
     /**

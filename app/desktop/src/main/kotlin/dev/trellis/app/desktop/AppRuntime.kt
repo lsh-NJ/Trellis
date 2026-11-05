@@ -51,10 +51,23 @@ import dev.trellis.activity.ActivityTaxonomy
 import dev.trellis.activity.ActivityTaxonomyStore
 import dev.trellis.activity.ActivityWatchClient
 import dev.trellis.activity.AppSlice
+import dev.trellis.activity.Attribution
+import dev.trellis.activity.AttributionSource
+import dev.trellis.activity.AttributionStatus
+import dev.trellis.activity.Attributions
 import dev.trellis.activity.ClassificationExplanation
 import dev.trellis.activity.DaySummary
+import dev.trellis.activity.NO_TASK_REF
 import dev.trellis.activity.RangeSummary
 import dev.trellis.activity.Segment
+import dev.trellis.activity.TaskTime
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import dev.trellis.dsl.DslLoader
 import dev.trellis.script.ScriptLoader
 import dev.trellis.dsl.JvmPluginFileSystem
@@ -3440,6 +3453,11 @@ class AppRuntime private constructor() {
 
     private val activityLock = Mutex()
 
+    /** AI 归因把未归因片段切成的小块：一块 20 分钟；短于 2 分钟的块不送（判断价值太低）。 */
+    private val ATTRIBUTION_BLOCK_MS = 20 * 60_000L
+
+    private val ATTRIBUTION_MIN_BLOCK_MS = 2 * 60_000L
+
     /** 活动页最近一次失败的一句话；成功时清空。 */
     internal var activityMessage by mutableStateOf<String?>(null)
         private set
@@ -3614,6 +3632,378 @@ class AppRuntime private constructor() {
         if (failure != null) return listOf("分类规则保存失败：" + (failure.message ?: "未知原因"))
         activityMessage = null
         return emptyList()
+    }
+
+    // ---------------------------------------------------------------- 活动 ↔ 任务归因
+
+    /**
+     * 归因的 `taskRef` 约定：学习计划的 occurrence（含 `todo_id` 的待办型 occurrence）。
+     *
+     * 这里只拼字符串，activity 模块不认识它；哪天换成别的锚点（任务型 PlanService、笔记），
+     * 只改这一个函数与 UI 的候选列表，数据层不用动。
+     */
+    internal fun occurrenceTaskRef(occurrenceId: String): String = "occurrence:$occurrenceId"
+
+    private fun activityDate(dayMs: Long): LocalDate =
+        Instant.ofEpochMilli(dayMs).atZone(ZoneId.systemDefault()).toLocalDate()
+
+    /** 某天（按 settings.dayStartHour 切）的全部归因，含 AI 待确认与已否掉的。 */
+    internal suspend fun activityAttributions(dayMs: Long): List<Attribution> {
+        ensureActivityEngine() ?: return emptyList()
+        val settings = activitySettingsCache ?: return emptyList()
+        val store = activityStore ?: return emptyList()
+        return runCatching {
+            activityIo { store.attributionsInRange(settings.dayStartMs(dayMs), settings.dayEndMs(dayMs)) }
+        }.getOrElse { error ->
+            activityMessage = "归因读取失败：" + (error.message ?: "未知原因")
+            emptyList()
+        }
+    }
+
+    /**
+     * 写一条归因（手动标记 / 忽略区间 / 将来规则都走这里）。
+     *
+     * 返回空列表表示成功；非空是给界面显示的一句话。区间会被限制在当天之内吗？
+     * 不会 —— 归因是独立的时间事实，允许跨天；这里是通用写入，不做业务裁剪。
+     */
+    internal suspend fun activityAddAttribution(
+        fromMs: Long,
+        toMs: Long,
+        taskRef: String,
+        source: String = AttributionSource.MANUAL,
+        confidence: Double = 1.0,
+        reason: String? = null,
+    ): List<String> {
+        if (toMs <= fromMs) return listOf("时间区间为空，没法归因")
+        ensureActivityEngine() ?: return listOf(activityMessage ?: "活动库打不开")
+        val store = activityStore ?: return listOf("活动库打不开")
+        val failure = runCatching {
+            activityIo {
+                store.insertAttribution(
+                    Attribution(
+                        fromMs = fromMs,
+                        toMs = toMs,
+                        taskRef = taskRef,
+                        source = source,
+                        confidence = confidence,
+                        reason = reason,
+                    ),
+                )
+            }
+        }.exceptionOrNull()
+        if (failure != null) return listOf("归因保存失败：" + (failure.message ?: "未知原因"))
+        activityMessage = null
+        return emptyList()
+    }
+
+    /** 标记一段「与任何任务无关」：不参与任务时长，之后 AI 也不再分析这段。 */
+    internal suspend fun activityIgnoreRange(fromMs: Long, toMs: Long): List<String> = activityAddAttribution(
+        fromMs = fromMs,
+        toMs = toMs,
+        taskRef = NO_TASK_REF,
+        reason = "用户标记为与任务无关",
+    )
+
+    internal suspend fun activityDeleteAttribution(id: Long): Boolean {
+        ensureActivityEngine() ?: return false
+        val store = activityStore ?: return false
+        return runCatching { activityIo { store.deleteAttribution(id) } }.getOrDefault(false)
+    }
+
+    internal suspend fun activitySetAttributionStatus(id: Long, status: String): Boolean {
+        ensureActivityEngine() ?: return false
+        val store = activityStore ?: return false
+        return runCatching { activityIo { store.updateAttributionStatus(id, status) } }.getOrDefault(false)
+    }
+
+    /** 某天按任务归因的总时长（只算 applied、不含 `#none`）。 */
+    internal suspend fun activityTaskTimes(dayMs: Long): List<TaskTime> {
+        val aggregator = ensureActivityEngine() ?: return emptyList()
+        return runCatching { activityIo { aggregator.taskTimes(dayMs) } }.getOrDefault(emptyList())
+    }
+
+    /** 某段范围的按任务归因总时长（任务时间视图「本周」用）。 */
+    internal suspend fun activityTaskTimes(firstDayMs: Long, lastDayMs: Long): List<TaskTime> {
+        val aggregator = ensureActivityEngine() ?: return emptyList()
+        return runCatching { activityIo { aggregator.taskTimes(firstDayMs, lastDayMs) } }.getOrDefault(emptyList())
+    }
+
+    /** 计划页徽标用：某天 occurrenceId → 已归因毫秒（只取 `occurrence:` 前缀的 taskRef）。 */
+    internal suspend fun activityOccurrenceMinutes(day: LocalDate): Map<String, Long> {
+        val dayMs = day.atTime(12, 0).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        return activityTaskTimes(dayMs)
+            .mapNotNull { time ->
+                val id = time.taskRef.removePrefix("occurrence:")
+                if (id != time.taskRef && id.isNotEmpty()) id to time.durationMs else null
+            }
+            .toMap()
+    }
+
+    /** 任务时间视图：计划里当天的任务 + 已归因时长 + 未归因片段 + AI 待确认建议。 */
+    internal suspend fun activityTaskReport(dayMs: Long): ActivityTaskReport {
+        val aggregator = ensureActivityEngine() ?: return ActivityTaskReport(dayMs, emptyList(), emptyList(), emptyList(), null, false)
+        val times = runCatching { activityIo { aggregator.taskTimes(dayMs) } }.getOrDefault(emptyList())
+            .associate { it.taskRef to it.durationMs }
+        val rows = ArrayList<ActivityTaskRow>()
+
+        val service = learningPlan()
+        val planId = planFocusId ?: service?.activePlanId()
+        val day = if (service != null && planId != null) {
+            runCatching { service.today(planId, activityDate(dayMs).toString()) }.getOrNull()
+        } else {
+            null
+        }
+        val doneIds = day?.completed?.map { it.id }?.toSet().orEmpty()
+        day?.occurrences?.forEach { occurrence ->
+            val ref = occurrenceTaskRef(occurrence.id)
+            rows += ActivityTaskRow(
+                taskRef = ref,
+                title = occurrence.title,
+                detail = listOfNotNull(
+                    occurrence.chapter?.takeIf { it.isNotBlank() },
+                    "预计 " + occurrence.minutes + " 分钟",
+                ).joinToString(" · "),
+                plannedMinutes = occurrence.minutes,
+                attributedMs = times[ref] ?: 0L,
+                done = occurrence.id in doneIds,
+            )
+        }
+
+        // 有归因、但这天的计划里找不到对应 occurrence（任务被移走/延期/删了）：也列出来，不能丢时长。
+        val known = rows.map { it.taskRef }.toSet()
+        times.entries
+            .filter { it.key !in known }
+            .sortedByDescending { it.value }
+            .forEach { (ref, ms) ->
+                rows += ActivityTaskRow(
+                    taskRef = ref,
+                    title = "计划外的任务",
+                    detail = ref,
+                    plannedMinutes = null,
+                    attributedMs = ms,
+                    done = false,
+                    unknown = true,
+                )
+            }
+
+        val proposals = activityAttributions(dayMs).filter { it.status == AttributionStatus.PROPOSED }
+        val unattributed = runCatching { activityIo { aggregator.unattributedSegments(dayMs) } }
+            .getOrDefault(emptyList())
+        return ActivityTaskReport(
+            dayMs = dayMs,
+            rows = rows,
+            unattributed = unattributed,
+            proposals = proposals,
+            planTitle = planTitle.takeIf { day != null },
+            hasPlan = day != null,
+        )
+    }
+
+    /**
+     * 让 AI 把未归因的片段对到当天的任务上，结果写成 `proposed` 等用户确认。
+     *
+     * 只分析 [Attributions.uncovered]（没被手动/规则/AI 判断过的空档）——
+     * 用户明确要求「不能绑定的活动不要反复分析」，所以判断过的区间直接跳过。
+     * 隐私：只发进程名 + 窗口标题（过 titleRedactions），URL 一律不发。
+     */
+    internal suspend fun activityProposeAttributions(dayMs: Long): String {
+        val aggregator = ensureActivityEngine() ?: return activityMessage ?: "活动库打不开"
+        val settings = activitySettingsCache ?: return "活动库打不开"
+        if (!settings.attributionAiEnabled) {
+            return "AI 归因在 activity/settings.json 里关掉了（attributionAiEnabled=false）"
+        }
+        val store = activityStore ?: return "活动库打不开"
+        val fromMs = settings.dayStartMs(dayMs)
+        val toMs = settings.dayEndMs(dayMs)
+        val existing = runCatching { activityIo { store.attributionsInRange(fromMs, toMs) } }
+            .getOrElse { return "归因读取失败：" + (it.message ?: "未知原因") }
+        val gaps = Attributions.uncovered(fromMs, toMs, existing)
+        if (gaps.isEmpty()) return "这一天的时间都已经判断过，没有需要再分析的片段"
+
+        val segments = runCatching { activityIo { aggregator.segments(dayMs) } }
+            .getOrElse { return "活动数据读取失败：" + (it.message ?: "未知原因") }
+        val blocks = attributionBlocks(segments, gaps)
+        if (blocks.isEmpty()) return "没有足够长的未归因片段（至少 2 分钟）"
+
+        val candidates = attributionCandidates(dayMs)
+        if (candidates.isEmpty()) return "这一天的计划里没有可对照的任务，先排好计划再让 AI 归因"
+
+        val llm = llmClientOrNull() ?: return "还没配置模型（llm.json），AI 归因暂时用不了"
+        val messages = attributionPrompt(settings, activityDate(dayMs), candidates, blocks.take(80))
+        val raw = runCatching {
+            withTimeoutOrNull(90_000) { llm.complete(messages) }
+        }.getOrNull() ?: return "AI 归因超时或请求失败，稍后再试"
+        val assignments = parseAttributionReply(raw)
+        if (assignments.isEmpty()) return "AI 没有给出可用的归因（回复片段：" + raw.take(120) + "）"
+
+        val byBlock = blocks.associateBy { it.id }
+        val candidateRefs = candidates.map { it.ref }.toSet()
+        val inserted = ArrayList<Attribution>()
+        for (assignment in assignments) {
+            val block = byBlock[assignment.block] ?: continue
+            val ref = assignment.task.trim().let { if (it.startsWith("occurrence:")) it else occurrenceTaskRef(it) }
+            if (ref !in candidateRefs) continue
+            // 同一任务在同一段已经被建议/确认过就不再重复写。
+            val duplicate = existing.any {
+                it.taskRef == ref && Attributions.overlapMs(it, block.fromMs, block.toMs) * 2 >= block.durationMs
+            }
+            if (duplicate) continue
+            inserted += Attribution(
+                fromMs = block.fromMs,
+                toMs = block.toMs,
+                taskRef = ref,
+                source = AttributionSource.AI,
+                confidence = assignment.confidence,
+                status = AttributionStatus.PROPOSED,
+                reason = ("AI 建议（" + (block.app ?: "未知进程") + "）").take(120),
+            )
+        }
+        if (inserted.isEmpty()) return "AI 的建议都对不上现有任务，已丢弃（可检查模型配置）"
+        val failure = runCatching {
+            activityIo { inserted.forEach { store.insertAttribution(it) } }
+        }.exceptionOrNull()
+        if (failure != null) return "AI 建议保存失败：" + (failure.message ?: "未知原因")
+        return "AI 给出 " + inserted.size + " 条建议，请在上面确认或忽略"
+    }
+
+    private data class AttributionBlock(
+        val id: Int,
+        val fromMs: Long,
+        val toMs: Long,
+        val app: String?,
+        val title: String?,
+        val categoryPath: String,
+    ) {
+        val durationMs: Long get() = toMs - fromMs
+    }
+
+    /** 把未归因片段切成 ≤20 分钟的块：太长的一段模型很难判断「整段都在做同一件事」。 */
+    private fun attributionBlocks(segments: List<Segment>, gaps: List<LongRange>): List<AttributionBlock> {
+        val out = ArrayList<AttributionBlock>()
+        var id = 0
+        for (gap in gaps) {
+            for (segment in segments) {
+                val start = maxOf(segment.fromMs, gap.first)
+                val end = minOf(segment.toMs, gap.last + 1)
+                if (end <= start) continue
+                var cursor = start
+                while (cursor < end) {
+                    val blockEnd = minOf(cursor + ATTRIBUTION_BLOCK_MS, end)
+                    if (blockEnd - cursor >= ATTRIBUTION_MIN_BLOCK_MS) {
+                        out += AttributionBlock(
+                            id = id++,
+                            fromMs = cursor,
+                            toMs = blockEnd,
+                            app = segment.app,
+                            title = segment.title,
+                            categoryPath = segment.categoryPath,
+                        )
+                    }
+                    cursor = blockEnd
+                }
+            }
+        }
+        return out
+    }
+
+    private data class TaskCandidate(val ref: String, val title: String, val chapter: String?, val minutes: Int)
+
+    private suspend fun attributionCandidates(dayMs: Long): List<TaskCandidate> {
+        val service = learningPlan() ?: return emptyList()
+        val planId = planFocusId ?: service.activePlanId() ?: return emptyList()
+        val day = runCatching { service.today(planId, activityDate(dayMs).toString()) }.getOrNull()
+            ?: return emptyList()
+        return day.occurrences.map {
+            TaskCandidate(occurrenceTaskRef(it.id), it.title, it.chapter, it.minutes)
+        }
+    }
+
+    private fun attributionPrompt(
+        settings: ActivitySettings,
+        date: LocalDate,
+        candidates: List<TaskCandidate>,
+        blocks: List<AttributionBlock>,
+    ): List<LlmMessage> {
+        val system = """
+            你是 Trellis 的学习时间归因助手：把用户电脑上的活动片段对到当天的学习任务上。
+
+            输出规则（严格遵守）：
+            1. 只输出一个 JSON 数组，不要任何解释、不要 markdown 代码块。
+            2. 数组元素形如 {"block": 3, "task": "occurrence:xxx", "confidence": 0.8}；
+               block 是片段编号，task 必须来自给定任务清单的 ref，confidence 是 0 到 1 的数。
+            3. 只有确实可能是在做该任务时才输出；拿不准就省略这个片段（宁缺毋滥）。
+            4. 看视频、游戏、闲聊、系统设置等与任务无关的片段不要输出；它们会被用户手动标成无关。
+            5. 一段片段最多对到一个任务。
+        """.trimIndent()
+        val taskLines = candidates.joinToString("\n") { candidate ->
+            val extra = listOfNotNull(
+                candidate.chapter?.takeIf { it.isNotBlank() },
+                "预计 " + candidate.minutes + " 分钟",
+            ).joinToString("，")
+            "- " + candidate.ref + " | " + candidate.title + if (extra.isBlank()) "" else "（$extra）"
+        }
+        val blockLines = blocks.joinToString("\n") { block ->
+            val app = block.app ?: "（未知进程）"
+            val title = if (settings.attributionAiSendTitles) redactTitle(block.title, settings) else null
+            val parts = listOfNotNull(
+                "#" + block.id,
+                clockLabel(block.fromMs) + "-" + clockLabel(block.toMs),
+                app,
+                title?.takeIf { it.isNotBlank() },
+                block.categoryPath,
+            )
+            parts.joinToString(" | ")
+        }
+        val user = """
+            日期：$date
+
+            当天的任务：
+            $taskLines
+
+            未归因的电脑活动片段（每段 ≤20 分钟）：
+            $blockLines
+        """.trimIndent()
+        return listOf(LlmMessage(LlmRole.System, system), LlmMessage(LlmRole.User, user))
+    }
+
+    private fun redactTitle(title: String?, settings: ActivitySettings): String? {
+        val source = title ?: return null
+        var out = source
+        for (pattern in settings.titleRedactions) {
+            val regex = try {
+                Regex(pattern, RegexOption.IGNORE_CASE)
+            } catch (_: Exception) {
+                null
+            }
+            if (regex != null) out = regex.replace(out, "***")
+        }
+        return out
+    }
+
+    private fun clockLabel(ms: Long): String {
+        val time = Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()).toLocalTime()
+        return String.format("%02d:%02d", time.hour, time.minute)
+    }
+
+    private data class AiAssignment(val block: Int, val task: String, val confidence: Double)
+
+    private fun parseAttributionReply(raw: String): List<AiAssignment> {
+        val text = raw.trim()
+            .removePrefix("```json").removePrefix("```")
+            .removeSuffix("```").trim()
+        val start = text.indexOf('[')
+        val end = text.lastIndexOf(']')
+        if (start < 0 || end <= start) return emptyList()
+        val json = Json { ignoreUnknownKeys = true; isLenient = true }
+        val array = runCatching { json.parseToJsonElement(text.substring(start, end + 1)).jsonArray }
+            .getOrNull() ?: return emptyList()
+        return array.mapNotNull { element ->
+            val obj = runCatching { element.jsonObject }.getOrNull() ?: return@mapNotNull null
+            val block = obj["block"]?.jsonPrimitive?.intOrNull ?: return@mapNotNull null
+            val task = obj["task"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            val confidence = obj["confidence"]?.jsonPrimitive?.doubleOrNull ?: 0.5
+            AiAssignment(block, task, confidence.coerceIn(0.0, 1.0))
+        }
     }
 
     companion object {

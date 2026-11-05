@@ -147,7 +147,8 @@ Trellis 的规则：
   - 「不显示未追踪」勾选框把 `uncategorized` 从饼图和图例里去掉，百分比按剩下的部分重算；
     日视图与范围总览共用同一个开关状态。
 - **片段详情浮层**：点时间轴片段或未分类条目，显示 app、窗口标题、标签页 URL、分类色点、时间段与时长，
-  以及 `classifier.explain()` 的命中规则；底部「归到分类…」可以就地建一条规则（见下）。
+  以及 `classifier.explain()` 的命中规则；底部「归到分类…」可以就地建一条规则（见下），
+  「归到任务…」把这段活动记到当天的计划节点上（见 §8）。
 - **分类规则页**（页头第三个按钮，`ActivityMode.Rules`）：在程序内管理分类树，不用再手改 JSON。
   页面在 `app/desktop/src/main/kotlin/dev/trellis/app/desktop/ActivityRules.kt`（`ActivityRulesView`）：
   - 分类树平铺展示（缩进、色点、路径、规则条数），「新建大类」/「加子类」/「删除」（删除时子类挂到上一级，规则一起删；
@@ -162,14 +163,55 @@ Trellis 的规则：
 - **片段一键归类**（`QuickClassifyDialog`）：详情浮层点「归到分类…」弹窗，正则预填按片段自动生成——
   有域名就 `Regex.escape(domain)` + `DOMAIN`，否则 app + `APP`，再否则 title + `TITLE`；
   选一个分类后把这条规则追加到该分类（`withCategory`），保存即重新分类；以后同类片段不再进未分类。
+- **任务时间**（页头第四个按钮，`ActivityMode.Task`；实现在 `ActivityTaskView.kt`）：
+  把当天计划任务与窗口活动归因放在一起看。上半「任务时长」列出当天 occurrence（标题、章节、预计分钟、
+  已归因分钟 + 进度条），下半「未归因的窗口活动」列出还没判断过的片段（app、时间段、分类、标题），
+  每条可「归到任务」或「无关」；页头「AI 分析未归因」把未判断区间发给模型，建议进「待确认」列表，
+  接受/忽略后写回归因表（见 §8）。计划页的 occurrence 行尾也会显示「归因 N 分钟」徽标。
 - **隐私分层**：列表只显示 app 名 + 分类；窗口标题、标签页 URL 只在点开详情后才出现。
   将来接 AI 时仍要过 `aiExposure` 这一层（见 §5）。
 
-## 8. 文件与配置
+## 8. 任务归因（任务时间）
+
+归因 = 给一段时间打上「当时在做哪个任务」的标签，**不改原始事件**。表在 `activity.db` 的
+`activity_attribution`（schema v3）：
+
+| 列 | 说明 |
+|---|---|
+| `from_ms` / `to_ms` | 时间区间（毫秒，左闭右开） |
+| `task_ref` | 不透明任务引用；当前是 `occurrence:<id>`（学习计划 occurrence，含待办型）；`#none` 表示「与任务无关」 |
+| `source` | `manual`（用户点的）/ `rule`（预留）/ `ai`（模型建议） |
+| `confidence` | 0–1，AI 建议用；手动默认 1 |
+| `status` | `proposed`（待确认）/ `applied`（生效）/ `rejected`（已判断并否掉） |
+| `reason` | 给界面看的说明（如「AI 建议（app）」「用户标记为与任务无关」） |
+
+语义：
+
+- **只有 `applied` 参与计时**。`proposed` 等用户接受；`rejected` 和 `#none` 都算「已经判断过」，
+  AI 不会重复分析（`Attributions.uncovered` 把所有行都当已判断区间，取补集）。
+- 同一片段落多条 `applied` 时按 `source` 优先级 **manual > rule > ai**，再比重叠时长、id
+  （`Attributions.best`）。
+- 片段在归因边界处切开（`ActivityAggregator.segmentsOf`），保证一条归因只对区间交集生效；
+  `#none` 的片段离开「未归因」列表，但也不计入任何任务时长。
+- 任务时长按 `task_ref` 求**区间并集**（`Attributions.durationFor`），不是简单相加，重叠不重复计时。
+- **AI 管线**（`AppRuntime.activityProposeAttributions`）：只送没判断过的区间，按 ≤20 分钟切块
+  （<2 分钟不送）；候选是当天计划里的 occurrence；prompt 要求只输出 JSON `[{block,task,confidence}]`；
+  默认只发 app + 窗口标题（`attributionAiSendTitles`，标题过 `titleRedactions`），**URL 一律不发**；
+  模型拿不准可以省略；返回后校验 `task_ref` 必须属于候选，写 `status=proposed, source=ai`，
+  用户在列表里接受（改 `applied`）/忽略（改 `rejected`）。没配 `llm.json` 时按钮只提示「还没配置模型」。
+- 真实计时（FocusTimer 的 session）不写归因表：那是另一条更精确的时间来源，目前分开展示，
+  合并成统一口径留到下一步。
+
+代码：`ActivityAttribution.kt`（模型、优先级、区间运算）、`ActivityStore` v3、`ActivityAggregator`
+（`taskTimes` / `unattributedSegments`）、`AppRuntime`（`activityAddAttribution` / `activityIgnoreRange` /
+`activityTaskReport` / `activityProposeAttributions`）、`ActivityTaskView.kt`、`ActivityScreen` 的任务时间模式
+与片段详情「归到任务…」、`PlanScreen` 的 `activityOccurrenceMinutes` 徽标。
+
+## 9. 文件与配置
 
 | 位置 | 内容 |
 |---|---|
-| `~/.trellis/activity/activity.db` | 原始事件（SQLite，WAL；schema v1 无 url，v2 加 `raw_event.url`，迁移自动跑） |
+| `~/.trellis/activity/activity.db` | 原始事件 + 归因（SQLite，WAL；schema v1 无 url，v2 加 `raw_event.url`，v3 加 `activity_attribution`，迁移自动跑） |
 | `~/.trellis/activity/taxonomy.json` | 分类树（用户手写数据，可直接看/备份/改；读坏会改名成 `taxonomy.json.bad-<毫秒>` 留档再回默认） |
 
 代码地图（`features/activity/src/main/kotlin/dev/trellis/activity/`）：
@@ -181,38 +223,44 @@ Trellis 的规则：
 | `ActivitySettings.kt` | 同步/日界/碎片/排除项/浏览器进程/AI 暴露粒度 |
 | `ActivityWatchClient.kt` | AW HTTP API 客户端（buckets / events） |
 | `ActivitySync.kt` | 增量同步、按天分块、pad、幂等 upsert、保留期清理 |
-| `ActivityStore.kt` | SQLite 读写与 schema 迁移 |
-| `ActivityAggregator.kt` | 片段化、AFK/排除/去重、贴 url、分类、日汇总与排行 |
+| `ActivityStore.kt` | SQLite 读写与 schema 迁移（raw_event + activity_attribution） |
+| `ActivityAggregator.kt` | 片段化、AFK/排除/去重、贴 url、分类、日汇总与排行、任务归因切分与未归因片段 |
+| `ActivityAttribution.kt` | 归因模型、来源优先级、区间并集/补集运算（`Attributions`） |
 
 桌面端 UI（`app/desktop/src/main/kotlin/dev/trellis/app/desktop/`）：
 
 | 文件 | 职责 |
 |---|---|
-| `ActivityScreen.kt` | 「活动」页外壳：日视图 / 范围总览 / 分类规则三个模式、时间轴、分类占比饼图、片段详情、一键归类入口 |
+| `ActivityScreen.kt` | 「活动」页外壳：日视图 / 范围总览 / 分类规则 / 任务时间四个模式、时间轴、分类占比饼图、片段详情、一键归类/归到任务入口 |
 | `ActivityRules.kt` | 分类规则页：分类树管理、分类/规则编辑对话框、`QuickClassifyDialog` |
-| `AppRuntime.kt`（活动段） | 懒开引擎、60 秒同步循环、日/范围查询、`saveActivityTaxonomy` 校验+落盘+重建聚合器 |
+| `ActivityTaskView.kt` | 任务时间视图：任务时长列表、未归因片段、`AssignTaskDialog`、AI 建议接受/忽略 |
+| `AppRuntime.kt`（活动段） | 懒开引擎、60 秒同步循环、日/范围查询、`saveActivityTaxonomy` 校验+落盘+重建聚合器、归因读写与 AI 提议 |
 
-## 9. 测试
+## 10. 测试
 
 ```powershell
 $env:JAVA_HOME = "$env:USERPROFILE\.jdks\jdk17"; $env:Path = "$env:JAVA_HOME\bin;$env:Path"
 .\gradlew.bat :features:activity:test --console=plain
 ```
 
-当前 62 个用例：聚合（AFK 交集、碎片、排除、日界、层级汇总、标签页 URL 取重叠最大者、双 bucket 去重、范围汇总）、
+当前 74 个用例：聚合（AFK 交集、碎片、排除、日界、层级汇总、标签页 URL 取重叠最大者、双 bucket 去重、范围汇总、
+归因边界切片段、任务时长、未归因片段）、
 分类（默认分类归类、优先级压深度、并列按声明顺序、字段语义、坏正则/空正则、validate、path/descendant、domainOf、
 序列化往返、`withCategory`/`withoutCategory`/`nextCategoryId`）、
-taxonomy.json 读写（缺失/坏文件留档）、store（url、COALESCE、v1 库自动迁移）、client（web/window 解析）、sync（web bucket 同步）。
+归因（manual 压 ai、同源取重叠长、proposed/rejected 不参与、区间并集/补集）、
+taxonomy.json 读写（缺失/坏文件留档）、store（url、COALESCE、v1 库自动迁移、归因 CRUD 与区间查询）、
+client（web/window 解析）、sync（web bucket 同步）。
 `LiveAwSmokeTest` 需要真实 aw-server，默认不跑（`TRELLIS_AW_LIVE` 环境变量控制）。
 
-## 10. 已知缺口 / 下一步
+## 11. 已知缺口 / 下一步
 
 1. **活动页还不能做的**：没有 CSV 导出、没有分类/规则的拖拽排序、没有「规则试跑」（输入 app/title/url 看命中哪条）、
    同步状态只在页头一行字；分类规则页只能逐条编辑，不能批量导入/导出 JSON。
-2. **没接任务/计划**：追溯（「这段时间对应哪个计划节点」）需要把 `Segment` 与计划后端的时间轴对上，接口还没设计。
+2. **任务归因的边界**：目前只到 occurrence 粒度、只能逐段手动/AI 归因，没有「规则归因」（按 app/分类自动映射到任务）；
+   AI 归因要 `llm.json` 配好模型才能用；归因时长与 FocusTimer 的真实计时还没合并成一个口径；没有批量接受/按周复盘。
 3. **分类编辑的边界**：规则编辑只覆盖分类树与规则本身；`activity/settings.json`（轮询间隔、排除进程、`titleRedactions`）
    仍要手改文件，页面上还不能编辑。
-4. **`titleRedactions` 还没生效**：设置里有字段，聚合时尚未应用；接 AI 前要和 `aiExposure` 一起补上。
+4. **`titleRedactions` 覆盖不全**：AI 归因发窗口标题前已过一遍 `titleRedactions`；聚合、导出和以后别的 AI 暴露路径还没统一走。
 5. **正则方言差异**：Kotlin 用 `java.util.regex`，AW 是 Python `re` / Rust regex crate；默认规则只用了公共子集，用户写高级语法时要注意。
 6. **URL 只来自浏览器扩展**：没装 `aw-watcher-web` 就没有标签页数据；没有浏览器历史 API 兜底。
 7. **只看窗口事件**：没有鼠标键盘活跃度（AFK 只有 idle/not-afk 两态），细粒度「是否真的在看」还做不到。
