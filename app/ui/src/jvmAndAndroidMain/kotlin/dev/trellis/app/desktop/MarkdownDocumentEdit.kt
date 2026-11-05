@@ -44,7 +44,15 @@ internal enum class InlineMarkKind {
 internal data class InlineMarkRange(val start: Int, val end: Int, val kind: InlineMarkKind)
 
 /** 可见文本里的一整块（代码/引用）：[start]..[end] 是开区间，供 UI 画整块底色/竖线。 */
-internal data class DocumentBlock(val start: Int, val end: Int)
+internal data class DocumentBlock(
+    val start: Int,
+    val end: Int,
+    /** 围栏声明的语言（```cpp → [CodeLanguage.Cpp]）；引用块/不明语言是 [CodeLanguage.Plain]。 */
+    val language: CodeLanguage = CodeLanguage.Plain,
+)
+
+/** 可见文本里的一段语法着色区间（坐标同 [DocumentBlock]）。 */
+internal data class CodeHighlightSpan(val start: Int, val end: Int, val kind: CodeTokenKind)
 
 /**
  * 原文里一个行内 token；[contentStart]..[contentEnd] 是内容，两侧是标记。
@@ -88,6 +96,8 @@ internal data class DocumentLine(
     /** 列表圆点 `-`/`*`/`+` 在原文里的下标；任务列表为空。 */
     val bullet: Int? = null,
     val isTask: Boolean = false,
+    /** 围栏行的 info string（```cpp → `cpp`）；非围栏行为空。 */
+    val fenceInfo: String = "",
 )
 
 /**
@@ -135,6 +145,8 @@ internal data class DocumentProjection(
     val caretParagraph: DocumentParagraph? = null,
     /** 可见文本里的围栏代码块（整块画底色用）。 */
     val codeBlocks: List<DocumentBlock> = emptyList(),
+    /** 可见文本里的语法着色区间（代码块内）。 */
+    val codeHighlights: List<CodeHighlightSpan> = emptyList(),
     /** 可见文本里的引用块（连续 `>` 行，画左侧竖线用）。 */
     val quoteBlocks: List<DocumentBlock> = emptyList(),
     val hidden: List<IntRange> = emptyList(),
@@ -229,7 +241,12 @@ internal fun scanDocumentLines(body: String): List<DocumentLine> {
 
             trimmed.startsWith("```") -> {
                 inCode = true
-                DocumentLine(lineStart, lineEnd, DocumentLineKind.CodeFence)
+                DocumentLine(
+                    lineStart,
+                    lineEnd,
+                    DocumentLineKind.CodeFence,
+                    fenceInfo = trimmed.removePrefix("```").trim(),
+                )
             }
 
             trimmed.startsWith(":::ai") -> {
@@ -640,7 +657,38 @@ internal fun projectDocument(
         val blockEnd = lines.getOrNull(block[1])?.end ?: body.length
         val from = rawToVisible[openLine.start]
         val to = rawToVisible[blockEnd]
-        if (to > from) DocumentBlock(from, to) else null
+        if (to > from) {
+            DocumentBlock(from, to, codeLanguageOf(openLine.fenceInfo))
+        } else {
+            null
+        }
+    }
+    val codeHighlights = buildList {
+        for ((openIndex, closeIndex) in rawCodeBlocks) {
+            val language = codeLanguageOf(lines[openIndex].fenceInfo)
+            if (language == CodeLanguage.Plain) continue
+            var state = CodeHighlightState.Empty
+            val lastIndex = if (closeIndex >= 0) closeIndex else lines.size
+            var lineIndex = openIndex + 1
+            while (lineIndex < lastIndex) {
+                val line = lines[lineIndex]
+                if (line.start < line.end) {
+                    val rawLine = body.substring(line.start, line.end)
+                    val highlighted = highlightCodeLine(rawLine, language, state)
+                    state = highlighted.state
+                    for (token in highlighted.tokens) {
+                        val tokenStart = line.start + token.start
+                        val tokenEnd = (line.start + token.end).coerceAtMost(body.length)
+                        val visibleStart = rawToVisible[tokenStart]
+                        val visibleEnd = rawToVisible[tokenEnd]
+                        if (visibleEnd > visibleStart) {
+                            add(CodeHighlightSpan(visibleStart, visibleEnd, token.kind))
+                        }
+                    }
+                }
+                lineIndex += 1
+            }
+        }
     }
     val quoteBlocks = buildList {
         var cursor = 0
@@ -676,6 +724,7 @@ internal fun projectDocument(
         paragraphs = paragraphs,
         caretParagraph = caretParagraph,
         codeBlocks = codeBlocks,
+        codeHighlights = codeHighlights,
         quoteBlocks = quoteBlocks,
         hidden = mergeRanges(hiddenRanges),
         caretKind = caretKind,
