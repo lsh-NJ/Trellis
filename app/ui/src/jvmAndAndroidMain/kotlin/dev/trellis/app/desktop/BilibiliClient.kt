@@ -236,7 +236,11 @@ class BilibiliClient(
         }
 
         fun url(value: String): String =
-            URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20")
+            // 必须用 String 版的 charset 参数：`encode(String, Charset)` 是 Java 10 才加的重载，
+            // 安卓上没有。用它的话桌面跑得好好的，手机上 B 站搜索会抛
+            // `NoSuchMethodError: No static method encode(...Charset)`，而且被 guard 包成
+            // 「工具自己出错了」，用户只看到搜索一直失败。
+            URLEncoder.encode(value, "UTF-8").replace("+", "%20")
 
         fun md5(text: String): String =
             MessageDigest.getInstance("MD5").digest(text.toByteArray(StandardCharsets.UTF_8))

@@ -60,7 +60,9 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.trellis.domain.Task
 import dev.trellis.kernel.slot.Slots
@@ -433,6 +435,9 @@ private fun BentoCard(
                     kicker,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    // 大字号下「DAILY SNAPSHOT」这种等宽小标不该折成两行占两行高。
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     title,
@@ -725,38 +730,64 @@ internal fun Header(runtime: AppRuntime, framed: Boolean = true) {
             }
         },
     ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-            cells.forEachIndexed { index, cell ->
-                if (index > 0) {
-                    Box(
-                        Modifier.padding(horizontal = 16.dp)
-                            .width(1.dp)
-                            .height(42.dp)
-                            .background(MaterialTheme.colorScheme.outlineVariant),
-                    )
-                }
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        cell.label,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Row(verticalAlignment = Alignment.Bottom) {
-                        Text(
-                            cell.value,
-                            style = MaterialTheme.typography.displaySmall,
-                            fontWeight = FontWeight.Bold,
-                            color = cell.color,
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            cell.unit,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+        // 大字号下四个数字横排会被挤爆：标签压成两行（「今天到 / 期」）、数字贴边。
+        // 字体缩放过一档就改 2×2 —— 宁可多占一行高度，也不让文字互相挤。
+        // 判定用 LocalDensity.fontScale：手机把应用的字号偏好乘进来了，桌面也一样。
+        val bigFont = LocalDensity.current.fontScale >= 1.2f
+        if (bigFont) {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                cells.chunked(2).forEach { pair ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+                        pair.forEachIndexed { index, cell ->
+                            if (index > 0) QuadDivider()
+                            QuadCell(cell, Modifier.weight(1f))
+                        }
+                        if (pair.size == 1) Spacer(Modifier.weight(1f))
                     }
                 }
             }
+        } else {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+                cells.forEachIndexed { index, cell ->
+                    if (index > 0) QuadDivider()
+                    QuadCell(cell, Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuadDivider() {
+    Box(
+        Modifier.padding(horizontal = 16.dp)
+            .width(1.dp)
+            .height(42.dp)
+            .background(MaterialTheme.colorScheme.outlineVariant),
+    )
+}
+
+@Composable
+private fun QuadCell(cell: Quad, modifier: Modifier) {
+    Column(modifier) {
+        Text(
+            cell.label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                cell.value,
+                style = MaterialTheme.typography.displaySmall,
+                fontWeight = FontWeight.Bold,
+                color = cell.color,
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+                cell.unit,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

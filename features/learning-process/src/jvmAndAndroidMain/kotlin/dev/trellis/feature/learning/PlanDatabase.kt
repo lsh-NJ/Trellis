@@ -45,8 +45,12 @@ internal class PlanDatabase private constructor(val connection: Connection) : Au
             }
         }
         if (applied == 0) {
+            // `INSERT OR IGNORE` 而不是先查再插：手机上启动时计划库会被开两次
+            // （运行时创建与管家的首个 tick 撞在一起），两个连接都读到「还没迁移」，
+            // 后到的那个插入 version 1 就会撞主键 —— 表现是「计划库打开失败」，
+            // 而库里其实已经有表了。OR IGNORE 让这种竞争变成无害的重复写入。
             connection.prepareStatement(
-                "INSERT INTO schema_migration(version, applied_at) VALUES (1, ?)",
+                "INSERT OR IGNORE INTO schema_migration(version, applied_at) VALUES (1, ?)",
             ).use { ps ->
                 ps.setString(1, java.time.Instant.now().toString())
                 ps.executeUpdate()
