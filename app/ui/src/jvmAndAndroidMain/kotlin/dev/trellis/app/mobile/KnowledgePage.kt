@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import dev.trellis.app.desktop.AppRuntime
 import dev.trellis.app.desktop.ConceptIdentity
 import dev.trellis.app.desktop.ConceptMetaStore
+import dev.trellis.app.desktop.KnowledgeRevealTarget
 import dev.trellis.app.desktop.KnowledgeNote
 import dev.trellis.app.desktop.KnowledgeStore
 import dev.trellis.app.desktop.MarkdownText
@@ -67,6 +68,7 @@ import kotlinx.coroutines.launch
 fun KnowledgePage(runtime: AppRuntime, startTab: Int = 0, startGraphMode: Int = 0, startNoteId: String? = null) {
     var tab by remember { mutableStateOf(startTab.coerceIn(0, 1)) }
     var openNoteId by remember { mutableStateOf(startNoteId) }
+    var reveal by remember { mutableStateOf<KnowledgeRevealTarget?>(null) }
     val store = remember(runtime) { runtime.knowledgeStore }
 
     // 对话里点「来自《…》」会写这个字段：跳到那篇笔记，而不是让用户自己找。
@@ -77,6 +79,16 @@ fun KnowledgePage(runtime: AppRuntime, startTab: Int = 0, startGraphMode: Int = 
             tab = 0
             runtime.knowledgeNoteId = null
         }
+    }
+
+    // 计划页「AI 自动完成」点「看证据」会写这个字段：打开那篇笔记，并把当时那句证据
+    // 顶到第一屏。手机上滚到正文中间反而丢上下文 —— 只有两三行的窗口，人不知道自己在哪。
+    LaunchedEffect(runtime.pendingKnowledgeReveal) {
+        val target = runtime.pendingKnowledgeReveal ?: return@LaunchedEffect
+        runtime.pendingKnowledgeReveal = null
+        tab = 0
+        reveal = target
+        openNoteId = target.noteId
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -110,7 +122,11 @@ fun KnowledgePage(runtime: AppRuntime, startTab: Int = 0, startGraphMode: Int = 
             NoteListView(
                 runtime = runtime,
                 store = store,
-                onOpen = { openNoteId = it },
+                onOpen = {
+                    // 从列表点进来是「自己找」，不是「别人指的」，把上一次的证据清掉。
+                    reveal = null
+                    openNoteId = it
+                },
             )
         } else if (openNoteId == null) {
             KnowledgeGraphPage(runtime, startMode = startGraphMode, onOpenNote = { openNoteId = it })
@@ -119,7 +135,12 @@ fun KnowledgePage(runtime: AppRuntime, startTab: Int = 0, startGraphMode: Int = 
                 runtime = runtime,
                 store = store,
                 noteId = openNoteId!!,
-                onBack = { openNoteId = null },
+                reveal = reveal,
+                onDismissEvidence = { reveal = null },
+                onBack = {
+                    reveal = null
+                    openNoteId = null
+                },
             )
         }
     }
@@ -217,6 +238,8 @@ private fun NoteDetail(
     runtime: AppRuntime,
     store: KnowledgeStore,
     noteId: String,
+    reveal: KnowledgeRevealTarget?,
+    onDismissEvidence: () -> Unit,
     onBack: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -296,6 +319,29 @@ private fun NoteDetail(
                         agoLabel(current.updatedAt, runtime.clock.nowMs()) + " · " + body.length + " 字",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            // 证据：别人（计划页的自动完成）指过来的那一句，放在第一屏。
+            // 偏移来自当时的正文；笔记被改过、越界了就只当「打开这篇」，不猜位置。
+            val evidence = if (!editing && reveal != null && reveal.noteId == noteId) {
+                val text = runCatching { body.substring(reveal.start, reveal.end) }.getOrNull()
+                val line = if (text != null && reveal.start >= 0) {
+                    body.take(reveal.start).count { it == '\n' } + 1
+                } else {
+                    null
+                }
+                text?.takeIf { it.isNotBlank() }?.let { it.trim() to line }
+            } else {
+                null
+            }
+            if (evidence != null) {
+                item {
+                    EvidenceCard(
+                        quote = evidence.first,
+                        line = evidence.second,
+                        onDismiss = onDismissEvidence,
                     )
                 }
             }
@@ -512,4 +558,51 @@ private suspend fun organizeNote(
     val definitions = kept.associate { it.name to it.definition }.filterValues { it.isNotBlank() }
     if (definitions.isNotEmpty()) metaStore.fillMissing(definitions)
     return "整理完成：概念 " + updated.concepts.size + " 个，补全 " + merged.fills.size + " 处空位"
+}
+
+/**
+ * 「AI 是凭这句勾掉的」卡片。
+ *
+ * 不做「滚到正文中间并高亮」：390dp 宽下滚过去只剩两三行字，人反而不知道自己在哪。
+ * 把原句顶到第一屏，再标上原文行号，既能核对，也能自己翻回去看上下文。
+ */
+@Composable
+private fun EvidenceCard(quote: String, line: Int?, onDismiss: () -> Unit) {
+    CardBox(padding = Gap.m) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "AI 依据的这句",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.weight(1f))
+            if (line != null) {
+                Text(
+                    "第 " + line + " 行",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Spacer(Modifier.height(Gap.s))
+        Text(
+            "「" + quote + "」",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(6.dp))
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f))
+                .padding(horizontal = Gap.s, vertical = Gap.s),
+        )
+        Spacer(Modifier.height(Gap.s))
+        Text(
+            "知道了",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .clickable(onClick = onDismiss)
+                .padding(horizontal = Gap.xs, vertical = Gap.xs),
+        )
+    }
 }

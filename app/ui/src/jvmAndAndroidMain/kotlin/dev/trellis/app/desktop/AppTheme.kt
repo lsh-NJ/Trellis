@@ -46,7 +46,13 @@ internal fun AppTheme(
 ) {
     val base = LocalDensity.current
     val scheme = themeScheme ?: if (dark) darkSchemeFor(prefs) else schemeFor(prefs)
-    val density = Density(base.density * densityScale(prefs.density), prefs.fontScale)
+    // 字号要**乘**系统的缩放，而不是替换它。
+    // 以前的写法是 `Density(..., prefs.fontScale)`，等于把用户在系统设置里调大的字号
+    // 一律按 100% 处理 —— 视力不好的人把系统字体调到最大，进这个应用还是小的。
+    val density = Density(
+        base.density * densityScale(prefs.density),
+        base.fontScale * prefs.fontScale,
+    )
     val cardStyle = when (prefs.card) {
         "flat" -> DynamicCardStyle(border = false, radius = prefs.radius.dp)
         "filled" -> DynamicCardStyle(border = false, filled = true, radius = prefs.radius.dp)

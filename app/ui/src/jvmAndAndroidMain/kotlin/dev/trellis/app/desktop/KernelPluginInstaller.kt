@@ -7,6 +7,7 @@ import dev.trellis.kernel.audit.Actor
 import dev.trellis.kernel.core.CapabilityId
 import dev.trellis.kernel.core.PluginId
 import java.io.File
+import java.util.zip.ZipFile
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -90,4 +91,54 @@ class KernelPluginInstaller(
             Json.parseToJsonElement(manifest).jsonObject["id"]?.jsonPrimitive?.content
         }.getOrNull()?.takeIf { it.isNotBlank() }
     }
+}
+
+/** 插件压缩包里认的文本扩展名。二进制文件（图片/字体）一律不进文件地图。 */
+private val pluginArchiveExtensions = setOf("json", "js", "md", "txt")
+
+/** 单个文件与整包的上限。插件是几百行声明式 JSON，超过这个量级基本是打错了包。 */
+private const val MAX_PLUGIN_FILE_BYTES = 512 * 1024L
+private const val MAX_PLUGIN_ARCHIVE_BYTES = 4 * 1024 * 1024L
+
+/**
+ * 把一个插件 zip 读成「文件名 → 内容」。
+ *
+ * 手机上装插件只能从文件选择器给一个 zip，而 [KernelPluginInstaller.install] 要的是
+ * 文件地图 —— 中间这一层就是它。
+ *
+ * 几条硬规矩，都是被真实事故教出来的：
+ * - **路径穿越**：`../` 或绝对路径一律丢弃。解压到 plugins 目录之外等于让压缩包
+ *   往应用私有目录的任意位置写文件。
+ * - **只认文本**：图片、字体不进；一个 3 MB 的 png 会把插件列表拖慢，而且它没有意义。
+ * - **剥一层目录**：从 GitHub 下载的包通常是 `my-plugin/manifest.json`，
+ *   不剥的话装上来的插件「找不到 manifest」。
+ */
+internal fun readPluginArchive(file: File): Map<String, String> {
+    val entries = LinkedHashMap<String, ByteArray>()
+    var total = 0L
+    ZipFile(file).use { zip ->
+        zip.entries().asSequence().forEach { entry ->
+            if (entry.isDirectory) return@forEach
+            val raw = entry.name.replace('\\', '/')
+            if (raw.startsWith("__MACOSX/") || raw.endsWith(".DS_Store")) return@forEach
+            // 绝对路径或含 .. 的路径：不可信，直接跳过（并让调用方看到「没读到东西」）。
+            if (raw.startsWith("/") || raw.split('/').any { it == ".." }) return@forEach
+            val extension = raw.substringAfterLast('.', "").lowercase()
+            if (extension !in pluginArchiveExtensions) return@forEach
+            if (entry.size > MAX_PLUGIN_FILE_BYTES) return@forEach
+            total += entry.size
+            if (total > MAX_PLUGIN_ARCHIVE_BYTES) return@forEach
+            entries[raw] = zip.getInputStream(entry).use { it.readBytes() }
+        }
+    }
+
+    // 所有文件都在同一个顶层目录下 → 剥掉它。混着放的不剥。
+    val roots = entries.keys.map { it.substringBefore('/') }.distinct()
+    val commonRoot = roots.singleOrNull()?.takeIf { entries.keys.all { key -> key.contains('/') } }
+    val normalized = if (commonRoot != null) {
+        entries.mapKeys { (name, _) -> name.removePrefix("$commonRoot/") }
+    } else {
+        entries
+    }
+    return normalized.mapValues { (_, bytes) -> String(bytes, Charsets.UTF_8) }
 }
