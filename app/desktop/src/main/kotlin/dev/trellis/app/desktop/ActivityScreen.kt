@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -43,10 +44,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import dev.trellis.activity.AppSlice
 import dev.trellis.activity.CategorySlice
 import dev.trellis.activity.ClassificationExplanation
@@ -56,6 +63,11 @@ import dev.trellis.activity.Segment
 import dev.trellis.ui.LocalCardStyle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.roundToInt
+import kotlin.math.sin
+import kotlin.math.sqrt
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
@@ -93,6 +105,9 @@ internal fun ActivityScreen(runtime: AppRuntime, modifier: Modifier = Modifier) 
     var showEndPicker by remember { mutableStateOf(false) }
     var detail by remember { mutableStateOf<Segment?>(null) }
     var classify by remember { mutableStateOf<Segment?>(null) }
+
+    // 饼图里是否隐藏「未追踪 / 未分类」：日视图和范围总览共用，切换视图时保持用户选择。
+    var hideUntracked by remember { mutableStateOf(false) }
 
     // 进页面才开库，然后按 settings.json 的间隔轮询；离开页面时作用域取消，后台不再跑。
     LaunchedEffect(Unit) {
@@ -157,10 +172,17 @@ internal fun ActivityScreen(runtime: AppRuntime, modifier: Modifier = Modifier) 
                 summary = daySummary,
                 segments = daySegments,
                 loading = loading,
+                hideUntracked = hideUntracked,
+                onHideUntrackedChange = { hideUntracked = it },
                 onOpenDetail = { detail = it },
             )
 
-            ActivityMode.Range -> RangeView(summary = rangeSummary, loading = loading)
+            ActivityMode.Range -> RangeView(
+                summary = rangeSummary,
+                loading = loading,
+                hideUntracked = hideUntracked,
+                onHideUntrackedChange = { hideUntracked = it },
+            )
 
             ActivityMode.Rules -> ActivityRulesView(
                 runtime = runtime,
@@ -317,6 +339,8 @@ private fun DayView(
     summary: DaySummary?,
     segments: List<Segment>,
     loading: Boolean,
+    hideUntracked: Boolean,
+    onHideUntrackedChange: (Boolean) -> Unit,
     onOpenDetail: (Segment) -> Unit,
 ) {
     var selectedCategoryId by remember { mutableStateOf<String?>(null) }
@@ -357,6 +381,15 @@ private fun DayView(
 
         item {
             TimelineCard(summary = summary, segments = segments, onOpenDetail = onOpenDetail)
+        }
+
+        item {
+            CategoryPieCard(
+                title = "分类占比",
+                slices = summary.categories,
+                hideUntracked = hideUntracked,
+                onHideUntrackedChange = onHideUntrackedChange,
+            )
         }
 
         item {
@@ -467,7 +500,12 @@ private fun DayView(
 
 /** 范围总览：一段日期按分类/应用汇总，全部按时长倒序。 */
 @Composable
-private fun RangeView(summary: RangeSummary?, loading: Boolean) {
+private fun RangeView(
+    summary: RangeSummary?,
+    loading: Boolean,
+    hideUntracked: Boolean,
+    onHideUntrackedChange: (Boolean) -> Unit,
+) {
     if (summary == null) {
         Text(
             if (loading) "正在汇总这段日期…" else "还没有可以汇总的活动数据。",
@@ -495,6 +533,15 @@ private fun RangeView(summary: RangeSummary?, loading: Boolean) {
                     ActivityStat("天数", summary.days.toString() + " 天")
                 }
             }
+        }
+
+        item {
+            CategoryPieCard(
+                title = "分类占比",
+                slices = summary.categories,
+                hideUntracked = hideUntracked,
+                onHideUntrackedChange = onHideUntrackedChange,
+            )
         }
 
         item {
@@ -584,6 +631,275 @@ private fun TimelineCard(summary: DaySummary, segments: List<Segment>, onOpenDet
             }
         }
     }
+}
+
+/**
+ * 分类占比饼图：只切一级分类（[CategorySlice.totalMs] 已含子类，不会重复计数）。
+ *
+ * 「不显示未追踪」勾上后把「未分类」从图里去掉——它常是采集噪声或还没补规则的时间，
+ * 想看「真正被归好类的时间花在哪」时用。图中空环用分类色，图例同时给时长和百分比。
+ */
+@Composable
+private fun CategoryPieCard(
+    title: String,
+    slices: List<CategorySlice>,
+    hideUntracked: Boolean,
+    onHideUntrackedChange: (Boolean) -> Unit,
+) {
+    val data = remember(slices, hideUntracked) { pieSlices(slices, hideUntracked) }
+    // 选中项放在卡片内：切换日期/勾选后数据变了，选中项如果不在图里就自动清空。
+    var selectedId by remember(data) { mutableStateOf<String?>(null) }
+    val selected = data.firstOrNull { it.categoryId == selectedId }
+    val selectedChildren = remember(selected, slices) {
+        selected?.let { childSlices(slices, it) } ?: emptyList()
+    }
+
+    ActivityCard {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(title, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+            Checkbox(checked = hideUntracked, onCheckedChange = onHideUntrackedChange)
+            Spacer(Modifier.width(2.dp))
+            Text(
+                "不显示未追踪",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.clickable { onHideUntrackedChange(!hideUntracked) },
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+
+        if (data.isEmpty()) {
+            Text(
+                if (hideUntracked) "隐藏未追踪后没有可显示的分类。" else "还没有可分类的活动。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            val totalMs = data.sumOf { it.totalMs }.coerceAtLeast(1)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(24.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ActivityPie(
+                    data = data,
+                    totalMs = totalMs,
+                    selectedId = selectedId,
+                    onSelect = { id -> selectedId = if (selectedId == id) null else id },
+                )
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    data.forEach { slice ->
+                        PieLegendRow(
+                            slice = slice,
+                            totalMs = totalMs,
+                            selected = slice.categoryId == selectedId,
+                            onClick = { selectedId = if (selectedId == slice.categoryId) null else slice.categoryId },
+                        )
+                    }
+                }
+            }
+            if (selected != null) {
+                Spacer(Modifier.height(12.dp))
+                PieSelectionDetail(slice = selected, children = selectedChildren, shownTotalMs = totalMs)
+            }
+        }
+    }
+}
+
+/**
+ * 环形饼图本体：外环按分类色切分，环上直接标分类名（扇区太窄放不下就省略），
+ * 点击扇区聚焦；中心显示合计时长，聚焦后改成选中分类的名字和时长。
+ */
+@Composable
+private fun ActivityPie(
+    data: List<CategorySlice>,
+    totalMs: Long,
+    selectedId: String?,
+    onSelect: (String?) -> Unit,
+) {
+    val textMeasurer = rememberTextMeasurer(cacheSize = 64)
+    val focus = data.firstOrNull { it.categoryId == selectedId }
+    Box(modifier = Modifier.size(184.dp), contentAlignment = Alignment.Center) {
+        Canvas(
+            Modifier
+                .fillMaxSize()
+                .padding(4.dp)
+                .pointerInput(data, totalMs) {
+                    detectTapGestures { offset ->
+                        val radius = minOf(size.width, size.height) / 2f
+                        val dx = offset.x - size.width / 2f
+                        val dy = offset.y - size.height / 2f
+                        val distance = sqrt(dx * dx + dy * dy)
+                        if (distance > radius) return@detectTapGestures
+                        val stroke = minOf(size.width, size.height) * 0.20f
+                        // 点中心空白 = 取消聚焦。
+                        if (distance < radius - stroke) {
+                            onSelect(null)
+                            return@detectTapGestures
+                        }
+                        val angle = ((Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat() + 90f) + 360f) % 360f
+                        var cursor = 0f
+                        data.forEach { slice ->
+                            val sweep = slice.totalMs.toFloat() / totalMs * 360f
+                            if (angle >= cursor && angle < cursor + sweep) {
+                                onSelect(slice.categoryId)
+                                return@detectTapGestures
+                            }
+                            cursor += sweep
+                        }
+                    }
+                },
+        ) {
+            val stroke = size.minDimension * 0.20f
+            val ringRadius = size.minDimension / 2f - stroke / 2f
+            var start = -90f
+            data.forEach { slice ->
+                val sweep = slice.totalMs.toFloat() / totalMs * 360f
+                val dimmed = selectedId != null && selectedId != slice.categoryId
+                drawArc(
+                    color = if (dimmed) tintOf(slice.color).copy(alpha = 0.28f) else tintOf(slice.color),
+                    startAngle = start,
+                    sweepAngle = sweep,
+                    useCenter = false,
+                    topLeft = Offset(stroke / 2f, stroke / 2f),
+                    size = Size(size.width - stroke, size.height - stroke),
+                    style = Stroke(width = stroke),
+                )
+
+                // 标签贴着环的中线放；只画「未被压暗」的扇区，而且弧长要放得下文字。
+                val showLabel = !dimmed && sweep >= 12f
+                if (showLabel) {
+                    val chord = 2f * ringRadius * sin(Math.toRadians(sweep.toDouble() / 2.0)).toFloat()
+                    val label = slice.name.lastOrNull() ?: "未分类"
+                    val style = TextStyle(
+                        color = labelColorOn(tintOf(slice.color)),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    val layout = textMeasurer.measure(AnnotatedString(label), style = style)
+                    if (layout.size.width <= chord * 0.92f) {
+                        val midRad = Math.toRadians((start + sweep / 2f).toDouble())
+                        val cx = size.width / 2f + cos(midRad).toFloat() * ringRadius
+                        val cy = size.height / 2f + sin(midRad).toFloat() * ringRadius
+                        drawText(
+                            textLayoutResult = layout,
+                            topLeft = Offset(cx - layout.size.width / 2f, cy - layout.size.height / 2f),
+                        )
+                    }
+                }
+                start += sweep
+            }
+        }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                if (focus != null) (focus.name.lastOrNull() ?: "未分类") else formatDuration(totalMs),
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                if (focus != null) {
+                    formatDuration(focus.totalMs) + " · " + percentLabel(focus.totalMs, totalMs)
+                } else {
+                    "已显示"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PieLegendRow(
+    slice: CategorySlice,
+    totalMs: Long,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(4.dp))
+            .background(if (selected) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(vertical = 2.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(10.dp)
+                .clip(CircleShape)
+                .background(tintOf(slice.color)),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            slice.name.lastOrNull() ?: "未分类",
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            formatDuration(slice.totalMs),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            percentLabel(slice.totalMs, totalMs),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** 饼图聚焦后的详情：全路径、合计/占比、直接时长、直接子分类。 */
+@Composable
+private fun PieSelectionDetail(slice: CategorySlice, children: List<CategorySlice>, shownTotalMs: Long) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(MaterialTheme.colorScheme.outlineVariant),
+    )
+    Spacer(Modifier.height(10.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier
+                .size(10.dp)
+                .clip(CircleShape)
+                .background(tintOf(slice.color)),
+        )
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(slice.path, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+            Text(
+                "合计 " + formatDuration(slice.totalMs) +
+                    " · 占已显示 " + percentLabel(slice.totalMs, shownTotalMs) +
+                    (if (slice.directMs != slice.totalMs) " · 直接 " + formatDuration(slice.directMs) else ""),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+    if (children.isNotEmpty()) {
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "子分类：" + children.take(5).joinToString(" · ") { child ->
+                (child.name.lastOrNull() ?: "未分类") + " " + formatDuration(child.totalMs)
+            } + if (children.size > 5) " 等 " + children.size + " 项" else "",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    Spacer(Modifier.height(4.dp))
+    Text(
+        "再点一次切片或图例取消聚焦。",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 /** 分类树一行：缩进 + 颜色点 + 名称，右侧 direct/total；点击筛选应用排行。 */
@@ -900,6 +1216,55 @@ private fun orderedCategories(slices: List<CategorySlice>): List<CategorySlice> 
             .sortedByDescending { it.totalMs }
             .flatMap { listOf(it) + walk(it.name) }
     return walk(emptyList())
+}
+
+/** 饼图切片：只取一级分类；超过 8 个时把尾部并成「其他」，免得图例比饼还长。 */
+private fun pieSlices(slices: List<CategorySlice>, hideUntracked: Boolean): List<CategorySlice> {
+    val top = slices
+        .filter { slice ->
+            slice.depth == 1 &&
+                slice.totalMs > 0 &&
+                (!hideUntracked || slice.categoryId != ActivityCategoryUncategorized)
+        }
+        .sortedByDescending { it.totalMs }
+    if (top.size <= 8) return top
+    val rest = top.drop(7)
+    return top.take(7) + CategorySlice(
+        categoryId = "activity-other",
+        name = listOf("其他"),
+        color = "#9CA3AF",
+        depth = 1,
+        directMs = rest.sumOf { it.directMs },
+        totalMs = rest.sumOf { it.totalMs },
+    )
+}
+
+/** 百分比文案：≥10% 取整，小切片留一位小数（否则 0% 看不出有没有）。 */
+private fun percentLabel(partMs: Long, totalMs: Long): String {
+    if (totalMs <= 0L || partMs <= 0L) return "0%"
+    val pct = partMs * 100.0 / totalMs
+    return if (pct >= 10) {
+        pct.roundToInt().toString() + "%"
+    } else {
+        ((pct * 10).roundToInt() / 10.0).toString() + "%"
+    }
+}
+
+/** 饼图聚焦时列出的直接子分类（路径正好比父级多一层）。 */
+private fun childSlices(slices: List<CategorySlice>, parent: CategorySlice): List<CategorySlice> =
+    slices
+        .filter { slice ->
+            slice.categoryId != parent.categoryId &&
+                slice.depth == parent.depth + 1 &&
+                slice.name.size == parent.name.size + 1 &&
+                slice.name.subList(0, parent.name.size) == parent.name
+        }
+        .sortedByDescending { it.totalMs }
+
+/** 环上标签要贴在色块上，按亮度选深灰或白，别用主题色。 */
+private fun labelColorOn(color: Color): Color {
+    val luminance = 0.299f * color.red + 0.587f * color.green + 0.114f * color.blue
+    return if (luminance > 0.55f) Color(0xFF1F2937) else Color.White
 }
 
 /** 分类颜色是数据里的 `#RRGGBB`，不接主题语义色；非法值退回未分类灰。 */
