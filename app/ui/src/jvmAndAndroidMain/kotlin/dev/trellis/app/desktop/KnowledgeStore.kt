@@ -50,6 +50,35 @@ internal class KnowledgeStore(internal val home: File, private val clock: Trelli
     /** 覆盖保存；返回是否真的写成功（写失败页面要能说人话，而不是假装保存了）。 */
     fun save(note: KnowledgeNote): Boolean = writeFile(note)
 
+    /**
+     * 从外部 Markdown 文件导入笔记（左栏「导入…」）。
+     *
+     * 标题按 `frontmatter.title` → 正文第一个 `# ` → 文件名 的顺序取（前两步
+     * [parseNoteMarkdown] 已经做了），重名追加「 (2)」；created/updated 都记成导入时刻，
+     * 因为原文件的时间戳不一定可信。坏文件直接跳过——批操作，不能让一篇挡住其它篇。
+     */
+    fun importNotes(files: List<File>): List<KnowledgeNote> {
+        val taken = allNotes().mapTo(mutableSetOf()) { titleKey(it.title) }
+        val imported = mutableListOf<KnowledgeNote>()
+        for (file in files) {
+            if (!file.isFile) continue
+            val raw = runCatching { file.readText(Charsets.UTF_8) }.getOrNull() ?: continue
+            val now = clock.nowMs()
+            var id = newId(now)
+            var guard = 0
+            while (fileOf(id)?.exists() == true && guard++ < 100) id = newId(now)
+            val parsed = runCatching { parseNoteMarkdown(id, raw, clock.zone, now) }.getOrNull() ?: continue
+            val base = parsed.title.ifBlank { file.nameWithoutExtension }
+            val title = uniqueNoteTitle(base, taken.mapTo(mutableSetOf()) { titleKey(it) })
+            taken += titleKey(title)
+            val note = parsed.copy(id = id, title = title, createdAt = now, updatedAt = now)
+            if (writeFile(note)) imported += note
+        }
+        return imported
+    }
+
+    private fun titleKey(title: String): String = title.trim().ifBlank { "无标题笔记" }
+
     fun delete(id: String): Boolean = fileOf(id)?.delete() == true
 
     /**

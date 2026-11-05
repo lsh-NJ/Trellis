@@ -43,6 +43,9 @@ internal enum class InlineMarkKind {
 /** 可见文本里的样式区间（坐标是投影后文本的偏移）。 */
 internal data class InlineMarkRange(val start: Int, val end: Int, val kind: InlineMarkKind)
 
+/** 可见文本里的一整块（代码/引用）：[start]..[end] 是开区间，供 UI 画整块底色/竖线。 */
+internal data class DocumentBlock(val start: Int, val end: Int)
+
 /**
  * 原文里一个行内 token；[contentStart]..[contentEnd] 是内容，两侧是标记。
  *
@@ -130,6 +133,10 @@ internal data class DocumentProjection(
     val paragraphs: List<DocumentParagraph> = emptyList(),
     /** 光标所在段落；光标在空行上时为 null。 */
     val caretParagraph: DocumentParagraph? = null,
+    /** 可见文本里的围栏代码块（整块画底色用）。 */
+    val codeBlocks: List<DocumentBlock> = emptyList(),
+    /** 可见文本里的引用块（连续 `>` 行，画左侧竖线用）。 */
+    val quoteBlocks: List<DocumentBlock> = emptyList(),
     val hidden: List<IntRange> = emptyList(),
     val caretKind: DocumentLineKind = DocumentLineKind.Paragraph,
     val mapping: OffsetMapping = identityOffsetMapping,
@@ -338,12 +345,72 @@ internal fun projectDocument(
                 }
             }
 
-            DocumentLineKind.CodeFence,
+            // 围栏行由下面的「代码块」逻辑统一处理（光标不在块里时连围栏一起藏掉）。
+            DocumentLineKind.CodeFence -> Unit
+
             DocumentLineKind.AiMarker,
             DocumentLineKind.MathFence,
             -> syntaxRanges += lineRange
 
             else -> Unit
+        }
+    }
+
+    // 围栏代码块：成对找开口/闭口围栏行；光标不在块里时把围栏行（连同换行）藏掉，
+    // 整块交给 UI 画一张底色卡片，光标进块后再把围栏露出来当语法提示。
+    val rawCodeBlocks = mutableListOf<IntArray>() // [openIndex, closeIndex]（未闭合时 closeIndex = -1）
+    var probe = 0
+    while (probe < lines.size) {
+        val line = lines[probe]
+        val previous = lines.getOrNull(probe - 1)
+        if (line.kind == DocumentLineKind.CodeFence && previous?.kind != DocumentLineKind.CodeContent) {
+            var close = -1
+            var scan = probe + 1
+            while (scan < lines.size) {
+                if (lines[scan].kind == DocumentLineKind.CodeFence) {
+                    close = scan
+                    break
+                }
+                scan += 1
+            }
+            rawCodeBlocks += intArrayOf(probe, close)
+            probe = if (close >= 0) close + 1 else lines.size
+        } else {
+            probe += 1
+        }
+    }
+    for (block in rawCodeBlocks) {
+        val openIndex = block[0]
+        val closeIndex = block[1]
+        val openLine = lines[openIndex]
+        val closeLine = lines.getOrNull(closeIndex)
+        val blockEnd = closeLine?.end ?: body.length
+        val inside = selection.min in openLine.start..blockEnd
+        if (inside) {
+            val openRange = if (openLine.end > openLine.start) openLine.start..(openLine.end - 1) else null
+            openRange?.let(syntaxRanges::add)
+            val closeRange = if (closeLine != null && closeLine.end > closeLine.start) {
+                closeLine.start..(closeLine.end - 1)
+            } else {
+                null
+            }
+            closeRange?.let(syntaxRanges::add)
+            continue
+        }
+        // 开口围栏：连它后面的换行一起藏，免得留下一条空行。
+        if (openLine.end > openLine.start) {
+            hiddenRanges += openLine.start..minOf(openLine.end, body.length - 1)
+        }
+        if (openLine.end < body.length) {
+            hiddenRanges += openLine.end..openLine.end
+        }
+        // 闭口围栏：连它前面的换行一起藏，块尾不额外多空行。
+        if (closeLine != null) {
+            val previousLineEnd = lines.getOrNull(closeIndex - 1)?.end ?: closeLine.start
+            val rangeStart = minOf(previousLineEnd, closeLine.start)
+            if (closeLine.end > rangeStart) {
+                hiddenRanges += rangeStart..(closeLine.end - 1)
+            }
         }
     }
 
@@ -356,8 +423,9 @@ internal fun projectDocument(
         if (line.kind in rawContentKinds) continue
         val groups = match.groups
         val kind: InlineMarkKind
-        val content: IntRange
+        var content: IntRange
         var innerHidden: IntRange? = null
+        var extraMarkRanges: List<IntRange> = emptyList()
         when {
             // 图片保持原样（图不是文本，折叠 URL 反而看不懂）。
             groups["imageAlt"] != null -> continue
@@ -380,6 +448,27 @@ internal fun projectDocument(
             groups["code"] != null -> {
                 kind = InlineMarkKind.Code
                 content = groups["code"]!!.range
+                // `` `[[概念]]` ``：反引号里包着概念标注时，代码只展示概念名/原文，
+                // 方括号（以及 `=> 概念名`）当作标记藏起来。
+                val rawContent = body.substring(content.first, content.last + 1)
+                if (rawContent.length > 4 && rawContent.startsWith("[[") && rawContent.endsWith("]]")) {
+                    val inner = rawContent.substring(2, rawContent.length - 2)
+                    if (!inner.contains("[[") && !inner.contains("\n")) {
+                        val separator = conceptAnnotationDisplayLength(inner)
+                        val display = if (separator >= 0) separator else inner.length
+                        if (display > 0) {
+                            extraMarkRanges = listOf(
+                                content.first..(content.first + 1),
+                                (content.last - 1)..content.last,
+                            )
+                            val innerStart = content.first + 2
+                            content = innerStart..(innerStart + display - 1)
+                            if (display < inner.length) {
+                                innerHidden = (innerStart + display)..(content.last + (inner.length - display))
+                            }
+                        }
+                    }
+                }
             }
 
             groups["italic"] != null -> {
@@ -419,6 +508,12 @@ internal fun projectDocument(
         tokens += token
         marks += InlineMarkRange(token.contentStart, token.contentEnd, kind)
         applyTokenMarkers(token, selection, hiddenRanges, syntaxRanges)
+        if (extraMarkRanges.isNotEmpty()) {
+            val revealed = isTokenRevealed(token.start, token.end, selection)
+            for (range in extraMarkRanges) {
+                if (revealed) syntaxRanges += range else hiddenRanges += range
+            }
+        }
     }
 
     // 概念名/别名在正文里的普通出现：只染色、不加下划线（标注过的 `[[…]]` 才有下划线）。
@@ -539,6 +634,32 @@ internal fun projectDocument(
     val paragraphs = groupDocumentParagraphs(lines)
     val caretParagraph = paragraphs.firstOrNull { caretIndex in it.firstLine..it.lastLine }
 
+    // 代码块/引用块的可见区间：交给编辑器画整块底色和左侧竖线。
+    val codeBlocks = rawCodeBlocks.mapNotNull { block ->
+        val openLine = lines[block[0]]
+        val blockEnd = lines.getOrNull(block[1])?.end ?: body.length
+        val from = rawToVisible[openLine.start]
+        val to = rawToVisible[blockEnd]
+        if (to > from) DocumentBlock(from, to) else null
+    }
+    val quoteBlocks = buildList {
+        var cursor = 0
+        while (cursor < lines.size) {
+            if (lines[cursor].kind != DocumentLineKind.Quote) {
+                cursor += 1
+                continue
+            }
+            val first = cursor
+            while (cursor + 1 < lines.size && lines[cursor + 1].kind == DocumentLineKind.Quote) {
+                cursor += 1
+            }
+            val from = rawToVisible[lines[first].start]
+            val to = rawToVisible[lines[cursor].end]
+            if (to > from) add(DocumentBlock(from, to))
+            cursor += 1
+        }
+    }
+
     return DocumentProjection(
         text = visible.toString(),
         marks = visibleMarks,
@@ -554,6 +675,8 @@ internal fun projectDocument(
         lines = lines,
         paragraphs = paragraphs,
         caretParagraph = caretParagraph,
+        codeBlocks = codeBlocks,
+        quoteBlocks = quoteBlocks,
         hidden = mergeRanges(hiddenRanges),
         caretKind = caretKind,
         mapping = InlineOffsetMapping(rawToVisible, visibleToRaw),
@@ -561,17 +684,21 @@ internal fun projectDocument(
 }
 
 /** 光标在 token 里或紧挨着它（前后各一格）时露源码，否则把两侧标记藏起来。 */
+/** 光标在 token 里或前后紧挨一格时，标记要还原成源码。 */
+private fun isTokenRevealed(start: Int, end: Int, selection: TextRange): Boolean =
+    if (selection.collapsed) {
+        selection.start in maxOf(0, start - 1)..end
+    } else {
+        selection.min < end && selection.max > start
+    }
+
 private fun applyTokenMarkers(
     token: InlineTokenRange,
     selection: TextRange,
     hidden: MutableList<IntRange>,
     syntax: MutableList<IntRange>,
 ) {
-    val revealed = if (selection.collapsed) {
-        selection.start in maxOf(0, token.start - 1)..token.end
-    } else {
-        selection.min < token.end && selection.max > token.start
-    }
+    val revealed = isTokenRevealed(token.start, token.end, selection)
     val left = token.start until token.contentStart
     val right = token.contentEnd until token.end
     val leftRange = if (left.isEmpty()) null else left.first..left.last

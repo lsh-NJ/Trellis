@@ -132,6 +132,15 @@ actual object HostPlatform {
         return File(dir, name)
     }
 
+    actual fun chooseImportFiles(): List<File> {
+        val dialog = java.awt.FileDialog(null as java.awt.Frame?, "导入 Markdown 笔记", java.awt.FileDialog.LOAD)
+        dialog.isMultipleMode = true
+        dialog.setFilenameFilter { _, name -> isMarkdownFileName(name) }
+        dialog.isVisible = true
+        val dir = dialog.directory ?: return emptyList()
+        return dialog.files.orEmpty().map { File(dir, it.name) }
+    }
+
     private fun appWindowBounds(): java.awt.Rectangle {
         val window = java.awt.Window.getWindows()
             .firstOrNull { it.isVisible && it.width > 300 && it.height > 200 }

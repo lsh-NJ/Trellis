@@ -422,4 +422,69 @@ class MarkdownDocumentEditTest {
         assertEquals(4, alreadyDivided.selection.min)
     }
 
+
+    @Test
+    fun inlineCodeNeverSpansLines() {
+        // 反引号跨行时不能把下一行吞进 code span（否则后面标记的配对全错位）。
+        val body = "a `b\nc` d"
+        val projection = project(body, caret = 0)
+        assertEquals(body, projection.text)
+        assertTrue(projection.marks.none { it.kind == InlineMarkKind.Code })
+        val closingOnly = project("a `b` c\nd `e` f", caret = 0)
+        assertEquals("a b c\nd e f", closingOnly.text)
+        val codes = closingOnly.marks.filter { it.kind == InlineMarkKind.Code }
+        assertEquals(2, codes.size)
+        assertTrue(codes.none { closingOnly.text.substring(it.start, it.end).contains('\n') })
+    }
+
+    @Test
+    fun fenceLinesHideWhenTheCaretIsOutsideTheBlock() {
+        val body = "前言\n\n```yaml\nservices:\n  db: x\n```\n\n结尾"
+        val projection = project(body, caret = 0)
+        assertEquals("前言\n\nservices:\n  db: x\n\n结尾", projection.text)
+        assertEquals(1, projection.codeBlocks.size)
+        val block = projection.codeBlocks.single()
+        assertEquals("services:\n  db: x", projection.text.substring(block.start, block.end).trimEnd())
+        assertFalse(projection.text.contains("```"))
+    }
+
+    @Test
+    fun fenceLinesShowWhenTheCaretIsInsideTheBlock() {
+        val body = "前言\n\n```yaml\nservices:\n  db: x\n```\n\n结尾"
+        val projection = project(body, caret = body.indexOf("services"))
+        assertTrue(projection.text.contains("```yaml"))
+        assertTrue(projection.text.contains("```"))
+        assertTrue(projection.syntax.isNotEmpty())
+    }
+
+    @Test
+    fun quoteBlocksGroupConsecutiveLines() {
+        val body = "> 一\n> 二\n\n正文"
+        val projection = project(body, caret = body.length)
+        assertEquals("一\n二\n\n正文", projection.text)
+        assertEquals(1, projection.quoteBlocks.size)
+        val block = projection.quoteBlocks.single()
+        assertEquals("一\n二", projection.text.substring(block.start, block.end).trimEnd())
+    }
+
+    @Test
+    fun backticksAroundAConceptAnnotationShowOnlyTheName() {
+        val body = "1. `[[services]]`: 定义"
+        val projection = project(body, caret = 0)
+        assertEquals("1. services: 定义", projection.text)
+        val code = projection.marks.single { it.kind == InlineMarkKind.Code }
+        assertEquals("services", projection.text.substring(code.start, code.end))
+    }
+
+    @Test
+    fun arrowMappingInsideCodeHidesTheMappedName() {
+        val body = "`[[原文 => 概念名]]`尾"
+        val projection = project(body, caret = body.length)
+        assertEquals("原文尾", projection.text)
+        val code = projection.marks.single { it.kind == InlineMarkKind.Code }
+        assertEquals(0, code.start)
+        assertEquals(2, code.end)
+    }
+
+
 }

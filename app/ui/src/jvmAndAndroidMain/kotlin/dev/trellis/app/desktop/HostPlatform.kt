@@ -59,6 +59,14 @@ expect object HostPlatform {
     fun chooseExportFile(defaultName: String): File?
 
     /**
+     * 让用户选一个或多个 Markdown 文件（笔记导入用）。
+     *
+     * 桌面弹系统打开面板（AWT `FileDialog` 多选）；手机没有等价的同步 API
+     * （SAF 要 `ActivityResult`），返回空列表，界面据此说明「手机上暂时不能导入」。
+     */
+    fun chooseImportFiles(): List<File>
+
+    /**
      * 「这里可以拖动」的指针图标。
      *
      * 桌面是左右箭头，手机没有 hover 这回事（返回默认图标）。

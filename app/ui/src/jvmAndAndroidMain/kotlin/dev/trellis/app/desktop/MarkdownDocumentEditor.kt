@@ -41,7 +41,9 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
@@ -403,6 +405,40 @@ internal fun MarkdownDocumentEditor(
         // gutter 画在文字左边（Canvas 先画 = 在最底层，文字不会盖住它）。
         Canvas(Modifier.matchParentSize()) {
             val layout = editLayout ?: return@Canvas
+            val textLength = layout.layoutInput.text.length
+            fun clampOffset(offset: Int): Int = offset.coerceIn(0, textLength)
+
+            // 代码块：整块画一张圆角浅灰卡片（行间不留缝），光标不在块里时连围栏行也藏掉了，
+            // 所以卡片范围就是可见文本里这一段。
+            for (block in projection.codeBlocks) {
+                if (block.end <= block.start) continue
+                val fromLine = layout.getLineForOffset(clampOffset(block.start))
+                val toLine = layout.getLineForOffset(clampOffset(block.end - 1))
+                val top = layout.getLineTop(fromLine) - 2.dp.toPx()
+                val bottom = layout.getLineBottom(toLine) + 2.dp.toPx()
+                val left = gutterWidthPx - 10.dp.toPx()
+                drawRoundRect(
+                    color = MarkdownCodeBackground,
+                    topLeft = Offset(left, top),
+                    size = Size((size.width - left - 8.dp.toPx()).coerceAtLeast(0f), bottom - top),
+                    cornerRadius = CornerRadius(8.dp.toPx()),
+                )
+            }
+
+            // 引用块：左侧一条竖线，跨连续的 `>` 行（marktext 那种引用样式）。
+            for (block in projection.quoteBlocks) {
+                if (block.end <= block.start) continue
+                val first = layout.getLineForOffset(clampOffset(block.start))
+                val last = layout.getLineForOffset(clampOffset(block.end - 1))
+                val x = gutterWidthPx - 8.dp.toPx()
+                drawLine(
+                    color = scheme.primary.copy(alpha = 0.55f),
+                    start = Offset(x, layout.getLineTop(first) + 2.dp.toPx()),
+                    end = Offset(x, layout.getLineBottom(last) - 2.dp.toPx()),
+                    strokeWidth = 2.5.dp.toPx(),
+                )
+            }
+
             val paragraph = projection.caretParagraph ?: return@Canvas
             val rawLines = projection.lines
             if (rawLines.isEmpty()) return@Canvas
@@ -577,14 +613,8 @@ private fun buildDocumentEditText(
         add(range, SpanStyle(color = scheme.onSurfaceVariant, fontStyle = FontStyle.Italic))
     }
     for (range in projection.codeLines) {
-        add(
-            range,
-            SpanStyle(
-                fontFamily = FontFamily.Monospace,
-                background = MarkdownCodeBackground,
-                color = scheme.onSurface,
-            ),
-        )
+        // 底色由 gutter Canvas 画成一整块圆角卡片，这里只管等宽字体。
+        add(range, SpanStyle(fontFamily = FontFamily.Monospace, color = scheme.onSurface))
     }
     for (range in projection.tables) {
         add(range, SpanStyle(fontFamily = FontFamily.Monospace, color = scheme.onSurfaceVariant))
