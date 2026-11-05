@@ -79,10 +79,44 @@ fun PhoneApp(
     startGraphMode: Int = 0,
     /** 只给预览器用：进来就打开某一篇笔记。 */
     startNoteId: String? = null,
+    /**
+     * 通知点开时该落到哪个页签（序号见 [PhoneTab]）。
+     *
+     * 和 [startTab] 的区别：那是首次组合的初值，这是**任何时刻**都可能来的指令 ——
+     * 应用在后台时点了通知，Activity 走 onNewIntent，界面早就组合过了。
+     * [openTabToken] 每次点击自增，用来表达「又点了同一条」。
+     */
+    openTab: Int? = null,
+    openTabToken: Int = 0,
+    /**
+     * 「从文件安装插件」的选文件动作。
+     *
+     * 共享层没有文件选择器：桌面是 `JFileChooser`，安卓是 SAF，都是壳的事。
+     * 传 null（预览器、没有宿主的场景）时这个按钮就不出现 —— 不摆一个点了没反应的入口。
+     */
+    onPickPluginArchive: ((onPicked: (java.io.File) -> Unit) -> Unit)? = null,
+    /** 只给预览器用：进来就停在某个二级页（插件 / 活动 / 诊断）。 */
+    startSubPage: PhoneSubPage? = null,
 ) {
-    PhoneTheme(runtime.uiPrefs.appearance) {
+    PhoneTheme(runtime.uiPrefs.appearance, runtime.uiPrefs.fontScale) {
         var tab by remember { mutableIntStateOf(startTab.coerceIn(0, PhoneTab.entries.size - 1)) }
-        var sub by remember { mutableStateOf<PhoneSubPage?>(null) }
+        var sub by remember { mutableStateOf(startSubPage) }
+
+        // 通知点开：落到对应页签。用 token 而不是拿 tab 本身做 key ——
+        // 「点同一条通知两次」也要重新跳一次，否则第二次什么都不会发生。
+        LaunchedEffect(openTabToken) {
+            if (openTabToken > 0 && openTab != null) {
+                sub = null
+                tab = openTab.coerceIn(0, PhoneTab.entries.size - 1)
+            }
+        }
+
+        // 「去知识里看」这类跨页跳转：计划页点「打开来源笔记」写的是 AppRuntime 的
+        // pendingKnowledgeReveal，桌面上靠 currentTab 切页；手机上页签是自己的状态，
+        // 得在这里把「知识」顶上来，否则字段被写进去、人还停在计划页，看起来像没反应。
+        LaunchedEffect(runtime.pendingKnowledgeReveal) {
+            if (runtime.pendingKnowledgeReveal != null) tab = PhoneTab.Knowledge.ordinal
+        }
 
         // 数据每秒刷新一次：插件也能改数据，而「变更通知」这件事领域层还没做。
         LaunchedEffect(Unit) {
@@ -104,17 +138,6 @@ fun PhoneApp(
             }
         }
 
-        // 计时器每秒推进一次。
-        //
-        // 桌面上这件事由 `TimerWindow` 自己的 LaunchedEffect 做（窗口关掉就自然停）；
-        // 手机上计时器是底部悬浮条，没有独立窗口，所以驱动必须放在根界面。
-        // 少了这段的表现很隐蔽：计时器能开、能显示，但数字一直是 0:00。
-        LaunchedEffect(runtime.timerRunning) {
-            while (runtime.timerRunning) {
-                delay(1_000)
-                runtime.timerTick(1)
-            }
-        }
 
         if (backHandler != null) {
             backHandler(sub != null || tab != PhoneTab.Today.ordinal) {
@@ -148,7 +171,12 @@ fun PhoneApp(
                     ) {
                         val current = sub
                         if (current != null) {
-                            SubPageHost(runtime, current) { sub = null }
+                            SubPageHost(
+                                runtime = runtime,
+                                page = current,
+                                onBack = { sub = null },
+                                onPickPluginArchive = onPickPluginArchive,
+                            )
                         } else {
                             when (PhoneTab.entries[tab]) {
                                 PhoneTab.Today -> TodayPage(runtime)
@@ -176,9 +204,18 @@ fun PhoneApp(
 }
 
 @Composable
-private fun SubPageHost(runtime: AppRuntime, page: PhoneSubPage, onBack: () -> Unit) {
+private fun SubPageHost(
+    runtime: AppRuntime,
+    page: PhoneSubPage,
+    onBack: () -> Unit,
+    onPickPluginArchive: (((java.io.File) -> Unit) -> Unit)?,
+) {
     when (page) {
-        PhoneSubPage.Plugins -> PluginsPage(runtime, onBack)
+        PhoneSubPage.Plugins -> PluginsPage(
+            runtime = runtime,
+            onPickArchive = onPickPluginArchive,
+            onBack = onBack,
+        )
         PhoneSubPage.Activity -> WrappedPage("活动", onBack) {
             dev.trellis.app.desktop.ActivityScreen(runtime)
         }
@@ -307,7 +344,9 @@ private fun TimerBar(runtime: AppRuntime) {
             Column(Modifier.fillMaxWidth().padding(horizontal = Gap.xl).padding(bottom = Gap.xxl)) {
                 SheetHeading(
                     if (runtime.timerFinished) "这一轮结束了" else "正在计时",
-                    runtime.timerTaskTitle + " · 已过 " + minutesLabel(runtime.timerElapsedSeconds / 60),
+                    // 用 m:ss 而不是「几分钟」：不到一分钟时分钟档只会显示「—」，
+                    // 看着像计时器没走。
+                    runtime.timerTaskTitle + " · 已过 " + clockText(runtime.timerElapsedSeconds),
                 )
                 Spacer(Modifier.height(Gap.l))
                 Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {

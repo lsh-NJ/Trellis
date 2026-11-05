@@ -11,8 +11,16 @@ import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import dev.trellis.app.desktop.AppRuntime
 import dev.trellis.app.mobile.PhoneApp
+import dev.trellis.app.mobile.PhoneSubPage
 import dev.trellis.domain.TaskStatus
+import dev.trellis.domain.plan.Actor
+import dev.trellis.domain.plan.CommandEnvelope
+import dev.trellis.domain.plan.CommitmentDraft
+import dev.trellis.domain.plan.UnitDraft
+import dev.trellis.feature.learning.LearningPlanStore
 import java.io.File
+import java.time.LocalDate
+import java.util.UUID
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -30,6 +38,13 @@ import kotlinx.coroutines.runBlocking
  */
 fun main() {
     val home = File(System.getenv("TRELLIS_PREVIEW_HOME") ?: "build/preview-home").apply { mkdirs() }
+
+    // 计划库必须在运行时之前造：`AppRuntime.create` 会立刻打开同一个 SQLite 文件，
+    // 那时候再灌数据就是两个连接抢锁。
+    if (System.getenv("TRELLIS_SEED") == "1") {
+        seedLearningPlan(home)
+    }
+
     val runtime = runBlocking { AppRuntime.create(home) }
 
     if (System.getenv("TRELLIS_SEED") == "1") {
@@ -63,13 +78,13 @@ fun main() {
 }
 
 /** 手机竖屏 + 平板，各来一套 —— 自适应只验一种尺寸等于没验。 */
-private val formFactors = listOf(
+internal val formFactors = listOf(
     Triple("phone", 390, 844),
     Triple("tablet", 834, 1112),
 )
 
 /** 顺序与 `PhoneTab` 一致：今日 / 计划 / 对话 / 知识 / 我的；知识再看「笔记」与「网络」。 */
-private val pages = listOf(
+internal val pages = listOf(
     Shot("01-today", 0),
     Shot("02-plan", 1),
     Shot("03-chat", 2),
@@ -78,14 +93,18 @@ private val pages = listOf(
     Shot("06-knowledge-overview", 3, knowledgeTab = 1, graphMode = 1),
     Shot("07-knowledge-note", 3, noteId = "n_preview_transport"),
     Shot("08-me", 4),
+    // 插件页：安装 / 卸载 / 能力授权三块都在这一页，折叠在「我的」下面，
+    // 不给它单独一张图就等于没验过。
+    Shot("09-plugins", 4, subPage = PhoneSubPage.Plugins),
 )
 
-private data class Shot(
+internal data class Shot(
     val label: String,
     val tab: Int,
     val knowledgeTab: Int = 0,
     val graphMode: Int = 0,
     val noteId: String? = null,
+    val subPage: PhoneSubPage? = null,
 )
 
 private fun renderAll(runtime: AppRuntime, dir: File) {
@@ -100,6 +119,10 @@ private fun renderAll(runtime: AppRuntime, dir: File) {
                     startKnowledgeTab = shot.knowledgeTab,
                     startGraphMode = shot.graphMode,
                     startNoteId = shot.noteId,
+                    startSubPage = shot.subPage,
+                    // 预览器没有 SAF：给一个空的选文件实现，好让「从文件安装」按钮
+                    // 在截图里真的出现（点了不会弹窗，这是预览，不是真机）。
+                    onPickPluginArchive = { _ -> },
                 )
             }
             println("已渲染：${out.absolutePath}")
@@ -107,8 +130,24 @@ private fun renderAll(runtime: AppRuntime, dir: File) {
     }
 }
 
-@OptIn(ExperimentalComposeUiApi::class)
 private fun render(widthDp: Int, heightDp: Int, out: File, content: @Composable () -> Unit) {
+    val bytes = renderToPng(widthDp, heightDp, content)
+    out.parentFile?.mkdirs()
+    out.writeBytes(bytes)
+}
+
+/**
+ * 离屏渲染成 PNG 字节。
+ *
+ * 单独抽出来是为了让测试也走**同一条**渲染路径（见 `PhoneRenderSmokeTest`）：
+ * 截图和冒烟测试用两套代码，测出来的「没问题」就不作数了。
+ */
+@OptIn(ExperimentalComposeUiApi::class)
+internal fun renderToPng(
+    widthDp: Int,
+    heightDp: Int,
+    content: @Composable () -> Unit,
+): ByteArray {
     val scale = 2
     val scene = ImageComposeScene(
         width = widthDp * scale,
@@ -118,11 +157,88 @@ private fun render(widthDp: Int, heightDp: Int, out: File, content: @Composable 
     )
     try {
         val data = scene.render().encodeToData() ?: error("PNG 编码失败")
-        out.parentFile?.mkdirs()
-        out.writeBytes(data.bytes)
+        return data.bytes
     } finally {
         scene.close()
     }
+}
+
+/**
+ * 学习计划：直接开库造一份。
+ *
+ * 为什么不用 `AppRuntime` 的入口：那个方法是 `internal`，预览器在另一个模块。
+ * `LearningPlanStore.open` 才是这一层的公开契约 —— 同一个文件路径（`<home>/plans/plan.db`）、
+ * 同一套命令信封，造出来的数据和真机点出来的没有区别。
+ *
+ * 灌完立刻关连接：运行时马上就要用这个文件。
+ */
+private fun seedLearningPlan(home: File) {
+    val file = File(home, "plans/plan.db")
+    file.parentFile?.mkdirs()
+    val service = runCatching { LearningPlanStore.open(file.toPath()) }.getOrNull() ?: return
+    try {
+        // 已经有计划就不动：预览目录是复用的，每次覆盖会把上次的手感冲掉。
+        if (service.activePlanId() != null) return
+
+        fun env(planId: String? = null) = CommandEnvelope(
+            commandId = "preview-" + UUID.randomUUID().toString().replace("-", ""),
+            actor = Actor.USER,
+            planId = planId,
+            origin = "preview",
+        )
+
+        val created = service.createProcess(
+            env(),
+            "网络原理 · 六周过一遍",
+            "把传输层和网络层讲清楚，能自己画一遍握手与拥塞控制",
+            weeklyCapacityMinutes = 60 * 7,
+        )
+        val planId = created.value?.planId ?: return
+
+        val units = listOf(
+            UnitDraft("第 1 章", "分层与协议栈", 25, 10),
+            UnitDraft("第 2 章", "物理层与数据链路", 30, 12),
+            UnitDraft("第 3 章", "以太网与交换", 30, 12),
+            UnitDraft("第 4 章", "网络层：IP 与路由", 40, 15),
+            UnitDraft("第 5 章", "传输层：TCP 与 UDP", 40, 15),
+            UnitDraft("第 5 章", "拥塞控制四段", 35, 12),
+            UnitDraft("第 6 章", "应用层与 DNS", 25, 10),
+            UnitDraft("第 6 章", "HTTP 与 HTTPS 的区别", 20, 8),
+            UnitDraft("第 7 章", "Wireshark 抓一次握手", 45, 15),
+            UnitDraft("第 7 章", "写一份拥塞控制小结", 40, 15),
+        )
+        val week = isoWeekOf(LocalDate.now())
+        val draft = service.saveDraft(
+            env(planId),
+            planId,
+            null,
+            units,
+            // 本周只承诺前三个：剩下的留在池子里，截图上才看得到「待办 N」。
+            listOf(CommitmentDraft(week, listOf(0, 1, 2))),
+        )
+        val versionId = draft.value?.versionId ?: return
+        service.acceptDraft(env(planId), versionId, week)
+        // 铺到天。不铺的话「今天」是空的，计划页只剩一条周条 ——
+        // 日历条、单元卡片、单位动作这些排版全都看不到。
+        service.scheduleWeek(env(planId), week)
+
+        // 今天第二个勾掉：截图里才有「已完成 1」，也让人看到「剩下的还能处理」。
+        val today = LocalDate.now().toString()
+        service.today(planId, today).occurrences.drop(1).take(1).forEach { occurrence ->
+            service.completeOccurrence(env(planId), occurrence.id, "先看例题再动手，快了一倍。")
+        }
+    } finally {
+        (service as? AutoCloseable)?.close()
+    }
+}
+
+/** ISO 周（`2026-W45`），和后端 `PlanTime` 的格式一致。 */
+private fun isoWeekOf(date: LocalDate): String {
+    val fields = java.time.temporal.WeekFields.ISO
+    return "%04d-W%02d".format(
+        date.get(fields.weekBasedYear()),
+        date.get(fields.weekOfWeekBasedYear()),
+    )
 }
 
 /**

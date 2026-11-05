@@ -2,6 +2,9 @@ package dev.trellis.app.mobile
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -17,6 +20,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -38,6 +43,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
@@ -67,6 +73,8 @@ import dev.trellis.app.desktop.KnowledgeGraphStore
 import dev.trellis.app.desktop.LayoutOptions
 import dev.trellis.app.desktop.buildKnowledgeGraph
 import dev.trellis.app.desktop.cacheWithoutCategorySuggestions
+import dev.trellis.app.desktop.assignConcept
+import dev.trellis.app.desktop.categoryPathOf
 import dev.trellis.app.desktop.categorySuggestionFingerprint
 import dev.trellis.app.desktop.collectPendingSuggestions
 import dev.trellis.app.desktop.confirmCategorySuggestions
@@ -74,6 +82,7 @@ import dev.trellis.app.desktop.globalCategoryBatches
 import dev.trellis.app.desktop.ignoreCategorySuggestion
 import dev.trellis.app.desktop.layoutKnowledgeGraph
 import dev.trellis.app.desktop.noteBodyHash
+import dev.trellis.app.desktop.renameCategory
 import dev.trellis.app.desktop.runGlobalCategorySuggestions
 import kotlinx.coroutines.launch
 
@@ -97,19 +106,26 @@ fun KnowledgeGraphPage(runtime: AppRuntime, startMode: Int = 0, onOpenNote: (Str
 
     var refreshToken by remember { mutableIntStateOf(0) }
     var mode by remember { mutableIntStateOf(startMode.coerceIn(0, 1)) } // 0 结构 / 1 总览
-    var collapsed by remember { mutableStateOf<Set<String>>(emptySet()) }
     var selectedKey by remember { mutableStateOf<String?>(null) }
     var suggestionsOpen by remember { mutableStateOf(false) }
     var diagnosticsOpen by remember { mutableStateOf(false) }
     var organizing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
 
+    // 节点详情里的二级面板：0 概览 / 1 改归属 / 2 改定义 / 3 重命名。
+    // 不复用第二个 ModalBottomSheet —— 两个 sheet 叠起来时，返回手势先关掉下面那个，
+    // 看起来像「点了一下什么都没发生」。
+    var nodePanel by remember { mutableIntStateOf(0) }
+    var definitionDraft by remember { mutableStateOf("") }
+    var aliasDraft by remember { mutableStateOf("") }
+    var renameDraft by remember { mutableStateOf("") }
+
     val user = remember(refreshToken) { graphStore.loadUser() }
     val cache = remember(refreshToken) { graphStore.loadCache() }
     val graph: KnowledgeGraph = remember(refreshToken) {
         buildKnowledgeGraph(store.allNotes(), metaStore.load(), user, cache)
     }
-    val treeRows = remember(graph, collapsed) { flattenTree(graph, collapsed) }
+    val columns = remember(graph) { boardColumns(graph) }
 
     Column(Modifier.fillMaxSize()) {
         LazyColumn(
@@ -153,19 +169,16 @@ fun KnowledgeGraphPage(runtime: AppRuntime, startMode: Int = 0, onOpenNote: (Str
                     )
                 }
             } else if (mode == 0) {
-                // 结构树：分类可折叠，概念点开详情。
-                treeRows.forEachIndexed { index, row ->
-                    item(key = "g" + row.key) {
-                        TreeRow(
-                            node = row.node,
-                            depth = row.depth,
-                            folded = row.key in collapsed,
-                            onToggle = {
-                                collapsed = if (row.key in collapsed) collapsed - row.key else collapsed + row.key
-                            },
-                            onClick = { selectedKey = row.key },
-                        )
-                        if (index < treeRows.lastIndex) DividerLine(Modifier.padding(start = (row.depth * 14 + 18).dp))
+                // 结构：一棵树一行，树的叶子朝右发散。
+                //
+                // 之前是横向分栏（一列一类、左右滑），切一次只能看一类；
+                // 现在竖着排树、每题往右展开，一屏能看到「有哪几棵树、每棵树挂着什么」，
+                // 叶子再多就在这一行里左右滑，不会把别的树挤走。
+                item(key = "forest") {
+                    Column(verticalArrangement = Arrangement.spacedBy(Gap.m)) {
+                        columns.forEach { column ->
+                            TreeBranch(column = column, onOpen = { selectedKey = it })
+                        }
                     }
                 }
             } else {
@@ -202,61 +215,229 @@ fun KnowledgeGraphPage(runtime: AppRuntime, startMode: Int = 0, onOpenNote: (Str
 
     val selected = selectedKey?.let { graph.nodes[it] }
     if (selected != null) {
+        val isCategory = selected.kind == GraphNodeKind.CATEGORY
+        // 存一次就用的写回助手：报错进 message，成功就重算图并关面板。
+        fun applyUser(result: dev.trellis.app.desktop.TaxonomyResult) {
+            if (result.error != null) {
+                message = result.error
+                return
+            }
+            graphStore.saveUser(result.user.copy(updatedAt = runtime.clock.nowMs()))
+            refreshToken++
+            message = result.changes.firstOrNull()
+            nodePanel = 0
+            selectedKey = null
+        }
+
         ModalBottomSheet(
-            onDismissRequest = { selectedKey = null },
+            onDismissRequest = {
+                // 二级面板先回概览，再按一次才关掉。
+                if (nodePanel != 0) nodePanel = 0 else selectedKey = null
+            },
             sheetState = sheetState,
             containerColor = MaterialTheme.colorScheme.background,
         ) {
             Column(Modifier.fillMaxWidth().padding(horizontal = Gap.xl).padding(bottom = Gap.xxl)) {
-                Text(
-                    if (selected.kind == GraphNodeKind.CATEGORY) "分类" else "概念",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(Gap.xs))
-                Text(selected.name, style = MaterialTheme.typography.headlineSmall)
-                val path = graph.pathOf(selected.key).joinToString(" / ") { it.name }
-                if (path.isNotBlank()) {
-                    Spacer(Modifier.height(Gap.xs))
-                    Text(
-                        path,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                if (selected.definition.isNotBlank()) {
-                    Spacer(Modifier.height(Gap.m))
-                    Text(selected.definition, style = MaterialTheme.typography.bodyMedium)
-                }
-                Spacer(Modifier.height(Gap.m))
-                Row(horizontalArrangement = Arrangement.spacedBy(Gap.xxl)) {
-                    BigStat(selected.noteCount.toString(), "相关笔记")
-                    BigStat(selected.mentionCount.toString(), "正文提及")
-                }
-                val relations = graph.relationsOf(selected.key)
-                if (relations.isNotEmpty()) {
-                    Spacer(Modifier.height(Gap.m))
-                    SectionLabel("关系 " + relations.size)
-                    Spacer(Modifier.height(Gap.xs))
-                    relations.take(8).forEach { edge ->
-                        val other = graph.nodes[if (edge.fromKey == selected.key) edge.toKey else edge.fromKey]
-                        Text(
-                            "· " + edgeKindLabel(edge.kind) + " " + (other?.name ?: "?"),
-                            style = MaterialTheme.typography.bodySmall,
+                when (nodePanel) {
+                    1 -> {
+                        PanelHeading("改归属", "归到哪个分类；没有合适的就选「未分类」，之后还能再改。")
+                        Spacer(Modifier.height(Gap.m))
+                        NodeChoice(
+                            label = "未分类",
+                            hint = "留在根上，不进任何分类",
+                            selected = selected.parentKey == null,
+                            onClick = { applyUser(assignConcept(user, selected.key, null)) },
                         )
+                        user.categories
+                            .sortedBy { categoryPathOf(user, it.id).joinToString("/") }
+                            .forEach { category ->
+                                val path = categoryPathOf(user, category.id).joinToString(" / ")
+                                NodeChoice(
+                                    label = path.ifBlank { category.name },
+                                    hint = null,
+                                    selected = selected.parentKey == category.id,
+                                    onClick = { applyUser(assignConcept(user, selected.key, category.id)) },
+                                )
+                            }
+                        Spacer(Modifier.height(Gap.m))
+                        PhoneButton("返回", { nodePanel = 0 }, modifier = Modifier.fillMaxWidth(), filled = false)
                     }
-                }
-                Spacer(Modifier.height(Gap.l))
-                Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {
-                    PhoneButton("在笔记里找", {
-                        // 跳到提到这个概念的第一篇笔记：手机上「看来源」比「看关系图」更有用。
-                        val hit = store.allNotes().firstOrNull { note ->
-                            note.concepts.any { it.equals(selected.name, ignoreCase = true) }
+
+                    2 -> {
+                        PanelHeading(
+                            title = if (isCategory) "分类说明" else "概念定义",
+                            hint = if (isCategory) {
+                                "一句话说明这个分类收什么，自己半年后也看得懂。"
+                            } else {
+                                "定义只有一份，所有提到它的笔记共用。写「是什么」，不写「在哪出现过」。"
+                            },
+                        )
+                        Spacer(Modifier.height(Gap.m))
+                        PhoneField(
+                            value = definitionDraft,
+                            onValueChange = { definitionDraft = it },
+                            placeholder = if (isCategory) {
+                                "例如：传输层与网络层之间的机制"
+                            } else {
+                                "例如：TCP 是面向连接的可靠传输协议。"
+                            },
+                            singleLine = false,
+                            minLines = 4,
+                        )
+                        if (!isCategory) {
+                            Spacer(Modifier.height(Gap.m))
+                            Text(
+                                "别名（逗号分隔，把同一概念的多种写法认成一条）",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(Gap.xs))
+                            PhoneField(
+                                value = aliasDraft,
+                                onValueChange = { aliasDraft = it },
+                                placeholder = "传输控制协议, Transmission Control Protocol",
+                                singleLine = false,
+                                minLines = 2,
+                            )
                         }
-                        if (hit != null) onOpenNote(hit.id) else message = "没有笔记提到它"
-                        selectedKey = null
-                    }, modifier = Modifier.weight(1f))
-                    PhoneButton("关闭", { selectedKey = null }, modifier = Modifier.weight(1f), filled = false)
+                        Spacer(Modifier.height(Gap.m))
+                        Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {
+                            PhoneButton("保存", {
+                                if (isCategory) {
+                                    graphStore.saveUser(
+                                        user.copy(
+                                            categories = user.categories.map {
+                                                if (it.id == selected.key) {
+                                                    it.copy(description = definitionDraft.ifBlank { null })
+                                                } else {
+                                                    it
+                                                }
+                                            },
+                                            updatedAt = runtime.clock.nowMs(),
+                                        ),
+                                    )
+                                    message = "已保存分类说明"
+                                } else {
+                                    val okDefinition = metaStore.saveDefinition(selected.name, definitionDraft)
+                                    val aliases = aliasDraft.split(',', '，').map { it.trim() }.filter { it.isNotBlank() }
+                                    val okAliases = metaStore.saveAliases(selected.name, aliases)
+                                    message = if (okDefinition && okAliases) {
+                                        "已保存定义"
+                                    } else {
+                                        "保存失败：写不进 " + metaStore.filePath
+                                    }
+                                }
+                                refreshToken++
+                                nodePanel = 0
+                                selectedKey = null
+                            }, modifier = Modifier.weight(1f))
+                            PhoneButton("返回", { nodePanel = 0 }, modifier = Modifier.weight(1f), filled = false)
+                        }
+                    }
+
+                    3 -> {
+                        PanelHeading("重命名分类", "改名会保留子分类与概念归属；同名分类不允许。")
+                        Spacer(Modifier.height(Gap.m))
+                        PhoneField(
+                            value = renameDraft,
+                            onValueChange = { renameDraft = it },
+                            placeholder = "分类名",
+                            singleLine = true,
+                            minLines = 1,
+                        )
+                        Spacer(Modifier.height(Gap.m))
+                        Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {
+                            PhoneButton("保存", {
+                                applyUser(renameCategory(user, selected.key, renameDraft))
+                            }, modifier = Modifier.weight(1f))
+                            PhoneButton("返回", { nodePanel = 0 }, modifier = Modifier.weight(1f), filled = false)
+                        }
+                    }
+
+                    else -> {
+                        Text(
+                            if (isCategory) "分类" else "概念",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(Gap.xs))
+                        Text(selected.name, style = MaterialTheme.typography.headlineSmall)
+                        val path = graph.pathOf(selected.key).joinToString(" / ") { it.name }
+                        if (path.isNotBlank()) {
+                            Spacer(Modifier.height(Gap.xs))
+                            Text(
+                                path,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (selected.definition.isNotBlank()) {
+                            Spacer(Modifier.height(Gap.m))
+                            Text(selected.definition, style = MaterialTheme.typography.bodyMedium)
+                        } else {
+                            Spacer(Modifier.height(Gap.m))
+                            Text(
+                                if (isCategory) "还没有说明 —— 补一句，以后翻回来才认得出。" else "还没有定义 —— 补一句，AI 整理时也会更准。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Spacer(Modifier.height(Gap.m))
+                        Row(horizontalArrangement = Arrangement.spacedBy(Gap.xxl)) {
+                            BigStat(selected.noteCount.toString(), "相关笔记")
+                            BigStat(selected.mentionCount.toString(), "正文提及")
+                        }
+                        val relations = graph.relationsOf(selected.key)
+                        if (relations.isNotEmpty()) {
+                            Spacer(Modifier.height(Gap.m))
+                            SectionLabel("关系 " + relations.size)
+                            Spacer(Modifier.height(Gap.xs))
+                            relations.take(8).forEach { edge ->
+                                val other = graph.nodes[if (edge.fromKey == selected.key) edge.toKey else edge.fromKey]
+                                Text(
+                                    "· " + edgeKindLabel(edge.kind) + " " + (other?.name ?: "?"),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(Gap.l))
+                        Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {
+                            if (isCategory) {
+                                PhoneButton("重命名", {
+                                    renameDraft = selected.name
+                                    nodePanel = 3
+                                }, modifier = Modifier.weight(1f))
+                            } else {
+                                PhoneButton("改归属", { nodePanel = 1 }, modifier = Modifier.weight(1f))
+                            }
+                            PhoneButton("改定义", {
+                                definitionDraft = if (isCategory) {
+                                    selected.definition
+                                } else {
+                                    metaStore.definition(selected.name).orEmpty()
+                                }
+                                aliasDraft = if (isCategory) {
+                                    ""
+                                } else {
+                                    metaStore.load()[dev.trellis.app.desktop.conceptIdentityKey(selected.name)]
+                                        ?.aliases.orEmpty().joinToString(", ")
+                                }
+                                nodePanel = 2
+                            }, modifier = Modifier.weight(1f), filled = false)
+                        }
+                        Spacer(Modifier.height(Gap.s))
+                        Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {
+                            PhoneButton("在笔记里找", {
+                                // 跳到提到这个概念的第一篇笔记：手机上「看来源」比「看关系图」更有用。
+                                val hit = store.allNotes().firstOrNull { note ->
+                                    note.concepts.any { it.equals(selected.name, ignoreCase = true) }
+                                }
+                                if (hit != null) onOpenNote(hit.id) else message = "没有笔记提到它"
+                                selectedKey = null
+                            }, modifier = Modifier.weight(1f), filled = false)
+                            PhoneButton("关闭", { selectedKey = null }, modifier = Modifier.weight(1f), filled = false)
+                        }
+                    }
                 }
             }
         }
@@ -436,87 +617,117 @@ fun KnowledgeGraphPage(runtime: AppRuntime, startMode: Int = 0, onOpenNote: (Str
     }
 }
 
-// ----------------------------------------------------------------------------- 结构树
+// ----------------------------------------------------------------------------- 结构分栏
 
-private data class TreeRowModel(
+private data class BoardColumnModel(
     val key: String,
-    val node: GraphNode,
-    val depth: Int,
-    val hasChildren: Boolean,
+    val title: String,
+    val count: String,
+    val items: List<GraphNode>,
 )
 
 /**
- * 把森林压成「缩进行」。
+ * 把森林切成「一列一类」。
  *
- * 折叠只影响展开，不影响统计：折叠一个分类时子节点不出现，但计数器仍是全量。
+ * 顶层分类各占一列；没有子节点的散概念收进最后一列 —— 让每一列里都是同一种东西，
+ * 比在缩进树里数「这个点是第几层」省力。列宽固定，右边露出下一列的一角，
+ * 一眼就知道还能往右滑。
  */
-private fun flattenTree(graph: KnowledgeGraph, collapsed: Set<String>): List<TreeRowModel> {
-    val out = ArrayList<TreeRowModel>()
+private fun boardColumns(graph: KnowledgeGraph): List<BoardColumnModel> {
+    val columns = ArrayList<BoardColumnModel>()
+    val loose = ArrayList<GraphNode>()
 
-    fun walk(key: String, depth: Int) {
-        val node = graph.nodes[key] ?: return
-        val children = graph.childrenOf(key)
-        out += TreeRowModel(key, node, depth, children.isNotEmpty())
-        if (key in collapsed) return
-        children.forEach { child -> walk(child.key, depth + 1) }
+    graph.childrenOf(null).forEach { root ->
+        val children = graph.childrenOf(root.key)
+        if (children.isEmpty() && root.kind != GraphNodeKind.CATEGORY) {
+            loose += root
+        } else {
+            columns += BoardColumnModel(
+                key = root.key,
+                title = root.name,
+                count = graphCountLabel(root),
+                items = children,
+            )
+        }
     }
-
-    graph.childrenOf(null).forEach { walk(it.key, 0) }
-    return out
+    if (loose.isNotEmpty()) {
+        columns += BoardColumnModel(
+            key = "__loose",
+            title = "散落概念",
+            count = loose.size.toString() + " 个",
+            items = loose,
+        )
+    }
+    return columns
 }
 
+/** 一棵树：上面是根（分类），下面一行是它的叶子，朝右发散、叶子多就横滑。 */
 @Composable
-private fun TreeRow(
-    node: GraphNode,
-    depth: Int,
-    folded: Boolean,
-    onToggle: () -> Unit,
-    onClick: () -> Unit,
-) {
-    val isCategory = node.kind == GraphNodeKind.CATEGORY
+private fun TreeBranch(column: BoardColumnModel, onOpen: (String) -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                column.title,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(enabled = column.key != "__loose") { onOpen(column.key) }
+                    .padding(horizontal = Gap.xs, vertical = 2.dp),
+            )
+            Text(
+                column.count,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = Gap.s),
+            )
+        }
+        Spacer(Modifier.height(Gap.xs))
+        if (column.items.isEmpty()) {
+            Text(
+                "这一类还没有概念",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = Gap.xs, vertical = 4.dp),
+            )
+        } else {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(Gap.xs),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                column.items.forEach { node -> LeafChip(node, onOpen) }
+            }
+        }
+    }
+}
+
+/** 叶子：一颗小药丸，点开概念详情。 */
+@Composable
+private fun LeafChip(node: GraphNode, onOpen: (String) -> Unit) {
     Row(
         Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .clickable { if (isCategory) onToggle() else onClick() }
-            .padding(start = (depth * 14).dp, top = Gap.s, bottom = Gap.s, end = Gap.s),
+            .clip(RoundedCornerShape(999.dp))
+            .background(LocalCardColor.current)
+            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f), RoundedCornerShape(999.dp))
+            .clickable { onOpen(node.key) }
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            if (isCategory) (if (folded) "▸" else "▾") else "·",
-            style = MaterialTheme.typography.labelMedium,
-            color = if (isCategory) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(18.dp),
-        )
-        Text(
             node.name,
-            style = if (isCategory) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 2,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
         )
-        if (isCategory) {
+        val label = graphCountLabel(node)
+        if (label.isNotEmpty()) {
             Text(
-                graphCountLabel(node),
+                label,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.width(Gap.xs))
-            Text(
-                "详情",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .clickable(onClick = onClick)
-                    .padding(horizontal = 6.dp, vertical = 6.dp),
-            )
-        } else if (node.noteCount > 0) {
-            Text(
-                node.noteCount.toString() + " 篇",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 6.dp),
             )
         }
     }
@@ -766,4 +977,62 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLabel(
             top + (height - measured.size.height) / 2f,
         ),
     )
+}
+
+@Composable
+private fun PanelHeading(title: String, hint: String) {
+    Text(title, style = MaterialTheme.typography.titleMedium)
+    Spacer(Modifier.height(Gap.xs))
+    Text(
+        hint,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+/**
+ * 二级面板里的一行「可选目标」。
+ *
+ * 不用 RadioButton：那一列在手机上会占掉半屏宽度，而且点整行比点小圆点容易得多。
+ * 选中态只用左侧色条 + 底色表示，和列表其它地方一致。
+ */
+@Composable
+private fun NodeChoice(
+    label: String,
+    hint: String?,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                else Color.Transparent,
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = Gap.m, vertical = Gap.m),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f),
+            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+        )
+        if (selected) {
+            Text(
+                "当前",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        } else if (hint != null) {
+            Text(
+                hint,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
 }

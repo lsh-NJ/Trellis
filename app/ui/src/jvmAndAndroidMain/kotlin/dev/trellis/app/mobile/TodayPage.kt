@@ -378,7 +378,11 @@ private fun TaskDetailSheet(
                 )
                 if (!task.isDone) {
                     PhoneButton("开始计时", {
+                        // 按钮写的是「开始」，那就真的开始：
+                        // 只调 openTimer 的话，屏幕上会出现一根 0:00 的悬浮条，
+                        // 而计时其实没跑（要用的人得再点开、再点「继续」）。
                         runtime.openTimer(task)
+                        runtime.startTimer()
                         onDismiss()
                     }, modifier = Modifier.weight(1f), filled = false)
                 }
