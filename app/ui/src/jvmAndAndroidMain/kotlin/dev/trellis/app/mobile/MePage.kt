@@ -29,6 +29,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import dev.trellis.activity.ActivitySettings
@@ -72,6 +73,30 @@ fun MePage(runtime: AppRuntime, onOpen: (PhoneSubPage) -> Unit) {
                     onSelect = {
                         runtime.updateUiPrefs(runtime.uiPrefs.copy(appearance = modes[it].first))
                     },
+                )
+                Spacer(Modifier.height(Gap.m))
+                Text(
+                    "字号",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(Gap.xs))
+                // 会在系统字号之上再乘一次（见 AppTheme），所以「标准」不等于「忽略系统设置」。
+                // 区间取 UiPrefs.normalized() 允许的 0.85–1.25：摆一个按下去被夹回去的档位更糟。
+                val scales = listOf(0.85f to "小", 1f to "标准", 1.15f to "大", 1.25f to "特大")
+                Segmented(
+                    items = scales.map { it.second },
+                    selected = scales.indexOfFirst { kotlin.math.abs(it.first - runtime.uiPrefs.fontScale) < 0.01f }
+                        .coerceAtLeast(0),
+                    onSelect = {
+                        runtime.updateUiPrefs(runtime.uiPrefs.copy(fontScale = scales[it].first))
+                    },
+                )
+                Spacer(Modifier.height(Gap.xs))
+                Text(
+                    "这四档在系统字号的基础上再放大或缩小。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                 )
             }
         }
@@ -396,7 +421,12 @@ private fun EntryRow(label: String, value: String, onClick: () -> Unit) {
         Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
         Text(value, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.width(Gap.s))
-        Text("›", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            "›",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.clearAndSetSemantics { },
+        )
     }
 }
 

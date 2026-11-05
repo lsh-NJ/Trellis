@@ -1,9 +1,12 @@
 package dev.trellis.app.mobile
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -19,12 +22,15 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import dev.trellis.app.desktop.AndroidNav
 import dev.trellis.app.desktop.AppRuntime
 import dev.trellis.app.desktop.HostPlatform
 import dev.trellis.app.desktop.installAndroidNotifications
@@ -46,6 +52,21 @@ class MainActivity : ComponentActivity() {
     private var runtime: AppRuntime? = null
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /**
+     * 通知点开要去的页签。放在 Activity 字段而不是 remember：
+     * `onNewIntent` 回来时界面早就组合过了，只有 Activity 级别的状态才能把它顶过去。
+     */
+    private var openTab by mutableStateOf<Int?>(null)
+
+    /** 每次点击自增 —— 「再点同一条通知」也要重新跳一次。 */
+    private var openTabToken by mutableIntStateOf(0)
+
+    private fun readOpenTab(intent: Intent?) {
+        val index = AndroidNav.tabIndexFrom(intent) ?: return
+        openTab = index
+        openTabToken++
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // 内容画到状态栏、导航栏下面，再由 Compose 的 safeDrawing 让出安全区。
@@ -62,13 +83,32 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // 冷启动时通知就在 intent 里（应用被杀掉的情况下点通知）。
+        readOpenTab(intent)
+
         // 家目录放在应用私有目录：卸载即清，不需要任何存储权限。
         val home = File(filesDir, "trellis").apply { mkdirs() }
         // 崩溃要留证据。手机上没有 jstack、也没法连 adb 的时候，
         // `<home>/app.log`（诊断页能直接看）就是唯一能拿到的栈。
         installCrashLogger(home)
 
-        setContent { MobileHost(home) }
+        setContent {
+            MobileHost(
+                home = home,
+                openTab = openTab,
+                openTabToken = openTabToken,
+            )
+        }
+    }
+
+    /**
+     * 应用在后台时点通知：系统复用这个实例（manifest 里 singleTop），
+     * 新的 intent 从这里进来。不处理的话表现就是「点通知只是把应用拉到前台」。
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        readOpenTab(intent)
     }
 
     override fun onDestroy() {
@@ -83,9 +123,34 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun MobileHost(home: File) {
+private fun MobileHost(
+    home: File,
+    openTab: Int?,
+    openTabToken: Int,
+) {
     var ready by remember { mutableStateOf<AppRuntime?>(null) }
     var failure by remember { mutableStateOf<String?>(null) }
+
+    val context = LocalContext.current
+    // 「从文件安装插件」：共享层没有文件选择器（桌面是 JFileChooser），
+    // 安卓这一套 SAF 只属于壳。选中的 uri 复制成 cache 里的临时 zip，
+    // 共享层只认 File —— 它不该知道 content:// 是什么。
+    var pendingPluginPick by remember { mutableStateOf<((File) -> Unit)?>(null) }
+    val pluginPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        val deliver = pendingPluginPick
+        pendingPluginPick = null
+        if (uri == null || deliver == null) return@rememberLauncherForActivityResult
+        val target = File(context.cacheDir, "plugin-" + System.currentTimeMillis() + ".zip")
+        val copied = runCatching {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                target.outputStream().use { output -> input.copyTo(output) }
+                true
+            } ?: false
+        }.getOrDefault(false)
+        if (copied) deliver(target)
+    }
 
     LaunchedEffect(Unit) {
         try {
@@ -114,6 +179,22 @@ private fun MobileHost(home: File) {
                     // 桌面上没有这个键，所以这段逻辑只属于壳，不进共享界面。
                     backHandler = { enabled, onBack ->
                         BackHandler(enabled = enabled, onBack = onBack)
+                    },
+                    // 通知点开落到哪一页，由壳从 intent 里读出来再交进去。
+                    openTab = openTab,
+                    openTabToken = openTabToken,
+                    onPickPluginArchive = { onPicked ->
+                        pendingPluginPick = onPicked
+                        // 有些文件管理器把 zip 报成 octet-stream，所以显式列常见类型再兜底：
+                        // 只写 application/zip 的话，用户会看到「没有可用的应用」。
+                        pluginPicker.launch(
+                            arrayOf(
+                                "application/zip",
+                                "application/x-zip-compressed",
+                                "application/octet-stream",
+                                "*/*",
+                            ),
+                        )
                     },
                 )
             }

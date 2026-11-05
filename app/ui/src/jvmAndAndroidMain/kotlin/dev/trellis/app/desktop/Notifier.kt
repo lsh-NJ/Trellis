@@ -8,11 +8,37 @@ import java.util.Base64
  * 通知是**尽力而为**：失败、没权限、平台不认识，都必须静默吞掉 —— 管家该发的消息
  * 已经落进会话里了（未读红点兜底），不能因为通知发不出去让仪式失败。
  *
- * 跨平台实现是命令行的三套（macOS `osascript` / Windows PowerShell Toast /
- * Linux `notify-send`），不引第三方依赖：桌面端打包成 app 后没有额外的原生桥，
- * 而这三条命令在各自系统上都自带。点通知不跳转（回调需要原生 API），
- * 点了只是系统行为；真正的入口是应用里的会话红点。
+ * 跨平台实现是命令行的三套（macOS `osascript` / Windows Toast / Linux `notify-send`），
+ * 不引第三方依赖：桌面端打包成 app 后没有额外的原生桥，而这三条命令在各自系统上都自带。
+ * 桌面点通知不跳转（那三条命令没有回调），点了只是系统行为；真正的入口是应用里的会话红点。
+ *
+ * 安卓可以跳转：`NotificationManager` 支持 `PendingIntent`，所以那边额外实现了
+ * [TargetedNotifier] —— 点「计划自动完成」直接落到计划页，而不是让人自己找。
  */
+/** 通知点开该去哪。桌面用不上（点了就只是系统行为），安卓拿它做 deeplink。 */
+enum class NotifyTarget(val wire: String, val tabIndex: Int) {
+    Chat("chat", 2),
+    Plan("plan", 1),
+    Knowledge("knowledge", 3),
+    ;
+
+    companion object {
+        /** 解析 intent 里的字符串；不认识就返回 null（宁可不跳，也不要跳错页）。 */
+        fun fromWire(raw: String?): NotifyTarget? =
+            raw?.trim()?.let { value -> entries.firstOrNull { it.wire.equals(value, ignoreCase = true) } }
+    }
+}
+
+/**
+ * 能带「点开去哪儿」的通知实现。
+ *
+ * 单独一个接口而不是给 [Notifier] 加第二个方法：`Notifier` 是 fun interface，
+ * 测试和静音环境里满屏的 `Notifier { _, _ -> }` 都靠它做 SAM 转换，加抽象方法会全部失效。
+ */
+internal interface TargetedNotifier : Notifier {
+    fun notify(title: String, body: String, target: NotifyTarget)
+}
+
 internal fun interface Notifier {
     fun notify(title: String, body: String)
 
