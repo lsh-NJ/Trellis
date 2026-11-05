@@ -69,7 +69,10 @@
   - 逾期条目**最多 3 条**，按顺序挪到「明天..本周日」（周日则只有当天）；
   - 更早欠下的单元**最多 2 个**，`placeUnit` 进「明天..本周日」；
   - 已经在目标日的跳过；没有可动的不生成建议（消息照发，不带卡）。
-- 渲染：`ChatScreen.StewardProposalCard`；未决定时显示「一键采纳 / 调整一下 / 先这样」。
+- 渲染：`ChatScreen.StewardProposalCard`——紫罗兰渐变底板（`StewardViolet`）、「管家建议」chip、
+  原话标题/说明、逐条建议小底板（左侧竖条 + title + 「挪到/排到 MM-dd」）；
+  建议区最高 280dp，超出框内滚动，标题与按钮不跟着滚（采纳永远点得到）。
+  未决定时显示「一键采纳 / 调整一下 / 先这样」。
 - 采纳（`AppRuntime.adoptStewardProposal`）：**不再跑模型**，直接调后端已有命令
   （`moveOccurrence` / `placeUnit`，reason「管家建议」），逐条统计成功/失败，
   写一条状态行「—— 已采纳管家建议：挪 N 件。」并记 `Adopted` 记忆。
@@ -85,6 +88,13 @@
 - 工具集与普通会话**完全一致**（全量工具，含计划写工具）；写操作仍受 `confirmed`/审批约束。
   后台节奏推进仍只由 `advanceRhythm` 做，管家不自动改计划。
 - 用户在管家会话里说的话，原样记一条 `UserReply` 记忆（`rememberUserReply`）。
+- **渲染完全同一套**：主动消息没有用户那一句，但分组后同样是 `ChatBlock.Round`（`user` 可空），
+  回合头显示「管家」、过程折叠/耗时/元信息/撤销/复制照常；不再有「孤儿消息」的特殊样式。
+  主动消息里如果发生工具调用，Step 行也按会话的过程行渲染。
+- **对话列宽度**：整列 `widthIn(max = 760.dp)` 在剩余空间里居中，左右各 24dp 对称留白；
+  用户气泡占列宽 62%，agent 正文占满整列。
+- 过程行里「它说完了」这一步已删（`ToolAgent` 不再 note）；旧会话里存过的
+  「它说完了，但 …」仍会显示成「· 还要补：…」，清楚的历史不丢。
 
 ## 7. 设置页
 
@@ -107,7 +117,7 @@
 | `app/desktop/.../ChatState.kt` | `SessionKind`、`ChatLine.proposal`/`proposalState` |
 | `app/desktop/.../ChatStore.kt` | kind / proposal / proposalState 的序列化（旧文件兼容） |
 | `app/desktop/.../AppRuntime.kt` | 接线：focus/ticker、`appendStewardLine`、`sendChat` 人格分叉、采纳/拒绝/协商 |
-| `app/desktop/.../ChatScreen.kt` | 管家置顶行、孤儿主动消息按正文渲染、建议卡 |
+| `app/desktop/.../ChatScreen.kt` | 管家置顶行、主动消息与普通会话同一渲染管线（`ChatBlock.Round.user` 可空）、建议卡（渐变+框内滚动） |
 | `app/desktop/.../SettingsScreen.kt` | 管家设置区 |
 
 测试：`StewardStoreTest`、`StewardRuntimeTest`、`StewardProposalsTest`、`NotifierTest`、

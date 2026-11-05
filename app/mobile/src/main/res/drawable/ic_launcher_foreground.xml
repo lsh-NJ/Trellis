@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  图标：一个花架（trellis）—— 三竖两横。
+  用线条而不是实心图形，是因为 App 本身的视觉语言就是「细边、方角、留白」。
+  108dp 画布，内容收在中间 72dp 的安全区里（自适应图标会被裁成圆形/方形/水滴形）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:pathData="M36,28 L36,80"
+        android:strokeColor="#2A2A28"
+        android:strokeWidth="4"
+        android:strokeLineCap="square" />
+    <path
+        android:pathData="M54,24 L54,84"
+        android:strokeColor="#2A2A28"
+        android:strokeWidth="4"
+        android:strokeLineCap="square" />
+    <path
+        android:pathData="M72,28 L72,80"
+        android:strokeColor="#2A2A28"
+        android:strokeWidth="4"
+        android:strokeLineCap="square" />
+
+    <path
+        android:pathData="M28,42 L80,42"
+        android:strokeColor="#2A2A28"
+        android:strokeWidth="4"
+        android:strokeLineCap="square" />
+    <path
+        android:pathData="M28,66 L80,66"
+        android:strokeColor="#2A2A28"
+        android:strokeWidth="4"
+        android:strokeLineCap="square" />
+</vector>
