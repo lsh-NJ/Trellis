@@ -30,22 +30,15 @@ internal fun SqliteLearningPlanService.cmdSettleWeek(
     val todayDate = PlanTime.parseDay(today) ?: today()
     return write(env) {
         if (planStatus(planId) == null) return@write fail(ErrorCode.E_NOT_FOUND, "找不到这个计划。")
-        val existing = connection.prepareStatement(
-            "SELECT payload_json FROM event WHERE type = 'plan.settled' AND plan_id = ? " +
-                "AND json_extract(payload_json, '$.week') = ? ORDER BY seq DESC LIMIT 1",
-        ).use { ps ->
-            ps.setString(1, planId)
-            ps.setString(2, week)
-            ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
-        }
+        val existing = EventPayloads.of(connection, "plan.settled", planId, newestFirst = true)
+            .firstOrNull { it.str("week") == week }
         if (existing != null) {
-            val obj = json().parseToJsonElement(existing).jsonObject
             return@write ok(
                 SettleResult(
                     week = week,
-                    missedCount = obj["missed"]?.jsonPrimitive?.content?.toIntOrNull() ?: 0,
-                    carriedCount = obj["carried"]?.jsonPrimitive?.content?.toIntOrNull() ?: 0,
-                    pendingCarry = obj["pending"]?.jsonPrimitive?.content?.toIntOrNull() ?: 0,
+                    missedCount = existing.num("missed") ?: 0,
+                    carriedCount = existing.num("carried") ?: 0,
+                    pendingCarry = existing.num("pending") ?: 0,
                 ),
                 warnings = listOf("这周已经结过一次，没有重复扣账。"),
             )
@@ -216,42 +209,18 @@ internal fun SqliteLearningPlanService.cmdGenerateReview(
     if (!PlanTime.isWeekFormat(week)) return fail(ErrorCode.E_INVALID, "周要写成 2026-W44 这种格式。")
     return write(env) {
         if (planStatus(planId) == null) return@write fail(ErrorCode.E_NOT_FOUND, "找不到这个计划。")
-        val existing = connection.prepareStatement(
-            "SELECT json_extract(payload_json, '$.reviewId') FROM event WHERE type = 'review.generated' " +
-                "AND plan_id = ? AND json_extract(payload_json, '$.week') = ? ORDER BY seq DESC LIMIT 1",
-        ).use { ps ->
-            ps.setString(1, planId)
-            ps.setString(2, week)
-            ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
-        }
+        val existing = EventPayloads.of(connection, "review.generated", planId, newestFirst = true)
+            .firstOrNull { it.str("week") == week }
+            ?.str("reviewId")
         if (existing != null) {
             return@write ok(ReviewRef(planId, week, existing), warnings = listOf("这周的复盘已经生成过了。"))
         }
 
-        val completedUnits = connection.prepareStatement(
-            "SELECT COUNT(DISTINCT json_extract(payload_json, '$.unitId')) FROM event " +
-                "WHERE type = 'occurrence.completed' AND plan_id = ? " +
-                "AND json_extract(payload_json, '$.week') = ?",
-        ).use { ps ->
-            ps.setString(1, planId); ps.setString(2, week)
-            ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
-        }
-        val completedMinutes = connection.prepareStatement(
-            "SELECT COALESCE(SUM(json_extract(payload_json, '$.minutes')), 0) FROM event " +
-                "WHERE type = 'occurrence.completed' AND plan_id = ? " +
-                "AND json_extract(payload_json, '$.week') = ?",
-        ).use { ps ->
-            ps.setString(1, planId); ps.setString(2, week)
-            ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
-        }
-        val activeDays = connection.prepareStatement(
-            "SELECT COUNT(DISTINCT json_extract(payload_json, '$.day')) FROM event " +
-                "WHERE type = 'occurrence.completed' AND plan_id = ? " +
-                "AND json_extract(payload_json, '$.week') = ?",
-        ).use { ps ->
-            ps.setString(1, planId); ps.setString(2, week)
-            ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
-        }
+        val completed = EventPayloads.of(connection, "occurrence.completed", planId)
+            .filter { it.str("week") == week }
+        val completedUnits = completed.mapNotNull { it.str("unitId") }.distinct().size
+        val completedMinutes = completed.sumOf { it.num("minutes") ?: 0 }
+        val activeDays = completed.mapNotNull { it.str("day") }.distinct().size
         val committedUnits = connection.prepareStatement(
             "SELECT COUNT(*) FROM commitment c JOIN commitment_unit cu ON cu.commitment_id = c.id " +
                 "JOIN plan_version pv ON pv.id = c.plan_version_id " +
@@ -260,14 +229,12 @@ internal fun SqliteLearningPlanService.cmdGenerateReview(
             ps.setString(1, planId); ps.setString(2, week)
             ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
         }
-        val deferred = connection.prepareStatement(
-            "SELECT COUNT(*) FROM event WHERE type = 'occurrence.moved' AND plan_id = ? " +
-                "AND substr(json_extract(payload_json, '$.fromDay'), 1, 10) BETWEEN ? AND ?",
-        ).use { ps ->
-            ps.setString(1, planId)
-            ps.setString(2, PlanTime.weekStart(week).toString())
-            ps.setString(3, PlanTime.weekEnd(week).toString())
-            ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        val weekStartDate = PlanTime.weekStart(week).toString()
+        val weekEndDate = PlanTime.weekEnd(week).toString()
+        val deferred = EventPayloads.of(connection, "occurrence.moved", planId).count { obj ->
+            // 只比日期部分：fromDay 可能带时间，BETWEEN 的右端是整天。
+            val fromDay = obj.str("fromDay")?.take(10)
+            fromDay != null && fromDay >= weekStartDate && fromDay <= weekEndDate
         }
 
         val narrative = buildString {

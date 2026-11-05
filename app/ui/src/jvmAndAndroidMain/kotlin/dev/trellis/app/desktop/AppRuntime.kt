@@ -352,7 +352,15 @@ class AppRuntime private constructor() {
      * 唯一会「导入成功但不生效」的情况是环境变量覆盖了文件 —— 那句话必须说出来。
      */
     fun importLlmConfig(raw: String, endpoint: String, model: String): LlmImportOutcome {
-        val result = LlmImport.parse(raw, endpoint, model)
+        // 「只粘一个 key」是最常见的用法：界面上那两个框留空就该走默认值。
+        // 以前直接把空串传下去，于是 normalizeEndpoint("") 返回 null，
+        // 用户看到的是「地址要以 http:// 或 https:// 开头，现在拿到的是「」。」——
+        // 明明他什么都没填，却被要求去填地址。
+        val result = LlmImport.parse(
+            raw,
+            endpoint.ifBlank { LlmConfigLoader.DEFAULT_ENDPOINT },
+            model.ifBlank { LlmConfigLoader.DEFAULT_MODEL },
+        )
         val config = result.config
             ?: return LlmImportOutcome(false, result.error ?: "这段没法识别成一份配置。")
         LlmConfigLoader.save(home, config)

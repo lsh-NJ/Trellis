@@ -15,13 +15,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -65,10 +64,28 @@ fun ChatPage(runtime: AppRuntime) {
     var sessionsOpen by remember { mutableStateOf(false) }
     var expandedSteps by remember { mutableStateOf<Set<Long>>(emptySet()) }
     var note by remember { mutableStateOf<String?>(null) }
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    val blocks = remember(runtime.chat) { blocksOf(runtime.chat) }
+    // 必须按「内容变化」做 key，不能只拿 runtime.chat 当 key：
+    // 它是同一个 mutableStateList 实例，`newChat()` 清空、`ask()` 再写入之后 key 没变，
+    // remember 会把**上一次会话**的 blocks 一直还回来 —— 表现是「发了消息，界面不动」，
+    // 而消息其实已经落盘、模型也回了。
+    val blocks = remember(runtime.chat.size, runtime.chat.lastOrNull()?.id) { blocksOf(runtime.chat) }
     val steward = runtime.chatSessions.firstOrNull { it.id == runtime.currentChatId }?.kind == SessionKind.Steward
+
+    // 会话列表是**一整页**，不是弹层：弹层盖住的是输入框和最后几条消息，
+    // 而「换个会话」这件事本身就该把当前对话收起来 —— 两件事同屏只会互相挤。
+    if (sessionsOpen) {
+        ChatSessionPage(
+            runtime = runtime,
+            onBack = { sessionsOpen = false },
+            onOpen = { id ->
+                runtime.markChatRead(id)
+                runtime.openChat(id)
+                sessionsOpen = false
+            },
+        )
+        return
+    }
 
     LaunchedEffect(runtime.chat.size, runtime.chat.lastOrNull()?.text?.length) {
         // 流式回答时这个 effect 每 60ms 会重启一次。用 animate 的话每次都在
@@ -238,76 +255,95 @@ fun ChatPage(runtime: AppRuntime) {
         }
     }
 
-    if (sessionsOpen) {
-        ModalBottomSheet(
-            onDismissRequest = { sessionsOpen = false },
-            sheetState = sheetState,
-            containerColor = MaterialTheme.colorScheme.background,
+}
+
+/**
+ * 会话列表页。
+ *
+ * 和「当前对话」是**两个页面**：进来只做一件事——挑一个会话或删掉它。
+ * 列表项右边留删除位，管家会话不给删（它是系统造的，删了下次还会来）。
+ */
+@Composable
+private fun ChatSessionPage(runtime: AppRuntime, onBack: () -> Unit, onOpen: (String) -> Unit) {
+    Column(Modifier.fillMaxSize()) {
+        Box(Modifier.padding(horizontal = Gap.l)) { SubPageBar("会话", onBack) }
+        Spacer(Modifier.height(Gap.s))
+        Text(
+            "会话记录落盘，关掉应用再打开还能接着聊",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = Gap.l),
+        )
+        Spacer(Modifier.height(Gap.m))
+
+        if (runtime.chatSessions.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                Text(
+                    "还没有会话",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = Gap.xl),
+                )
+            }
+            return@Column
+        }
+
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = Gap.l, end = Gap.l, bottom = Gap.xxl),
+            verticalArrangement = Arrangement.spacedBy(Gap.s),
         ) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = Gap.xl).padding(bottom = Gap.xxl)) {
-                SheetHeading("会话", "会话记录落盘，关掉应用再打开还能接着聊")
-                Spacer(Modifier.height(Gap.m))
-                if (runtime.chatSessions.isEmpty()) {
-                    Text("还没有会话", style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                runtime.chatSessions.forEach { session ->
-                    val active = session.id == runtime.currentChatId
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f) else LocalCardColor.current)
-                            .clickable {
-                                runtime.markChatRead(session.id)
-                                runtime.openChat(session.id)
-                                sessionsOpen = false
+            items(runtime.chatSessions, key = { it.id }) { session ->
+                val active = session.id == runtime.currentChatId
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f) else LocalCardColor.current)
+                        .clickable { onOpen(session.id) }
+                        .padding(horizontal = Gap.m, vertical = Gap.m),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (session.kind == SessionKind.Steward) {
+                                Pill("管家", Tone.Good)
+                                Spacer(Modifier.width(Gap.xs))
                             }
-                            .padding(horizontal = Gap.m, vertical = Gap.m),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (session.kind == SessionKind.Steward) {
-                                    Pill("管家", Tone.Good)
-                                    Spacer(Modifier.width(Gap.xs))
-                                }
-                                if (session.unread) {
-                                    Pill("未读", Tone.Warn)
-                                    Spacer(Modifier.width(Gap.xs))
-                                }
-                                Text(
-                                    session.title.ifBlank { "新对话" },
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
+                            if (session.unread) {
+                                Pill("未读", Tone.Warn)
+                                Spacer(Modifier.width(Gap.xs))
                             }
-                            Spacer(Modifier.height(2.dp))
                             Text(
-                                agoLabel(session.updatedAt, runtime.clock.nowMs()) + " · " + session.lines.size + " 条",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                session.title.ifBlank { "新对话" },
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         }
-                        if (session.kind != SessionKind.Steward) {
-                            Box(
-                                Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .semantics { contentDescription = "删除会话「" + session.title + "」" }
-                                    .clickable { runtime.deleteChat(session.id) }
-                                    .padding(8.dp),
-                            ) {
-                                Text(
-                                    "✕",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.clearAndSetSemantics { },
-                                )
-                            }
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            agoLabel(session.updatedAt, runtime.clock.nowMs()) + " · " + session.lines.size + " 条",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (session.kind != SessionKind.Steward) {
+                        Box(
+                            Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .semantics { contentDescription = "删除会话「" + session.title + "」" }
+                                .clickable { runtime.deleteChat(session.id) }
+                                .padding(8.dp),
+                        ) {
+                            Text(
+                                "✕",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.clearAndSetSemantics { },
+                            )
                         }
                     }
-                    Spacer(Modifier.height(Gap.xs))
                 }
             }
         }
@@ -477,19 +513,6 @@ private fun RoundView(
                         Spacer(Modifier.height(Gap.m))
                         StewardProposalCard(runtime, reply)
                     }
-                    Spacer(Modifier.height(Gap.xs))
-                    Text(
-                        "复制",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .clickable {
-                                runtime.copyToClipboard(reply.text)
-                                onNote("已复制这一段")
-                            }
-                            .padding(horizontal = 6.dp, vertical = 6.dp),
-                    )
                     Spacer(Modifier.height(Gap.xs))
                     Text(
                         "复制",

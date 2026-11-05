@@ -2,6 +2,9 @@ package dev.trellis.app.mobile
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -17,6 +20,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -101,7 +106,6 @@ fun KnowledgeGraphPage(runtime: AppRuntime, startMode: Int = 0, onOpenNote: (Str
 
     var refreshToken by remember { mutableIntStateOf(0) }
     var mode by remember { mutableIntStateOf(startMode.coerceIn(0, 1)) } // 0 结构 / 1 总览
-    var collapsed by remember { mutableStateOf<Set<String>>(emptySet()) }
     var selectedKey by remember { mutableStateOf<String?>(null) }
     var suggestionsOpen by remember { mutableStateOf(false) }
     var diagnosticsOpen by remember { mutableStateOf(false) }
@@ -121,7 +125,7 @@ fun KnowledgeGraphPage(runtime: AppRuntime, startMode: Int = 0, onOpenNote: (Str
     val graph: KnowledgeGraph = remember(refreshToken) {
         buildKnowledgeGraph(store.allNotes(), metaStore.load(), user, cache)
     }
-    val treeRows = remember(graph, collapsed) { flattenTree(graph, collapsed) }
+    val columns = remember(graph) { boardColumns(graph) }
 
     Column(Modifier.fillMaxSize()) {
         LazyColumn(
@@ -165,19 +169,16 @@ fun KnowledgeGraphPage(runtime: AppRuntime, startMode: Int = 0, onOpenNote: (Str
                     )
                 }
             } else if (mode == 0) {
-                // 结构树：分类可折叠，概念点开详情。
-                treeRows.forEachIndexed { index, row ->
-                    item(key = "g" + row.key) {
-                        TreeRow(
-                            node = row.node,
-                            depth = row.depth,
-                            folded = row.key in collapsed,
-                            onToggle = {
-                                collapsed = if (row.key in collapsed) collapsed - row.key else collapsed + row.key
-                            },
-                            onClick = { selectedKey = row.key },
-                        )
-                        if (index < treeRows.lastIndex) DividerLine(Modifier.padding(start = (row.depth * 14 + 18).dp))
+                // 结构：一棵树一行，树的叶子朝右发散。
+                //
+                // 之前是横向分栏（一列一类、左右滑），切一次只能看一类；
+                // 现在竖着排树、每题往右展开，一屏能看到「有哪几棵树、每棵树挂着什么」，
+                // 叶子再多就在这一行里左右滑，不会把别的树挤走。
+                item(key = "forest") {
+                    Column(verticalArrangement = Arrangement.spacedBy(Gap.m)) {
+                        columns.forEach { column ->
+                            TreeBranch(column = column, onOpen = { selectedKey = it })
+                        }
                     }
                 }
             } else {
@@ -616,87 +617,117 @@ fun KnowledgeGraphPage(runtime: AppRuntime, startMode: Int = 0, onOpenNote: (Str
     }
 }
 
-// ----------------------------------------------------------------------------- 结构树
+// ----------------------------------------------------------------------------- 结构分栏
 
-private data class TreeRowModel(
+private data class BoardColumnModel(
     val key: String,
-    val node: GraphNode,
-    val depth: Int,
-    val hasChildren: Boolean,
+    val title: String,
+    val count: String,
+    val items: List<GraphNode>,
 )
 
 /**
- * 把森林压成「缩进行」。
+ * 把森林切成「一列一类」。
  *
- * 折叠只影响展开，不影响统计：折叠一个分类时子节点不出现，但计数器仍是全量。
+ * 顶层分类各占一列；没有子节点的散概念收进最后一列 —— 让每一列里都是同一种东西，
+ * 比在缩进树里数「这个点是第几层」省力。列宽固定，右边露出下一列的一角，
+ * 一眼就知道还能往右滑。
  */
-private fun flattenTree(graph: KnowledgeGraph, collapsed: Set<String>): List<TreeRowModel> {
-    val out = ArrayList<TreeRowModel>()
+private fun boardColumns(graph: KnowledgeGraph): List<BoardColumnModel> {
+    val columns = ArrayList<BoardColumnModel>()
+    val loose = ArrayList<GraphNode>()
 
-    fun walk(key: String, depth: Int) {
-        val node = graph.nodes[key] ?: return
-        val children = graph.childrenOf(key)
-        out += TreeRowModel(key, node, depth, children.isNotEmpty())
-        if (key in collapsed) return
-        children.forEach { child -> walk(child.key, depth + 1) }
+    graph.childrenOf(null).forEach { root ->
+        val children = graph.childrenOf(root.key)
+        if (children.isEmpty() && root.kind != GraphNodeKind.CATEGORY) {
+            loose += root
+        } else {
+            columns += BoardColumnModel(
+                key = root.key,
+                title = root.name,
+                count = graphCountLabel(root),
+                items = children,
+            )
+        }
     }
-
-    graph.childrenOf(null).forEach { walk(it.key, 0) }
-    return out
+    if (loose.isNotEmpty()) {
+        columns += BoardColumnModel(
+            key = "__loose",
+            title = "散落概念",
+            count = loose.size.toString() + " 个",
+            items = loose,
+        )
+    }
+    return columns
 }
 
+/** 一棵树：上面是根（分类），下面一行是它的叶子，朝右发散、叶子多就横滑。 */
 @Composable
-private fun TreeRow(
-    node: GraphNode,
-    depth: Int,
-    folded: Boolean,
-    onToggle: () -> Unit,
-    onClick: () -> Unit,
-) {
-    val isCategory = node.kind == GraphNodeKind.CATEGORY
+private fun TreeBranch(column: BoardColumnModel, onOpen: (String) -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                column.title,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(enabled = column.key != "__loose") { onOpen(column.key) }
+                    .padding(horizontal = Gap.xs, vertical = 2.dp),
+            )
+            Text(
+                column.count,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = Gap.s),
+            )
+        }
+        Spacer(Modifier.height(Gap.xs))
+        if (column.items.isEmpty()) {
+            Text(
+                "这一类还没有概念",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = Gap.xs, vertical = 4.dp),
+            )
+        } else {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(Gap.xs),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                column.items.forEach { node -> LeafChip(node, onOpen) }
+            }
+        }
+    }
+}
+
+/** 叶子：一颗小药丸，点开概念详情。 */
+@Composable
+private fun LeafChip(node: GraphNode, onOpen: (String) -> Unit) {
     Row(
         Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .clickable { if (isCategory) onToggle() else onClick() }
-            .padding(start = (depth * 14).dp, top = Gap.s, bottom = Gap.s, end = Gap.s),
+            .clip(RoundedCornerShape(999.dp))
+            .background(LocalCardColor.current)
+            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f), RoundedCornerShape(999.dp))
+            .clickable { onOpen(node.key) }
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            if (isCategory) (if (folded) "▸" else "▾") else "·",
-            style = MaterialTheme.typography.labelMedium,
-            color = if (isCategory) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(18.dp),
-        )
-        Text(
             node.name,
-            style = if (isCategory) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 2,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
         )
-        if (isCategory) {
+        val label = graphCountLabel(node)
+        if (label.isNotEmpty()) {
             Text(
-                graphCountLabel(node),
+                label,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.width(Gap.xs))
-            Text(
-                "详情",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .clickable(onClick = onClick)
-                    .padding(horizontal = 6.dp, vertical = 6.dp),
-            )
-        } else if (node.noteCount > 0) {
-            Text(
-                node.noteCount.toString() + " 篇",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 6.dp),
             )
         }
     }
