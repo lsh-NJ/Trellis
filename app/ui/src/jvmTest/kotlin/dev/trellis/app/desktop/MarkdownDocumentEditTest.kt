@@ -486,5 +486,34 @@ class MarkdownDocumentEditTest {
         assertEquals(2, code.end)
     }
 
+    @Test
+    fun codeBlockRecordsLanguageFromFence() {
+        val body = "前言\n\n```cpp\nint x = 1;\n```\n\n结尾"
+        val projection = project(body, caret = 0)
+        assertFalse(projection.text.contains("```cpp"))
+        val block = projection.codeBlocks.single()
+        assertEquals(CodeLanguage.Cpp, block.language)
+    }
 
+    @Test
+    fun codeBlockHighlightsUseVisibleCoordinates() {
+        val body = "前言\n\n```cpp\nint x = 1;\n```\n\n结尾"
+        val projection = project(body, caret = 0)
+        assertTrue(projection.codeHighlights.isNotEmpty())
+        for (span in projection.codeHighlights) {
+            assertTrue(span.start >= 0)
+            assertTrue(span.end <= projection.text.length)
+            assertTrue(span.start < span.end)
+        }
+        val keyword = projection.codeHighlights.first { it.kind == CodeTokenKind.Keyword }
+        assertEquals("int", projection.text.substring(keyword.start, keyword.end))
+    }
+
+    @Test
+    fun plainFenceHasNoHighlights() {
+        val body = "前言\n\n```\nfoo bar\n```\n\n结尾"
+        val projection = project(body, caret = 0)
+        assertEquals(CodeLanguage.Plain, projection.codeBlocks.single().language)
+        assertTrue(projection.codeHighlights.isEmpty())
+    }
 }

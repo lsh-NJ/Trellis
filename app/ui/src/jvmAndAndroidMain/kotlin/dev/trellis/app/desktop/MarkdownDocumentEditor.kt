@@ -45,6 +45,8 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
@@ -381,6 +383,23 @@ internal fun MarkdownDocumentEditor(
             fontWeight = FontWeight.SemiBold,
         )
     }
+    val darkTheme = scheme.background.luminance() < 0.5f
+    val codeCardColor = remember(scheme) {
+        if (darkTheme) {
+            scheme.surfaceVariant.copy(alpha = 0.42f)
+        } else {
+            scheme.surfaceVariant.copy(alpha = 0.5f)
+        }
+    }
+    val codeCardBorder = remember(scheme) { scheme.outlineVariant.copy(alpha = 0.55f) }
+    val codeLabelMeasurer = rememberTextMeasurer()
+    val codeLabelStyle = remember(scheme) {
+        TextStyle(
+            color = scheme.onSurfaceVariant.copy(alpha = 0.66f),
+            fontSize = 10.sp,
+            fontFamily = AppFonts.mono,
+        )
+    }
 
     // 斜杠菜单贴着光标下方浮起来（和整篇编辑器的命令表是同一份）。
     val menuOffset = remember(editLayout, field.selection, projection, fieldWidth, density) {
@@ -408,21 +427,42 @@ internal fun MarkdownDocumentEditor(
             val textLength = layout.layoutInput.text.length
             fun clampOffset(offset: Int): Int = offset.coerceIn(0, textLength)
 
-            // 代码块：整块画一张圆角浅灰卡片（行间不留缝），光标不在块里时连围栏行也藏掉了，
-            // 所以卡片范围就是可见文本里这一段。
+            // 代码块：整块画一张圆角卡片（行间不留缝），光标不在块里时连围栏行也藏掉了，
+            // 所以卡片范围就是可见文本里这一段。底色/描边跟随主题，右上角标语言。
             for (block in projection.codeBlocks) {
                 if (block.end <= block.start) continue
                 val fromLine = layout.getLineForOffset(clampOffset(block.start))
                 val toLine = layout.getLineForOffset(clampOffset(block.end - 1))
-                val top = layout.getLineTop(fromLine) - 2.dp.toPx()
-                val bottom = layout.getLineBottom(toLine) + 2.dp.toPx()
-                val left = gutterWidthPx - 10.dp.toPx()
+                val top = layout.getLineTop(fromLine) - 8.dp.toPx()
+                val bottom = layout.getLineBottom(toLine) + 8.dp.toPx()
+                val left = gutterWidthPx - 14.dp.toPx()
+                val right = size.width - 10.dp.toPx()
+                val corner = CornerRadius(10.dp.toPx())
+                val cardSize = Size((right - left).coerceAtLeast(0f), bottom - top)
                 drawRoundRect(
-                    color = MarkdownCodeBackground,
+                    color = codeCardColor,
                     topLeft = Offset(left, top),
-                    size = Size((size.width - left - 8.dp.toPx()).coerceAtLeast(0f), bottom - top),
-                    cornerRadius = CornerRadius(8.dp.toPx()),
+                    size = cardSize,
+                    cornerRadius = corner,
                 )
+                drawRoundRect(
+                    color = codeCardBorder,
+                    topLeft = Offset(left, top),
+                    size = cardSize,
+                    cornerRadius = corner,
+                    style = Stroke(width = 1.dp.toPx()),
+                )
+                val label = block.language.label
+                if (label.isNotEmpty()) {
+                    val measured = codeLabelMeasurer.measure(AnnotatedString(label), codeLabelStyle)
+                    drawText(
+                        textLayoutResult = measured,
+                        topLeft = Offset(
+                            x = right - measured.size.width - 10.dp.toPx(),
+                            y = top + 5.dp.toPx(),
+                        ),
+                    )
+                }
             }
 
             // 引用块：左侧一条竖线，跨连续的 `>` 行（marktext 那种引用样式）。
@@ -661,6 +701,12 @@ private fun buildDocumentEditText(
             )
         }
         add(mark.start..(mark.end - 1), style)
+    }
+    // 代码块语法高亮：放在最后，覆盖上面统一的等宽字色（GitHub 固定配色）。
+    val codeColors = codeSyntaxColors(scheme.background.luminance() < 0.5f)
+    for (span in projection.codeHighlights) {
+        if (span.start >= span.end) continue
+        add(span.start..(span.end - 1), SpanStyle(color = codeColors.of(span.kind)))
     }
 }
 
