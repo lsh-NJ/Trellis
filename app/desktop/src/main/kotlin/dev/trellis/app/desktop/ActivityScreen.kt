@@ -5,6 +5,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -51,6 +53,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -333,7 +336,7 @@ private fun ActivityHeader(
     }
 }
 
-/** 日视图：统计条 → 24 小时时间轴 → 分类树 → 应用排行 → 未分类折叠块。 */
+/** 日视图：统计条 → 时间轴（全天概览 + 分钟网格）→ 分类占比 → 分类树 → 应用排行 → 未分类折叠块。 */
 @Composable
 private fun DayView(
     summary: DaySummary?,
@@ -576,14 +579,14 @@ private fun RangeView(
     }
 }
 
-/** 日视图时间轴：整块是当天观察窗口，彩色块是分类后的活跃片段。 */
+/** 日视图时间轴：上面一条 24 小时概览，下面按小时分行的分钟网格。 */
 @Composable
 private fun TimelineCard(summary: DaySummary, segments: List<Segment>, onOpenDetail: (Segment) -> Unit) {
     ActivityCard {
         Text("时间轴", style = MaterialTheme.typography.titleSmall)
         Spacer(Modifier.height(4.dp))
         Text(
-            "整块是当天的观察窗口，彩色段是去掉 AFK 之后的活跃时间；点一段看详情。",
+            "上面是全天概览；下面每小时一行、每格一分钟，颜色是该分钟里占时最多的分类。点格子看片段详情。",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -594,7 +597,7 @@ private fun TimelineCard(summary: DaySummary, segments: List<Segment>, onOpenDet
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(52.dp)
+                .height(24.dp)
                 .clip(RoundedCornerShape(6.dp))
                 .background(track),
         ) {
@@ -630,8 +633,195 @@ private fun TimelineCard(summary: DaySummary, segments: List<Segment>, onOpenDet
                 Text(hour, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+
+        Spacer(Modifier.height(14.dp))
+        val hours = remember(segments, summary.dayStartMs) { activeHourRange(summary.dayStartMs, segments) }
+        if (hours == null) {
+            Text(
+                "今天还没有活跃片段。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            HourMinuteGrid(
+                dayStartMs = summary.dayStartMs,
+                hours = hours,
+                segments = segments,
+                track = track,
+                onOpenDetail = onOpenDetail,
+            )
+            Spacer(Modifier.height(10.dp))
+            TimelineLegend(segments = segments)
+        }
     }
 }
+
+/** 分钟网格左侧小时标签的宽度，刻度行与格子行都按它对齐。 */
+private val HourLabelWidth = 46.dp
+
+private const val MinuteMs = 60_000L
+private const val HourMs = 3_600_000L
+
+/** 一分钟格：代表片段是这一分钟里重叠时间最长的那个。 */
+private data class MinuteCell(val segment: Segment, val coverage: Float)
+
+private class MinuteRow(val hour: Int, val cells: List<MinuteCell?>)
+
+/** 只列出有活动的小时，避免 24 行里大半是空白。 */
+private fun activeHourRange(dayStartMs: Long, segments: List<Segment>): IntRange? {
+    if (segments.isEmpty()) return null
+    val first = ((segments.minOf { it.fromMs } - dayStartMs).coerceAtLeast(0L) / HourMs).toInt().coerceIn(0, 23)
+    val last = ((segments.maxOf { it.toMs } - dayStartMs - 1).coerceAtLeast(0L) / HourMs).toInt().coerceIn(0, 23)
+    return first..last
+}
+
+/** 每分钟取「重叠时间最长」的片段作为该格的代表；coverage 是它占这一分钟的比例，用来调色块深浅。 */
+private fun minuteRows(dayStartMs: Long, hours: IntRange, segments: List<Segment>): List<MinuteRow> {
+    if (segments.isEmpty()) return emptyList()
+    val sorted = segments.sortedBy { it.fromMs }
+    return hours.map { hour ->
+        val cells = ArrayList<MinuteCell?>(60)
+        for (minute in 0 until 60) {
+            val start = dayStartMs + hour * HourMs + minute * MinuteMs
+            val end = start + MinuteMs
+            var best: Segment? = null
+            var bestOverlap = 0L
+            for (segment in sorted) {
+                if (segment.fromMs >= end) break
+                val overlap = minOf(segment.toMs, end) - maxOf(segment.fromMs, start)
+                if (overlap > bestOverlap) {
+                    bestOverlap = overlap
+                    best = segment
+                }
+            }
+            cells += if (best == null) {
+                null
+            } else {
+                MinuteCell(best, (bestOverlap.toFloat() / MinuteMs).coerceIn(0f, 1f))
+            }
+        }
+        MinuteRow(hour, cells)
+    }
+}
+
+private fun hourLabel(hour: Int): String = when {
+    hour >= 24 -> "24:00"
+    hour < 10 -> "0$hour:00"
+    else -> "$hour:00"
+}
+
+/** 分钟热力网格：每行一小时、每格一分钟，点格子打开该分钟代表片段的详情。 */
+@Composable
+private fun HourMinuteGrid(
+    dayStartMs: Long,
+    hours: IntRange,
+    segments: List<Segment>,
+    track: Color,
+    onOpenDetail: (Segment) -> Unit,
+) {
+    val rows = remember(dayStartMs, hours, segments) { minuteRows(dayStartMs, hours, segments) }
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(Modifier.fillMaxWidth()) {
+            Spacer(Modifier.width(HourLabelWidth))
+            Spacer(Modifier.width(8.dp))
+            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+                repeat(60) { minute ->
+                    Box(Modifier.weight(1f)) {
+                        if (minute % 15 == 0) {
+                            Text(
+                                minute.toString(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        rows.forEach { row ->
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    hourLabel(row.hour),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.width(HourLabelWidth),
+                    textAlign = TextAlign.End,
+                )
+                Spacer(Modifier.width(8.dp))
+                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+                    row.cells.forEach { cell ->
+                        val base = Modifier
+                            .weight(1f)
+                            .height(13.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(
+                                if (cell == null) {
+                                    track.copy(alpha = 0.35f)
+                                } else {
+                                    tintOf(cell.segment.color).copy(alpha = 0.35f + 0.65f * cell.coverage)
+                                },
+                            )
+                        Box(
+                            modifier = if (cell == null) base else base.clickable { onOpenDetail(cell.segment) },
+                        )
+                    }
+                }
+            }
+        }
+        Text(
+            "只显示有活动的小时（" + hourLabel(hours.first) + "–" + hourLabel(hours.last + 1) +
+                "）；空白格是 AFK 或没采集到。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** 时间轴图例：按分类汇总时长取前 8 个，色点和格子里的颜色一致（叶子分类）。 */
+@Composable
+private fun TimelineLegend(segments: List<Segment>) {
+    val items = remember(segments) { timelineLegend(segments) }
+    if (items.isEmpty()) return
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        items.forEach { item ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(9.dp)
+                        .clip(CircleShape)
+                        .background(item.color),
+                )
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    item.label + " " + formatDuration(item.durationMs),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+private data class TimelineLegendItem(val label: String, val color: Color, val durationMs: Long)
+
+private fun timelineLegend(segments: List<Segment>): List<TimelineLegendItem> =
+    segments.groupBy { it.categoryId }
+        .map { (_, group) ->
+            val first = group.first()
+            TimelineLegendItem(
+                label = first.category.lastOrNull() ?: "未分类",
+                color = tintOf(first.color),
+                durationMs = group.sumOf { it.durationMs },
+            )
+        }
+        .sortedByDescending { it.durationMs }
+        .take(8)
 
 /**
  * 分类占比饼图：只切一级分类（[CategorySlice.totalMs] 已含子类，不会重复计数）。
