@@ -4,11 +4,14 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,6 +26,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -51,6 +55,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -66,6 +72,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.trellis.ai.tool.DeepSeekMarkup
@@ -138,10 +145,7 @@ fun ChatScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
             planLine = if (planOpen) null else planLine,
             onOpenPlan = { planOpen = true },
             note = planNote,
-            modifier = Modifier.weight(1f).fillMaxHeight().padding(
-                start = 18.dp,
-                end = if (planSidebarVisible) 0.dp else 20.dp,
-            ),
+            modifier = Modifier.weight(1f).fillMaxHeight().padding(horizontal = 24.dp),
         )
         if (planSidebarVisible) {
             PlanSidebar(
@@ -379,6 +383,10 @@ private fun ChatConversation(
     var localNote by remember(runtime.currentChatId) { mutableStateOf<String?>(null) }
 
     val blocks = remember(runtime.chat.size, runtime.chat.lastOrNull()?.text?.length) { blocksOf(runtime.chat) }
+    // 管家会话里的主动消息没有用户那一句，但渲染与会话完全一致（回合头换成「管家」）。
+    val stewardSession = runtime.currentChatId?.let { id ->
+        runtime.chatSessions.firstOrNull { it.id == id }?.kind
+    } == SessionKind.Steward
 
     LaunchedEffect(runtime.chat.size, runtime.chat.lastOrNull()?.text?.length) {
         if (runtime.chat.isNotEmpty()) listState.animateScrollToItem(runtime.chat.size)
@@ -392,102 +400,110 @@ private fun ChatConversation(
         runCatching { focus.requestFocus() }
     }
 
-    Column(modifier) {
-        if (runtime.chat.isEmpty()) {
-            EmptyConversation(onPick = { input = it }, modifier = Modifier.weight(1f))
-        } else {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                items(blocks, key = { block ->
-                    when (block) {
-                        is ChatBlock.User -> "u-" + block.line.id
-                        is ChatBlock.Round -> "r-" + block.user.id
-                        is ChatBlock.Orphan -> "o-" + block.lines.first().id
-                    }
-                }) { block ->
-                    when (block) {
-                        is ChatBlock.User -> UserBubble(block.line)
-                        is ChatBlock.Orphan -> OrphanSteps(runtime, block.lines)
-                        is ChatBlock.Round -> {
-                            RoundView(
+    Box(modifier) {
+        BoxWithConstraints(
+            modifier = Modifier.widthIn(max = MaxConversationWidth).fillMaxHeight().align(Alignment.TopCenter),
+        ) {
+            // 用户消息按列宽的比例收窄，agent 消息占满整列（见下面的条宽计算）。
+            val userBubbleMax = maxWidth * 0.62f
+            Column(Modifier.fillMaxSize()) {
+            if (runtime.chat.isEmpty()) {
+                EmptyConversation(onPick = { input = it }, modifier = Modifier.weight(1f))
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    // 键里带上序号：历史会话文件里可能有重复的行 id（旧版本重启后计数器重置），
+                    // 只按 id 做 key 会在 LazyColumn 里撞键崩溃。
+                    itemsIndexed(blocks, key = { index, block ->
+                        when (block) {
+                            is ChatBlock.User -> "u-" + index + "-" + block.line.id
+                            is ChatBlock.Round -> "r-" + index + "-" + block.keyId
+                        }
+                    }) { _, block ->
+                        when (block) {
+                            is ChatBlock.User -> UserBubble(block.line, userBubbleMax)
+                            is ChatBlock.Round -> RoundView(
                                 runtime = runtime,
                                 round = block,
                                 isLast = block === blocks.lastOrNull(),
+                                stewardSession = stewardSession,
+                                userBubbleMax = userBubbleMax,
                                 onOpenPlan = onOpenPlan,
                             )
                         }
                     }
+                    item { Spacer(Modifier.height(4.dp)) }
                 }
-                item { Spacer(Modifier.height(4.dp)) }
+            }
+
+            // 右栏关掉时清单换成贴输入框的常驻条：常驻，不是消失。
+            if (planLine != null && planLine.plan.isNotEmpty()) {
+                PlanDock(
+                    line = planLine,
+                    running = runtime.chatBusy,
+                    onOpen = onOpenPlan,
+                    onStop = { runtime.stopChat() },
+                )
+            }
+
+            // 模型主动开了个选择（ask_choices）：选项竖着摆在输入框上方，等用户点。
+            // 这里不再有「运行时猜下一步」的建议条 —— 要不要继续做什么，由模型决定要不要问。
+            if (runtime.chatChoices.isNotEmpty()) {
+                ChoiceBar(
+                    choices = runtime.chatChoices,
+                    onPick = { runtime.applyChoice(it) },
+                    onDismiss = { runtime.dismissChoices() },
+                )
+            }
+
+            val shownNote = localNote ?: note
+            shownNote?.let { message ->
+                Text(
+                    message,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                )
+            }
+
+            HorizontalDivider()
+            Spacer(Modifier.height(8.dp))
+
+            if (!runtime.llmConfigured()) {
+                Text(
+                    runtime.llmSetupHint(),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                )
+                return@Column
+            }
+
+            InputBar(
+                runtime = runtime,
+                focus = focus,
+                input = input,
+                onInput = { input = it },
+                onSend = {
+                    val text = input.trim()
+                    if (text.isEmpty()) return@InputBar
+                    if (runtime.chatBusy) {
+                        localNote = "还在跑，等这一轮结束再发"
+                    } else {
+                        input = ""
+                        lastPrompt = text
+                        localNote = null
+                        runtime.ask(text)
+                    }
+                },
+                onRecall = {
+                    if (input.isBlank() && lastPrompt.isNotBlank()) input = lastPrompt
+                },
+        )
             }
         }
-
-        // 右栏关掉时清单换成贴输入框的常驻条：常驻，不是消失。
-        if (planLine != null && planLine.plan.isNotEmpty()) {
-            PlanDock(
-                line = planLine,
-                running = runtime.chatBusy,
-                onOpen = onOpenPlan,
-                onStop = { runtime.stopChat() },
-            )
-        }
-
-        // 模型主动开了个选择（ask_choices）：选项竖着摆在输入框上方，等用户点。
-        // 这里不再有「运行时猜下一步」的建议条 —— 要不要继续做什么，由模型决定要不要问。
-        if (runtime.chatChoices.isNotEmpty()) {
-            ChoiceBar(
-                choices = runtime.chatChoices,
-                onPick = { runtime.applyChoice(it) },
-                onDismiss = { runtime.dismissChoices() },
-            )
-        }
-
-        val shownNote = localNote ?: note
-        shownNote?.let { message ->
-            Text(
-                message,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-            )
-        }
-
-        HorizontalDivider()
-        Spacer(Modifier.height(8.dp))
-
-        if (!runtime.llmConfigured()) {
-            Text(
-                runtime.llmSetupHint(),
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
-            )
-            return@Column
-        }
-
-        InputBar(
-            runtime = runtime,
-            focus = focus,
-            input = input,
-            onInput = { input = it },
-            onSend = {
-                val text = input.trim()
-                if (text.isEmpty()) return@InputBar
-                if (runtime.chatBusy) {
-                    localNote = "还在跑，等这一轮结束再发"
-                } else {
-                    input = ""
-                    lastPrompt = text
-                    localNote = null
-                    runtime.ask(text)
-                }
-            },
-            onRecall = {
-                if (input.isBlank() && lastPrompt.isNotBlank()) input = lastPrompt
-            },
-        )
     }
 }
 
@@ -599,11 +615,11 @@ private fun EmptyConversation(onPick: (String) -> Unit, modifier: Modifier) {
 }
 
 @Composable
-private fun UserBubble(line: ChatLine) {
+private fun UserBubble(line: ChatLine, maxWidth: Dp = 560.dp) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
         Column(
             modifier = Modifier
-                .widthIn(max = 560.dp)
+                .widthIn(max = maxWidth)
                 .clip(RoundedCornerShape(topStart = 10.dp, topEnd = 10.dp, bottomEnd = 3.dp, bottomStart = 10.dp))
                 .background(MaterialTheme.colorScheme.primaryContainer)
                 .padding(horizontal = 14.dp, vertical = 10.dp),
@@ -615,30 +631,6 @@ private fun UserBubble(line: ChatLine) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
             )
             Text(line.text, style = MaterialTheme.typography.bodyLarge)
-        }
-    }
-}
-
-@Composable
-private fun OrphanSteps(runtime: AppRuntime, lines: List<ChatLine>) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        for (line in lines) {
-            if (line.role == ChatRole.Assistant) {
-                // 主动消息（管家）没有用户那一句开头，成不了「一轮」；
-                // 但它是正式发言，按正文渲染，建议卡也照常挂在下面。
-                Text(line.text, style = MaterialTheme.typography.bodyMedium)
-                line.proposal?.let { proposal ->
-                    Spacer(Modifier.height(8.dp))
-                    StewardProposalCard(runtime, line, proposal)
-                }
-            } else {
-                Text(
-                    line.text,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
         }
     }
 }
@@ -708,9 +700,11 @@ private fun RoundView(
     runtime: AppRuntime,
     round: ChatBlock.Round,
     isLast: Boolean,
+    stewardSession: Boolean,
+    userBubbleMax: Dp,
     onOpenPlan: () -> Unit = {},
 ) {
-    val key = round.user.id
+    val key = round.keyId
     val steps = round.steps
     val running = isLast && runtime.chatBusy
     val failed = round.status?.text?.let {
@@ -732,8 +726,15 @@ private fun RoundView(
 
     val expandedNow = expanded || running || failed
     val toolNames = steps.mapNotNull { step ->
-        Regex("^第 \\d+ 步：(.+)$").find(step.text)?.groupValues?.get(1)?.trim()
-    }.filter { it.isNotEmpty() }
+        val raw = Regex("^第 \\d+ 步：(.+)$").find(step.text)?.groupValues?.get(1)?.trim()
+            ?: return@mapNotNull null
+        when {
+            raw.isEmpty() -> null
+            raw == "它说完了" -> null
+            raw.startsWith("它说完了，但 ") -> "还要补"
+            else -> raw
+        }
+    }
     val changedCount = diff.size
     val dotColor = when {
         running -> RunningAmber
@@ -742,8 +743,10 @@ private fun RoundView(
     }
 
     Column(Modifier.alpha(if (undone) 0.55f else 1f)) {
-        UserBubble(round.user)
-        Spacer(Modifier.height(10.dp))
+        round.user?.let { user ->
+            UserBubble(user, userBubbleMax)
+            Spacer(Modifier.height(10.dp))
+        }
 
         // 线程里只留一行入口：活的清单在右栏，这里不重复渲染（结束后折叠成摘要）。
         round.plan?.let { planLine ->
@@ -762,7 +765,11 @@ private fun RoundView(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.width(6.dp).height(6.dp).clip(CircleShape).background(dotColor))
             Spacer(Modifier.width(6.dp))
-            Text("Trellis", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium)
+            Text(
+                if (stewardSession) "管家" else "Trellis",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Medium,
+            )
             Spacer(Modifier.width(8.dp))
             Text(
                 when {
@@ -817,7 +824,7 @@ private fun RoundView(
                 "…",
                 style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.5.sp, lineHeight = 27.6.sp),
                 color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.widthIn(max = 527.dp),
+                modifier = Modifier.fillMaxWidth(),
             )
         } else {
             // agent 的答复天然是 Markdown（小标题/清单/代码块）：按块渲染，
@@ -827,7 +834,7 @@ private fun RoundView(
             // 当正文存进了盘），这里再剥一遍：存下来的文本改不了，但可以不给人看。
             MarkdownText(
                 DeepSeekMarkup.strip(conclusion),
-                modifier = Modifier.widthIn(max = 527.dp),
+                modifier = Modifier.fillMaxWidth(),
                 bodyStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.5.sp, lineHeight = 27.6.sp),
             )
         }
@@ -974,10 +981,14 @@ private fun ProcessDetails(steps: List<ChatLine>) {
         for (line in steps) {
             val isResult = line.text.startsWith("　→")
             val isJudgement = line.text.startsWith("判断：")
+            // 旧会话里存过「它说完了」的收尾行：成功的那条不再显示，
+            // 「…，但 X」保留补做原因，别把有用信息一起扔掉。
+            if (line.text.contains("它说完了") && !line.text.contains("它说完了，但 ")) continue
             val text = line.text
                 .replace("判断：", "")
                 .replace(Regex("^第 \\d+ 步："), "· ")
                 .replace("　→", "↳")
+                .replace("· 它说完了，但 ", "· 还要补：")
                 .trim()
             if (text.isEmpty()) continue
             Row(verticalAlignment = Alignment.Top) {
@@ -1101,14 +1112,26 @@ private fun InputBar(
 
 private sealed interface ChatBlock {
     data class User(val line: ChatLine) : ChatBlock
+
+    /**
+     * 一轮对话。[user] 可空：管家的主动消息没有用户那一句开头，
+     * 但它同样是一轮——回合头、过程折叠、正文、建议卡、元信息都照常渲染。
+     */
     data class Round(
-        val user: ChatLine,
+        val user: ChatLine?,
         val plan: ChatLine?,
         val steps: List<ChatLine>,
         val reply: ChatLine?,
         val status: ChatLine?,
-    ) : ChatBlock
-    data class Orphan(val lines: List<ChatLine>) : ChatBlock
+    ) : ChatBlock {
+        /** 列表 key / 撤销/差异用的稳定锚点。 */
+        val keyId: Long
+            get() = user?.id ?: reply?.id ?: plan?.id ?: steps.firstOrNull()?.id ?: status?.id ?: 0L
+
+        /** 耗时从这一轮的第一行算起。 */
+        val startedAtMs: Long
+            get() = user?.atMs ?: plan?.atMs ?: steps.firstOrNull()?.atMs ?: reply?.atMs ?: status?.atMs ?: 0L
+    }
 }
 
 /** 清单属于哪一轮：从清单行往上找最近的一条用户消息，它才是这一轮的起点。 */
@@ -1120,16 +1143,18 @@ private fun planRoundKeyOf(lines: List<ChatLine>, planLine: ChatLine?): Long? {
 }
 private fun blocksOf(lines: List<ChatLine>): List<ChatBlock> {
     val out = mutableListOf<ChatBlock>()
-    val orphan = mutableListOf<ChatLine>()
     var user: ChatLine? = null
     var plan: ChatLine? = null
     var steps = mutableListOf<ChatLine>()
     var reply: ChatLine? = null
     var status: ChatLine? = null
 
+    fun opened(): Boolean =
+        user != null || plan != null || steps.isNotEmpty() || reply != null || status != null
+
     fun flush() {
-        val opened = user ?: return
-        out += ChatBlock.Round(opened, plan, steps, reply, status)
+        if (!opened()) return
+        out += ChatBlock.Round(user, plan, steps.toList(), reply, status)
         user = null
         plan = null
         steps = mutableListOf()
@@ -1143,17 +1168,26 @@ private fun blocksOf(lines: List<ChatLine>): List<ChatBlock> {
                 flush()
                 user = line
             }
-            ChatRole.Plan -> if (user == null) orphan += line else plan = line
-            ChatRole.Step -> if (user == null) orphan += line else steps += line
-            ChatRole.Assistant -> if (user == null) orphan += line else reply = line
-            ChatRole.Status -> if (user == null) orphan += line else status = line
+            // 没有用户那一句时（管家主动消息），每一步都可能开新的一轮：
+            // 上一轮已经有答复、又来了新的发言，说明是下一条主动消息。
+            ChatRole.Plan -> {
+                if (user == null && reply != null) flush()
+                plan = line
+            }
+            ChatRole.Step -> {
+                if (user == null && reply != null) flush()
+                steps += line
+            }
+            ChatRole.Assistant -> {
+                if (user == null && reply != null) flush()
+                reply = line
+            }
+            ChatRole.Status -> status = line
         }
     }
     flush()
-    if (orphan.isNotEmpty()) out.add(0, ChatBlock.Orphan(orphan))
     return out
 }
-
 private fun clockLabel(ms: Long): String {
     if (ms <= 0L) return ""
     return Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault())
@@ -1167,7 +1201,7 @@ private fun isToday(ms: Long): Boolean {
 }
 
 private fun roundDurationLabel(round: ChatBlock.Round): String {
-    val start = round.user.atMs
+    val start = round.startedAtMs
     val end = (round.status ?: round.reply)?.atMs ?: return ""
     if (start <= 0L || end <= start) return ""
     val seconds = (end - start) / 1000.0
@@ -1175,10 +1209,13 @@ private fun roundDurationLabel(round: ChatBlock.Round): String {
 }
 
 /**
- * 管家建议卡：模板化的一条改动 + 三个动作。
+ * 管家建议卡：一条模板化改动 + 逐条建议 + 三个动作。
  *
  * 采纳是直接执行（走计划后端命令），不是再让模型跑一轮；「调整一下」把话带进输入框；
  * 「先这样」只记账不动计划 —— 三选一，不猜用户想不想。
+ *
+ * 视觉上用紫罗兰渐变底板把「这是建议、不是对话结论」区分出来；建议多时框内滚动，
+ * 标题和按钮固定，采纳永远点得到。
  */
 @Composable
 private fun StewardProposalCard(
@@ -1186,23 +1223,34 @@ private fun StewardProposalCard(
     line: ChatLine,
     proposal: StewardProposal,
 ) {
-    val extra = LocalExtraColors.current
     val decided = line.proposalState != ProposalState.Open
     Column(
         modifier = Modifier
-            .widthIn(max = 527.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(10.dp))
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(
+                Brush.verticalGradient(
+                    listOf(StewardViolet.copy(alpha = 0.16f), StewardViolet.copy(alpha = 0f)),
+                ),
+            )
+            .border(1.dp, StewardViolet.copy(alpha = 0.28f), RoundedCornerShape(12.dp))
             .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(
             "管家建议",
             style = MaterialTheme.typography.labelSmall,
-            color = extra.accentText,
+            color = StewardViolet,
+            modifier = Modifier
+                .clip(RoundedCornerShape(4.dp))
+                .background(StewardViolet.copy(alpha = 0.14f))
+                .padding(horizontal = 6.dp, vertical = 2.dp),
         )
-        Text(proposal.title, style = MaterialTheme.typography.bodyMedium)
+        Text(
+            proposal.title,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+        )
         if (proposal.detail.isNotBlank()) {
             Text(
                 proposal.detail,
@@ -1210,13 +1258,42 @@ private fun StewardProposalCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        proposal.changes.forEach { change ->
-            val verb = if (change is StewardChange.Move) "挪到" else "排到"
-            Text(
-                "· 把「${change.title}」$verb ${change.day.takeLast(5)}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
+        // 计划/待办建议逐条一张小底板；超过限高就框内滑，标题与按钮不跟着滚。
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 280.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            proposal.changes.forEach { change ->
+                val verb = if (change is StewardChange.Move) "挪到" else "排到"
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(StewardViolet.copy(alpha = 0.08f))
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier
+                            .width(3.dp)
+                            .height(30.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(StewardViolet.copy(alpha = 0.6f)),
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(change.title, style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            "$verb ${change.day.takeLast(5)}",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                            color = StewardViolet,
+                        )
+                    }
+                }
+            }
         }
         if (decided) {
             Text(
@@ -1227,7 +1304,7 @@ private fun StewardProposalCard(
         } else {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = { runtime.launchAdoptStewardProposal(line.id) }) {
-                    Text("一键采纳", style = MaterialTheme.typography.labelSmall)
+                    Text("一键采纳", style = MaterialTheme.typography.labelSmall, color = StewardViolet)
                 }
                 TextButton(onClick = { runtime.negotiateStewardProposal(line.id) }) {
                     Text("调整一下", style = MaterialTheme.typography.labelSmall)
@@ -1260,3 +1337,9 @@ private fun metaLabel(round: ChatBlock.Round): String {
 }
 
 private val RunningAmber = androidx.compose.ui.graphics.Color(0xFF8F5C12)
+
+/** 对话列的最大宽度：窗口再宽也只到这里；左右留白因此对称。 */
+private val MaxConversationWidth = 760.dp
+
+/** 管家卡的专属强调色（不进入全局主题）：紫罗兰，和 Bento 的强调色区分开。 */
+private val StewardViolet = Color(0xFF8B6CE0)
