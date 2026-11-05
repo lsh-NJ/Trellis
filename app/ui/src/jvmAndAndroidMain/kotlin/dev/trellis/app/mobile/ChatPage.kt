@@ -30,6 +30,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
@@ -291,11 +294,16 @@ fun ChatPage(runtime: AppRuntime) {
                             Box(
                                 Modifier
                                     .clip(RoundedCornerShape(8.dp))
+                                    .semantics { contentDescription = "删除会话「" + session.title + "」" }
                                     .clickable { runtime.deleteChat(session.id) }
                                     .padding(8.dp),
                             ) {
-                                Text("✕", style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(
+                                    "✕",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.clearAndSetSemantics { },
+                                )
                             }
                         }
                     }
