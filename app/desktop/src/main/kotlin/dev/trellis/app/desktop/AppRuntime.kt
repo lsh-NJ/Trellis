@@ -812,7 +812,8 @@ class AppRuntime private constructor() {
         currentChatId = null
         chat.clear()
         chatHistory.clear()
-        nextChatLineId = 1L
+        // 行 id 是**整个进程**单调递增的：会话之间、重启前后都不能撞，
+        // 否则界面按 id 做 key、按 id 找行（采纳建议）都会指错行。
     }
 
     /** 打开一段历史会话；也把最近 20 条正式发言接回模型上下文。 */
@@ -822,7 +823,8 @@ class AppRuntime private constructor() {
         currentChatId = session.id
         chat.clear()
         chat += session.lines
-        nextChatLineId = (session.lines.maxOfOrNull { it.id } ?: 0L) + 1
+        // 只升不降：从任意一段历史会话切过来，新行都不能复用别的会话已有的 id。
+        nextChatLineId = maxOf(nextChatLineId, (session.lines.maxOfOrNull { it.id } ?: 0L) + 1)
         chatHistory.clear()
         session.lines
             .filter { it.role == ChatRole.User || it.role == ChatRole.Assistant }
@@ -848,6 +850,12 @@ class AppRuntime private constructor() {
         if (!::chatStore.isInitialized) return
         chatSessions.clear()
         chatSessions += chatStore.list()
+        // 启动时把计数器顶到所有会话的最大 id 之上（以前只按当前会话算，
+        // 重启后给管家追加消息会撞上历史行 id）。
+        val maxLineId = chatSessions.maxOfOrNull { session ->
+            session.lines.maxOfOrNull { it.id } ?: 0L
+        } ?: 0L
+        nextChatLineId = maxOf(nextChatLineId, maxLineId + 1)
     }
 
     /** 打开/正在看这段会话：清掉未读并落盘（只改这一段，不重排列表）。 */
