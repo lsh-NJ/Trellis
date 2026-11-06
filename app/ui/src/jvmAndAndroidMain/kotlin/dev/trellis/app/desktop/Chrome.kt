@@ -36,6 +36,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.luminance
@@ -198,39 +199,36 @@ internal fun ChromeButton(
 }
 
 /**
- * 「堆出来的对勾」：完成状态的艺术化提示。
+ * 对勾：完成状态的艺术化提示。
  *
  * 评审 §4.3 说完成态只有「面变浅 + 删除线」，读起来像禁用而不是做完。这里沿「短臂下探 →
- * 长臂上甩」两段线按固定间距叠方块，颜色取主题的荧光笔色（mark）——它是唯一「奖赏」语义的颜色。
- * 不引字体/贴图，16/24/32dp 都是同一枚勾。
+ * 长臂上甩」两段线直接画一笔对勾（圆头圆角），颜色取主题的荧光笔色（mark）——它是唯一
+ * 「奖赏」语义的颜色。16/24/32dp 用同一套比例，缩到任务行里也是清清楚楚一个勾。
  */
 @Composable
-internal fun BlockCheck(
+internal fun CheckMark(
     modifier: Modifier = Modifier,
     size: Dp = 16.dp,
     tint: Color = LocalTrellisTokens.current.colors.mark,
 ) {
     Canvas(modifier.size(size)) {
-        val cell = this.size.minDimension / 5.2f
-        val left = Offset(this.size.width * 0.08f, this.size.height * 0.44f)
-        val knee = Offset(this.size.width * 0.36f, this.size.height * 0.82f)
-        val top = Offset(this.size.width * 0.94f, this.size.height * 0.16f)
-        fun stamps(from: Offset, to: Offset) {
-            val length = kotlin.math.hypot((to.x - from.x).toDouble(), (to.y - from.y).toDouble()).toFloat()
-            val count = (length / (cell * 0.72f)).toInt().coerceAtLeast(1)
-            for (i in 0..count) {
-                val t = i / count.toFloat()
-                val x = from.x + (to.x - from.x) * t
-                val y = from.y + (to.y - from.y) * t
-                drawRect(
-                    color = tint.copy(alpha = if (i % 2 == 0) 1f else 0.78f),
-                    topLeft = Offset(x - cell / 2f, y - cell / 2f),
-                    size = Size(cell, cell),
-                )
-            }
-        }
-        stamps(left, knee)
-        stamps(knee, top)
+        val w = this.size.width
+        val h = this.size.height
+        val stroke = this.size.minDimension * 0.17f
+        drawLine(
+            color = tint,
+            start = Offset(w * 0.10f, h * 0.52f),
+            end = Offset(w * 0.38f, h * 0.84f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round,
+        )
+        drawLine(
+            color = tint,
+            start = Offset(w * 0.38f, h * 0.84f),
+            end = Offset(w * 0.92f, h * 0.16f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round,
+        )
     }
 }
 

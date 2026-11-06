@@ -470,7 +470,7 @@ private fun WeekProgressCard(runtime: AppRuntime) {
             )
             if (progress.allTotal > 0 && progress.allDone == progress.allTotal) {
                 Spacer(Modifier.width(tokens.space.s))
-                BlockCheck(size = 26.dp)
+                CheckMark(size = 26.dp)
             }
             Spacer(Modifier.weight(1f))
             Text("全部节点", style = tokens.type.meta, color = tokens.colors.ink3)
@@ -965,7 +965,7 @@ private fun TaskRow(
                 modifier = Modifier.size(40.dp).clickable { onToggle(task) },
                 contentAlignment = Alignment.Center,
             ) {
-                BlockCheck(size = 18.dp)
+                CheckMark(size = 18.dp)
             }
         } else {
             ChromeCheckbox(checked = false, onCheckedChange = { onToggle(task) })
