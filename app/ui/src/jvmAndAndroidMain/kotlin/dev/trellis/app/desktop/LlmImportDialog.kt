@@ -50,6 +50,7 @@ internal fun LlmImportDialog(
     var preset by remember { mutableStateOf(LlmImport.PRESETS.first()) }
     var error by remember { mutableStateOf<String?>(null) }
     val clipboard = LocalClipboardManager.current
+    val tokens = LocalTrellisTokens.current
 
     fun submit() {
         val outcome = runtime.importLlmConfig(raw, preset.endpoint, preset.model)
@@ -113,7 +114,7 @@ internal fun LlmImportDialog(
                     Spacer(Modifier.weight(1f))
                     Text(
                         preset.name + " · " + preset.model,
-                        style = MaterialTheme.typography.labelSmall,
+                        style = tokens.type.meta,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -143,6 +144,7 @@ internal fun LlmImportDialog(
 /** 服务商胶囊：选中用主色淡底，未选中只有一条细边。 */
 @Composable
 private fun PresetChip(preset: LlmPreset, selected: Boolean, onClick: () -> Unit) {
+    val tokens = LocalTrellisTokens.current
     val shape = RoundedCornerShape(999.dp)
     val background = if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
     val foreground = if (selected) {
@@ -162,6 +164,6 @@ private fun PresetChip(preset: LlmPreset, selected: Boolean, onClick: () -> Unit
             .clickable(onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 5.dp),
     ) {
-        Text(preset.name, style = MaterialTheme.typography.labelSmall, color = foreground)
+        Text(preset.name, style = tokens.type.control, color = foreground)
     }
 }

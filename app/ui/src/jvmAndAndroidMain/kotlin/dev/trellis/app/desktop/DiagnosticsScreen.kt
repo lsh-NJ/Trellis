@@ -35,6 +35,7 @@ import java.time.format.DateTimeFormatter
 fun DiagnosticsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     val actions = runtime.auditEntries
     val errors = runtime.kernelErrors
+    val tokens = LocalTrellisTokens.current
 
     Column(modifier) {
         ChromeSecondaryHeader(
@@ -49,7 +50,7 @@ fun DiagnosticsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                 Text("最近操作", style = MaterialTheme.typography.titleSmall)
                 Text(
                     "装 / 启用 / 停用 / 删除 / 彻底删除，只记内核自己做的事",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                 )
                 Spacer(Modifier.height(6.dp))
             }
@@ -69,7 +70,7 @@ fun DiagnosticsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
 
             item {
                 Text("内核错误", style = MaterialTheme.typography.titleSmall)
-                Text("诊断页只收错误；正常动作在上面", style = MaterialTheme.typography.labelSmall)
+                Text("诊断页只收错误；正常动作在上面", style = tokens.type.meta)
                 Spacer(Modifier.height(6.dp))
             }
 
@@ -91,7 +92,7 @@ fun DiagnosticsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                             // 跨模块的公开属性不能智能转换，先取到局部变量
                             val owner = e.pluginId
                             if (owner != null) {
-                                Text("插件 " + owner.value, style = MaterialTheme.typography.labelSmall)
+                                Text("插件 " + owner.value, style = tokens.type.meta)
                             }
                             Text(e.detail, style = MaterialTheme.typography.bodySmall)
                         }

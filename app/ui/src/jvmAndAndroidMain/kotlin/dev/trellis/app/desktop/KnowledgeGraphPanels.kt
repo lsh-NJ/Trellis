@@ -23,7 +23,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -62,6 +61,7 @@ internal fun KnowledgeGraphLeftPanel(
     onCenterNode: (String) -> Unit = {},
 ) {
     val extra = LocalExtraColors.current
+    val tokens = LocalTrellisTokens.current
     val results = remember(graph, query) {
         val keyword = query.trim()
         if (keyword.isEmpty()) {
@@ -99,23 +99,21 @@ internal fun KnowledgeGraphLeftPanel(
             }
             Text(
                 "${graph.stats.conceptCount} 概念 · ${graph.stats.categoryCount} 分类 · ${graph.stats.unclassifiedCount} 未分类",
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.caption,
                 color = extra.dataMuted,
             )
-            TextButton(onClick = onAiOrganize, enabled = aiEnabled && !aiBusy) {
-                Text(
-                    if (aiBusy) "✦ AI 整理中…" else "✦ AI 整理分类",
-                    style = MaterialTheme.typography.labelMedium,
-                )
-            }
+            ChromeTextLink(
+                if (aiBusy) "✦ AI 整理中…" else "✦ AI 整理分类",
+                onClick = onAiOrganize,
+                enabled = aiEnabled && !aiBusy,
+            )
             if (suggestionCount > 0) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = onOpenSuggestions) {
-                        Text("查看 AI 建议（$suggestionCount 条）", style = MaterialTheme.typography.labelMedium)
-                    }
-                    TextButton(onClick = onAdoptAll) {
-                        Text("一键采纳", style = MaterialTheme.typography.labelMedium)
-                    }
+                    ChromeTextLink(
+                        "查看 AI 建议（$suggestionCount 条）",
+                        onClick = onOpenSuggestions,
+                    )
+                    ChromeButton("一键采纳", onClick = onAdoptAll)
                 }
             }
             if (!aiHint.isNullOrBlank()) {
@@ -123,7 +121,7 @@ internal fun KnowledgeGraphLeftPanel(
             }
             if (roots.isNotEmpty() || unclassified.isNotEmpty()) {
                 Spacer(Modifier.height(2.dp))
-                Text("分类树", style = MaterialTheme.typography.labelSmall, color = extra.dataMuted)
+                Text("分类树", style = tokens.type.meta, color = extra.dataMuted)
                 roots.forEach { root ->
                     GraphHitRow(node = root, onClick = { onCenterNode(root.key) })
                 }
@@ -152,7 +150,7 @@ internal fun KnowledgeGraphLeftPanel(
         }
 
         if (!message.isNullOrBlank()) {
-            Text(message, style = MaterialTheme.typography.labelSmall, color = extra.accentText)
+            Text(message, style = tokens.type.meta, color = extra.accentText)
         }
     }
 }
@@ -160,6 +158,7 @@ internal fun KnowledgeGraphLeftPanel(
 @Composable
 private fun LegendRow(solid: Boolean, label: String) {
     val extra = LocalExtraColors.current
+    val tokens = LocalTrellisTokens.current
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         Box(
             modifier = Modifier
@@ -172,16 +171,17 @@ private fun LegendRow(solid: Boolean, label: String) {
                     shape = RoundedCornerShape(3.dp),
                 ),
         )
-        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface)
+        Text(label, style = tokens.type.caption, color = MaterialTheme.colorScheme.onSurface)
     }
 }
 
 @Composable
 private fun LegendLineRow(label: String) {
     val extra = LocalExtraColors.current
+    val tokens = LocalTrellisTokens.current
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         Box(Modifier.width(26.dp).height(1.5.dp).background(extra.dataTrack))
-        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface)
+        Text(label, style = tokens.type.caption, color = MaterialTheme.colorScheme.onSurface)
     }
 }
 
@@ -203,9 +203,9 @@ internal fun KnowledgeGraphLegend(modifier: Modifier = Modifier) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        LegendRow(solid = true, label = "概念（实）")
-        LegendRow(solid = false, label = "分类（虚）")
-        LegendLineRow("父子连线")
+        LegendRow(solid = true, label = "概念")
+        LegendRow(solid = false, label = "分类")
+        LegendLineRow("归属")
     }
 }
 
@@ -235,6 +235,7 @@ internal fun KnowledgeGraphToolbar(
 @Composable
 internal fun KnowledgeGraphEmptyState(hasNotes: Boolean, hasConcepts: Boolean, message: String?) {
     val extra = LocalExtraColors.current
+    val tokens = LocalTrellisTokens.current
     Column(
         modifier = Modifier.fillMaxWidth().padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -250,7 +251,7 @@ internal fun KnowledgeGraphEmptyState(hasNotes: Boolean, hasConcepts: Boolean, m
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (!message.isNullOrBlank()) {
-            Text(message, style = MaterialTheme.typography.labelSmall, color = extra.accentText)
+            Text(message, style = tokens.type.meta, color = extra.accentText)
         }
     }
 }
@@ -272,6 +273,7 @@ internal fun GraphSectionLabel(text: String) {
 @Composable
 internal fun GraphHitRow(node: GraphNode, onClick: () -> Unit) {
     val extra = LocalExtraColors.current
+    val tokens = LocalTrellisTokens.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -295,7 +297,7 @@ internal fun GraphHitRow(node: GraphNode, onClick: () -> Unit) {
             overflow = TextOverflow.Ellipsis,
         )
         if (node.origin == NodeOrigin.AI && !node.confirmed) {
-            Text("AI", style = MaterialTheme.typography.labelSmall, color = extra.warning)
+            Text("AI", style = tokens.type.caption, color = extra.warning)
         }
     }
 }
@@ -304,7 +306,7 @@ internal fun GraphHitRow(node: GraphNode, onClick: () -> Unit) {
 internal fun KnowledgeHint(text: String) {
     Text(
         text,
-        style = MaterialTheme.typography.labelSmall,
+        style = LocalTrellisTokens.current.type.meta,
         color = LocalExtraColors.current.dataMuted,
     )
 }
@@ -320,14 +322,7 @@ internal fun KnowledgeGraphHintCard(title: String, hint: String) {
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Text(title, style = MaterialTheme.typography.titleSmall)
-        Text(hint, style = MaterialTheme.typography.labelSmall, color = LocalExtraColors.current.dataMuted)
-    }
-}
-
-@Composable
-internal fun ChromeButton2(label: String, enabled: Boolean, onClick: () -> Unit) {
-    TextButton(onClick = onClick, enabled = enabled) {
-        Text(label, style = MaterialTheme.typography.labelMedium)
+        Text(hint, style = LocalTrellisTokens.current.type.meta, color = LocalExtraColors.current.dataMuted)
     }
 }
 
@@ -343,6 +338,8 @@ internal fun KnowledgeGraphSuggestionPanel(
     busy: Boolean,
     message: String?,
     modifier: Modifier = Modifier,
+    // 停靠模式：贴在画布右侧一条通高栏（320dp），不再是个浮动小窗、也不再和聚焦浮窗抢位置。
+    dock: Boolean = false,
     onClose: () -> Unit,
     onConfirmCategory: (PendingCategorySuggestion) -> Unit,
     onIgnoreCategory: (PendingCategorySuggestion) -> Unit,
@@ -353,13 +350,14 @@ internal fun KnowledgeGraphSuggestionPanel(
     onIgnoreAll: () -> Unit,
 ) {
     val extra = LocalExtraColors.current
+    val tokens = LocalTrellisTokens.current
+    val shape = RoundedCornerShape(if (dock) 0.dp else 10.dp)
     Column(
         modifier = modifier
-            .width(392.dp)
-            .heightIn(max = 560.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.98f))
-            .border(1.dp, extra.dataTrack, RoundedCornerShape(10.dp))
+            .then(if (dock) Modifier.width(320.dp) else Modifier.width(392.dp).heightIn(max = 560.dp))
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, extra.dataTrack, shape)
             .padding(12.dp)
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -370,10 +368,10 @@ internal fun KnowledgeGraphSuggestionPanel(
                 style = MaterialTheme.typography.titleSmall,
                 modifier = Modifier.weight(1f),
             )
-            TextButton(onClick = onClose) { Text("收起", style = MaterialTheme.typography.labelSmall) }
+            ChromeTextLink("收起", onClick = onClose)
         }
         if (!message.isNullOrBlank()) {
-            Text(message, style = MaterialTheme.typography.labelSmall, color = extra.warning)
+            Text(message, style = tokens.type.meta, color = extra.warning)
         }
         if (pending.isEmpty) {
             KnowledgeHint("暂时没有待确认建议。AI 建议会在整理笔记或点「AI 整理分类」后出现；确认前不会改分类树。")
@@ -402,8 +400,8 @@ internal fun KnowledgeGraphSuggestionPanel(
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                TextButton(onClick = onConfirmAll, enabled = !busy) { Text("全部确认", style = MaterialTheme.typography.labelSmall) }
-                TextButton(onClick = onIgnoreAll, enabled = !busy) { Text("全部忽略", style = MaterialTheme.typography.labelSmall) }
+                ChromeButton("全部确认", onClick = onConfirmAll, enabled = !busy)
+                ChromeButton("全部忽略", onClick = onIgnoreAll, enabled = !busy, filled = false)
             }
         }
     }
@@ -417,6 +415,7 @@ private fun SuggestionCategoryRow(
     onIgnore: () -> Unit,
 ) {
     val extra = LocalExtraColors.current
+    val tokens = LocalTrellisTokens.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -427,17 +426,17 @@ private fun SuggestionCategoryRow(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(item.conceptName, style = MaterialTheme.typography.labelMedium, maxLines = 1)
-            Text("→", style = MaterialTheme.typography.labelSmall, color = extra.dataMuted)
+            Text("→", style = tokens.type.caption, color = extra.dataMuted)
             Text(item.categoryPath.joinToString(" / "), style = MaterialTheme.typography.labelMedium, color = extra.accentText)
             Spacer(Modifier.weight(1f))
-            Text(item.origin.label, style = MaterialTheme.typography.labelSmall, color = extra.dataMuted)
+            Text(item.origin.label, style = tokens.type.meta, color = extra.dataMuted)
         }
         if (!item.reason.isNullOrBlank()) {
-            Text(item.reason, style = MaterialTheme.typography.labelSmall, color = extra.dataMuted)
+            Text(item.reason, style = tokens.type.meta, color = extra.dataMuted)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            TextButton(onClick = onConfirm, enabled = !busy) { Text("确认", style = MaterialTheme.typography.labelSmall) }
-            TextButton(onClick = onIgnore, enabled = !busy) { Text("忽略", style = MaterialTheme.typography.labelSmall) }
+            ChromeTextLink("确认", onClick = onConfirm, enabled = !busy)
+            ChromeTextLink("忽略", onClick = onIgnore, enabled = !busy)
         }
     }
 }
@@ -451,6 +450,7 @@ private fun SuggestionRelationRow(
     onIgnore: () -> Unit,
 ) {
     val extra = LocalExtraColors.current
+    val tokens = LocalTrellisTokens.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -461,21 +461,21 @@ private fun SuggestionRelationRow(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(item.fromName, style = MaterialTheme.typography.labelMedium, maxLines = 1)
-            Text(relationLabel(item.kind), style = MaterialTheme.typography.labelSmall, color = extra.dataMuted)
+            Text(relationLabel(item.kind), style = tokens.type.meta, color = extra.dataMuted)
             Text(item.toName, style = MaterialTheme.typography.labelMedium, maxLines = 1)
             Spacer(Modifier.weight(1f))
-            Text(item.origin.label, style = MaterialTheme.typography.labelSmall, color = extra.dataMuted)
+            Text(item.origin.label, style = tokens.type.meta, color = extra.dataMuted)
         }
         if (!item.reason.isNullOrBlank()) {
-            Text(item.reason, style = MaterialTheme.typography.labelSmall, color = extra.dataMuted)
+            Text(item.reason, style = tokens.type.meta, color = extra.dataMuted)
         }
         if (!item.evidence.isNullOrBlank()) {
-            Text("依据：${item.evidence}", style = MaterialTheme.typography.labelSmall, color = extra.dataMuted, maxLines = 2)
+            Text("依据：${item.evidence}", style = tokens.type.meta, color = extra.dataMuted, maxLines = 2)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            TextButton(onClick = onConfirm, enabled = !busy) { Text("确认", style = MaterialTheme.typography.labelSmall) }
-            TextButton(onClick = onReverse, enabled = !busy) { Text("反向", style = MaterialTheme.typography.labelSmall) }
-            TextButton(onClick = onIgnore, enabled = !busy) { Text("忽略", style = MaterialTheme.typography.labelSmall) }
+            ChromeTextLink("确认", onClick = onConfirm, enabled = !busy)
+            ChromeTextLink("反向", onClick = onReverse, enabled = !busy)
+            ChromeTextLink("忽略", onClick = onIgnore, enabled = !busy)
         }
     }
 }
@@ -510,12 +510,13 @@ internal fun GraphTextInputDialog(
             )
         },
         confirmButton = {
-            TextButton(
+            ChromeButton(
+                label = confirmLabel,
                 onClick = { if (value.trim().isNotEmpty()) onConfirm(value.trim()) },
                 enabled = value.trim().isNotEmpty(),
-            ) { Text(confirmLabel) }
+            )
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        dismissButton = { ChromeButton("取消", onClick = onDismiss, filled = false) },
     )
 }
 
@@ -541,6 +542,6 @@ internal fun GraphChoiceDialog(
                 }
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        confirmButton = { ChromeButton("取消", onClick = onDismiss, filled = false) },
     )
 }

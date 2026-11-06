@@ -24,7 +24,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -64,6 +63,7 @@ internal fun ActivityRulesView(
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
+    val tokens = LocalTrellisTokens.current
     var taxonomy by remember { mutableStateOf<ActivityTaxonomy?>(null) }
     var loadError by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf<CategoryNode?>(null) }
@@ -105,7 +105,7 @@ internal fun ActivityRulesView(
                 Text("分类规则", style = MaterialTheme.typography.titleSmall)
                 Text(
                     "大类-小类树 + 正则规则；保存后立即按新规则重新分类。",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -129,9 +129,9 @@ internal fun ActivityRulesView(
                     .padding(10.dp),
                 verticalArrangement = Arrangement.spacedBy(3.dp),
             ) {
-                Text("保存失败，规则没有改动：", style = MaterialTheme.typography.labelSmall)
+                Text("保存失败，规则没有改动：", style = tokens.type.meta)
                 problems.take(6).forEach { problem ->
-                    Text("· " + problem, style = MaterialTheme.typography.labelSmall)
+                    Text("· " + problem, style = tokens.type.meta)
                 }
             }
         }
@@ -194,13 +194,17 @@ internal fun ActivityRulesView(
                 )
             },
             confirmButton = {
-                TextButton(onClick = {
-                    pendingDelete = null
-                    apply(tree.withoutCategory(node.id))
-                }) { Text("删除") }
+                ChromeButton(
+                    label = "删除",
+                    onClick = {
+                        pendingDelete = null
+                        apply(tree.withoutCategory(node.id))
+                    },
+                    destructive = true,
+                )
             },
             dismissButton = {
-                TextButton(onClick = { pendingDelete = null }) { Text("取消") }
+                ChromeButton(label = "取消", onClick = { pendingDelete = null }, filled = false)
             },
         )
     }
@@ -217,6 +221,7 @@ private fun CategoryListRow(
     onAddChild: () -> Unit,
     onDelete: (() -> Unit)?,
 ) {
+    val tokens = LocalTrellisTokens.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -243,16 +248,14 @@ private fun CategoryListRow(
             )
             Text(
                 tree.pathNames(node.id).joinToString(" / ") + " · " + node.rules.size + " 条规则",
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         if (node.id != ActivityTaxonomy.UNCATEGORIZED_ID) {
-            TextButton(onClick = onAddChild) { Text("加子类") }
+            ChromeTextLink("加子类", onClick = onAddChild)
             if (onDelete != null) {
-                TextButton(onClick = onDelete) {
-                    Text("删除", color = MaterialTheme.colorScheme.error)
-                }
+                ChromeTextLink("删除", onClick = onDelete, danger = true)
             }
         }
     }
@@ -270,6 +273,7 @@ private fun CategoryEditorDialog(
     onDismiss: () -> Unit,
     onSave: (CategoryNode) -> Unit,
 ) {
+    val tokens = LocalTrellisTokens.current
     var name by remember(node) { mutableStateOf(node.name) }
     var color by remember(node) { mutableStateOf(node.color) }
     var parentId by remember(node) { mutableStateOf(node.parentId) }
@@ -297,13 +301,14 @@ private fun CategoryEditorDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (isNew) "新建分类" else "编辑分类") },
         confirmButton = {
-            TextButton(
+            ChromeButton(
+                label = if (saving) "保存中…" else "保存",
                 enabled = !saving,
-                onClick = {
+                onClick = confirm@{
                     val trimmed = name.trim()
                     if (trimmed.isEmpty()) {
                         localError = "名字不能为空"
-                        return@TextButton
+                        return@confirm
                     }
                     val finalColor = color.trim().uppercase()
                         .takeIf { ActivityTaxonomy.isHexColor(it) }
@@ -317,10 +322,10 @@ private fun CategoryEditorDialog(
                         ),
                     )
                 },
-            ) { Text(if (saving) "保存中…" else "保存") }
+            )
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            ChromeButton(label = "取消", onClick = onDismiss, filled = false)
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -373,7 +378,7 @@ private fun CategoryEditorDialog(
                 if (node.id == ActivityTaxonomy.UNCATEGORIZED_ID) {
                     Text(
                         "未分类是保留分类：没被任何规则命中的片段会落到这里，规则加在这里没有意义。",
-                        style = MaterialTheme.typography.labelSmall,
+                        style = tokens.type.meta,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -399,10 +404,10 @@ private fun CategoryEditorDialog(
                 )
 
                 (localError ?: problems.firstOrNull())?.let {
-                    Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                    Text(it, style = tokens.type.meta, color = MaterialTheme.colorScheme.error)
                 }
                 problems.drop(1).take(4).forEach {
-                    Text("· " + it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                    Text("· " + it, style = tokens.type.meta, color = MaterialTheme.colorScheme.error)
                 }
             }
         },
@@ -428,6 +433,7 @@ private fun CategoryEditorDialog(
 
 @Composable
 private fun RuleListRow(rule: CategoryRule, onEdit: () -> Unit, onDelete: () -> Unit) {
+    val tokens = LocalTrellisTokens.current
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -443,12 +449,12 @@ private fun RuleListRow(rule: CategoryRule, onEdit: () -> Unit, onDelete: () -> 
             )
             Text(
                 ruleFieldsLabel(rule) + " · " + (rule.priority?.let { "优先级 $it" } ?: "优先级按层级"),
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        TextButton(onClick = onEdit) { Text("编辑") }
-        TextButton(onClick = onDelete) { Text("删除") }
+        ChromeTextLink("编辑", onClick = onEdit)
+        ChromeTextLink("删除", onClick = onDelete, danger = true)
     }
 }
 
@@ -489,6 +495,7 @@ private fun RuleEditorDialog(
     onDismiss: () -> Unit,
     onSave: (CategoryRule) -> Unit,
 ) {
+    val tokens = LocalTrellisTokens.current
     var pattern by remember(initial) { mutableStateOf(initial?.pattern ?: "") }
     var fields by remember(initial) { mutableStateOf(initial?.fields ?: setOf(RuleField.APP)) }
     var ignoreCase by remember(initial) { mutableStateOf(initial?.ignoreCase ?: true) }
@@ -499,40 +506,43 @@ private fun RuleEditorDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (initial == null) "添加规则" else "编辑规则") },
         confirmButton = {
-            TextButton(onClick = {
-                val text = pattern.trim()
-                if (text.isEmpty()) {
-                    error = "正则不能为空（空正则会匹配一切）"
-                    return@TextButton
-                }
-                val compileError = runCatching {
-                    Regex(text, ActivityTaxonomy.regexOptions(CategoryRule(pattern = text, fields = fields, ignoreCase = ignoreCase)))
-                }.exceptionOrNull()
-                if (compileError != null) {
-                    error = "正则编译不过：" + (compileError.message ?: "语法错误")
-                    return@TextButton
-                }
-                val rawPriority = priority.trim()
-                val parsedPriority = if (rawPriority.isEmpty()) {
-                    null
-                } else {
-                    rawPriority.toIntOrNull() ?: run {
-                        error = "优先级要写整数，留空表示按层级计算"
-                        return@TextButton
+            ChromeButton(
+                label = "保存",
+                onClick = confirm@{
+                    val text = pattern.trim()
+                    if (text.isEmpty()) {
+                        error = "正则不能为空（空正则会匹配一切）"
+                        return@confirm
                     }
-                }
-                onSave(
-                    CategoryRule(
-                        pattern = text,
-                        fields = fields,
-                        ignoreCase = ignoreCase,
-                        priority = parsedPriority,
-                    ),
-                )
-            }) { Text("保存") }
+                    val compileError = runCatching {
+                        Regex(text, ActivityTaxonomy.regexOptions(CategoryRule(pattern = text, fields = fields, ignoreCase = ignoreCase)))
+                    }.exceptionOrNull()
+                    if (compileError != null) {
+                        error = "正则编译不过：" + (compileError.message ?: "语法错误")
+                        return@confirm
+                    }
+                    val rawPriority = priority.trim()
+                    val parsedPriority = if (rawPriority.isEmpty()) {
+                        null
+                    } else {
+                        rawPriority.toIntOrNull() ?: run {
+                            error = "优先级要写整数，留空表示按层级计算"
+                            return@confirm
+                        }
+                    }
+                    onSave(
+                        CategoryRule(
+                            pattern = text,
+                            fields = fields,
+                            ignoreCase = ignoreCase,
+                            priority = parsedPriority,
+                        ),
+                    )
+                },
+            )
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            ChromeButton(label = "取消", onClick = onDismiss, filled = false)
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -547,7 +557,7 @@ private fun RuleEditorDialog(
                     textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Text("匹配字段", style = MaterialTheme.typography.labelSmall)
+                Text("匹配字段", style = tokens.type.meta)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     RuleField.entries.forEach { field ->
                         FieldToggle(
@@ -574,7 +584,7 @@ private fun RuleEditorDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 error?.let {
-                    Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                    Text(it, style = tokens.type.meta, color = MaterialTheme.colorScheme.error)
                 }
             }
         },
@@ -584,6 +594,7 @@ private fun RuleEditorDialog(
 /** 字段开关：APP / TITLE / URL / DOMAIN，多选是「或」关系。 */
 @Composable
 private fun FieldToggle(field: RuleField, selected: Boolean, onClick: () -> Unit) {
+    val tokens = LocalTrellisTokens.current
     val container = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent
     val content = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary
     Box(
@@ -594,7 +605,7 @@ private fun FieldToggle(field: RuleField, selected: Boolean, onClick: () -> Unit
             .clickable(onClick = onClick)
             .padding(horizontal = 8.dp, vertical = 5.dp),
     ) {
-        Text(fieldName(field), style = MaterialTheme.typography.labelSmall, color = content)
+        Text(fieldName(field), style = tokens.type.control, color = content)
     }
 }
 
@@ -614,6 +625,7 @@ internal fun QuickClassifyDialog(
     onSaved: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
+    val tokens = LocalTrellisTokens.current
     var taxonomy by remember { mutableStateOf<ActivityTaxonomy?>(null) }
     var selectedId by remember { mutableStateOf<String?>(null) }
     var pattern by remember(segment) { mutableStateOf(defaultRulePattern(segment)) }
@@ -634,11 +646,12 @@ internal fun QuickClassifyDialog(
         onDismissRequest = onDismiss,
         title = { Text("归到分类") },
         confirmButton = {
-            TextButton(
+            ChromeButton(
+                label = if (saving) "保存中…" else "保存并重新分类",
                 enabled = tree != null && selectedNode != null && pattern.isNotBlank() && !saving,
-                onClick = {
-                    val current = tree ?: return@TextButton
-                    val node = selectedNode ?: return@TextButton
+                onClick = confirm@{
+                    val current = tree ?: return@confirm
+                    val node = selectedNode ?: return@confirm
                     scope.launch {
                         saving = true
                         val rule = CategoryRule(
@@ -653,10 +666,10 @@ internal fun QuickClassifyDialog(
                         if (problems.isEmpty()) onSaved() else error = problems.joinToString("；")
                     }
                 },
-            ) { Text(if (saving) "保存中…" else "保存并重新分类") }
+            )
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            ChromeButton(label = "取消", onClick = onDismiss, filled = false)
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -667,7 +680,7 @@ internal fun QuickClassifyDialog(
                 if (!segment.url.isNullOrBlank()) {
                     Text(
                         "网址：" + segment.url,
-                        style = MaterialTheme.typography.labelSmall,
+                        style = tokens.type.meta,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
@@ -721,11 +734,11 @@ internal fun QuickClassifyDialog(
                 }
                 Text(
                     "保存后会给这个分类加一条规则，按上面的正则重新分类所有记录。",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 error?.let {
-                    Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                    Text(it, style = tokens.type.meta, color = MaterialTheme.colorScheme.error)
                 }
             }
         },

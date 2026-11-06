@@ -15,6 +15,7 @@ import dev.trellis.ui.ExtraColors
 import dev.trellis.ui.LocalExtraColors
 import java.io.File
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
@@ -142,6 +143,80 @@ class KnowledgeGraphCanvasRenderTest {
     fun rendersTreeWhenNothingIsSelected() {
         val bytes = render(selectedKey = null)
         assertTrue(bytes.size > 5_000, "默认视图截图太小：" + bytes.size)
+    }
+
+    /**
+     * 未分类散概念折成网格之后的画布：25 个概念应铺成 4 行多列，而不是一条横线。
+     */
+    @OptIn(ExperimentalComposeUiApi::class)
+    @Test
+    fun unclassifiedConceptsRenderAsAGrid() {
+        val concepts = (1..25).map { i ->
+            GraphNode(
+                key = "k_$i",
+                kind = GraphNodeKind.CONCEPT,
+                name = "未分类概念$i",
+                noteCount = 0,
+                mentionCount = 0,
+                parentKey = null,
+            )
+        }
+        val graph = KnowledgeGraph(
+            nodes = concepts.associateBy { it.key },
+            childrenOf = mapOf(null to concepts.map { it.key }),
+            stats = GraphStats(
+                conceptCount = concepts.size,
+                categoryCount = 0,
+                rootCategoryCount = 0,
+                maxDepth = 1,
+                classifiedCount = 0,
+                unclassifiedCount = concepts.size,
+                relationEdgeCount = 0,
+            ),
+        )
+        val layout = layoutKnowledgeGraph(graph, emptySet(), null, LayoutOptions())
+        assertTrue(layout.nodes.size >= concepts.size, "布局应包含所有概念")
+        val scene = ImageComposeScene(width = 1100, height = 720, density = Density(1f)) {
+            CompositionLocalProvider(LocalExtraColors provides ExtraColors()) {
+                MaterialTheme {
+                    KnowledgeGraphCanvas(
+                        graph = graph,
+                        layout = layout,
+                        camera = fitCamera(layout.bounds, GraphSize(1100f, 720f), padding = 24f),
+                        selectedKey = null,
+                        modifier = Modifier.fillMaxSize(),
+                        onCameraChange = {},
+                        onNodeClick = {},
+                        onCategoryToggle = {},
+                        onBackgroundClick = {},
+                    )
+                }
+            }
+        }
+        val bytes = scene.render().encodeToData()?.bytes ?: error("PNG 编码失败")
+        scene.close()
+        val out = File("build/ui-shot-graph-unclassified.png")
+        out.parentFile?.mkdirs()
+        out.writeBytes(bytes)
+        assertTrue(bytes.size > 5_000, "网格截图像素太少：" + bytes.size)
+        // 4 行网格：25 个概念占 7 列、最后一列 1 个。
+        val tops = concepts.map { layout.nodes.getValue(it.key).bounds.top }.distinct()
+        assertEquals(4, tops.size, "应折成 4 行：" + tops)
+    }
+
+    /**
+     * 首屏取景只装「根分类 + 一层」：深度 2 的“向量检索”不该进初始视野。
+     * 整棵树 fit 下来 zoom 会被 0.25 的下限夹住，95 个概念的标签糊成纹理（评审 §3.7 P0）。
+     */
+    @Test
+    fun initialFocusBoundsCoverOnlyTheFirstTwoLayers() {
+        val layout = sampleLayout()
+        val focus = initialFocusBounds(layout)
+        // 深度 2 的节点 top = 240；初始视野的下沿必须比它高（不含它）。
+        assertTrue(focus.bottom < 240f, "初始视野不该包含深度 2 的节点：" + focus)
+        // 根分类都在里面。
+        assertTrue(focus.top <= 40f, "初始视野应覆盖根分类：" + focus)
+        assertTrue(focus.height < layout.bounds.height, "初始视野应比整棵树小：" + focus)
     }
 
     /**

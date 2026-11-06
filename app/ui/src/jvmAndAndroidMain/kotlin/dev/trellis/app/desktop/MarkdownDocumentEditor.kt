@@ -650,7 +650,8 @@ private fun buildDocumentEditText(
         )
     }
     for (range in projection.quotes) {
-        add(range, SpanStyle(color = scheme.onSurfaceVariant, fontStyle = FontStyle.Italic))
+        // 引用块用「灰字 + 左侧 gutter 的 ▍ 标记」表达层次；中文斜体是伪斜体，反而更糊。
+        add(range, SpanStyle(color = scheme.onSurfaceVariant))
     }
     for (range in projection.codeLines) {
         // 底色由 gutter Canvas 画成一整块圆角卡片，这里只管等宽字体。
@@ -739,7 +740,7 @@ private fun SlashMenu(
             Spacer(Modifier.weight(1f))
             Text(
                 "↑↓ 选 · 回车插入 · Esc 关",
-                style = MaterialTheme.typography.labelSmall,
+                style = LocalTrellisTokens.current.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
             )
         }
@@ -747,7 +748,7 @@ private fun SlashMenu(
         if (matches.isEmpty()) {
             Text(
                 "没有匹配的命令",
-                style = MaterialTheme.typography.labelSmall,
+                style = LocalTrellisTokens.current.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(12.dp),
             )
@@ -800,7 +801,7 @@ private fun ConceptCompletionMenu(
             Spacer(Modifier.weight(1f))
             Text(
                 "↑↓ 选 · 回车补全 · Esc 关",
-                style = MaterialTheme.typography.labelSmall,
+                style = LocalTrellisTokens.current.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
             )
         }
@@ -839,7 +840,7 @@ private fun ConceptCompletionMenu(
                             } else {
                                 "概念名 / 别名"
                             },
-                            style = MaterialTheme.typography.labelSmall,
+                            style = LocalTrellisTokens.current.type.meta,
                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                         )
                     }
@@ -878,7 +879,7 @@ private fun SlashRow(command: MarkdownCommand, selected: Boolean, onClick: () ->
             )
             Text(
                 command.group.label + " · " + command.hint,
-                style = MaterialTheme.typography.labelSmall,
+                style = LocalTrellisTokens.current.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
             )
         }

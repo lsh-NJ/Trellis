@@ -136,6 +136,7 @@ internal fun EditorChip(
 /** 快捷键按键帽：行级代码样式（mono + 浅底 + 细边），一眼能看出「这是要按的键」。 */
 @Composable
 internal fun ShortcutKeyCap(label: String, modifier: Modifier = Modifier) {
+    val tokens = LocalTrellisTokens.current
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(4.dp))
@@ -150,7 +151,7 @@ internal fun ShortcutKeyCap(label: String, modifier: Modifier = Modifier) {
     ) {
         Text(
             label,
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.caption,
             fontFamily = AppFonts.mono,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -165,6 +166,7 @@ internal fun ShortcutKeyCap(label: String, modifier: Modifier = Modifier) {
  */
 @Composable
 internal fun MarkdownMenuSheet(modifier: Modifier = Modifier) {
+    val tokens = LocalTrellisTokens.current
     val editorHints = remember { markdownShortcutHints.filter { it.owned } }
     val pageHints = remember { markdownShortcutHints.filter { !it.owned } }
     Column(
@@ -187,7 +189,7 @@ internal fun MarkdownMenuSheet(modifier: Modifier = Modifier) {
             Spacer(Modifier.weight(1f))
             Text(
                 "点空白处关闭",
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
             )
         }
@@ -207,9 +209,10 @@ internal fun MarkdownMenuSheet(modifier: Modifier = Modifier) {
 
 @Composable
 private fun MenuSection(title: String, hints: List<ShortcutHint>) {
+    val tokens = LocalTrellisTokens.current
     Text(
         title,
-        style = MaterialTheme.typography.labelSmall,
+        style = tokens.type.meta,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(top = 8.dp, bottom = 3.dp),
     )

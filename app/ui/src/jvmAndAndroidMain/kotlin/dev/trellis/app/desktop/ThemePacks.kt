@@ -40,6 +40,8 @@ internal val THEME_EXTRA_TOKENS: List<String> = listOf(
     "data", "dataMuted", "dataTrack", "accentText",
     "danger", "dangerContainer", "warning", "warningContainer",
     "success", "successContainer",
+    // 荧光笔：只当底（AI 撰写、概念高亮），所以 onMark 是「压在 mark 上的字」。
+    "mark", "onMark",
 )
 
 internal val THEME_ALL_TOKENS: List<String> =
@@ -60,6 +62,17 @@ private val THEME_CONTRAST_PAIRS: List<Pair<String, String>> = listOf(
 private val THEME_BODY_PAIRS: Set<Pair<String, String>> = setOf(
     "onBackground" to "background",
     "onSurface" to "surface",
+)
+
+/**
+ * 强线（非文本）：卡片边界、输入框、未选中单选框要在表面上看得见。
+ *
+ * 以前只校验文字对，于是 Bento 的浅色 outline 对纸白只有 2.06:1、卡片发丝线 1.32:1
+ * 都能过审 —— 而这两个恰好是「卡片到底在哪」的唯一线索（WCAG 1.4.11 要求 ≥3:1）。
+ * 只校验 surface：发丝线落在卡片里，不落在页面底上。
+ */
+private val THEME_LINE_PAIRS: List<Triple<String, String, Double>> = listOf(
+    Triple("outline", "surface", 3.0),
 )
 
 internal fun parseHexColor(raw: String): Color? {
@@ -124,6 +137,8 @@ private val THEME_EXTRA_PAIRS: List<Triple<String, String, Double>> = listOf(
     Triple("accentText", "primaryContainer", 4.5),
     Triple("danger", "dangerContainer", 3.0),
     Triple("warning", "warningContainer", 3.0),
+    // 荧光笔上的字：mark 是底，onMark 必须压得住。
+    Triple("onMark", "mark", 4.5),
 )
 
 /**
@@ -158,7 +173,7 @@ internal fun extraProblems(extra: Map<String, String>, tokens: Map<String, Strin
     // 墨字写在它上面要能看清，而不是它自己写在纸上要能看清。
     val ink = tokens["onSurface"]?.let { parseHexColor(it) } ?: tokens["onBackground"]?.let { parseHexColor(it) }
     if (ink != null) {
-        for (name in listOf("success", "successContainer", "dangerContainer", "warningContainer")) {
+        for (name in listOf("success", "successContainer", "dangerContainer", "warningContainer", "mark")) {
             val bg = extra[name]?.let { parseHexColor(it) } ?: continue
             val ratio = contrastRatio(ink, bg)
             if (ratio < 4.5) {
@@ -182,6 +197,9 @@ internal fun extraColorsOf(theme: ThemeContribution?, dark: Boolean, scheme: Col
         warningContainer = scheme.tertiaryContainer,
         success = scheme.primaryContainer,
         successContainer = scheme.primaryContainer.copy(alpha = 0.35f),
+        // 主题没给荧光笔就用「强调底 + 它上面的字」，至少语义是对的。
+        mark = scheme.primaryContainer,
+        onMark = scheme.onPrimaryContainer,
     )
     val extra = theme?.extra
     if (extra.isNullOrEmpty()) return base
@@ -204,6 +222,21 @@ internal fun extraColorsOf(theme: ThemeContribution?, dark: Boolean, scheme: Col
             val fg = inverted[name] ?: continue
             inverted[name] = pushApart(fg, background, need)
         }
+        // 荧光笔是「底」，暗色下反相之后底色变暗，压在它上面的字要重新推一遍。
+        // 反相后底落在中灰区时，黑字和白字都过不了 4.5（怎么推都差一口气），
+        // 这时宁可放弃反相：退回「强调底 + 它上面的字」——那本来就是一组配好的，
+        // 也用主题自己的品牌色（Bento 的荧光青柠、书桌的荧光黄），语义反而更对。
+        val mark = inverted["mark"]
+        val onMark = inverted["onMark"]
+        if (mark != null && onMark != null) {
+            val fixed = pushApart(onMark, mark, 4.5)
+            if (contrastRatio(fixed, mark) >= 4.5) {
+                inverted["onMark"] = fixed
+            } else {
+                inverted.remove("mark")
+                inverted.remove("onMark")
+            }
+        }
         inverted
     } else {
         extra.mapNotNull { (name, value) -> parseHexColor(value)?.let { name to it } }.toMap()
@@ -220,6 +253,8 @@ internal fun extraColorsOf(theme: ThemeContribution?, dark: Boolean, scheme: Col
         warningContainer = resolved["warningContainer"] ?: base.warningContainer,
         success = resolved["success"] ?: base.success,
         successContainer = resolved["successContainer"] ?: base.successContainer,
+        mark = resolved["mark"] ?: base.mark,
+        onMark = resolved["onMark"] ?: base.onMark,
     )
 }
 
@@ -245,6 +280,16 @@ internal fun themeProblems(light: Map<String, String>, dark: Map<String, String>
             if (ratio < need) {
                 problems += label + " 的 " + foreground + " / " + background + " 对比度只有 " +
                     oneDecimal(ratio) + ":1，至少要 " + oneDecimal(need) + ":1"
+            }
+        }
+        for ((foreground, background, need) in THEME_LINE_PAIRS) {
+            val fg = tokens[foreground]?.let { parseHexColor(it) } ?: continue
+            val bg = tokens[background]?.let { parseHexColor(it) } ?: continue
+            val ratio = contrastRatio(fg, bg)
+            if (ratio < need) {
+                problems += label + " 的强线 " + foreground + " / " + background + " 只有 " +
+                    oneDecimal(ratio) + ":1，至少要 " + oneDecimal(need) + ":1（卡片边界和输入框靠它" +
+                    "才看得见；不行就把 outline 加深，不用动正文色）"
             }
         }
     }
@@ -432,8 +477,11 @@ private val THEME_FAMILIES: Set<String> = setOf("default", "mono", "serif", "con
 
 /** 外壳参数：解析后的值，全部带默认，宿主直接拿去建 Shapes/Typography。 */
 internal data class ChromeStyle(
-    val cardRadius: Int = 12,
-    val controlRadius: Int = 8,
+    // 默认值从 12/8 收到 8/4：12dp 的卡片圆角配 3px 的样片图标、又配 6dp 的控件，
+    // 三种圆角同屏，谁也不是「这套界面的圆角」。8 是卡片、4 是控件，宿主自己的默认值
+    // 得先自洽，主题包才有东西可覆盖。
+    val cardRadius: Int = 8,
+    val controlRadius: Int = 4,
     val labelFamily: String = "default",
     val titleFamily: String = "default",
     /** 大数字（Stat、KPI、图表读数）用什么字族；样片这里用 condensed。 */
@@ -480,8 +528,8 @@ internal fun chromeOf(theme: ThemeContribution?): ChromeStyle {
         theme.type[name]?.trim()?.lowercase()?.takeIf { it in THEME_FAMILIES } ?: "default"
     val scale = theme.type["scale"]?.trim()?.toFloatOrNull()?.takeIf { it in 0.85f..1.2f } ?: 1f
     return ChromeStyle(
-        cardRadius = number("cardRadius", 12),
-        controlRadius = number("controlRadius", 8),
+        cardRadius = number("cardRadius", 8),
+        controlRadius = number("controlRadius", 4),
         labelFamily = family("labelFamily"),
         titleFamily = family("titleFamily"),
         displayFamily = family("displayFamily"),

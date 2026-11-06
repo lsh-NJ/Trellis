@@ -109,10 +109,11 @@ internal fun NoteListPanel(
     onDelete: (NoteSummary) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val tokens = LocalTrellisTokens.current
     if (notes.isEmpty()) {
         Text(
             emptyHint,
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(8.dp),
         )
@@ -144,6 +145,7 @@ private fun NoteListRow(
     // 46dp 高、4dp 圆角、选中浅主色 + 左侧竖条、hover 淡底。
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
+    val tokens = LocalTrellisTokens.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -165,7 +167,7 @@ private fun NoteListRow(
             )
             Text(
                 metaOverride ?: (knowledgeTimeLabel(note.updatedAt, zone) + " · " + note.chars + " 字符"),
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.caption,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -203,6 +205,8 @@ internal fun NoteConceptChips(
         if (name.isNotEmpty()) onAddConcept(name)
     }
 
+    val tokens = LocalTrellisTokens.current
+
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -212,7 +216,7 @@ internal fun NoteConceptChips(
     ) {
         Text(
             "概念",
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         for (name in concepts) {
@@ -225,7 +229,7 @@ internal fun NoteConceptChips(
         if (concepts.isEmpty()) {
             Text(
                 "还没有概念",
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
             )
         }
@@ -255,7 +259,7 @@ internal fun NoteConceptChips(
                     if (input.isEmpty()) {
                         Text(
                             "添加概念，回车确认",
-                            style = MaterialTheme.typography.labelSmall,
+                            style = tokens.type.meta,
                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                         )
                     }
@@ -285,6 +289,7 @@ internal fun NoteConceptPanel(
     modifier: Modifier = Modifier,
 ) {
     var input by remember { mutableStateOf("") }
+    val tokens = LocalTrellisTokens.current
     // 「已删除」默认收起；刚删掉一个概念时，标题旁边闪一下亮色「＋1」。
     var showRemoved by remember { mutableStateOf(false) }
     var pulseVisible by remember { mutableStateOf(false) }
@@ -318,14 +323,14 @@ internal fun NoteConceptPanel(
             Spacer(Modifier.weight(1f))
             Text(
                 concepts.size.toString(),
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.caption,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         if (concepts.isEmpty()) {
             Text(
                 "这篇还没有概念。保存后 AI 会整理，也可以在下面加。",
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
             )
@@ -402,7 +407,7 @@ internal fun NoteConceptPanel(
                     if (input.isEmpty()) {
                         Text(
                             "添加概念，回车确认",
-                            style = MaterialTheme.typography.labelSmall,
+                            style = tokens.type.meta,
                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                         )
                     }
@@ -421,6 +426,7 @@ private fun RemovedConceptHeader(
     pulseVisible: Boolean,
     onToggle: () -> Unit,
 ) {
+    val tokens = LocalTrellisTokens.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -430,7 +436,7 @@ private fun RemovedConceptHeader(
     ) {
         Text(
             if (expanded) "已删除 ▾" else "已删除 ▸",
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.control,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.weight(1f))
@@ -441,7 +447,7 @@ private fun RemovedConceptHeader(
         ) {
             Text(
                 "＋1",
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.caption,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier
@@ -453,7 +459,7 @@ private fun RemovedConceptHeader(
         Spacer(Modifier.width(6.dp))
         Text(
             count.toString(),
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.caption,
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
         )
     }
@@ -465,6 +471,7 @@ private fun RemovedConceptChip(
     name: String,
     onRestore: () -> Unit,
 ) {
+    val tokens = LocalTrellisTokens.current
     Row(
         modifier = Modifier
             .clip(ControlShape)
@@ -474,14 +481,14 @@ private fun RemovedConceptChip(
     ) {
         Text(
             name,
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
             textDecoration = TextDecoration.LineThrough,
             modifier = Modifier.padding(vertical = 4.dp),
         )
         Text(
             "↩",
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.caption,
             color = MaterialTheme.colorScheme.primary,
             modifier = Modifier
                 .clip(ControlShape)
@@ -497,6 +504,7 @@ private fun ConceptChip(
     onOpen: () -> Unit,
     onRemove: () -> Unit,
 ) {
+    val tokens = LocalTrellisTokens.current
     Row(
         modifier = Modifier
             .clip(ControlShape)
@@ -514,7 +522,7 @@ private fun ConceptChip(
         )
         Text(
             "×",
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.caption,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier
                 .clip(ControlShape)
@@ -534,10 +542,11 @@ internal fun ConceptListPanel(
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val tokens = LocalTrellisTokens.current
     if (concepts.isEmpty()) {
         Text(
             emptyHint,
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(8.dp),
         )
@@ -571,7 +580,7 @@ internal fun ConceptListPanel(
                     Text(
                         concept.noteCount.toString() + " 篇 · " + concept.mentionCount + " 次 · " +
                             knowledgeTimeLabel(concept.updatedAt, zone),
-                        style = MaterialTheme.typography.labelSmall,
+                        style = tokens.type.caption,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -596,6 +605,7 @@ private fun ConceptMentionRow(
     onLocate: (ConceptMention) -> Unit,
     muted: Boolean = false,
 ) {
+    val tokens = LocalTrellisTokens.current
     Column(
         Modifier
             .fillMaxWidth()
@@ -614,13 +624,13 @@ private fun ConceptMentionRow(
             )
             Text(
                 knowledgeTimeLabel(mention.noteUpdatedAt, zone),
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.caption,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         Text(
             mention.snippet,
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 3,
             overflow = TextOverflow.Ellipsis,
@@ -641,6 +651,7 @@ internal fun ConceptDetailPanel(
 ) {
     // 「其他提到」默认收起：没标注的笔记只是碰巧提到，不该和归属混在一起。
     var showOthers by remember(detail?.summary?.name) { mutableStateOf(false) }
+    val tokens = LocalTrellisTokens.current
     if (detail == null) {
         Box(modifier.fillMaxWidth().padding(24.dp)) {
             Text(
@@ -655,14 +666,14 @@ internal fun ConceptDetailPanel(
         Text(detail.summary.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text(
             detail.summary.noteCount.toString() + " 篇笔记提到 · 共 " + detail.summary.mentionCount + " 次",
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.caption,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(12.dp))
 
         Text(
             "定义",
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(4.dp))
@@ -698,7 +709,7 @@ internal fun ConceptDetailPanel(
         if (definitionStatus.isNotEmpty()) {
             Text(
                 definitionStatus,
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 4.dp),
             )
@@ -707,7 +718,7 @@ internal fun ConceptDetailPanel(
 
         Text(
             "标注过的笔记（点一下跳回正文）",
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(4.dp))
@@ -720,7 +731,7 @@ internal fun ConceptDetailPanel(
                     Text(
                         (if (showOthers) "▾ 其他提到（未标注） " else "▸ 其他提到（未标注） ") +
                             detail.others.size,
-                        style = MaterialTheme.typography.labelSmall,
+                        style = tokens.type.control,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -741,7 +752,7 @@ internal fun ConceptDetailPanel(
             Spacer(Modifier.height(12.dp))
             Text(
                 "常一起出现",
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Row(
@@ -775,10 +786,11 @@ internal fun KnowledgeSearchResults(
     onOpenConcept: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val tokens = LocalTrellisTokens.current
     if (hits.concepts.isEmpty() && hits.notes.isEmpty()) {
         Text(
             "没有匹配的概念或笔记",
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(8.dp),
         )
@@ -810,7 +822,7 @@ internal fun KnowledgeSearchResults(
                     )
                     Text(
                         concept.noteCount.toString() + " 篇",
-                        style = MaterialTheme.typography.labelSmall,
+                        style = tokens.type.caption,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -836,7 +848,7 @@ internal fun KnowledgeSearchResults(
 private fun SectionLabel(text: String) {
     Text(
         text,
-        style = MaterialTheme.typography.labelSmall,
+        style = LocalTrellisTokens.current.type.meta,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 2.dp),
     )
@@ -847,7 +859,7 @@ private fun SectionLabel(text: String) {
 internal fun KnowledgeHint(text: String, modifier: Modifier = Modifier) {
     Text(
         text,
-        style = MaterialTheme.typography.labelSmall,
+        style = LocalTrellisTokens.current.type.meta,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = modifier.padding(8.dp),
     )

@@ -170,11 +170,46 @@ class ThemePacksTest {
 
     @Test
     fun noThemeMeansTheDefaultShell() {
+        // 宿主自己的默认值从 12/8 收到 8/4：卡片一档、控件一档，和插件卡（UiPrefs.radius）
+        // 也走同一份 token。以前的 12 只在「没有任何主题」时才出现，等于谁也没见过它。
         val chrome = chromeOf(null)
-        assertEquals(12, chrome.cardRadius)
-        assertEquals(8, chrome.controlRadius)
+        assertEquals(8, chrome.cardRadius)
+        assertEquals(4, chrome.controlRadius)
         assertEquals("default", chrome.labelFamily)
         assertEquals(1f, chrome.scale)
+    }
+
+    @Test
+    fun aFaintOutlineIsRejectedBecauseCardsWouldVanish() {
+        // Bento 原来的 #B9B3A2 对纸白只有 2.06:1 —— 文字全过审，卡片边界却看不见。
+        val problems = themeProblems(warmPaper + ("outline" to "#EFE6D8"), emptyMap())
+        assertTrue(
+            problems.any { it.contains("强线") && it.contains("outline") },
+            problems.toString(),
+        )
+        assertTrue(problems.any { it.contains("3.0") }, problems.toString())
+    }
+
+    @Test
+    fun theMarkedHighlightIsValidatedAsABackground() {
+        val theme = ThemeContribution(
+            id = "warm",
+            name = "暖纸",
+            light = warmPaper,
+            extra = mapOf("mark" to "#F3D35B", "onMark" to "#1C2124"),
+        )
+        assertTrue(extraProblems(theme.extra, theme.light).isEmpty(), extraProblems(theme.extra, theme.light).toString())
+
+        val unreadable = ThemeContribution(
+            id = "loud",
+            name = "大声",
+            light = warmPaper,
+            extra = mapOf("mark" to "#F3D35B", "onMark" to "#FFFFFF"),
+        )
+        assertTrue(
+            extraProblems(unreadable.extra, unreadable.light).any { it.contains("onMark") },
+            extraProblems(unreadable.extra, unreadable.light).toString(),
+        )
     }
 
     @Test

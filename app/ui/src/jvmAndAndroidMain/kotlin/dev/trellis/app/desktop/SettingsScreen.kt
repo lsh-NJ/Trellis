@@ -27,12 +27,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.trellis.kernel.slot.Slots
 import dev.trellis.ui.LocalExtraColors
 import dev.trellis.ui.SlotArea
+import kotlin.math.roundToInt
 
 /**
  * 设置：程序怎么陪你排计划，以及插件自己的开关。
@@ -130,7 +132,16 @@ private fun ModelSection(runtime: AppRuntime, note: String?, onImport: () -> Uni
     }
 }
 
-/** 主题与导航：两样都走和 agent 同一套入口，改完立即落盘。 */
+/**
+ * 外观：主题 / 深浅色 / 字号 / 密度 / 卡片 / 圆角 / 导航。
+ *
+ * 评审 P0 之一：这一页原来只有「主题」和「导航」，深浅色、字号、密度、卡片、圆角
+ * 只能靠对话里的 agent 调 `set_ui` —— 用户看不见、也找不到入口。
+ * 现在七组都在这里，每次改动立刻走 [AppRuntime.updateUiPrefs] 落盘并重建界面。
+ *
+ * 卡片样式会给到「硬边（bento）」这种具体选项，但圆角默认是**跟随主题**：
+ * 圆角是主题的壳基因（Bento 3dp、书桌 8dp），用户手动改过才覆盖。
+ */
 @Composable
 private fun AppearanceSection(runtime: AppRuntime) {
     val prefs = runtime.uiPrefs
@@ -144,21 +155,27 @@ private fun AppearanceSection(runtime: AppRuntime) {
     val currentKey = prefs.theme.ifBlank { "builtin" }
     val currentKnown = themes.any { it.first == currentKey }
 
-    SettingsSection(title = "外观") {
-        SettingsSubLabel("主题")
-        for ((key, label) in themes) {
-            SettingsChoiceRow(
-                label = label,
-                selected = key == currentKey,
-                onClick = {
+    fun commit(next: UiPrefs, done: String) {
+        val result = runtime.updateUiPrefs(next)
+        message = if (result.startsWith("界面偏好已更新")) done else result
+    }
+
+    SettingsSection(
+        title = "外观",
+        status = appearanceLabel(prefs.appearance) + " · " + densityLabel(prefs.density) + " · " +
+            Math.round(prefs.fontScale * 100) + "%",
+    ) {
+        AppearanceGroup("主题") {
+            for ((key, label) in themes) {
+                AppearanceChoiceRow(label = label, selected = key == currentKey) {
                     val result = runtime.applyTheme(key)
                     message = if (result.startsWith("界面偏好已更新")) {
                         "主题已切到「" + label + "」"
                     } else {
                         result
                     }
-                },
-            )
+                }
+            }
         }
         if (!currentKnown) {
             SettingsStatusLine(
@@ -167,26 +184,112 @@ private fun AppearanceSection(runtime: AppRuntime) {
             )
         }
 
-        SettingsSubLabel("导航")
-        for ((key, label) in listOf("top" to "顶部标签栏", "left" to "左侧边栏（默认）")) {
-            SettingsChoiceRow(
-                label = label,
-                selected = prefs.nav == key,
-                onClick = {
-                    val result = runtime.updateUiPrefs(runtime.uiPrefs.copy(nav = key))
-                    message = if (result.startsWith("界面偏好已更新")) {
-                        "导航已改成「" + label + "」"
-                    } else {
-                        result
-                    }
-                },
-            )
+        AppearanceGroup("深浅色") {
+            for (key in APPEARANCES) {
+                AppearanceChoiceRow(label = appearanceLabel(key), selected = prefs.appearance == key) {
+                    commit(prefs.copy(appearance = key), "深浅色已改成「" + appearanceLabel(key) + "」")
+                }
+            }
+        }
+
+        AppearanceGroup("字号") {
+            for (scale in FONT_SCALE_CHOICES) {
+                AppearanceChoiceRow(label = fontScaleLabel(scale), selected = prefs.fontScale == scale) {
+                    commit(prefs.copy(fontScale = scale), "字号已改成「" + fontScaleLabel(scale) + "」")
+                }
+            }
+        }
+
+        AppearanceGroup("密度") {
+            for (key in DENSITIES) {
+                AppearanceChoiceRow(label = densityLabel(key), selected = prefs.density == key) {
+                    commit(prefs.copy(density = key), "密度已改成「" + densityLabel(key) + "」，行高跟着变")
+                }
+            }
+        }
+
+        AppearanceGroup("卡片") {
+            for (key in CARDS) {
+                AppearanceChoiceRow(label = cardLabel(key), selected = prefs.card == key) {
+                    commit(prefs.copy(card = key), "卡片已改成「" + cardLabel(key) + "」")
+                }
+            }
+        }
+
+        AppearanceGroup("圆角") {
+            for (radius in RADIUS_CHOICES) {
+                // 「跟随主题」要显示主题实际给的 dp，得先读 token；点回调里不能再读，
+                // 所以标签先算好交给行和回调。
+                val label = radiusLabel(radius)
+                AppearanceChoiceRow(label = label, selected = prefs.radius == radius) {
+                    commit(prefs.copy(radius = radius), "圆角已改成「" + label + "」")
+                }
+            }
+        }
+
+        AppearanceGroup("导航") {
+            for ((key, label) in listOf("top" to "顶部标签栏", "left" to "左侧边栏（默认）")) {
+                AppearanceChoiceRow(label = label, selected = prefs.nav == key) {
+                    commit(prefs.copy(nav = key), "导航已改成「" + label + "」")
+                }
+            }
         }
 
         if (message.isNotBlank()) {
             SettingsStatusLine(message)
         }
     }
+}
+
+/** 外观里的一组：弱标签 + 若干选项行。 */
+@Composable
+private fun AppearanceGroup(label: String, content: @Composable ColumnScope.() -> Unit) {
+    val tokens = LocalTrellisTokens.current
+    Text(
+        label,
+        style = tokens.type.meta,
+        color = tokens.colors.ink3,
+        modifier = Modifier.padding(
+            start = tokens.space.s,
+            top = tokens.space.m,
+            bottom = tokens.space.xs,
+        ),
+    )
+    Column(Modifier.fillMaxWidth()) { content() }
+}
+
+/**
+ * 外观选项行：直接走 [ChromeListRow]。
+ *
+ * 行高、选中竖条、紧跟标签的 ✓、键盘焦点环都由组件负责；设置页只声明「哪个选了」。
+ * 旧的 [SettingsChoiceRow]（7dp 灰方块 + 行尾「当前」）也换成同一个组件——方块对纸底
+ * 只有 1.23:1 等于没画，「当前」贴在 1000pt 外要横跨整页去找。
+ */
+@Composable
+private fun AppearanceChoiceRow(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    ChromeListRow(title = label, selected = selected, onClick = onClick)
+}
+
+/** 「跟随主题」在界面上要把数字写出来，否则用户不知道现在到底是几 dp。 */
+@Composable
+private fun radiusLabel(radius: Int): String {
+    val tokens = LocalTrellisTokens.current
+    return if (radius == FOLLOW_THEME_RADIUS) {
+        "跟随主题（" + tokens.radius.card.value.roundToInt() + "dp）"
+    } else {
+        radius.toString() + "dp"
+    }
+}
+
+/** 字号档位：写百分比，不写「大/小」这种没有刻度的词。 */
+private fun fontScaleLabel(scale: Float): String = when (scale) {
+    0.85f -> "小 85%"
+    1f -> "标准 100%"
+    else -> "大 " + Math.round(scale * 100) + "%"
 }
 
 /**
@@ -483,7 +586,7 @@ private fun SettingsSection(
             if (status != null) {
                 Text(
                     status,
-                    style = MaterialTheme.typography.labelSmall,
+                    style = LocalTrellisTokens.current.type.meta,
                     color = extra.dataMuted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -507,34 +610,10 @@ private fun SettingsSection(
     }
 }
 
-/** 选项行：7dp 方块当选中标记，整行可点；选中行右侧写「当前」。 */
+/** 选项行：和外观选项同一个组件，历史上分在两段代码里。 */
 @Composable
 private fun SettingsChoiceRow(label: String, selected: Boolean, onClick: () -> Unit) {
-    val extra = LocalExtraColors.current
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(5.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 6.dp, vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            Modifier
-                .size(7.dp)
-                .clip(RoundedCornerShape(2.dp))
-                .background(if (selected) extra.accentText else extra.dataTrack),
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            label,
-            style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier.weight(1f),
-        )
-        if (selected) {
-            Text("当前", style = MaterialTheme.typography.labelSmall, color = extra.dataMuted)
-        }
-    }
+    ChromeListRow(title = label, selected = selected, onClick = onClick)
 }
 
 /** 链接行：名称在左、状态在右、末尾一个 ›，整行可点进二级页。 */
@@ -552,7 +631,7 @@ private fun SettingsLinkRow(label: String, status: String, onClick: () -> Unit) 
         Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
         Text(
             status,
-            style = MaterialTheme.typography.labelSmall,
+            style = LocalTrellisTokens.current.type.meta,
             color = extra.dataMuted,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -568,7 +647,7 @@ private fun SettingsStatusLine(text: String, error: Boolean = false) {
     val extra = LocalExtraColors.current
     Text(
         text,
-        style = MaterialTheme.typography.labelSmall,
+        style = LocalTrellisTokens.current.type.meta,
         color = if (error) MaterialTheme.colorScheme.error else extra.dataMuted,
         modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
     )
@@ -579,7 +658,7 @@ private fun SettingsStatusLine(text: String, error: Boolean = false) {
 private fun SettingsSubLabel(text: String) {
     Text(
         text,
-        style = MaterialTheme.typography.labelSmall,
+        style = LocalTrellisTokens.current.type.meta,
         color = LocalExtraColors.current.dataMuted,
         modifier = Modifier.padding(start = 6.dp, top = 8.dp, bottom = 4.dp),
     )

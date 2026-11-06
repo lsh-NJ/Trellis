@@ -21,7 +21,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -91,6 +90,7 @@ fun PlanSidebar(
 
     val scheme = MaterialTheme.colorScheme
     val extra = LocalExtraColors.current
+    val tokens = LocalTrellisTokens.current
 
     Column(
         modifier
@@ -108,7 +108,7 @@ fun PlanSidebar(
         ) {
             Text(
                 "执行清单",
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 fontFamily = FontFamily.Monospace,
                 letterSpacing = 0.8.sp,
                 color = scheme.onSurfaceVariant,
@@ -116,7 +116,7 @@ fun PlanSidebar(
             Spacer(Modifier.width(8.dp))
             Text(
                 settledCount(plan).toString() + "/" + plan.size,
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 fontFamily = FontFamily.Monospace,
                 color = if (status == PlanStatus.Done) extra.accentText else scheme.onSurfaceVariant,
             )
@@ -124,16 +124,14 @@ fun PlanSidebar(
             if (status == PlanStatus.Running) {
                 Text(
                     "进行中",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     fontFamily = FontFamily.Monospace,
                     color = extra.warning,
                 )
                 Spacer(Modifier.width(8.dp))
             }
             if (collapsed) {
-                TextButton(onClick = { collapsed = false }) {
-                    Text("展开", style = MaterialTheme.typography.labelSmall)
-                }
+                ChromeTextLink("展开", onClick = { collapsed = false })
             }
             Box(
                 Modifier
@@ -200,6 +198,7 @@ fun PlanDock(
     val status = planStatus(plan, running)
     val scheme = MaterialTheme.colorScheme
     val extra = LocalExtraColors.current
+    val tokens = LocalTrellisTokens.current
     val current = plan.firstOrNull { it.state == PlanStepState.Running }
         ?: plan.firstOrNull { it.state == PlanStepState.Pending }
 
@@ -218,7 +217,7 @@ fun PlanDock(
         Spacer(Modifier.width(8.dp))
         Text(
             "执行清单 " + settledCount(plan) + "/" + plan.size,
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             fontFamily = FontFamily.Monospace,
             color = scheme.onSurfaceVariant,
         )
@@ -233,13 +232,9 @@ fun PlanDock(
         )
         Spacer(Modifier.weight(1f))
         if (running) {
-            TextButton(onClick = onStop) {
-                Text("停止", style = MaterialTheme.typography.labelSmall)
-            }
+            ChromeTextLink("停止", onClick = onStop)
         }
-        TextButton(onClick = onOpen) {
-            Text("展开", style = MaterialTheme.typography.labelSmall)
-        }
+        ChromeTextLink("展开", onClick = onOpen)
     }
 }
 
@@ -247,6 +242,7 @@ fun PlanDock(
 private fun PlanSummaryRow(line: ChatLine, status: PlanStatus, modifier: Modifier) {
     val scheme = MaterialTheme.colorScheme
     val extra = LocalExtraColors.current
+    val tokens = LocalTrellisTokens.current
     val plan = line.plan
     Column(modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -262,7 +258,7 @@ private fun PlanSummaryRow(line: ChatLine, status: PlanStatus, modifier: Modifie
                 Spacer(Modifier.width(8.dp))
                 Text(
                     "· " + durationText(cost),
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     fontFamily = FontFamily.Monospace,
                     color = scheme.onSurfaceVariant,
                 )
@@ -273,7 +269,7 @@ private fun PlanSummaryRow(line: ChatLine, status: PlanStatus, modifier: Modifie
             "耗时 " + durationText(plan.sumOf { it.ms }) +
                 " · 改动 " + plan.count { it.impact.isNotBlank() } + " 处" +
                 " · " + (if (status == PlanStatus.Failed) "有失败步骤" else "可撤销"),
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             fontFamily = FontFamily.Monospace,
             color = extra.dataMuted,
         )
@@ -284,6 +280,7 @@ private fun PlanSummaryRow(line: ChatLine, status: PlanStatus, modifier: Modifie
 private fun PlanStepRow(index: Int, step: PlanStep, last: Boolean) {
     val scheme = MaterialTheme.colorScheme
     val extra = LocalExtraColors.current
+    val tokens = LocalTrellisTokens.current
     val active = step.state == PlanStepState.Running
     val rowBg = if (active) extra.warningContainer else Color.Transparent
     val titleColor = when (step.state) {
@@ -310,7 +307,7 @@ private fun PlanStepRow(index: Int, step: PlanStep, last: Boolean) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         (index + 1).toString().padStart(2, '0'),
-                        style = MaterialTheme.typography.labelSmall,
+                        style = tokens.type.caption,
                         fontFamily = FontFamily.Monospace,
                         color = scheme.onSurfaceVariant.copy(alpha = 0.6f),
                     )
@@ -336,7 +333,7 @@ private fun PlanStepRow(index: Int, step: PlanStep, last: Boolean) {
                 Spacer(Modifier.height(2.dp))
                 Text(
                     stepMeta(step, active),
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
+                    style = tokens.type.caption.copy(fontSize = 10.5.sp),
                     fontFamily = FontFamily.Monospace,
                     color = if (step.state == PlanStepState.Failed) {
                         extra.danger
@@ -363,17 +360,17 @@ private fun PlanStepRow(index: Int, step: PlanStep, last: Boolean) {
             ) {
                 Text(
                     "这一步在做什么" + (if (step.tool.isNotBlank()) "：" + step.tool else ""),
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.5.sp),
+                    style = tokens.type.caption.copy(fontSize = 11.5.sp),
                     color = scheme.onSurfaceVariant,
                 )
                 Text(
                     "会改动：" + (step.impact.ifBlank { "未知（等它做完再看）" }),
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.5.sp),
+                    style = tokens.type.caption.copy(fontSize = 11.5.sp),
                     color = scheme.onSurfaceVariant,
                 )
                 Text(
                     if (step.undoable) "✓ 可撤销，随时能回退" else "· 提交后生效，不能撤销",
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.5.sp),
+                    style = tokens.type.caption.copy(fontSize = 11.5.sp),
                     color = if (step.undoable) extra.accentText else scheme.onSurfaceVariant,
                 )
             }
@@ -401,6 +398,7 @@ private fun PlanFooter(
 ) {
     val scheme = MaterialTheme.colorScheme
     val extra = LocalExtraColors.current
+    val tokens = LocalTrellisTokens.current
     Column {
         HorizontalDivider(color = scheme.outlineVariant.copy(alpha = 0.6f))
         Row(
@@ -409,29 +407,23 @@ private fun PlanFooter(
         ) {
             when {
                 running -> {
-                    TextButton(onClick = onStop) {
-                        Text("中止并停止本轮", style = MaterialTheme.typography.labelSmall)
-                    }
+                    ChromeTextLink("中止并停止本轮", onClick = onStop)
                     Spacer(Modifier.weight(1f))
                     Text(
                         "预计剩余 " + if (status == PlanStatus.Running) "几秒" else "",
-                        style = MaterialTheme.typography.labelSmall,
+                        style = tokens.type.meta,
                         fontFamily = FontFamily.Monospace,
                         color = extra.warning,
                     )
                 }
                 diffCount > 0 -> {
-                    TextButton(onClick = onUndo, enabled = undoable) {
-                        Text("撤销这次改动", style = MaterialTheme.typography.labelSmall)
-                    }
-                    TextButton(onClick = onDiff) {
-                        Text("看差异", style = MaterialTheme.typography.labelSmall)
-                    }
+                    ChromeTextLink("撤销这次改动", onClick = onUndo, enabled = undoable)
+                    ChromeTextLink("看差异", onClick = onDiff)
                 }
                 else -> {
                     Text(
                         if (status == PlanStatus.Failed) "本轮有失败步骤" else "本轮没有改动",
-                        style = MaterialTheme.typography.labelSmall,
+                        style = tokens.type.meta,
                         fontFamily = FontFamily.Monospace,
                         color = if (status == PlanStatus.Failed) extra.danger else scheme.onSurfaceVariant,
                     )

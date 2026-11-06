@@ -21,7 +21,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -112,7 +111,7 @@ internal fun KnowledgeGraphPopover(
         PopoverPath(isCategory, pathNodes, node, extra, scheme)
 
         if (relations.isNotEmpty()) {
-            Text("直接关联", fontSize = 10.sp, color = extra.dataMuted)
+            Text("直接关联", style = LocalTrellisTokens.current.type.caption, color = extra.dataMuted)
             relations.forEach { relation ->
                 RelationRow(relation, extra, scheme, onSelectNode)
             }
@@ -161,7 +160,7 @@ private fun PopoverHeader(
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
             text = if (isCategory) "分类" else "概念",
-            fontSize = 10.sp,
+            style = LocalTrellisTokens.current.type.caption,
             color = extra.dataMuted,
             modifier = Modifier
                 .background(extra.dataTrack, RoundedCornerShape(4.dp))
@@ -170,12 +169,12 @@ private fun PopoverHeader(
         Spacer(Modifier.width(6.dp))
         Text(
             text = node.name,
-            fontSize = 15.sp,
+            style = LocalTrellisTokens.current.type.title,
             fontWeight = FontWeight.SemiBold,
             color = scheme.onSurface,
             modifier = Modifier.weight(1f),
         )
-        TextButton(onClick = onClose) { Text("×", fontSize = 16.sp) }
+        ChromeTextLink("×", onClick = onClose)
     }
 }
 
@@ -187,14 +186,14 @@ private fun PopoverPath(
     extra: ExtraColors,
     scheme: androidx.compose.material3.ColorScheme,
 ) {
-    Text(if (isCategory) "所属路径" else "所属分类", fontSize = 10.sp, color = extra.dataMuted)
+    Text(if (isCategory) "所属路径" else "所属分类", style = LocalTrellisTokens.current.type.caption, color = extra.dataMuted)
     Text(
         text = when {
             isCategory -> (pathNodes + node).joinToString(" / ") { it.name }
             pathNodes.isEmpty() -> "未分类（点「移动到分类…」归档）"
             else -> pathNodes.joinToString(" / ") { it.name }
         },
-        fontSize = 12.sp,
+        style = LocalTrellisTokens.current.type.meta,
         color = scheme.onSurfaceVariant,
     )
 }
@@ -215,16 +214,16 @@ private fun CategoryBody(
     onDeleteCategory: (String) -> Unit,
 ) {
     Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-        TextButton(onClick = { onRenameCategory(node.key) }) { Text("改名", fontSize = 12.sp) }
-        TextButton(onClick = { onNewSubcategory(node.key) }) { Text("新建子分类", fontSize = 12.sp) }
-        TextButton(onClick = { onDeleteCategory(node.key) }) { Text("删除", fontSize = 12.sp) }
+        ChromeTextLink("改名", onClick = { onRenameCategory(node.key) })
+        ChromeTextLink("新建子分类", onClick = { onNewSubcategory(node.key) })
+        ChromeTextLink("删除", onClick = { onDeleteCategory(node.key) }, danger = true)
     }
     val forbidden = remember(graph, node.key) { collectCategoryDescendants(graph, node.key) }
     Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-        TextButton(onClick = { onNewParentCategory(node.key) }) { Text("新建上级分类", fontSize = 12.sp) }
+        ChromeTextLink("新建上级分类", onClick = { onNewParentCategory(node.key) })
         var moveMenu by remember(node.key) { mutableStateOf(false) }
         Box {
-            TextButton(onClick = { moveMenu = true }) { Text("移动到分类…", fontSize = 12.sp) }
+            ChromeTextLink("移动到分类…", onClick = { moveMenu = true })
             DropdownMenu(expanded = moveMenu, onDismissRequest = { moveMenu = false }) {
                 DropdownMenuItem(
                     text = { Text("顶层（成为根分类）", fontSize = 12.sp) },
@@ -249,11 +248,11 @@ private fun CategoryBody(
         }
     }
     if (children.isNotEmpty()) {
-        Text("包含", fontSize = 10.sp, color = extra.dataMuted)
+        Text("包含", style = LocalTrellisTokens.current.type.caption, color = extra.dataMuted)
         children.take(10).forEach { child ->
             Text(
                 text = (if (child.kind == GraphNodeKind.CATEGORY) "▸ " else "· ") + child.name,
-                fontSize = 12.sp,
+                style = LocalTrellisTokens.current.type.meta,
                 color = scheme.onSurface,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -280,12 +279,12 @@ private fun ConceptBody(
     var draft by remember(node.key, node.definition) { mutableStateOf(node.definition) }
 
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Text("定义", fontSize = 10.sp, color = extra.dataMuted, modifier = Modifier.weight(1f))
+        Text("定义", style = LocalTrellisTokens.current.type.caption, color = extra.dataMuted, modifier = Modifier.weight(1f))
         if (!editing) {
-            TextButton(onClick = {
+            ChromeTextLink("编辑", onClick = {
                 draft = graph.nodes[node.key]?.definition ?: ""
                 editing = true
-            }) { Text("编辑", fontSize = 11.sp) }
+            })
         }
     }
     if (editing) {
@@ -296,24 +295,24 @@ private fun ConceptBody(
             textStyle = MaterialTheme.typography.bodySmall,
             minLines = 2,
         )
-        Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-            TextButton(onClick = { editing = false }) { Text("取消", fontSize = 11.sp) }
-            TextButton(onClick = {
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End), modifier = Modifier.fillMaxWidth()) {
+            ChromeButton("取消", onClick = { editing = false }, filled = false)
+            ChromeButton("保存", onClick = {
                 editing = false
                 onSaveDefinition(node.name, draft.trim())
-            }) { Text("保存", fontSize = 11.sp) }
+            })
         }
     } else {
         Text(
             text = node.definition.ifBlank { "（还没有定义，AI 整理或手动补一句）" },
-            fontSize = 12.sp,
+            style = LocalTrellisTokens.current.type.meta,
             color = if (node.definition.isBlank()) extra.dataMuted else scheme.onSurface,
         )
     }
 
-    Text("来源", fontSize = 10.sp, color = extra.dataMuted)
+    Text("来源", style = LocalTrellisTokens.current.type.caption, color = extra.dataMuted)
     if (sources.isEmpty()) {
-        Text("（笔记里还没有可定位的片段）", fontSize = 12.sp, color = extra.dataMuted)
+        Text("（笔记里还没有可定位的片段）", style = LocalTrellisTokens.current.type.meta, color = extra.dataMuted)
     } else {
         sources.take(3).forEach { mention ->
             Column(
@@ -324,7 +323,7 @@ private fun ConceptBody(
             ) {
                 Text(
                     text = mention.noteTitle.ifBlank { mention.noteId },
-                    fontSize = 12.sp,
+                    style = LocalTrellisTokens.current.type.meta,
                     fontWeight = FontWeight.Medium,
                     color = extra.accentText,
                 )
@@ -332,7 +331,7 @@ private fun ConceptBody(
                 if (snippet.isNotEmpty()) {
                     Text(
                         text = if (snippet.length > 40) "${snippet.take(40)}…" else snippet,
-                        fontSize = 11.sp,
+                        style = LocalTrellisTokens.current.type.caption,
                         color = scheme.onSurfaceVariant,
                     )
                 }
@@ -342,7 +341,7 @@ private fun ConceptBody(
 
     var moveMenu by remember(node.key) { mutableStateOf(false) }
     Box {
-        TextButton(onClick = { moveMenu = true }) { Text("移动到分类…", fontSize = 12.sp) }
+        ChromeTextLink("移动到分类…", onClick = { moveMenu = true })
         DropdownMenu(expanded = moveMenu, onDismissRequest = { moveMenu = false }) {
             DropdownMenuItem(
                 text = { Text("未分类", fontSize = 12.sp) },
@@ -388,19 +387,19 @@ private fun RelationRow(
     ) {
         Text(
             text = relationKindLabel(relation.edge.kind, relation.outgoing),
-            fontSize = 10.sp,
+            style = LocalTrellisTokens.current.type.caption,
             color = relationKindColor(relation.edge.kind, extra),
             modifier = Modifier.width(52.dp),
         )
         Text(
             text = relation.otherName,
-            fontSize = 12.sp,
+            style = LocalTrellisTokens.current.type.meta,
             color = scheme.onSurface,
             modifier = Modifier.weight(1f),
         )
         Text(
             text = relationSourceLabel(relation.edge.source),
-            fontSize = 9.sp,
+            style = LocalTrellisTokens.current.type.caption,
             color = extra.dataMuted,
         )
     }

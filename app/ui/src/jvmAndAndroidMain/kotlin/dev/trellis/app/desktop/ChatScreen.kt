@@ -38,7 +38,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -179,7 +178,7 @@ fun ChatScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                 }
             },
             confirmButton = {
-                TextButton(onClick = { diffOpen = false }) { Text("关闭") }
+                ChromeTextLink("关闭", onClick = { diffOpen = false })
             },
         )
     }
@@ -189,6 +188,7 @@ fun ChatScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
 
 @Composable
 private fun ChatSessionList(runtime: AppRuntime) {
+    val tokens = LocalTrellisTokens.current
     var pendingDelete by remember { mutableStateOf<ChatSession?>(null) }
     var query by remember { mutableStateOf("") }
 
@@ -242,7 +242,7 @@ private fun ChatSessionList(runtime: AppRuntime) {
                 item(key = "steward-divider") {
                     Text(
                         "普通会话",
-                        style = MaterialTheme.typography.labelSmall,
+                        style = tokens.type.meta,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                         modifier = Modifier.padding(top = 10.dp, bottom = 2.dp),
                     )
@@ -253,7 +253,7 @@ private fun ChatSessionList(runtime: AppRuntime) {
                 item(key = "group-" + title) {
                     Text(
                         title,
-                        style = MaterialTheme.typography.labelSmall,
+                        style = tokens.type.meta,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                         modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
                     )
@@ -278,13 +278,17 @@ private fun ChatSessionList(runtime: AppRuntime) {
             title = { Text("删除这段对话？") },
             text = { Text("「" + victim.title + "」的记录会从磁盘删掉，不能恢复。") },
             confirmButton = {
-                TextButton(onClick = {
-                    runtime.deleteChat(victim.id)
-                    pendingDelete = null
-                }) { Text("删除") }
+                ChromeButton(
+                    label = "删除",
+                    onClick = {
+                        runtime.deleteChat(victim.id)
+                        pendingDelete = null
+                    },
+                    destructive = true,
+                )
             },
             dismissButton = {
-                TextButton(onClick = { pendingDelete = null }) { Text("取消") }
+                ChromeTextLink("取消", onClick = { pendingDelete = null })
             },
         )
     }
@@ -302,6 +306,7 @@ private fun SessionRow(
     val hovered by interaction.collectIsHoveredAsState()
     var menuOpen by remember { mutableStateOf(false) }
     val rounds = session.lines.count { it.role == ChatRole.User }
+    val tokens = LocalTrellisTokens.current
 
     Row(
         modifier = Modifier
@@ -327,7 +332,7 @@ private fun SessionRow(
                 } else {
                     chatTimeLabel(session.updatedAt) + " · " + rounds + " 轮"
                 },
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
             )
         }
@@ -381,6 +386,7 @@ private fun ChatConversation(
     var input by remember(runtime.currentChatId) { mutableStateOf("") }
     var lastPrompt by remember(runtime.currentChatId) { mutableStateOf("") }
     var localNote by remember(runtime.currentChatId) { mutableStateOf<String?>(null) }
+    val tokens = LocalTrellisTokens.current
 
     val blocks = remember(runtime.chat.size, runtime.chat.lastOrNull()?.text?.length) { blocksOf(runtime.chat) }
     // 管家会话里的主动消息没有用户那一句，但渲染与会话完全一致（回合头换成「管家」）。
@@ -463,7 +469,7 @@ private fun ChatConversation(
             shownNote?.let { message ->
                 Text(
                     message,
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
                 )
@@ -528,6 +534,7 @@ internal fun ChoiceBar(
     onPick: (ChatChoice) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val tokens = LocalTrellisTokens.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -539,7 +546,7 @@ internal fun ChoiceBar(
     ) {
         Text(
             "选一个",
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         for (choice in choices) {
@@ -553,7 +560,7 @@ internal fun ChoiceBar(
             ) {
                 Text(
                     "→",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.caption,
                     fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.width(18.dp),
@@ -569,15 +576,14 @@ internal fun ChoiceBar(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.End,
         ) {
-            TextButton(onClick = onDismiss) {
-                Text("不用", style = MaterialTheme.typography.labelSmall)
-            }
+            ChromeTextLink("不用", onClick = onDismiss)
         }
     }
 }
 
 @Composable
 private fun EmptyConversation(onPick: (String) -> Unit, modifier: Modifier) {
+    val tokens = LocalTrellisTokens.current
     Column(
         modifier = modifier.fillMaxWidth().padding(vertical = 20.dp),
         verticalArrangement = Arrangement.Center,
@@ -585,7 +591,7 @@ private fun EmptyConversation(onPick: (String) -> Unit, modifier: Modifier) {
     ) {
         Text(
             "还没有对话",
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -616,6 +622,7 @@ private fun EmptyConversation(onPick: (String) -> Unit, modifier: Modifier) {
 
 @Composable
 private fun UserBubble(line: ChatLine, maxWidth: Dp = 560.dp) {
+    val tokens = LocalTrellisTokens.current
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
         Column(
             modifier = Modifier
@@ -626,7 +633,7 @@ private fun UserBubble(line: ChatLine, maxWidth: Dp = 560.dp) {
         ) {
             Text(
                 "你 · " + clockLabel(line.atMs),
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
             )
@@ -652,6 +659,7 @@ private fun PlanThreadLink(line: ChatLine, running: Boolean, onOpen: () -> Unit)
     val active = plan.firstOrNull { it.state == PlanStepState.Running }?.text
     val scheme = MaterialTheme.colorScheme
     val extra = LocalExtraColors.current
+    val tokens = LocalTrellisTokens.current
     val tone = when {
         failed -> scheme.error
         allSettled -> extra.accentText
@@ -668,7 +676,7 @@ private fun PlanThreadLink(line: ChatLine, running: Boolean, onOpen: () -> Unit)
     ) {
         Text(
             if (allSettled) "执行计划 · 已完成" else "执行计划 · 进行中",
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             fontFamily = FontFamily.Monospace,
             letterSpacing = 0.6.sp,
             color = scheme.onSurfaceVariant,
@@ -676,7 +684,7 @@ private fun PlanThreadLink(line: ChatLine, running: Boolean, onOpen: () -> Unit)
         Spacer(Modifier.width(8.dp))
         Text(
             "$settled/${plan.size}",
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             fontFamily = FontFamily.Monospace,
             color = tone,
         )
@@ -684,7 +692,7 @@ private fun PlanThreadLink(line: ChatLine, running: Boolean, onOpen: () -> Unit)
             Spacer(Modifier.width(8.dp))
             Text(
                 active,
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = scheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -723,7 +731,12 @@ private fun RoundView(
     var expanded by remember(key) { mutableStateOf(false) }
     var diffOpen by remember(key) { mutableStateOf(false) }
     var note by remember(key) { mutableStateOf<String?>(null) }
+    // 只有最后一轮常驻「撤销 / 看差异 / 复制」；旧轮次鼠标移上去才露出来，
+    // 免得整页对话每轮尾巴上都挂三行链接。
+    val hoverSource = remember { MutableInteractionSource() }
+    val hovered by hoverSource.collectIsHoveredAsState()
 
+    val tokens = LocalTrellisTokens.current
     val expandedNow = expanded || running || failed
     val toolNames = steps.mapNotNull { step ->
         val raw = Regex("^第 \\d+ 步：(.+)$").find(step.text)?.groupValues?.get(1)?.trim()
@@ -732,7 +745,7 @@ private fun RoundView(
             raw.isEmpty() -> null
             raw == "它说完了" -> null
             raw.startsWith("它说完了，但 ") -> "还要补"
-            else -> raw
+            else -> toolActionLabel(raw)
         }
     }
     val changedCount = diff.size
@@ -742,7 +755,7 @@ private fun RoundView(
         else -> LocalExtraColors.current.data
     }
 
-    Column(Modifier.alpha(if (undone) 0.55f else 1f)) {
+    Column(Modifier.alpha(if (undone) 0.55f else 1f).hoverable(hoverSource)) {
         round.user?.let { user ->
             UserBubble(user, userBubbleMax)
             Spacer(Modifier.height(10.dp))
@@ -778,7 +791,7 @@ private fun RoundView(
                     failed -> "没做成"
                     else -> "完成"
                 },
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 fontFamily = FontFamily.Monospace,
                 color = dotColor,
             )
@@ -787,7 +800,7 @@ private fun RoundView(
                 Spacer(Modifier.width(8.dp))
                 Text(
                     duration,
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                 )
@@ -796,9 +809,7 @@ private fun RoundView(
                 Spacer(Modifier.width(8.dp))
                 CircularProgressIndicator(Modifier.height(11.dp).width(11.dp), strokeWidth = 1.6.dp)
                 Spacer(Modifier.weight(1f))
-                TextButton(onClick = { runtime.stopChat() }) {
-                    Text("停止生成", style = MaterialTheme.typography.labelSmall)
-                }
+                ChromeTextLink("停止生成", onClick = { runtime.stopChat() })
             }
         }
 
@@ -849,7 +860,7 @@ private fun RoundView(
             Spacer(Modifier.height(4.dp))
             Text(
                 meta,
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
             )
@@ -864,28 +875,28 @@ private fun RoundView(
             Spacer(Modifier.height(6.dp))
             Text(
                 "已撤销这次改动",
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-        } else if (!running) {
+        } else if (!running && (isLast || hovered || diffOpen)) {
             Spacer(Modifier.height(2.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 val hasSnapshot = runtime.hasRoundActions(key)
-                TextButton(
+                ChromeTextLink(
+                    label = "撤销这次改动",
                     onClick = { note = runtime.undoRound(key) },
                     enabled = hasSnapshot,
-                ) { Text("撤销这次改动", style = MaterialTheme.typography.labelSmall) }
-                TextButton(
+                )
+                ChromeTextLink(
+                    label = "看差异",
                     onClick = { diffOpen = !diffOpen },
                     enabled = diff.isNotEmpty(),
-                ) { Text("看差异", style = MaterialTheme.typography.labelSmall) }
-                TextButton(onClick = { runtime.copyToClipboard(conclusion); note = "已复制" }) {
-                    Text("复制", style = MaterialTheme.typography.labelSmall)
-                }
+                )
+                ChromeTextLink(label = "复制", onClick = { runtime.copyToClipboard(conclusion); note = "已复制" })
                 if (!hasSnapshot) {
                     Text(
                         "（重启后旧轮次不能撤销）",
-                        style = MaterialTheme.typography.labelSmall,
+                        style = tokens.type.meta,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                     )
                 }
@@ -895,7 +906,7 @@ private fun RoundView(
         note?.let {
             Text(
                 it,
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -911,7 +922,7 @@ private fun RoundView(
                     .padding(10.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                Text("这一轮改了什么", style = MaterialTheme.typography.labelSmall)
+                Text("这一轮改了什么", style = tokens.type.meta)
                 if (diff.isEmpty()) {
                     Text(
                         "没有改动宿主状态（没有改布局、偏好或卡片样式）。",
@@ -935,6 +946,7 @@ private fun ProcessSummary(
     expanded: Boolean,
     onClick: () -> Unit,
 ) {
+    val tokens = LocalTrellisTokens.current
     val text = buildString {
         append("过程 · ")
         append(steps.size)
@@ -965,13 +977,13 @@ private fun ProcessSummary(
         Spacer(Modifier.width(8.dp))
         Text(
             text,
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        Text(if (expanded) "▴" else "▾", style = MaterialTheme.typography.labelSmall)
+        Text(if (expanded) "▴" else "▾", style = tokens.type.caption)
     }
 }
 
@@ -1059,6 +1071,7 @@ private fun InputBar(
     onSend: () -> Unit,
     onRecall: () -> Unit,
 ) {
+    val tokens = LocalTrellisTokens.current
     Column(Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.Bottom) {
             ChromeTextField(
@@ -1102,7 +1115,7 @@ private fun InputBar(
         Spacer(Modifier.height(4.dp))
         Text(
             "Enter 发送 · Shift+Enter 换行 · ↑ 召回上一条 · Esc 停止",
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
         )
     }
@@ -1224,22 +1237,24 @@ private fun StewardProposalCard(
     proposal: StewardProposal,
 ) {
     val decided = line.proposalState != ProposalState.Open
+    val tokens = LocalTrellisTokens.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            // 圆角跟卡片 token 走（批 5）：12dp 是批 1 之前写死的，比插件卡还圆。
+            .clip(RoundedCornerShape(tokens.radius.card))
             .background(
                 Brush.verticalGradient(
                     listOf(StewardViolet.copy(alpha = 0.16f), StewardViolet.copy(alpha = 0f)),
                 ),
             )
-            .border(1.dp, StewardViolet.copy(alpha = 0.28f), RoundedCornerShape(12.dp))
+            .border(1.dp, StewardViolet.copy(alpha = 0.28f), RoundedCornerShape(tokens.radius.card))
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(
             "管家建议",
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             color = StewardViolet,
             modifier = Modifier
                 .clip(RoundedCornerShape(4.dp))
@@ -1288,7 +1303,7 @@ private fun StewardProposalCard(
                         Text(change.title, style = MaterialTheme.typography.bodySmall)
                         Text(
                             "$verb ${change.day.takeLast(5)}",
-                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                            style = tokens.type.meta.copy(fontFamily = FontFamily.Monospace),
                             color = StewardViolet,
                         )
                     }
@@ -1298,23 +1313,65 @@ private fun StewardProposalCard(
         if (decided) {
             Text(
                 if (line.proposalState == ProposalState.Adopted) "已采纳" else "这次先不动",
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = { runtime.launchAdoptStewardProposal(line.id) }) {
-                    Text("一键采纳", style = MaterialTheme.typography.labelSmall, color = StewardViolet)
-                }
-                TextButton(onClick = { runtime.negotiateStewardProposal(line.id) }) {
-                    Text("调整一下", style = MaterialTheme.typography.labelSmall)
-                }
-                TextButton(onClick = { runtime.dismissStewardProposal(line.id) }) {
-                    Text("先这样", style = MaterialTheme.typography.labelSmall)
-                }
+                ChromeButton(label = "一键采纳", onClick = { runtime.launchAdoptStewardProposal(line.id) })
+                ChromeTextLink("调整一下", onClick = { runtime.negotiateStewardProposal(line.id) })
+                ChromeTextLink("先这样", onClick = { runtime.dismissStewardProposal(line.id) })
             }
         }
     }
+}
+
+/**
+ * 过程行里的动作名：模型看到的是工具名（`create_learning_plan`），用户看到的该是人话。
+ * 没登记的工具原样露出——宁可难看，也不要瞎编一个意思。
+ */
+internal fun toolActionLabel(raw: String): String {
+    val name = raw.substringBefore('(').trim()
+    val arg = raw.substringAfter('(', "").substringBefore(')').trim()
+    val label = when (name) {
+        "create_learning_plan" -> "建了学习计划"
+        "get_learning_plan" -> "查了学习计划"
+        "plan_next_week" -> "排了下一周"
+        "complete_plan_node" -> "勾了计划节点"
+        "move_plan_node" -> "挪了计划节点"
+        "review_last_week" -> "看了上周复盘"
+        "set_plan_pace" -> "调了学习节奏"
+        "add_tasks" -> "加了待办"
+        "search_bilibili" -> "搜了 B 站课程"
+        "list_bilibili_parts" -> "看了课程分集"
+        "set_plan" -> "列了步骤"
+        "step_done" -> "记了一步"
+        "ask_choices" -> "问了你要选哪个"
+        "try_plugin" -> "试装了插件"
+        "deploy" -> "装了插件"
+        "read_plugin" -> "读了插件代码"
+        "list_plugins" -> "看了插件列表"
+        "list_events", "list_actions" -> "查了插件能力"
+        "disable_plugin" -> "停了插件"
+        "remove_plugin" -> "删了插件"
+        "list_cards" -> "看了卡片"
+        "arrange_cards" -> "重排了卡片"
+        "list_ui_options" -> "查了样式选项"
+        "set_ui" -> "改了界面样式"
+        "set_plugin_card" -> "调了单卡样式"
+        "list_themes" -> "看了主题"
+        "set_theme" -> "换了主题"
+        "describe_screen" -> "看了界面结构"
+        "take_screenshot" -> "截了屏"
+        "open_tab" -> "切了页面"
+        "click" -> "点了界面"
+        "type_text" -> "填了输入框"
+        "press_key" -> "按了快捷键"
+        "get_diagnostics" -> "查了运行环境"
+        else -> return raw
+    }
+    // 参数只在很短的时候带上：过程行是给人扫一眼的，不是日志。
+    return if (arg.isNotEmpty() && arg.length <= 18) label + "（" + arg + "）" else label
 }
 
 private fun metaLabel(round: ChatBlock.Round): String {

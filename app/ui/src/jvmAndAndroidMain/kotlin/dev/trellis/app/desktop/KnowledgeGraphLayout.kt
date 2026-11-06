@@ -208,15 +208,20 @@ private class ForestLayout(
         if (looseConcepts.isNotEmpty()) {
             val folded = GRAPH_UNCLASSIFIED_KEY in collapsed
             val children = if (folded) emptyList() else looseConcepts.map(::measureConcept)
-            trees.add(
+            // 未分类不是一个分类、底下却常挂着几十个散概念：单行排开会把画布拉成一条线
+            // （评审 §3.7：33 个未分类横排一行），这里折成 4 行一列的网格。
+            val tree = if (folded) {
                 buildMeasured(
                     key = GRAPH_UNCLASSIFIED_KEY,
                     kind = GraphNodeKind.CATEGORY,
                     name = UNCLASSIFIED_LABEL,
-                    folded = folded,
+                    folded = true,
                     children = children,
-                ),
-            )
+                )
+            } else {
+                buildUnclassifiedGrid(children)
+            }
+            trees.add(tree)
         }
         return trees
     }
@@ -277,6 +282,32 @@ private class ForestLayout(
         )
     }
 
+    /**
+     * 未分类虚拟根：把散概念折成 [UNCLASSIFIED_ROWS] 行一列的网格。
+     *
+     * 只有叶子概念，不会有更深层；树的宽度仍按列累加，高度按行数算，摆放见 [placeUnclassifiedGrid]。
+     */
+    private fun buildUnclassifiedGrid(children: List<MeasuredTree>): MeasuredTree {
+        val columns = children.chunked(UNCLASSIFIED_ROWS)
+        var width = 0f
+        columns.forEachIndexed { index, column ->
+            if (index > 0) width += nodeGapX
+            width += column.maxOf { it.width }
+        }
+        val rows = columns.maxOfOrNull { it.size } ?: 0
+        val gridHeight = if (rows == 0) 0f else rowStep + (rows - 1) * (nodeHeight + UNCLASSIFIED_ROW_GAP) + nodeHeight
+        return MeasuredTree(
+            key = GRAPH_UNCLASSIFIED_KEY,
+            kind = GraphNodeKind.CATEGORY,
+            folded = false,
+            width = estimateLabelWidth(UNCLASSIFIED_LABEL, options.categoryFontPx) + NODE_HORIZONTAL_PADDING,
+            height = categoryHeight,
+            children = children,
+            subtreeWidth = max(estimateLabelWidth(UNCLASSIFIED_LABEL, options.categoryFontPx) + NODE_HORIZONTAL_PADDING, width),
+            treeHeight = max(categoryHeight, gridHeight),
+        )
+    }
+
     // ---- warm 根序 ----
 
     /** 指纹命中时按缓存里的根顺序重排（新根接在后面，未分类永远最后）；坐标照常全部重算。 */
@@ -324,6 +355,10 @@ private class ForestLayout(
         )
         if (tree.folded) foldedKeys.add(tree.key)
         if (tree.children.isEmpty()) return
+        if (tree.key == GRAPH_UNCLASSIFIED_KEY) {
+            placeUnclassifiedGrid(tree, centerX, rowTop, depth, nodes, links, foldedKeys)
+            return
+        }
 
         var childrenWidth = 0f
         tree.children.forEachIndexed { index, child ->
@@ -337,7 +372,45 @@ private class ForestLayout(
             childLeft += child.subtreeWidth + nodeGapX
         }
     }
+
+    /** 未分类网格的摆放：[UNCLASSIFIED_ROWS] 行一列，列内每个概念水平居中对齐。 */
+    private fun placeUnclassifiedGrid(
+        tree: MeasuredTree,
+        centerX: Float,
+        rowTop: Float,
+        depth: Int,
+        nodes: MutableMap<String, GraphNodeBox>,
+        links: MutableList<GraphLink>,
+        foldedKeys: MutableSet<String>,
+    ) {
+        val columns = tree.children.chunked(UNCLASSIFIED_ROWS)
+        var gridWidth = 0f
+        columns.forEachIndexed { index, column ->
+            if (index > 0) gridWidth += nodeGapX
+            gridWidth += column.maxOf { it.width }
+        }
+        var columnLeft = centerX - gridWidth / 2f
+        columns.forEach { column ->
+            val columnWidth = column.maxOf { it.width }
+            column.forEachIndexed { row, child ->
+                links.add(GraphLink(fromKey = tree.key, toKey = child.key))
+                val childLeft = columnLeft + (columnWidth - child.width) / 2f
+                val top = rowTop + rowStep + row * (nodeHeight + UNCLASSIFIED_ROW_GAP)
+                // placeTree 自己会加 (depth + 1) * rowStep，这里把基准行顶反推回去，
+                // 概念才会落在网格行上而不是再往下偏一层。
+                val baseTop = top - (depth + 1) * rowStep
+                placeTree(child, subtreeLeft = childLeft, rowTop = baseTop, depth = depth + 1, nodes = nodes, links = links, foldedKeys = foldedKeys)
+            }
+            columnLeft += columnWidth + nodeGapX
+        }
+    }
 }
+
+/** 未分类网格的每个概念占一行、最多 [UNCLASSIFIED_ROWS] 行一列。 */
+private const val UNCLASSIFIED_ROWS = 4
+
+/** 未分类网格里相邻两行概念的间距（比整层 rowStep 紧）。 */
+private const val UNCLASSIFIED_ROW_GAP = 10f
 
 /** 测量结果：一棵可见子树的骨架。宽高在构建时算好，摆放时只读。 */
 private data class MeasuredTree(

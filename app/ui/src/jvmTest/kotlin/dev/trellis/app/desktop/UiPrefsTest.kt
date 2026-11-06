@@ -48,8 +48,13 @@ class UiPrefsTest {
     }
 
     @Test
-    fun negativeRadiusIsClampedToZero() {
-        assertEquals(0, UiPrefs(radius = -8).normalized().radius)
+    fun negativeRadiusMeansFollowTheTheme() {
+        // -1 不是「0dp」，是「跟主题走」（Bento 3 / 书桌 8）。以前负数被夹成 0，
+        // 于是「没设置」和「要方角」成了同一件事。
+        assertEquals(FOLLOW_THEME_RADIUS, UiPrefs().radius)
+        assertEquals(FOLLOW_THEME_RADIUS, UiPrefs(radius = -8).normalized().radius)
+        assertTrue(UiPrefs().describe().contains("圆角 跟随主题"), UiPrefs().describe())
+        assertTrue(UiPrefs(radius = 18).describe().contains("圆角 18dp"))
     }
 
     @Test
@@ -60,13 +65,26 @@ class UiPrefsTest {
     }
 
     @Test
-    fun defaultsAreBentoThemeAndLeftNavigation() {
+    fun defaultsAreTheDeskThemeAndLeftNavigation() {
         val prefs = UiPrefs()
 
-        assertEquals("dev.bento.shift/bento", prefs.theme)
+        // 2026-11-06 用户拍板：Bento 与书桌并排看过后，书桌当默认、Bento 退为可选。
+        assertEquals(DESK_THEME_KEY, prefs.theme)
         assertEquals(DEFAULT_THEME, prefs.theme)
         assertEquals("left", prefs.nav)
-        assertTrue(prefs.describe().contains("Bento（默认）"), prefs.describe())
+        assertTrue(prefs.describe().contains("书桌（默认）"), prefs.describe())
+    }
+
+    @Test
+    fun choosingBentoIsStillRespected() {
+        // 默认换了，但「我就要 Bento」这个选择不能被新默认值盖掉。
+        val home = tempHome()
+        File(home, "ui.json").writeText("""{"theme":"dev.bento.shift/bento"}""", Charsets.UTF_8)
+
+        val loaded = UiPrefsStore(home).load()
+
+        assertEquals("dev.bento.shift/bento", loaded.theme)
+        assertTrue(loaded.describe().contains("Bento"), loaded.describe())
     }
 
     @Test
