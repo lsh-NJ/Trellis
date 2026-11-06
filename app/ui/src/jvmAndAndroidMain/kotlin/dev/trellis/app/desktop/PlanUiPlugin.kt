@@ -54,11 +54,17 @@ internal class PlanUiPlugin(private val runtime: AppRuntime) : Plugin {
                 Header(runtime, framed = false)
             },
         )
-        ctx.extensions.register(
-            Slots.HomeSection,
-            ComposeSlot(id = "plan-board", order = 95) {
-                TaskBoard(runtime, runtime.taskFocus, framed = false)
-            },
-        )
+        // 待办清单这块是**桌面排版**：12 栏卡片、键盘提示（ENTER 添加 · ESC 清空）、
+        // 任务列表本身就是手机今日页已有的东西。手机上再挂一次的结果是一屏两个输入框、
+        // 两份任务列表，还带着摸不到的 ESC —— 所以只在桌面把它当插件卡片贡献出去。
+        // 手机仍然会渲染别人的 HomeSection 卡片（插件化在手机上不砍，砍的只是这张桌面卡）。
+        if (HostPlatform.isDesktop) {
+            ctx.extensions.register(
+                Slots.HomeSection,
+                ComposeSlot(id = "plan-board", order = 95) {
+                    TaskBoard(runtime, runtime.taskFocus, framed = false)
+                },
+            )
+        }
     }
 }

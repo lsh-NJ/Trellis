@@ -28,7 +28,13 @@ compose.desktop {
 
 dependencies {
     implementation(project(":app:ui"))
+    // 预览器要造「学习计划」的数据。走 :features:learning-process 的公开入口
+    // （LearningPlanStore.open）而不是运行时的 internal 方法 —— 预览器是另一个模块，
+    // 本来就不该看见运行时内部；同一份文件 + 同一套命令造出来的数据才和真机一致。
+    implementation(project(":features:learning-process"))
     implementation(compose.desktop.currentOs)
     implementation(compose.material3)
     implementation(libs.kotlinx.coroutines.swing)
+
+    testImplementation(kotlin("test"))
 }

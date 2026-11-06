@@ -365,7 +365,15 @@ class AppRuntime private constructor() {
      * 唯一会「导入成功但不生效」的情况是环境变量覆盖了文件 —— 那句话必须说出来。
      */
     fun importLlmConfig(raw: String, endpoint: String, model: String): LlmImportOutcome {
-        val result = LlmImport.parse(raw, endpoint, model)
+        // 「只粘一个 key」是最常见的用法：界面上那两个框留空就该走默认值。
+        // 以前直接把空串传下去，于是 normalizeEndpoint("") 返回 null，
+        // 用户看到的是「地址要以 http:// 或 https:// 开头，现在拿到的是「」。」——
+        // 明明他什么都没填，却被要求去填地址。
+        val result = LlmImport.parse(
+            raw,
+            endpoint.ifBlank { LlmConfigLoader.DEFAULT_ENDPOINT },
+            model.ifBlank { LlmConfigLoader.DEFAULT_MODEL },
+        )
         val config = result.config
             ?: return LlmImportOutcome(false, result.error ?: "这段没法识别成一份配置。")
         LlmConfigLoader.save(home, config)
@@ -547,11 +555,21 @@ class AppRuntime private constructor() {
 
     /** 从待办板的计划节点点 ⏱ 进来：和任务共用同一个小窗，只是落账走 session。 */
     internal fun openNodeTimer(node: PlanNodeRow) {
-        val occurrenceId = node.occurrenceId ?: return
+        openOccurrenceTimer(node.planId, node.occurrenceId ?: return, node.title)
+    }
+
+    /**
+     * 按「某一次排期」开计时。
+     *
+     * 手机的计划页只有 [DayOccurrence]（日历条/单元弹层拿到的都是它），
+     * 没有完整的 [PlanNodeRow]。以前只能从任务详情开计时，计划单元本身没有入口 ——
+     * 明明「在这道题上花多久」比「在这个任务上花多久」更值得记。
+     */
+    internal fun openOccurrenceTimer(planId: String, occurrenceId: String, title: String) {
         endNodeSession()
-        timerNodeTarget = TimerNodeTarget(node.planId, occurrenceId, node.title)
+        timerNodeTarget = TimerNodeTarget(planId, occurrenceId, title)
         timerTaskId = null
-        timerTaskTitle = node.title
+        timerTaskTitle = title
         timerVisible = true
         timerMode = FocusMode.Countdown
         timerMinutes = 25
@@ -692,6 +710,23 @@ class AppRuntime private constructor() {
 
     /** 系统通知实现；测试里换成 [Notifier.silent]。 */
     internal var notifier: Notifier = Notifier.silent
+
+    /**
+     * 发一条通知，能在点开时落到 [target]。
+     *
+     * 桌面那三条命令行没有回调，忽略目标；安卓走 `PendingIntent`。
+     * 通知失败一律吞掉 —— 该说的话已经落进会话/计划里了，通知只是提醒。
+     */
+    internal fun notifyWithTarget(title: String, body: String, target: NotifyTarget) {
+        runCatching {
+            val current = notifier
+            if (current is TargetedNotifier) {
+                current.notify(title, body, target)
+            } else {
+                current.notify(title, body)
+            }
+        }
+    }
 
     /** 管家设置（界面可改；落盘在 [StewardStore]）。 */
     internal var stewardSettings by mutableStateOf(StewardSettings())
@@ -1120,7 +1155,8 @@ class AppRuntime private constructor() {
         }
 
         override fun notify(title: String, body: String) {
-            runCatching { notifier.notify(title, body) }
+            // 管家招呼落在会话里，点通知就该落在会话上。
+            notifyWithTarget(title, body, NotifyTarget.Chat)
         }
 
         override fun appFocused(): Boolean = windowFocused
@@ -2781,13 +2817,13 @@ class AppRuntime private constructor() {
         refreshPlan()
         tick++
         if (done.isNotEmpty() && uiPrefs.notifyAutoCompletion) {
-            runCatching {
-                notifier.notify(
-                    "Trellis · 计划自动完成",
-                    "《" + noteTitle.ifBlank { "笔记" } + "》自动完成了 " + done.size + " 个节点：" +
-                        done.take(3).joinToString("、") { it.title },
-                )
-            }
+            notifyWithTarget(
+                "Trellis · 计划自动完成",
+                "《" + noteTitle.ifBlank { "笔记" } + "》自动完成了 " + done.size + " 个节点：" +
+                    done.take(3).joinToString("、") { it.title },
+                // 通知说的是「计划节点被勾掉了」，点开当然要落到计划页（能撤销的那一屏）。
+                NotifyTarget.Plan,
+            )
         }
         planMessage = if (done.isNotEmpty()) {
             "AI 根据《" + noteTitle.ifBlank { "笔记" } + "》自动完成了 " + done.size +
@@ -3228,6 +3264,41 @@ class AppRuntime private constructor() {
         kernel.uninstall(id)
         kernel.install(id)
         refresh()
+    }
+
+    /**
+     * 从 zip 装一个插件。返回 null 表示成功，否则是给人看的失败原因。
+     *
+     * 手机上没有「把文件放进目录再重启」这条路 —— 用户手里只有一个压缩包，
+     * 所以安装必须由应用自己完成。桌面端同样受益：AI 生成的插件也是这个入口。
+     */
+    suspend fun installPluginArchive(file: File): String? {
+        val files = runCatching { readPluginArchive(file) }.getOrElse {
+            return "读不了这个压缩包：" + (it.message ?: "文件可能损坏")
+        }
+        if (files.isEmpty()) return "压缩包里没有插件文件（需要 manifest.json 与入口脚本）"
+        if ("manifest.json" !in files) return "压缩包里没有 manifest.json（也许它多套了一层目录）"
+        val error = KernelPluginInstaller(pluginsDir, kernel).install(files)
+        refresh()
+        return error
+    }
+
+    /**
+     * 卸载第三方插件。
+     *
+     * 数据不立即销毁：内核把它放进回收站（[recycleBin]），过一阵才真正清理。
+     * 手机上这是「不想要了」的唯一出口 —— 没有文件管理器可以让你删目录。
+     */
+    suspend fun uninstallPlugin(id: String): String {
+        val pluginId = PluginId(id)
+        val info = pluginInfos.firstOrNull { it.manifest.id == pluginId } ?: return "没有这个插件：$id"
+        if (info.manifest.builtin) return "内置插件不能卸载，把开关关掉就行"
+        val failure = runCatching { kernel.uninstall(pluginId) }.exceptionOrNull()
+        if (failure != null) return "卸载失败：" + (failure.message ?: "未知错误")
+        // 目录也要删：只从内核摘掉的话，下次启动扫描目录又会把它装回来。
+        runCatching { File(pluginsDir, id).deleteRecursively() }
+        refresh()
+        return "已卸载「" + info.manifest.name + "」，数据在回收站里"
     }
 
     private fun wireApprovalDialog() {

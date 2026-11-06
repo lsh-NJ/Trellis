@@ -10,6 +10,11 @@ package dev.trellis.feature.learning
  *   （occurrence/session）也要能归到计划。这是加列，旧数据 `plan_id` 为 NULL。
  *
  * 执行方式是一条条执行（SQLite JDBC 不支持单次多语句），触发器里的 `;` 因此不会被误切。
+ *
+ * **不要在这里用 `json_valid()` / `json_extract()`**：安卓自带的 SQLite 没有 JSON1
+ * （见 [EventPayloads] 的说明），带 `CHECK (json_valid(payload_json))` 的建表语句
+ * 在手机上会直接抛 `no such function: json_valid`，整库建不起来。
+ * payload 的合法性由写入侧的 `JsonObject` 类型保证，读取一律在 Kotlin 侧解析。
  */
 internal val PLAN_SCHEMA_V1: List<String> = listOf(
     "CREATE TABLE IF NOT EXISTS schema_migration (" +
@@ -38,7 +43,7 @@ internal val PLAN_SCHEMA_V1: List<String> = listOf(
         "id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plan(id), " +
         "parent_id TEXT NULL REFERENCES plan_version(id), " +
         "reason TEXT NOT NULL CHECK (length(reason) >= 1), " +
-        "diff_json TEXT NULL CHECK (diff_json IS NULL OR json_valid(diff_json)), " +
+        "diff_json TEXT NULL, " +
         "effective_from_week TEXT NOT NULL CHECK (effective_from_week GLOB '[0-9][0-9][0-9][0-9]-W[0-9][0-9]'), " +
         "status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','active','archived')), " +
         "created_at TEXT NOT NULL)",
@@ -99,7 +104,7 @@ internal val PLAN_SCHEMA_V1: List<String> = listOf(
     "CREATE TABLE IF NOT EXISTS event (" +
         "seq INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE, " +
         "type TEXT NOT NULL, entity TEXT NOT NULL, entity_id TEXT NULL, " +
-        "payload_json TEXT NOT NULL CHECK (json_valid(payload_json)), " +
+        "payload_json TEXT NOT NULL, " +
         "occurred_at TEXT NOT NULL, recorded_at TEXT NOT NULL, " +
         "actor TEXT NOT NULL CHECK (actor IN ('user','agent','system')), " +
         "command_id TEXT NULL, undo_of TEXT NULL, plan_id TEXT NULL)",
@@ -114,7 +119,7 @@ internal val PLAN_SCHEMA_V1: List<String> = listOf(
     "CREATE TABLE IF NOT EXISTS job (" +
         "id TEXT PRIMARY KEY, kind TEXT NOT NULL, " +
         "state TEXT NOT NULL DEFAULT 'created' CHECK (state IN ('created','running','awaiting_user','done','failed','cancelled')), " +
-        "payload_json TEXT NULL CHECK (payload_json IS NULL OR json_valid(payload_json)), " +
+        "payload_json TEXT NULL, " +
         "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS job_step (" +
         "job_id TEXT NOT NULL REFERENCES job(id), step TEXT NOT NULL, " +
