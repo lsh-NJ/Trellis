@@ -18,7 +18,8 @@ import dev.trellis.kernel.theme.ThemeContribution
  * 话，「换掉这套配色」就退化成改代码重新发版，违背「界面也是插件」这条线。
  *
  * 为什么又要**内置**（而不是留在 `~/.trellis/plugins/` 里）：
- * 它是**默认主题**（应用启动就用它，见 `UiPrefs.kt` 的 `DEFAULT_THEME`），属于「装好就有」
+ * 它曾经是**默认主题**；2026-11-06 起默认换成书桌（见 `UiPrefs.kt` 的
+ * `DEFAULT_THEME`），它退为可选，但仍属于「装好就有」
  * 的东西。放在插件目录里，一次误停用就整页回落到默认紫，而且插件列表里一旦被删掉
  * 就找不回来 —— 默认能力不该依赖用户目录里的一份脚本。内置插件仍然出现在插件列表里，
  * 可以停用、可以看贡献，和 `core.plan` 是同一类东西。
@@ -69,7 +70,9 @@ internal class BentoThemePlugin : Plugin {
             "onSurface" to "#141414",
             "surfaceVariant" to "#EFEBDD",
             "onSurfaceVariant" to "#4B473C",
-            "outline" to "#B9B3A2",
+            // 原来是 #B9B3A2：对纸白表面只有 2.06:1，卡片边界和输入框在浅色下几乎看不见。
+            // 加深到 3.43:1（对页面底 3.2:1），ThemePacks 现在把「强线 ≥3:1」当硬门槛。
+            "outline" to "#8E897C",
             "outlineVariant" to "#E2DED2",
             "error" to "#B3261E",
             "onError" to "#FFFFFF",
@@ -119,6 +122,10 @@ internal class BentoThemePlugin : Plugin {
             "warningContainer" to "#F6EBD6",
             "success" to "#D6F24B",
             "successContainer" to "#EEF7C4",
+            // 荧光笔：只当底（AI 撰写、概念高亮），绝不当正文色。青柠在这里第一次
+            // 有了明确岗位，之前它是 success、又是 primaryContainer，语义全靠猜。
+            "mark" to "#D6F24B",
+            "onMark" to "#141414",
         ),
     )
 

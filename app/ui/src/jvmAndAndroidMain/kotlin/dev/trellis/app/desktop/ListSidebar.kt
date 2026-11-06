@@ -91,7 +91,7 @@ internal fun ListSidebar(
             Spacer(Modifier.width(6.dp))
             Text(
                 count.toString(),
-                style = MaterialTheme.typography.labelSmall,
+                style = LocalTrellisTokens.current.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
             )
             Spacer(Modifier.weight(1f))

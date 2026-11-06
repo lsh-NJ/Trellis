@@ -9,6 +9,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -286,34 +287,34 @@ private fun ActivityHeader(
     message: String?,
     onSync: () -> Unit,
 ) {
+    val tokens = LocalTrellisTokens.current
     Column {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                ChromeButton(
-                    label = "日视图",
-                    onClick = { onMode(ActivityMode.Day) },
-                    filled = mode == ActivityMode.Day,
-                )
-                ChromeButton(
-                    label = "范围总览",
-                    onClick = { onMode(ActivityMode.Range) },
-                    filled = mode == ActivityMode.Range,
-                )
-                ChromeButton(
-                    label = "分类规则",
-                    onClick = { onMode(ActivityMode.Rules) },
-                    filled = mode == ActivityMode.Rules,
-                )
-                ChromeButton(
-                    label = "任务时间",
-                    onClick = { onMode(ActivityMode.Task) },
-                    filled = mode == ActivityMode.Task,
-                )
-                ChromeButton(label = "同步", onClick = onSync, filled = false)
+        // 四个视图是同一件事的四种看法：分段控件（单选），不是四个并列按钮。
+        // 「同步」不是视图，是动作，所以放右边当文字链接——它原来和视图同样重，等于没有主次。
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val modes = listOf(ActivityMode.Day, ActivityMode.Range, ActivityMode.Rules, ActivityMode.Task)
+            // 窄窗（手机 / 半屏）放不下一排：分段控件独占一行，同步落到右下。
+            if (maxWidth < TrellisBreakpoints.compact.dp) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ChromeSegmented(
+                        segments = listOf("日视图", "范围总览", "分类规则", "任务时间"),
+                        selectedIndex = modes.indexOf(mode).coerceAtLeast(0),
+                        onSelect = { onMode(modes[it]) },
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        ChromeTextLink("同步", onClick = onSync)
+                    }
+                }
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    ChromeSegmented(
+                        segments = listOf("日视图", "范围总览", "分类规则", "任务时间"),
+                        selectedIndex = modes.indexOf(mode).coerceAtLeast(0),
+                        onSelect = { onMode(modes[it]) },
+                    )
+                    Spacer(Modifier.weight(1f))
+                    ChromeTextLink("同步", onClick = onSync)
+                }
             }
         }
 
@@ -335,21 +336,21 @@ private fun ActivityHeader(
                 )
                 Text(
                     syncLabel(runtime),
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         } else if (mode == ActivityMode.Range) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ChromeButton(label = dayShortLabel(rangeStart), onClick = onPickStart, filled = false)
-                Text("到", style = MaterialTheme.typography.labelSmall)
+                Text("到", style = tokens.type.caption)
                 ChromeButton(label = dayShortLabel(rangeEnd), onClick = onPickEnd, filled = false)
                 Spacer(Modifier.width(4.dp))
                 ChromeButton(label = "最近 7 天", onClick = { onQuickRange(6) }, filled = false)
                 ChromeButton(label = "最近 30 天", onClick = { onQuickRange(29) }, filled = false)
                 Text(
                     syncLabel(runtime),
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -359,7 +360,7 @@ private fun ActivityHeader(
             Spacer(Modifier.height(8.dp))
             Text(
                 message!!,
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.error,
             )
         }
@@ -376,6 +377,7 @@ private fun DayView(
     onHideUntrackedChange: (Boolean) -> Unit,
     onOpenDetail: (Segment) -> Unit,
 ) {
+    val tokens = LocalTrellisTokens.current
     var selectedCategoryId by remember { mutableStateOf<String?>(null) }
     var selectedCategoryPath by remember { mutableStateOf<List<String>?>(null) }
     var uncategorizedOpen by remember { mutableStateOf(false) }
@@ -404,10 +406,10 @@ private fun DayView(
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(28.dp)) {
                     ActivityStat("活跃", formatDuration(summary.activeMs))
-                    ActivityStat("AFK", formatDuration(summary.afkMs))
-                    ActivityStat("观察窗口", formatDuration(summary.observedMs))
+                    ActivityStat("离开", formatDuration(summary.afkMs))
+                    ActivityStat("有记录", formatDuration(summary.observedMs))
                     ActivityStat("其他", formatDuration((summary.observedMs - summary.activeMs - summary.afkMs).coerceAtLeast(0)))
-                    ActivityStat("片段", summary.segmentCount.toString() + " 段")
+                    ActivityStat("记录", summary.segmentCount.toString() + " 条")
                 }
             }
         }
@@ -453,7 +455,7 @@ private fun DayView(
                     if (selectedSlice != null) {
                         Text(
                             "已只看「" + selectedSlice.path + "」，再点一次取消。",
-                            style = MaterialTheme.typography.labelSmall,
+                            style = tokens.type.meta,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -491,7 +493,7 @@ private fun DayView(
                         Text("未分类", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                         Text(
                             formatDuration(uncategorized.sumOf { it.durationMs }) + if (uncategorizedOpen) " 收起" else " 展开",
-                            style = MaterialTheme.typography.labelSmall,
+                            style = tokens.type.meta,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -514,14 +516,14 @@ private fun DayView(
                                 )
                                 Text(
                                     formatDuration(segment.durationMs),
-                                    style = MaterialTheme.typography.labelSmall,
+                                    style = tokens.type.meta,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                         }
                         Text(
                             "点一条看窗口标题、网址和归类原因。",
-                            style = MaterialTheme.typography.labelSmall,
+                            style = tokens.type.meta,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -561,8 +563,8 @@ private fun RangeView(
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(28.dp)) {
                     ActivityStat("活跃", formatDuration(summary.activeMs))
-                    ActivityStat("AFK", formatDuration(summary.afkMs))
-                    ActivityStat("观察窗口", formatDuration(summary.observedMs))
+                    ActivityStat("离开", formatDuration(summary.afkMs))
+                    ActivityStat("有记录", formatDuration(summary.observedMs))
                     ActivityStat("天数", summary.days.toString() + " 天")
                 }
             }
@@ -612,12 +614,13 @@ private fun RangeView(
 /** 日视图时间轴：上面一条 24 小时概览，下面按小时分行的分钟网格。 */
 @Composable
 private fun TimelineCard(summary: DaySummary, segments: List<Segment>, onOpenDetail: (Segment) -> Unit) {
+    val tokens = LocalTrellisTokens.current
     ActivityCard {
         Text("时间轴", style = MaterialTheme.typography.titleSmall)
         Spacer(Modifier.height(4.dp))
         Text(
-            "上面是全天概览；下面每小时一行、每格一分钟，颜色是该分钟里占时最多的分类。点格子看片段详情。",
-            style = MaterialTheme.typography.labelSmall,
+            "上面一条是全天概览；下面每小时一行、每格一分钟，颜色是这一分钟里占时最多的分类。点格子看这一段在干什么。",
+            style = tokens.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(10.dp))
@@ -660,7 +663,7 @@ private fun TimelineCard(summary: DaySummary, segments: List<Segment>, onOpenDet
         Spacer(Modifier.height(4.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             listOf("0", "6", "12", "18", "24").forEach { hour ->
-                Text(hour, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(hour, style = tokens.type.caption, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
 
@@ -668,7 +671,7 @@ private fun TimelineCard(summary: DaySummary, segments: List<Segment>, onOpenDet
         val hours = remember(segments, summary.dayStartMs) { activeHourRange(summary.dayStartMs, segments) }
         if (hours == null) {
             Text(
-                "今天还没有活跃片段。",
+                "今天还没有记录到活动。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -749,6 +752,7 @@ private fun HourMinuteGrid(
     track: Color,
     onOpenDetail: (Segment) -> Unit,
 ) {
+    val tokens = LocalTrellisTokens.current
     val rows = remember(dayStartMs, hours, segments) { minuteRows(dayStartMs, hours, segments) }
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Row(Modifier.fillMaxWidth()) {
@@ -760,7 +764,7 @@ private fun HourMinuteGrid(
                         if (minute % 15 == 0) {
                             Text(
                                 minute.toString(),
-                                style = MaterialTheme.typography.labelSmall,
+                                style = tokens.type.caption,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
@@ -772,7 +776,7 @@ private fun HourMinuteGrid(
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     hourLabel(row.hour),
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.caption,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.width(HourLabelWidth),
                     textAlign = TextAlign.End,
@@ -801,7 +805,7 @@ private fun HourMinuteGrid(
         Text(
             "只显示有活动的小时（" + hourLabel(hours.first) + "–" + hourLabel(hours.last + 1) +
                 "）；空白格是 AFK 或没采集到。",
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
@@ -810,6 +814,7 @@ private fun HourMinuteGrid(
 /** 时间轴图例：按分类汇总时长取前 8 个，色点和格子里的颜色一致（叶子分类）。 */
 @Composable
 private fun TimelineLegend(segments: List<Segment>) {
+    val tokens = LocalTrellisTokens.current
     val items = remember(segments) { timelineLegend(segments) }
     if (items.isEmpty()) return
     Row(
@@ -830,7 +835,7 @@ private fun TimelineLegend(segments: List<Segment>) {
                 Spacer(Modifier.width(5.dp))
                 Text(
                     item.label + " " + formatDuration(item.durationMs),
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -866,6 +871,7 @@ private fun CategoryPieCard(
     hideUntracked: Boolean,
     onHideUntrackedChange: (Boolean) -> Unit,
 ) {
+    val tokens = LocalTrellisTokens.current
     val data = remember(slices, hideUntracked) { pieSlices(slices, hideUntracked) }
     // 选中项放在卡片内：切换日期/勾选后数据变了，选中项如果不在图里就自动清空。
     var selectedId by remember(data) { mutableStateOf<String?>(null) }
@@ -881,7 +887,7 @@ private fun CategoryPieCard(
             Spacer(Modifier.width(2.dp))
             Text(
                 "不显示未追踪",
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.control,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.clickable { onHideUntrackedChange(!hideUntracked) },
             )
@@ -938,6 +944,7 @@ private fun ActivityPie(
     onSelect: (String?) -> Unit,
 ) {
     val textMeasurer = rememberTextMeasurer(cacheSize = 64)
+    val tokens = LocalTrellisTokens.current
     val focus = data.firstOrNull { it.categoryId == selectedId }
     Box(modifier = Modifier.size(184.dp), contentAlignment = Alignment.Center) {
         Canvas(
@@ -1023,7 +1030,7 @@ private fun ActivityPie(
                 } else {
                     "已显示"
                 },
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -1037,6 +1044,7 @@ private fun PieLegendRow(
     selected: Boolean,
     onClick: () -> Unit,
 ) {
+    val tokens = LocalTrellisTokens.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1063,13 +1071,13 @@ private fun PieLegendRow(
         )
         Text(
             formatDuration(slice.totalMs),
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.width(10.dp))
         Text(
             percentLabel(slice.totalMs, totalMs),
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
@@ -1078,6 +1086,7 @@ private fun PieLegendRow(
 /** 饼图聚焦后的详情：全路径、合计/占比、直接时长、直接子分类。 */
 @Composable
 private fun PieSelectionDetail(slice: CategorySlice, children: List<CategorySlice>, shownTotalMs: Long) {
+    val tokens = LocalTrellisTokens.current
     Box(
         Modifier
             .fillMaxWidth()
@@ -1099,7 +1108,7 @@ private fun PieSelectionDetail(slice: CategorySlice, children: List<CategorySlic
                 "合计 " + formatDuration(slice.totalMs) +
                     " · 占已显示 " + percentLabel(slice.totalMs, shownTotalMs) +
                     (if (slice.directMs != slice.totalMs) " · 直接 " + formatDuration(slice.directMs) else ""),
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -1110,14 +1119,14 @@ private fun PieSelectionDetail(slice: CategorySlice, children: List<CategorySlic
             "子分类：" + children.take(5).joinToString(" · ") { child ->
                 (child.name.lastOrNull() ?: "未分类") + " " + formatDuration(child.totalMs)
             } + if (children.size > 5) " 等 " + children.size + " 项" else "",
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
     Spacer(Modifier.height(4.dp))
     Text(
         "再点一次切片或图例取消聚焦。",
-        style = MaterialTheme.typography.labelSmall,
+        style = tokens.type.meta,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 }
@@ -1125,6 +1134,7 @@ private fun PieSelectionDetail(slice: CategorySlice, children: List<CategorySlic
 /** 分类树一行：缩进 + 颜色点 + 名称，右侧 direct/total；点击筛选应用排行。 */
 @Composable
 private fun CategoryRow(slice: CategorySlice, selected: Boolean, onClick: () -> Unit) {
+    val tokens = LocalTrellisTokens.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1155,7 +1165,7 @@ private fun CategoryRow(slice: CategorySlice, selected: Boolean, onClick: () -> 
             } else {
                 formatDuration(slice.totalMs)
             },
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
@@ -1164,6 +1174,7 @@ private fun CategoryRow(slice: CategorySlice, selected: Boolean, onClick: () -> 
 /** 范围总览的分类行：细进度条 + 名称 + 合计时长。 */
 @Composable
 private fun RangeCategoryRow(slice: CategorySlice, maxMs: Long) {
+    val tokens = LocalTrellisTokens.current
     Column(Modifier.padding(vertical = 4.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Spacer(Modifier.width(((slice.depth - 1).coerceAtLeast(0) * 14).dp))
@@ -1184,7 +1195,7 @@ private fun RangeCategoryRow(slice: CategorySlice, maxMs: Long) {
             )
             Text(
                 formatDuration(slice.totalMs),
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -1209,6 +1220,7 @@ private fun RangeCategoryRow(slice: CategorySlice, maxMs: Long) {
 /** 应用排行一行：应用名 + 主分类 + 时长 + 细进度条。 */
 @Composable
 private fun AppRow(row: AppRowData, maxMs: Long) {
+    val tokens = LocalTrellisTokens.current
     Column(Modifier.padding(vertical = 4.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -1220,7 +1232,7 @@ private fun AppRow(row: AppRowData, maxMs: Long) {
                 )
                 Text(
                     row.categoryPath.joinToString(" / "),
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -1228,7 +1240,7 @@ private fun AppRow(row: AppRowData, maxMs: Long) {
             }
             Text(
                 formatDuration(row.durationMs),
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -1252,6 +1264,7 @@ private fun AppRow(row: AppRowData, maxMs: Long) {
 
 @Composable
 private fun RangeAppRow(slice: AppSlice, maxMs: Long) {
+    val tokens = LocalTrellisTokens.current
     Column(Modifier.padding(vertical = 4.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -1263,7 +1276,7 @@ private fun RangeAppRow(slice: AppSlice, maxMs: Long) {
             )
             Text(
                 formatDuration(slice.durationMs),
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -1294,6 +1307,7 @@ private fun SegmentDetailDialog(
     onClassify: () -> Unit,
     onAssignTask: () -> Unit,
 ) {
+    val tokens = LocalTrellisTokens.current
     val explanation by produceState<ClassificationExplanation?>(initialValue = null, segment) {
         value = runtime.activityExplain(segment.app, segment.title, segment.url)
     }
@@ -1301,9 +1315,9 @@ private fun SegmentDetailDialog(
         onDismissRequest = onDismiss,
         confirmButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onAssignTask) { Text("归到任务…") }
-                TextButton(onClick = onClassify) { Text("归到分类…") }
-                TextButton(onClick = onDismiss) { Text("关闭") }
+                ChromeTextLink("归到任务…", onClick = onAssignTask)
+                ChromeTextLink("归到分类…", onClick = onClassify)
+                ChromeTextLink("关闭", onClick = onDismiss)
             }
         },
         title = { Text("片段详情") },
@@ -1336,13 +1350,13 @@ private fun SegmentDetailDialog(
                     if (hit.pattern != null) {
                         Text(
                             "命中规则：" + hit.pattern + "（" + hit.pathText + "）",
-                            style = MaterialTheme.typography.labelSmall,
+                            style = tokens.type.meta,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     } else {
                         Text(
                             "没有规则命中，归到未分类。点「归到分类…」可以就地建一条规则。",
-                            style = MaterialTheme.typography.labelSmall,
+                            style = tokens.type.meta,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -1373,9 +1387,10 @@ private fun ActivityDatePicker(initial: LocalDate, onDismiss: () -> Unit, onPick
 
 @Composable
 private fun ActivityStat(label: String, value: String) {
+    val tokens = LocalTrellisTokens.current
     Column {
         Text(value, style = MaterialTheme.typography.titleMedium)
-        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(label, style = tokens.type.meta, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

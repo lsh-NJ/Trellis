@@ -170,6 +170,26 @@ internal val RENDERED_MOUNT_POINTS: Set<ExtensionPointId> = setOf(
 )
 
 /** 一次截图：[text] 是给人看的话（存到哪、多大），[dataUrl] 是给模型看的图片。 */
+/**
+ * 首页右栏的完成情况；由 [AppRuntime.refreshPlan] 从后端周视图算好。
+ *
+ * [done]/[total] 是「本周」，[allDone]/[allTotal] 是「所有未结束计划的全部节点」。
+ * 任务页列的是跨计划的所有节点，进度只算某一份或跟着计划页选中的周走都是 bug。
+ */
+data class WeekProgress(
+    val label: String,
+    val done: Int,
+    val total: Int,
+    val allDone: Int,
+    val allTotal: Int,
+    val plannedMinutes: Int,
+) {
+    val remaining: Int get() = (total - done).coerceAtLeast(0)
+    val allRemaining: Int get() = (allTotal - allDone).coerceAtLeast(0)
+    val progress: Float get() = if (total == 0) 0f else done.toFloat() / total
+    val allProgress: Float get() = if (allTotal == 0) 0f else allDone.toFloat() / allTotal
+}
+
 data class ScreenCapture(
     val text: String,
     val dataUrl: String?,
@@ -226,6 +246,9 @@ internal fun UiNode.toPreview(): Pair<String, String> {
             is UiNode.Button -> texts += node.label
             is UiNode.Input -> texts += node.hint.ifBlank { node.submitLabel }
             is UiNode.Stepper -> texts += node.label.ifBlank { "计数" } + " " + node.value + node.unit
+            is UiNode.ListRow -> texts += node.title + (node.trailing?.let { "（" + it + "）" } ?: "")
+            is UiNode.Switch -> texts += node.label + (if (node.checked) " 开" else " 关")
+            is UiNode.Chip -> texts += node.label
             is UiNode.HeatStrip -> texts += node.labels.joinToString(" ").ifBlank { node.values.size.toString() + " 格" }
             is UiNode.Notice -> texts += node.text
             is UiNode.Spacer -> Unit
@@ -2094,10 +2117,16 @@ class AppRuntime private constructor() {
         val contributions = runCatching {
             kernel.extensions.contributionsAt(KernelPoints.Theme)
         }.getOrElse { return emptyList() }
-        return contributions.mapNotNull { contribution ->
+        val themes = contributions.mapNotNull { contribution ->
             val theme = contribution.value as? ThemeContribution ?: return@mapNotNull null
-            val key = contribution.owner.value + "/" + theme.id
-            key to (theme.name + "（" + contribution.owner.value + "）")
+            Triple(contribution.owner.value + "/" + theme.id, theme.name, contribution.owner.value)
+        }
+        return themes.map { (key, name, owner) ->
+            // 界面上只显示主题名：插件 ID 是身份证号，不是给人读的
+            //（评审 S6：「Bento（dev.bento.shift）」把实现细节漏到了设置页）。
+            // 只有两个插件给同名主题时才拿 owner 消歧——否则用户根本分不清。
+            val duplicated = themes.count { it.second == name } > 1
+            key to if (duplicated) name + "（" + owner + "）" else name
         }
     }
 
@@ -2339,6 +2368,15 @@ class AppRuntime private constructor() {
     internal var todoPlanNodes by mutableStateOf<List<PlanNodeGroup>>(emptyList())
         private set
 
+    /**
+     * 本周进度：本周排到天里的节点数、已经做完几件、估时合计。
+     *
+     * 首页右栏只需要这三个数，但「本周」和后端算的当前周必须是同一周——所以由
+     * [refreshPlan] 统一从 `week(planId, state.week)` 取，而不是页面自己拿 planDays 猜。
+     */
+    var planWeekProgress by mutableStateOf<WeekProgress?>(null)
+        private set
+
     /** 顶部标题：库里的计划名；没有计划时为 null。 */
     var planTitle by mutableStateOf<String?>(null)
         private set
@@ -2553,8 +2591,20 @@ class AppRuntime private constructor() {
 
             val map = service.map(planId)
             planTitle = map.planTitle.ifBlank { state.title }
+            // 全部节点（跨计划）的完成情况：在下面按周取视图时顺带累加，不为进度多查一遍库。
+            var allDone = 0
+            var allTotal = 0
+            fun countWeek(view: dev.trellis.domain.plan.WeekView) {
+                view.days.forEach { weekDay ->
+                    weekDay.items.forEach { item ->
+                        allTotal += 1
+                        if (item.status == "done") allDone += 1
+                    }
+                }
+            }
             planWeekCards = map.weeks.mapIndexed { index, week ->
                 val view = service.week(planId, week.week)
+                countWeek(view)
                 val units = view.commitment.units
                 // 卡片第二行要「这一周在讲什么」：单元里出现最多的章节名，比承诺标签更具体。
                 val chapter = units.groupingBy { it.chapter }.eachCount().maxByOrNull { it.value }?.key
@@ -2594,6 +2644,25 @@ class AppRuntime private constructor() {
                 planSelectedDay = day
                 planDayView = day?.let { service.today(planId, it) }
             }
+            // 首页右栏的完成情况：大数字对「所有未结束计划」，本周数字对后端「当前周」。
+            planWeekProgress = runCatching {
+                planAll.filter { it.status != "ended" && it.id != planId }.forEach { other ->
+                    runCatching {
+                        service.map(other.id).weeks.forEach { week -> countWeek(service.week(other.id, week.week)) }
+                    }
+                }
+                val currentView = service.week(planId, state.week)
+                val items = currentView.days.flatMap { it.items }
+                val index = map.weeks.indexOfFirst { it.week == state.week }
+                WeekProgress(
+                    label = if (index >= 0) "第 " + (index + 1) + " 周" else "本周",
+                    done = items.count { it.status == "done" },
+                    total = items.size,
+                    allDone = allDone,
+                    allTotal = allTotal,
+                    plannedMinutes = items.filter { it.status == "done" }.sumOf { it.minutes },
+                )
+            }.getOrNull()
             planMessage = null
         }.onFailure { planMessage = "计划读不出来：" + (it.message ?: "未知原因") }
     }
@@ -2724,6 +2793,30 @@ class AppRuntime private constructor() {
             origin = "ui.plan",
         )
         val result = runCatching { service.completeOccurrence(command, occurrenceId) }
+            .getOrElse {
+                planMessage = "这次没记上：" + (it.message ?: "未知原因")
+                null
+            }
+        if (result != null && !result.ok) planMessage = result.error?.message
+        refreshPlan()
+        tick++
+    }
+
+    /**
+     * 待办板上勾掉一个计划节点：等于在计划页把这一天的 occurrence 勾完（决策 2）。
+     *
+     * 待办板是跨计划的，所以信封里的 planId 用节点自己那一个，不能拿当前聚焦的计划凑——
+     * 否则「勾了别的计划的节点」会静默失败或者记到错的计划里。
+     */
+    internal fun completeTodoPlanNode(node: PlanNodeRow) {
+        val service = learningPlan() ?: return
+        val command = CommandEnvelope(
+            commandId = "cmd_" + java.util.UUID.randomUUID().toString().replace("-", ""),
+            actor = Actor.USER,
+            planId = node.planId,
+            origin = "ui.tasks.node",
+        )
+        val result = runCatching { service.completeOccurrence(command, node.occurrenceId) }
             .getOrElse {
                 planMessage = "这次没记上：" + (it.message ?: "未知原因")
                 null
@@ -3754,6 +3847,26 @@ class AppRuntime private constructor() {
             .toMap()
     }
 
+    /**
+     * 选中那一周的实际投入：把窗口活动按 `occurrence:` 归因到周内节点上求和。
+     *
+     * 取「选中周」而不是写死本周：卡片上说的数字必须和左边周卡/天条指着的是同一周，
+     * 否则用户会看到「本周 12/14」配着别的周的时长。
+     */
+    internal suspend fun planWeekAttributedMinutes(): Long {
+        val days = planDays
+        if (days.isEmpty() || planSelectedWeek == null) return 0L
+        val ids = days.flatMap { day -> day.items.map { it.occurrenceId } }.toSet()
+        if (ids.isEmpty()) return 0L
+        var total = 0L
+        for (day in days) {
+            val parsed = runCatching { LocalDate.parse(day.day) }.getOrNull() ?: continue
+            val attributed = runCatching { activityOccurrenceMinutes(parsed) }.getOrDefault(emptyMap())
+            total += attributed.filterKeys { it in ids }.values.sum()
+        }
+        return total
+    }
+
     /** 任务时间视图：计划里当天的任务 + 已归因时长 + 未归因片段 + AI 待确认建议。 */
     internal suspend fun activityTaskReport(dayMs: Long): ActivityTaskReport {
         val aggregator = ensureActivityEngine() ?: return ActivityTaskReport(dayMs, emptyList(), emptyList(), emptyList(), null, false)
@@ -4058,6 +4171,9 @@ class AppRuntime private constructor() {
                                 PlanUiPlugin(runtime),
                                 // 默认主题包也是插件：可在插件页停用，停用后回落默认配色。
                                 BentoThemePlugin(),
+                                // 第二个内置主题（「书桌」）。两套并列是 2026-11-06 评审的
+                                // 决策 1：先看截图再定谁当默认，不猜。
+                                DeskThemePlugin(),
                             ) + extraBuiltins,
                         ),
                         DslLoader(JvmPluginFileSystem()),

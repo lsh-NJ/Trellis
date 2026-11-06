@@ -20,7 +20,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -166,19 +165,20 @@ private fun TaskHeader(
     message: String?,
     onAi: () -> Unit,
 ) {
+    val tokens = LocalTrellisTokens.current
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text("任务时间", style = MaterialTheme.typography.titleMedium)
             Text(
                 (planTitle ?: "还没有计划") + " · AI 只分析没判断过的空档",
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         if (proposalCount > 0) {
             Text(
                 "$proposalCount 条 AI 建议待确认",
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(end = 12.dp),
             )
@@ -203,6 +203,7 @@ private fun TaskProposalsCard(
     onChanged: () -> Unit,
 ) {
     val scope = rememberCoroutineScopeCompat()
+    val tokens = LocalTrellisTokens.current
     val titles = report?.rows?.associate { it.taskRef to it.title }.orEmpty()
     TaskCard(title = "AI 建议", subtitle = "确认后才计入任务时长；忽略的区间不会再次分析。") {
         proposals.forEach { proposal ->
@@ -220,22 +221,22 @@ private fun TaskProposalsCard(
                         taskClock(proposal.fromMs) + "-" + taskClock(proposal.toMs) +
                             " · " + taskDuration(proposal.durationMs) +
                             " · 置信度 " + (proposal.confidence * 100).toInt() + "%",
-                        style = MaterialTheme.typography.labelSmall,
+                        style = tokens.type.meta,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                TextButton(onClick = {
+                ChromeTextLink("接受", onClick = {
                     scope.launch {
                         runtime.activitySetAttributionStatus(proposal.id, AttributionStatus.APPLIED)
                         onChanged()
                     }
-                }) { Text("接受") }
-                TextButton(onClick = {
+                })
+                ChromeTextLink("忽略", onClick = {
                     scope.launch {
                         runtime.activitySetAttributionStatus(proposal.id, AttributionStatus.REJECTED)
                         onChanged()
                     }
-                }) { Text("忽略") }
+                })
             }
         }
     }
@@ -261,6 +262,7 @@ private fun TaskRowsCard(rows: List<ActivityTaskRow>, hasPlan: Boolean, loading:
 
 @Composable
 private fun TaskRowView(row: ActivityTaskRow) {
+    val tokens = LocalTrellisTokens.current
     val plannedMs = (row.plannedMinutes ?: 0) * 60_000L
     val ratio = if (plannedMs > 0) (row.attributedMs.toFloat() / plannedMs).coerceIn(0f, 1f) else 0f
     Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
@@ -272,7 +274,7 @@ private fun TaskRowView(row: ActivityTaskRow) {
                     fontWeight = FontWeight.Medium,
                 )
                 row.detail?.let {
-                    Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(it, style = tokens.type.meta, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             Text(
@@ -303,6 +305,7 @@ private fun UnattributedCard(
     onAssign: (Segment) -> Unit,
     onIgnore: (Segment) -> Unit,
 ) {
+    val tokens = LocalTrellisTokens.current
     TaskCard(
         title = "未归因的窗口活动",
         subtitle = "这些片段还没对上任务。归到任务后会计入上面的时长；标成「无关」的以后不再出现。",
@@ -328,14 +331,14 @@ private fun UnattributedCard(
                     val title = segment.title?.takeIf { it.isNotBlank() }
                     Text(
                         listOfNotNull(segment.categoryPath, title).joinToString(" · "),
-                        style = MaterialTheme.typography.labelSmall,
+                        style = tokens.type.meta,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                     )
                 }
                 Text(taskDuration(segment.durationMs), style = MaterialTheme.typography.labelMedium)
-                TextButton(onClick = { onAssign(segment) }) { Text("归到任务") }
-                TextButton(onClick = { onIgnore(segment) }) { Text("无关") }
+                ChromeTextLink("归到任务", onClick = { onAssign(segment) })
+                ChromeTextLink("无关", onClick = { onIgnore(segment) })
             }
         }
     }
@@ -360,6 +363,7 @@ internal fun AssignTaskDialog(
     var error by remember { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScopeCompat()
+    val tokens = LocalTrellisTokens.current
 
     LaunchedEffect(fromMs, toMs) {
         report = runtime.activityTaskReport((fromMs + toMs) / 2)
@@ -383,7 +387,7 @@ internal fun AssignTaskDialog(
         title = { Text("归到任务") },
         text = {
             Column {
-                Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(label, style = tokens.type.meta, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(8.dp))
                 val rows = report?.rows.orEmpty()
                 if (rows.isEmpty()) {
@@ -399,28 +403,29 @@ internal fun AssignTaskDialog(
                                 Column(Modifier.weight(1f)) {
                                     Text(row.title, style = MaterialTheme.typography.bodyMedium)
                                     row.detail?.let {
-                                        Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text(it, style = tokens.type.meta, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                 }
-                                Text(taskDuration(row.attributedMs), style = MaterialTheme.typography.labelSmall)
+                                Text(taskDuration(row.attributedMs), style = tokens.type.meta)
                             }
                         }
                     }
                 }
                 error?.let {
                     Spacer(Modifier.height(8.dp))
-                    Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                    Text(it, style = tokens.type.meta, color = MaterialTheme.colorScheme.error)
                 }
             }
         },
         confirmButton = {
-            TextButton(
+            ChromeButton(
+                label = "与任务无关",
                 onClick = { save(dev.trellis.activity.NO_TASK_REF, dev.trellis.activity.AttributionSource.MANUAL) },
                 enabled = !saving,
-            ) { Text("与任务无关") }
+            )
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            ChromeButton(label = "取消", onClick = onDismiss, filled = false)
         },
     )
 }
@@ -428,6 +433,7 @@ internal fun AssignTaskDialog(
 /** 任务时间视图的小卡片外壳；和活动页其它卡片同一套边框/底色。 */
 @Composable
 private fun TaskCard(title: String, subtitle: String? = null, content: @Composable () -> Unit) {
+    val tokens = LocalTrellisTokens.current
     Column(
         modifier = Modifier.fillMaxWidth().widthIn(max = 1120.dp)
             .clip(RoundedCornerShape(6.dp))
@@ -438,7 +444,7 @@ private fun TaskCard(title: String, subtitle: String? = null, content: @Composab
         Text(title, style = MaterialTheme.typography.labelLarge)
         subtitle?.let {
             Spacer(Modifier.height(2.dp))
-            Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(it, style = tokens.type.meta, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Spacer(Modifier.height(8.dp))
         content()

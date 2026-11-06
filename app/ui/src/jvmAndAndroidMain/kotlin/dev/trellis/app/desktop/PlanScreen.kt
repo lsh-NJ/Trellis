@@ -17,6 +17,7 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -38,7 +39,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -106,16 +106,22 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     )
 
     var rootOrigin by remember { mutableStateOf(Offset.Zero) }
-    Box(
+    BoxWithConstraints(
         modifier = modifier.onGloballyPositioned { coordinates -> rootOrigin = coordinates.positionInRoot() },
     ) {
-        Row(Modifier.fillMaxSize().padding(end = panelWidth)) {
+        // 中窗及以下：抽屉改「覆盖」，不再把内容列挤窄——880 宽的窗口里 296 的抽屉
+        // 等于把周卡糊掉一半，且日期格被压在抽屉后面反而更难拖。
+        val drawerOverlays = maxWidth < TrellisBreakpoints.medium.dp
+        Row(Modifier.fillMaxSize().padding(end = if (drawerOverlays) 0.dp else panelWidth)) {
             PlanList(runtime, Modifier.width(232.dp).fillMaxHeight())
             Spacer(Modifier.width(20.dp))
             LazyColumn(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
+                // 页头：计划页此前没有页标题，左边 232dp 的列表里孤零零一个「计划」。
+                // 计划级动作（重排 / 计划设置）从周卡标题行搬到页头右上角，和周卡内容解耦。
+                item { PlanHeader(runtime) }
                 if (runtime.isSimulatingTime) item { PlanSimulatedBanner(runtime) }
                 if (runtime.planRhythmHasNews) item { PlanRhythmCard(runtime) }
 
@@ -150,19 +156,22 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
 /** 左侧计划列表：按大类分组（没有大类归「未分类」）。已结束的计划不占列表。 */
 @Composable
 private fun PlanList(runtime: AppRuntime, modifier: Modifier = Modifier) {
+    val tokens = LocalTrellisTokens.current
     val visible = runtime.planAll.filter { it.status != "ended" }
     val grouped = visible.groupBy { runtime.planCategories[it.id] ?: "未分类" }
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        // 左栏是「清单」，页面标题在上方内容列里（批 3 补的 PlanHeader）：
+        // 两处都叫「计划」会让左栏看起来像页标题，实际只是这一列的名字。
         Text(
-            "计划",
-            style = MaterialTheme.typography.labelSmall,
+            "学习计划",
+            style = tokens.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(4.dp))
         grouped.forEach { (category, plans) ->
             Text(
                 category,
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
             )
@@ -185,6 +194,7 @@ private fun PlanList(runtime: AppRuntime, modifier: Modifier = Modifier) {
 @Composable
 private fun ListRow(text: String, sub: String, selected: Boolean, onClick: () -> Unit) {
     val shape = RoundedCornerShape(6.dp)
+    val tokens = LocalTrellisTokens.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -204,7 +214,7 @@ private fun ListRow(text: String, sub: String, selected: Boolean, onClick: () ->
         )
         Text(
             sub,
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
@@ -219,18 +229,17 @@ private fun ListRow(text: String, sub: String, selected: Boolean, onClick: () ->
 @Composable
 private fun PlanRhythmCard(runtime: AppRuntime) {
     val report = runtime.planRhythmReport ?: return
+    val tokens = LocalTrellisTokens.current
     PlanCard {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "计划节奏",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.weight(1f))
-                TextButton(onClick = { runtime.dismissPlanRhythmReport() }) {
-                    Text("知道了", style = MaterialTheme.typography.labelMedium)
-                }
+                ChromeTextLink("知道了", onClick = { runtime.dismissPlanRhythmReport() })
             }
             Text(
                 report.note.ifBlank { "计划在轨道上。" },
@@ -245,7 +254,7 @@ private fun PlanRhythmCard(runtime: AppRuntime) {
             extras.forEach { line ->
                 Text(
                     line,
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -263,46 +272,43 @@ private fun PlanRhythmCard(runtime: AppRuntime) {
 private fun PlanAutoCompletionCard(runtime: AppRuntime) {
     val entries = runtime.planAutoCompletions
     if (entries.isEmpty() && runtime.planAutoCompletionBlockedCount == 0) return
+    val tokens = LocalTrellisTokens.current
     var expanded by remember { mutableStateOf(false) }
     PlanCard {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "AI 自动完成",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
                     " " + entries.size,
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.weight(1f))
                 if (runtime.planAutoCompletionBlockedCount > 0) {
-                    TextButton(onClick = { runtime.clearAutoCompletionBlocks() }) {
-                        Text(
-                            "解除屏蔽（" + runtime.planAutoCompletionBlockedCount + "）",
-                            style = MaterialTheme.typography.labelSmall,
-                        )
-                    }
+                    ChromeTextLink(
+                        label = "解除屏蔽（" + runtime.planAutoCompletionBlockedCount + "）",
+                        onClick = { runtime.clearAutoCompletionBlocks() },
+                    )
                 }
             }
             if (entries.isEmpty()) {
                 Text(
                     "笔记里讲到本周节点时，AI 整理完会自动勾上并记在这里。现在没有记录。",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
                 val shown = if (expanded) entries else entries.take(5)
                 shown.forEach { entry -> AutoCompletionRow(runtime, entry) }
                 if (entries.size > 5) {
-                    TextButton(onClick = { expanded = !expanded }) {
-                        Text(
-                            if (expanded) "收起" else "展开全部 " + entries.size + " 条",
-                            style = MaterialTheme.typography.labelSmall,
-                        )
-                    }
+                    ChromeTextLink(
+                        label = if (expanded) "收起" else "展开全部 " + entries.size + " 条",
+                        onClick = { expanded = !expanded },
+                    )
                 }
             }
         }
@@ -312,6 +318,7 @@ private fun PlanAutoCompletionCard(runtime: AppRuntime) {
 @Composable
 private fun AutoCompletionRow(runtime: AppRuntime, entry: AutoCompletionEntry) {
     var showEvidence by remember(entry.id) { mutableStateOf(false) }
+    val tokens = LocalTrellisTokens.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -324,21 +331,19 @@ private fun AutoCompletionRow(runtime: AppRuntime, entry: AutoCompletionEntry) {
             Text("✔", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.width(6.dp))
             Text(entry.title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-            TextButton(onClick = { runtime.undoAutoCompletion(entry.id) }) {
-                Text("撤销", style = MaterialTheme.typography.labelSmall)
-            }
+            ChromeTextLink("撤销", onClick = { runtime.undoAutoCompletion(entry.id) })
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
                         entry.day.ifBlank { "未标注日期" },
-                        style = MaterialTheme.typography.labelSmall,
+                        style = tokens.type.meta,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
                         "来自《" + entry.noteTitle.ifBlank { "未命名笔记" } + "》",
-                        style = MaterialTheme.typography.labelSmall,
+                        style = tokens.type.control,
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.clickable { runtime.openAutoCompletionNote(entry.id) },
                     )
@@ -346,7 +351,7 @@ private fun AutoCompletionRow(runtime: AppRuntime, entry: AutoCompletionEntry) {
                 if (entry.chapter.isNotBlank()) {
                     Text(
                         entry.chapter,
-                        style = MaterialTheme.typography.labelSmall,
+                        style = tokens.type.meta,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -354,7 +359,7 @@ private fun AutoCompletionRow(runtime: AppRuntime, entry: AutoCompletionEntry) {
             if (entry.evidence.isNotBlank()) {
                 Text(
                     if (showEvidence) "收起证据" else "看证据",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.control,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.clickable { showEvidence = !showEvidence },
                 )
@@ -363,7 +368,7 @@ private fun AutoCompletionRow(runtime: AppRuntime, entry: AutoCompletionEntry) {
         if (showEvidence && entry.evidence.isNotBlank()) {
             Text(
                 "“" + entry.evidence + "”",
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -380,6 +385,7 @@ private fun AutoCompletionRow(runtime: AppRuntime, entry: AutoCompletionEntry) {
 @Composable
 private fun PlanSimulatedBanner(runtime: AppRuntime) {
     val simulated = runtime.simulatedToday ?: return
+    val tokens = LocalTrellisTokens.current
     PlanCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -391,7 +397,7 @@ private fun PlanSimulatedBanner(runtime: AppRuntime) {
                 Text(
                     "真实时间 " + java.time.LocalDate.now() +
                         "；计划相关的结算、补周、复盘、铺天都按模拟日期走。这只是调试工具，不要在上面决定真实计划。",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -401,9 +407,7 @@ private fun PlanSimulatedBanner(runtime: AppRuntime) {
                 Spacer(Modifier.width(6.dp))
                 ChromeButton(label = "+1 周", onClick = { runtime.jumpSimulatedWeeks(1) })
                 Spacer(Modifier.width(6.dp))
-                TextButton(onClick = { runtime.applySimulatedToday(null) }) {
-                    Text("退出模拟", style = MaterialTheme.typography.labelMedium)
-                }
+                ChromeTextLink("退出模拟", onClick = { runtime.applySimulatedToday(null) })
             }
         }
     }
@@ -443,9 +447,7 @@ private fun PlanSettingsDialog(runtime: AppRuntime) {
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     listOf(30, 45, 60, 90, 120).forEach { minutes ->
-                        TextButton(onClick = { runtime.choosePlanDailyDraft(minutes) }) {
-                            Text(minutes.toString() + "′", style = MaterialTheme.typography.labelMedium)
-                        }
+                        ChromeTextLink(minutes.toString() + "′", onClick = { runtime.choosePlanDailyDraft(minutes) })
                     }
                 }
                 Text(
@@ -456,10 +458,34 @@ private fun PlanSettingsDialog(runtime: AppRuntime) {
             }
         },
         confirmButton = {
-            TextButton(onClick = { runtime.savePlanDailyMinutes() }) { Text("保存") }
+            ChromeButton(label = "保存", onClick = { runtime.savePlanDailyMinutes() })
         },
         dismissButton = {
-            TextButton(onClick = { runtime.closePlanSettings() }) { Text("取消") }
+            ChromeTextLink("取消", onClick = { runtime.closePlanSettings() })
+        },
+    )
+}
+
+/** 计划页页头：标题 + 当前计划名 + 计划级动作。 */
+@Composable
+private fun PlanHeader(runtime: AppRuntime) {
+    val tokens = LocalTrellisTokens.current
+    ChromePageHeader(
+        title = "计划",
+        subtitle = runtime.planTitle ?: "还没有计划",
+        actions = {
+            if (runtime.planTitle != null) {
+                ChromeTextLink(
+                    label = when {
+                        runtime.planRearrangeOpen -> "收起重排"
+                        runtime.planRearrangeCount > 0 -> "重排 · " + runtime.planRearrangeCount
+                        else -> "重排"
+                    },
+                    onClick = { runtime.togglePlanRearrange() },
+                )
+                Spacer(Modifier.width(tokens.space.s))
+                ChromeTextLink("计划设置", onClick = { runtime.openPlanSettings() })
+            }
         },
     )
 }
@@ -474,6 +500,13 @@ private fun PlanEmpty(runtime: AppRuntime) {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Spacer(Modifier.height(6.dp))
+            // 空态必须有一个动作：原来只有两句说明，看完了也不知道下一步点哪。
+            ChromeButton(
+                label = "去对话里安排",
+                filled = false,
+                onClick = { runtime.currentTab = TAB_CHAT },
+            )
         }
     }
 }
@@ -481,18 +514,19 @@ private fun PlanEmpty(runtime: AppRuntime) {
 /** 上半：总视图，一周一格，横向滚。计划级动作（重排 / 设置 / 周数）收在这一行的右端。 */
 @Composable
 private fun WeekStrip(runtime: AppRuntime) {
+    val tokens = LocalTrellisTokens.current
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "总览",
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.width(8.dp))
             Text("按周排", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.weight(1f))
             runtime.planMessage?.let {
-                Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                Text(it, style = tokens.type.meta, color = MaterialTheme.colorScheme.error)
                 Spacer(Modifier.width(8.dp))
             }
             Text(
@@ -500,20 +534,6 @@ private fun WeekStrip(runtime: AppRuntime) {
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            TextButton(onClick = { runtime.togglePlanRearrange() }) {
-                Text(
-                    when {
-                        runtime.planRearrangeOpen -> "收起重排"
-                        runtime.planRearrangeCount > 0 -> "重排 · " + runtime.planRearrangeCount
-                        else -> "重排"
-                    },
-                    style = MaterialTheme.typography.labelLarge,
-                )
-            }
-            Spacer(Modifier.width(4.dp))
-            TextButton(onClick = { runtime.openPlanSettings() }) {
-                Text("计划设置", style = MaterialTheme.typography.labelLarge)
-            }
         }
         val state = rememberLazyListState()
         val scope = rememberCoroutineScope()
@@ -554,6 +574,7 @@ private fun WeekStrip(runtime: AppRuntime) {
 @Composable
 private fun PendingWeekCard(count: Int, selected: Boolean, onClick: () -> Unit) {
     val style = LocalCardStyle.current
+    val tokens = LocalTrellisTokens.current
     val shape = RoundedCornerShape(style.radius)
     Column(
         modifier = Modifier
@@ -578,7 +599,7 @@ private fun PendingWeekCard(count: Int, selected: Boolean, onClick: () -> Unit) 
         ) {
             Text(
                 "待安排",
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.surface,
             )
         }
@@ -591,13 +612,13 @@ private fun PendingWeekCard(count: Int, selected: Boolean, onClick: () -> Unit) 
         )
         Text(
             "个节点",
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.caption,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.weight(1f))
         Text(
             "点开看",
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
@@ -606,15 +627,15 @@ private fun PendingWeekCard(count: Int, selected: Boolean, onClick: () -> Unit) 
 @Composable
 private fun WeekCard(card: PlanWeekCard, selected: Boolean, onClick: () -> Unit) {
     val style = LocalCardStyle.current
+    val tokens = LocalTrellisTokens.current
     val shape = RoundedCornerShape(style.radius)
-    val border = if (selected) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.outlineVariant
-    }
+    // 选中态和天条 / 列表行统一：浅 accent 面 + accent 线，不用 2dp 纯黑描边
+    // （黑框在浅色主题里像「报错」，而且和别处的选中完全是两种语言）。
+    val border = if (selected) tokens.colors.accent else MaterialTheme.colorScheme.outlineVariant
     // 还没排到具体某天的周：整张卡灰掉 + 左上角「待安排」，免得跟已排的混在一起看。
     val background = when {
         !card.scheduled -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+        selected -> tokens.colors.accentSoft.copy(alpha = 0.35f)
         style.filled -> MaterialTheme.colorScheme.surfaceVariant
         else -> MaterialTheme.colorScheme.surface
     }
@@ -651,7 +672,7 @@ private fun WeekCard(card: PlanWeekCard, selected: Boolean, onClick: () -> Unit)
                 card.units.take(3).forEach { unit ->
                     Text(
                         "· " + unit,
-                        style = MaterialTheme.typography.labelSmall,
+                        style = tokens.type.meta,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -660,12 +681,12 @@ private fun WeekCard(card: PlanWeekCard, selected: Boolean, onClick: () -> Unit)
             } else {
                 Text(
                     "这一周还没排",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
                     "到当周、或者周日晚上会自动排到每一天",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2,
                 )
@@ -675,14 +696,14 @@ private fun WeekCard(card: PlanWeekCard, selected: Boolean, onClick: () -> Unit)
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 card.rangeLabel,
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 fontFamily = AppFonts.mono,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.weight(1f))
             Text(
                 card.unitCount.toString() + " 件",
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.caption,
                 fontFamily = AppFonts.mono,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -692,6 +713,7 @@ private fun WeekCard(card: PlanWeekCard, selected: Boolean, onClick: () -> Unit)
 
 @Composable
 private fun PendingChip() {
+    val tokens = LocalTrellisTokens.current
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(4.dp))
@@ -701,7 +723,7 @@ private fun PendingChip() {
     ) {
         Text(
             "待安排",
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
@@ -714,6 +736,7 @@ private fun PendingChip() {
  */
 @Composable
 private fun PendingDetail(runtime: AppRuntime) {
+    val tokens = LocalTrellisTokens.current
     PlanCard {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -724,7 +747,7 @@ private fun PendingDetail(runtime: AppRuntime) {
                 Spacer(Modifier.weight(1f))
                 Text(
                     "还没排到某一天，排的时候按每天投入分钟数往里塞",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -740,13 +763,13 @@ private fun PendingDetail(runtime: AppRuntime) {
                         append(" · 还没定每天投入多少分钟，排程会问你要")
                     }
                 },
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             runtime.planPendingNodes.groupBy { it.chapter.ifBlank { "未分章" } }.forEach { (chapter, units) ->
                 Text(
                     chapter,
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 6.dp),
                 )
@@ -763,7 +786,7 @@ private fun PendingDetail(runtime: AppRuntime) {
                         Text(unit.title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                         Text(
                             unit.estimateMinutes.toString() + " 分钟",
-                            style = MaterialTheme.typography.labelSmall,
+                            style = tokens.type.caption,
                             fontFamily = AppFonts.mono,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -776,6 +799,7 @@ private fun PendingDetail(runtime: AppRuntime) {
 
 @Composable
 private fun WeekStateChip(state: String) {
+    val tokens = LocalTrellisTokens.current
     val label = when (state) {
         "current" -> "本周"
         "past" -> "过去"
@@ -798,7 +822,7 @@ private fun WeekStateChip(state: String) {
             .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(4.dp))
             .padding(horizontal = 6.dp, vertical = 2.dp),
     ) {
-        Text(label, style = MaterialTheme.typography.labelSmall, color = foreground)
+        Text(label, style = tokens.type.meta, color = foreground)
     }
 }
 
@@ -855,6 +879,7 @@ private fun DayChip(
     onClick: () -> Unit,
 ) {
     val shape = RoundedCornerShape(6.dp)
+    val tokens = LocalTrellisTokens.current
     var bounds by remember { mutableStateOf(Rect.Zero) }
     val hovering = controller.payload != null && droppable && bounds.contains(controller.pointer)
     val scale by animateFloatAsState(
@@ -900,7 +925,7 @@ private fun DayChip(
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(day.label.substringBefore(" "), style = MaterialTheme.typography.labelSmall, color = foreground)
+            Text(day.label.substringBefore(" "), style = tokens.type.meta, color = foreground)
             if (day.today) {
                 Box(
                     Modifier.size(4.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary),
@@ -915,7 +940,7 @@ private fun DayChip(
         )
         Text(
             if (day.items.isEmpty()) "—" else day.items.size.toString() + " 件",
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.caption,
             color = if (selected) foreground else MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
@@ -923,6 +948,7 @@ private fun DayChip(
 
 @Composable
 private fun DayBody(runtime: AppRuntime, controller: PlanDragController) {
+    val tokens = LocalTrellisTokens.current
     val unscheduled = runtime.planWeekCards
         .firstOrNull { it.week == runtime.planSelectedWeek }
         ?.scheduled == false
@@ -969,12 +995,12 @@ private fun DayBody(runtime: AppRuntime, controller: PlanDragController) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     "已完成 · " + view.completed.size,
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
                     "点一下可以改回没做",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -1017,6 +1043,7 @@ private fun OccurrenceRow(
     onComplete: () -> Unit,
 ) {
     val shape = RoundedCornerShape(6.dp)
+    val tokens = LocalTrellisTokens.current
     val payload = PlanDragPayload.Occurrence(occurrence.id, occurrence.title, occurrence.minutes)
     Row(
         modifier = Modifier
@@ -1035,17 +1062,12 @@ private fun OccurrenceRow(
             .graphicsLayer { alpha = if (controller.payload == payload) 0.35f else 1f }
             .clip(shape)
             .border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            // 行内勾选框和任务页共用同一个：同一个动作在三个页面里不该长三个样。
+            .padding(start = 6.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Box(
-            modifier = Modifier
-                .size(22.dp)
-                .clip(RoundedCornerShape(4.dp))
-                .border(1.5.dp, MaterialTheme.colorScheme.onSurfaceVariant, RoundedCornerShape(4.dp))
-                .clickable(onClick = onComplete),
-        )
+        ChromeCheckbox(checked = false, onCheckedChange = onComplete)
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(occurrence.title, style = MaterialTheme.typography.bodyLarge)
             Text(
@@ -1055,7 +1077,7 @@ private fun OccurrenceRow(
                     if (occurrence.carried) append(" · 上周顺延")
                     if (occurrence.movedCount > 0) append(" · 改过 ").append(occurrence.movedCount).append(" 次")
                 },
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -1063,13 +1085,13 @@ private fun OccurrenceRow(
         if (attributedMinutes > 0L) {
             Text(
                 "归因 ${attributedMinutes} 分钟",
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.primary,
             )
         }
         Text(
             "待做",
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }

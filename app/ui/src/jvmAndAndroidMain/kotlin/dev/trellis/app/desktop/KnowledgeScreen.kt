@@ -20,7 +20,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -31,10 +30,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
@@ -66,7 +68,9 @@ private data class PendingReveal(val noteId: String, val start: Int, val end: In
  *    （只建议、默认点亮、可删），失败不影响保存；没配模型就跳过，用户也可以手动添加。
  */
 @Composable
+@OptIn(ExperimentalComposeUiApi::class)
 internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
+    val tokens = LocalTrellisTokens.current
     val store = runtime.knowledgeStore
     val metaStore = remember(runtime) { ConceptMetaStore(runtime.home) }
     // 图建议（G1）与网络视图共用同一个缓存文件；整理完一篇顺手写进去，图那边下次打开就能看到「建议」。
@@ -74,6 +78,11 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     val clock = runtime.clock
     // 页面根保持一个兜底焦点，键盘事件才有接收者；编辑器组成后再把焦点交给它。
     val pageFocus = remember { FocusRequester() }
+    // 中窗及以下：右栏（本篇概念 + 目录）默认收成 36dp 窄边，别把编辑区挤成一条缝。
+    // 用户点窄边的箭头仍可强行展开——展开时按 240dp 给，不按他之前拖的宽度硬撑。
+    val windowWidth = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.width.toDp() }
+    val narrowRail = windowWidth < TrellisBreakpoints.medium.dp
+    var railOverride by remember { mutableStateOf(false) }
 
     var notes by remember { mutableStateOf(store.list()) }
     var selectedId by remember { mutableStateOf<String?>(null) }
@@ -757,7 +766,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                 Spacer(Modifier.height(6.dp))
                 Text(
                     message!!,
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     color = if (messageIsProblem) {
                         MaterialTheme.colorScheme.error
                     } else {
@@ -947,13 +956,13 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                             ) {
                                 Text(
                                     if (loaded == null) "还没有选中笔记" else body.length.toString() + " 字符",
-                                    style = MaterialTheme.typography.labelSmall,
+                                    style = tokens.type.caption,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                                 )
                                 Spacer(Modifier.weight(1f))
                                 Text(
                                     status,
-                                    style = MaterialTheme.typography.labelSmall,
+                                    style = tokens.type.meta,
                                     color = if (messageIsProblem) {
                                         MaterialTheme.colorScheme.error
                                     } else {
@@ -965,9 +974,13 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                         // 右栏：本篇概念 + 目录。目录宽度可拖（OutlineSplitter 在面板外留了口子），
                         // 收起/展开走页头「目录」、目录面板自己的「收起」，或这一栏顶部的箭头；
                         // 收起后留一条窄边（和左栏一致），点箭头再展开。
-                        Spacer(Modifier.width(if (MarkdownSidebarState.visible) 12.dp else 6.dp))
-                        if (MarkdownSidebarState.visible) {
-                            Column(Modifier.width(MarkdownSidebarState.width).fillMaxHeight()) {
+                        val showSidebar = MarkdownSidebarState.visible && (!narrowRail || railOverride)
+                        Spacer(Modifier.width(if (showSidebar) 12.dp else 6.dp))
+                        if (showSidebar) {
+                            Column(
+                                Modifier.width(if (narrowRail) 240.dp else MarkdownSidebarState.width)
+                                    .fillMaxHeight(),
+                            ) {
                                 Row(
                                     Modifier.fillMaxWidth().padding(end = 6.dp),
                                     horizontalArrangement = Arrangement.End,
@@ -1027,7 +1040,11 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                                 EditorChip(
                                     label = "‹",
                                     active = false,
-                                    onClick = { MarkdownSidebarState.visible = true },
+                                    onClick = {
+                                        MarkdownSidebarState.visible = true
+                                        // 中窗里「展开」是一次性的：窗口再变窄时不记得这次强开。
+                                        railOverride = true
+                                    },
                                 )
                             }
                         }
@@ -1047,17 +1064,17 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
             title = { Text("删除这篇笔记？") },
             text = { Text("「" + displayTitle(target.title) + "」会从磁盘删除，暂不进回收站。") },
             confirmButton = {
-                TextButton(onClick = {
-                    deleteNote(target)
-                    deleteTarget = null
-                }) {
-                    Text("删除")
-                }
+                ChromeButton(
+                    "删除",
+                    onClick = {
+                        deleteNote(target)
+                        deleteTarget = null
+                    },
+                    destructive = true,
+                )
             },
             dismissButton = {
-                TextButton(onClick = { deleteTarget = null }) {
-                    Text("取消")
-                }
+                ChromeButton("取消", onClick = { deleteTarget = null }, filled = false)
             },
         )
     }
@@ -1101,6 +1118,7 @@ private fun NoteTitleField(
 
 @Composable
 private fun KnowledgeEmptyState(onCreate: () -> Unit) {
+    val tokens = LocalTrellisTokens.current
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -1109,7 +1127,7 @@ private fun KnowledgeEmptyState(onCreate: () -> Unit) {
             Text("还没有笔记", style = MaterialTheme.typography.titleMedium)
             Text(
                 "先写一篇：标题 + Markdown 正文，存成本地 .md 文件；保存后 AI 会帮着整理概念。",
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(6.dp))

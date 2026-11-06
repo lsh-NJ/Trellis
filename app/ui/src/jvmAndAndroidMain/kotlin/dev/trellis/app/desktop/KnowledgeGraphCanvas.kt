@@ -230,6 +230,15 @@ internal fun KnowledgeGraphCanvas(
                         drawTreeLink(from, to, color.copy(alpha = color.alpha * alpha), isFocused)
                     }
 
+                    // LOD 走布局层已有的判定（设计 §4.3：zoom + 概念数 + 视口面积）：
+                    // Aggregate/TooLarge 只留形状，Compact 只留分类名，Full 才铺概念名。
+                    // 以前是无条件画 12sp 标签，fit 全图时 95 个名字糊成一片纹理。
+                    val conceptCount = graph.nodes.values.count { it.kind == GraphNodeKind.CONCEPT }
+                    val lod = when (lodFor(camera.zoom, conceptCount, size.width * size.height)) {
+                        LodLevel.Full -> GraphLod.Near
+                        LodLevel.Compact -> GraphLod.Mid
+                        else -> GraphLod.Far
+                    }
                     layout.nodes.values.forEach { box ->
                         val node = graph.nodes[box.key]
                         val isSelected = box.key == selectedKey
@@ -240,10 +249,10 @@ internal fun KnowledgeGraphCanvas(
                         val alpha = if (box.key == dragKey) 0.3f else baseAlpha
                         if (isSelected) {
                             scale(selectedScale, pivot = Offset(box.bounds.centerX, box.bounds.centerY)) {
-                                drawTreeNode(colors, node, box, measurer, density, alpha, true)
+                                drawTreeNode(colors, node, box, measurer, density, alpha, true, lod)
                             }
                         } else {
-                            drawTreeNode(colors, node, box, measurer, density, alpha, false)
+                            drawTreeNode(colors, node, box, measurer, density, alpha, false, lod)
                         }
                     }
 
@@ -282,6 +291,9 @@ internal fun KnowledgeGraphCanvas(
 
 // ---- 绘制辅助 ----
 
+/** 画布的标签详细度：远处只留形状，中等距离只留分类名，近处才画概念名。 */
+private enum class GraphLod { Far, Mid, Near }
+
 private data class GraphCanvasColors(
     val background: Color,
     val dot: Color,
@@ -300,6 +312,8 @@ private data class GraphCanvasColors(
 private const val DOT_SPACING_DP = 24f
 
 private fun DrawScope.drawDotGrid(dotColor: Color, camera: Camera) {
+    // 点阵只在放大到能看清网格时画（设计 §4.3：zoom ≥ 0.8）。小比例下它只是噪点。
+    if (camera.zoom < 0.8f) return
     val spacing = DOT_SPACING_DP * density * camera.zoom
     if (spacing < 6f) return
     val startX = camera.panX % spacing
@@ -344,6 +358,7 @@ private fun DrawScope.drawTreeNode(
     density: Float,
     alpha: Float,
     selected: Boolean,
+    lod: GraphLod,
 ) {
     val rect = box.bounds
     val left = rect.left
@@ -405,31 +420,64 @@ private fun DrawScope.drawTreeNode(
         )
     }
 
-    val textColor = if (isCategory) colors.categoryText else colors.conceptText
-    val fontSize = if (isCategory) 12.5.sp else 12.sp
-    val style = TextStyle(
-        color = textColor.copy(alpha = textColor.alpha * alpha),
-        fontSize = fontSize,
-        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-    )
-    // 节点宽度本身已经含两端留白（布局里 estimateLabelWidth + padding）；
-    // 这里只留很小的内缩，避免中文名/英文缩写被椭到只剩一两个字。
-    val maxWidthPx = ((width - 8f).coerceAtLeast(12f)).roundToInt()
-    val text = measurer.measure(
-        text = AnnotatedString(label),
-        style = style,
-        maxLines = 1,
-        softWrap = false,
-        overflow = TextOverflow.Ellipsis,
-        constraints = Constraints(maxWidth = maxWidthPx),
-    )
-    drawText(
-        textLayoutResult = text,
-        topLeft = Offset(
-            left + (width - text.size.width) / 2f,
-            top + (height - text.size.height) / 2f,
-        ),
-    )
+    // LOD：远处不画名字（只留形状）；中距离只画分类名和刚选中的那个；
+    // 近处才把所有概念名铺出来。选中项无论哪档都画，否则点完就不知道点的是谁。
+    // 中档只给根分类画名字：根节点的框比子树窄得多、名字又短，缩到 0.55 时还读得出来；
+    // 一层分类/概念的名字在这个比例下会互相压住，索性不画（放大到 Full 再出现）。
+    val showLabel = when (lod) {
+        GraphLod.Near -> true
+        GraphLod.Mid -> box.depth == 0
+        GraphLod.Far -> false
+    } || selected
+    if (showLabel) {
+        val textColor = if (isCategory) colors.categoryText else colors.conceptText
+        val fontSize = if (isCategory) 12.5.sp else 12.sp
+        val style = TextStyle(
+            color = textColor.copy(alpha = textColor.alpha * alpha),
+            fontSize = fontSize,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+        )
+        // 节点宽度本身已经含两端留白（布局里 estimateLabelWidth + padding）；
+        // 这里只留很小的内缩，避免中文名/英文缩写被椭到只剩一两个字。
+        val maxWidthPx = ((width - 8f).coerceAtLeast(12f)).roundToInt()
+        val text = measurer.measure(
+            text = AnnotatedString(label),
+            style = style,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
+            constraints = Constraints(maxWidth = maxWidthPx),
+        )
+        drawText(
+            textLayoutResult = text,
+            topLeft = Offset(
+                left + (width - text.size.width) / 2f,
+                top + (height - text.size.height) / 2f,
+            ),
+        )
+    }
+}
+
+/**
+ * 首屏取景：根分类 + 一层子节点，而不是整棵树。
+ *
+ * 95 个概念的整图 fit 下来 zoom 小于 0.25，标签全糊成纹理（评审 §3.7 P0）。
+ * 先给出「根 + 一层」让用户能读出分类结构，想看全图点「适应窗口」。
+ */
+internal fun initialFocusBounds(layout: GraphLayout): GraphRect {
+    val shallow = layout.nodes.values.filter { it.depth <= 1 }
+    if (shallow.isEmpty()) return layout.bounds
+    var left = Float.MAX_VALUE
+    var top = Float.MAX_VALUE
+    var right = -Float.MAX_VALUE
+    var bottom = -Float.MAX_VALUE
+    shallow.forEach { box ->
+        left = minOf(left, box.bounds.left)
+        top = minOf(top, box.bounds.top)
+        right = maxOf(right, box.bounds.right)
+        bottom = maxOf(bottom, box.bounds.bottom)
+    }
+    return GraphRect(left, top, right - left, bottom - top)
 }
 
 /**

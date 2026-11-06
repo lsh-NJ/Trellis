@@ -21,6 +21,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -45,6 +46,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.trellis.kernel.api.ActionOutcome
@@ -126,7 +128,7 @@ private fun UiNodeView(
 ) {
     when (node) {
         is UiNode.Column -> Column(
-            verticalArrangement = Arrangement.spacedBy(node.gap.dp),
+            verticalArrangement = Arrangement.spacedBy(snapGap(node.gap)),
             horizontalAlignment = when (node.align) {
                 UiAlign.Start -> Alignment.Start
                 UiAlign.Center -> Alignment.CenterHorizontally
@@ -137,7 +139,7 @@ private fun UiNodeView(
         }
 
         is UiNode.Row -> Row(
-            horizontalArrangement = Arrangement.spacedBy(node.gap.dp),
+            horizontalArrangement = Arrangement.spacedBy(snapGap(node.gap)),
             verticalAlignment = when (node.align) {
                 UiAlign.Start -> Alignment.Top
                 UiAlign.Center -> Alignment.CenterVertically
@@ -176,6 +178,7 @@ private fun UiNodeView(
             style = MaterialTheme.typography.bodySmall,
             color = when (node.tone) {
                 UiNoticeTone.Hint -> MaterialTheme.colorScheme.onSurfaceVariant
+                UiNoticeTone.Warning -> LocalExtraColors.current.warning
                 UiNoticeTone.Problem -> MaterialTheme.colorScheme.error
             },
         )
@@ -197,6 +200,9 @@ private fun UiNodeView(
         is UiNode.Button -> DynamicButton(node, slot, onAction)
         is UiNode.Input -> DynamicInput(node, slot)
         is UiNode.Stepper -> DynamicStepper(node, slot)
+        is UiNode.ListRow -> DynamicListRow(node, slot, onAction)
+        is UiNode.Switch -> DynamicSwitch(node, slot, onAction)
+        is UiNode.Chip -> DynamicChip(node, slot, onAction)
     }
 }
 
@@ -287,6 +293,8 @@ private fun TextNode(node: UiNode.Text) {
             UiFont.Serif -> fonts.serif
             UiFont.Condensed -> fonts.condensed
         },
+        maxLines = node.maxLines ?: Int.MAX_VALUE,
+        overflow = if (node.maxLines != null) TextOverflow.Ellipsis else TextOverflow.Clip,
     )
 }
 
@@ -936,4 +944,146 @@ private fun toneColor(tone: UiTone): Color = when (tone) {
     UiTone.Accent -> MaterialTheme.colorScheme.primary
     UiTone.Danger -> MaterialTheme.colorScheme.error
     UiTone.Success -> MaterialTheme.colorScheme.tertiary
+}
+
+/**
+ * 把插件写的任意 `gap` 取整到宿主 token 的间距档（4/8/12/16/24）。
+ *
+ * 词表以前写的是「gap 0..32」，结果每张卡都长出自己的间距节奏；宿主只认自己的刻度，
+ * 旧插件里的 6/10/18 落到最近一档，视觉上是轻微变化，不会破版。
+ */
+private fun snapGap(gap: Int): Dp = when {
+    gap <= 4 -> 4.dp
+    gap <= 8 -> 8.dp
+    gap <= 12 -> 12.dp
+    gap <= 16 -> 16.dp
+    else -> 24.dp
+}
+
+/**
+ * 列表行（批 6）：标题/副标题/右值三段，行高、内边距与宿主自营清单一致。
+ * 有 `onTap` 时整行可点。
+ */
+@Composable
+private fun DynamicListRow(
+    node: UiNode.ListRow,
+    slot: DynamicSlot,
+    onAction: (suspend (PluginId?, SlotAction) -> ActionOutcome)?,
+) {
+    val scope = rememberCoroutineScope()
+    val owner = LocalSlotOwner.current
+    val tap = node.onTap
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (tap != null) {
+                    Modifier.clickable { scope.launch { runTap(tap, node.title, slot, onAction, owner) } }
+                } else {
+                    Modifier
+                },
+            )
+            .padding(horizontal = 4.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(node.title, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            val subtitle = node.subtitle
+            if (subtitle != null) {
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        val trailing = node.trailing
+        if (trailing != null) {
+            Text(
+                trailing,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+/** 开关（批 6）：与宿主设置页同一个 M3 开关，不自己画。 */
+@Composable
+private fun DynamicSwitch(
+    node: UiNode.Switch,
+    slot: DynamicSlot,
+    onAction: (suspend (PluginId?, SlotAction) -> ActionOutcome)?,
+) {
+    val scope = rememberCoroutineScope()
+    val owner = LocalSlotOwner.current
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(node.label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        Switch(
+            checked = node.checked,
+            onCheckedChange = { scope.launch { runTap(node.onTap, node.label, slot, onAction, owner) } },
+        )
+    }
+}
+
+/** 选择片（批 6）：选中用主色浅底，未选中描边，和宿主 chip 同一套。 */
+@Composable
+private fun DynamicChip(
+    node: UiNode.Chip,
+    slot: DynamicSlot,
+    onAction: (suspend (PluginId?, SlotAction) -> ActionOutcome)?,
+) {
+    val scope = rememberCoroutineScope()
+    val owner = LocalSlotOwner.current
+    val colors = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(percent = 50)
+    Row(
+        modifier = Modifier
+            .clip(shape)
+            .background(if (node.selected) colors.primaryContainer else Color.Transparent)
+            .border(1.dp, if (node.selected) Color.Transparent else colors.outlineVariant, shape)
+            .then(
+                if (node.onTap != null) {
+                    Modifier.clickable {
+                        node.onTap?.let { tap -> scope.launch { runTap(tap, node.label, slot, onAction, owner) } }
+                    }
+                } else {
+                    Modifier
+                },
+            )
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            node.label,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (node.selected) colors.onPrimaryContainer else colors.onSurfaceVariant,
+            maxLines = 1,
+        )
+    }
+}
+
+/** 把一次点击交回插件/宿主，和按钮共用同一套返回值处理。 */
+private suspend fun runTap(
+    tap: UiTap,
+    label: String,
+    slot: DynamicSlot,
+    onAction: (suspend (PluginId?, SlotAction) -> ActionOutcome)?,
+    owner: PluginId?,
+): String = try {
+    when (tap) {
+        is UiTap.Plugin -> slot.perform(tap.handler, tap.args).message
+        is UiTap.Host -> onAction?.invoke(owner, SlotAction(label = label, call = tap.call))?.message
+            ?: "这个操作现在点不了"
+    }
+} catch (t: Throwable) {
+    t.message ?: "操作失败"
 }

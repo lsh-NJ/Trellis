@@ -103,7 +103,7 @@ internal fun FocusTimerWindow(runtime: AppRuntime) {
         ) {
             Text(
                 text = runtime.timerTaskTitle.ifBlank { "计时" },
-                style = MaterialTheme.typography.labelSmall,
+                style = LocalTrellisTokens.current.type.meta,
                 color = muted,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -128,13 +128,13 @@ internal fun FocusTimerWindow(runtime: AppRuntime) {
                 )
                 Text(
                     if (finished) "时间到" else "倒计时 · 共 ${clampTimerMinutes(total / 60)} 分钟",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = LocalTrellisTokens.current.type.meta,
                     color = if (finished) MaterialTheme.colorScheme.primary else muted,
                 )
             } else if (mode == FocusMode.Stopwatch) {
                 Text(
                     if (finished) "已结束" else "正计时 · 没有进度条，到停为止",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = LocalTrellisTokens.current.type.meta,
                     color = muted,
                 )
             }
@@ -157,7 +157,7 @@ internal fun FocusTimerWindow(runtime: AppRuntime) {
                     ) {
                         Text(
                             "不计时，直接记 25 分钟",
-                            style = MaterialTheme.typography.labelSmall,
+                            style = LocalTrellisTokens.current.type.meta,
                             color = muted,
                         )
                     }
@@ -245,7 +245,7 @@ private fun MinutesRow(runtime: AppRuntime) {
                     .padding(horizontal = 8.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                Text("$preset′", style = MaterialTheme.typography.labelSmall)
+                Text("$preset′", style = LocalTrellisTokens.current.type.meta)
             }
         }
     }

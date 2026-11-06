@@ -17,7 +17,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -113,7 +112,20 @@ internal fun KnowledgeGraphView(
         if (canvasSize.isEmpty) return@LaunchedEffect
         val request = KnowledgeGraphViewState.fitRequests
         if (lastFittedFingerprint != fingerprint || request != lastFitRequest) {
-            KnowledgeGraphViewState.camera = fitCamera(layout.bounds, canvasSize, padding = 32f * density)
+            // 第一次打开：只装「根分类 + 一层」，先让人读出结构；点「适应窗口」才装整棵树。
+            // 只看「是不是第一次 fit」：首次时 `request` 本来就和 `lastFitRequest` 的初值
+            // （-1）不同，旧写法 `&& request == lastFitRequest` 会让首屏永远退化成整图 fit。
+            val firstOpen = lastFittedFingerprint == null
+            val target = if (firstOpen) initialFocusBounds(layout) else layout.bounds
+            val fitted = fitCamera(target, canvasSize, padding = 32f * density)
+            // 「根 + 一层」的宽度仍然可能是整张图的两三倍：fit 出来 zoom 只有 0.25，
+            // 标签全糊。首屏给一个最低放大倍数，宁可只看见中间一块，也要能读出名字；
+            // 想看全貌点「适应窗口」。
+            KnowledgeGraphViewState.camera = if (firstOpen) {
+                fitted.copy(zoom = fitted.zoom.coerceAtLeast(FIRST_OPEN_MIN_ZOOM))
+            } else {
+                fitted
+            }
             lastFittedFingerprint = fingerprint
             lastFitRequest = request
         }
@@ -562,6 +574,15 @@ internal fun KnowledgeGraphView(
                         },
                     )
 
+                    // AI 建议停靠在右侧时，浮窗要按「剩余可用宽度」避让，别钻到停靠栏下面。
+                    val popoverViewport = if (KnowledgeGraphViewState.suggestionsOpen) {
+                        GraphSize(
+                            width = (canvasSize.width - 320f * density).coerceAtLeast(1f),
+                            height = canvasSize.height,
+                        )
+                    } else {
+                        canvasSize
+                    }
                     val anchor = selectedKey?.let { key ->
                         popoverAnchor(layout, key, KnowledgeGraphViewState.camera)
                     }
@@ -570,7 +591,7 @@ internal fun KnowledgeGraphView(
                             graph = graph,
                             node = selectedNode,
                             anchor = anchor,
-                            viewport = canvasSize,
+                            viewport = popoverViewport,
                             sources = sources,
                             categories = categories,
                             onClose = { KnowledgeGraphViewState.clearFocus() },
@@ -603,8 +624,9 @@ internal fun KnowledgeGraphView(
                             busy = aiBusy,
                             message = aiProgress,
                             modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(top = 52.dp, end = 12.dp),
+                                .align(Alignment.CenterEnd)
+                                .fillMaxHeight(),
+                            dock = true,
                             onClose = { KnowledgeGraphViewState.suggestionsOpen = false },
                             onConfirmCategory = { confirmCategories(listOf(it)) },
                             onIgnoreCategory = { ignoreCategories(listOf(it)) },
@@ -646,13 +668,16 @@ internal fun KnowledgeGraphView(
                 )
             },
             confirmButton = {
-                TextButton(onClick = {
-                    val batches = confirmBatches
-                    aiConfirmBatches = null
-                    startAiOrganize(batches)
-                }) { Text("开始") }
+                ChromeButton(
+                    "开始",
+                    onClick = {
+                        val batches = confirmBatches
+                        aiConfirmBatches = null
+                        startAiOrganize(batches)
+                    },
+                )
             },
-            dismissButton = { TextButton(onClick = { aiConfirmBatches = null }) { Text("取消") } },
+            dismissButton = { ChromeButton("取消", onClick = { aiConfirmBatches = null }, filled = false) },
         )
     }
 
@@ -717,12 +742,22 @@ internal fun KnowledgeGraphView(
             title = { Text("删除分类「${delete.name}」？") },
             text = { Text("子分类会往上移一层，分类下的概念回到「未分类」；笔记正文不会被改。") },
             confirmButton = {
-                TextButton(onClick = {
-                    deleteTarget = null
-                    persist(deleteCategory(user, delete.key, runtime.clock.nowMs()))
-                }) { Text("删除") }
+                ChromeButton(
+                    "删除",
+                    onClick = {
+                        deleteTarget = null
+                        persist(deleteCategory(user, delete.key, runtime.clock.nowMs()))
+                    },
+                    destructive = true,
+                )
             },
-            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } },
+            dismissButton = { ChromeButton("取消", onClick = { deleteTarget = null }, filled = false) },
         )
     }
 }
+
+/**
+ * 首屏最低放大倍数：`fit` 只保证「能装下」，不保证「能读」。
+ * 0.6 时 12sp 的标签在屏幕上约 7px，中文还能认；再往下就是纹理了。
+ */
+private const val FIRST_OPEN_MIN_ZOOM = 0.6f

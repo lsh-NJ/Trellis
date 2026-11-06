@@ -192,6 +192,7 @@ internal fun MarkdownOutlinePanel(
     onJump: (OutlineItem) -> Unit = {},
     onHide: () -> Unit = {},
 ) {
+    val tokens = LocalTrellisTokens.current
     val rows = remember(roots, collapsed) { flattenOutline(roots, collapsed) }
     Column(modifier.fillMaxHeight()) {
         Row(
@@ -207,7 +208,7 @@ internal fun MarkdownOutlinePanel(
             Spacer(Modifier.width(6.dp))
             Text(
                 rows.size.toString(),
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.caption,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
             )
             Spacer(Modifier.weight(1f))
@@ -219,7 +220,7 @@ internal fun MarkdownOutlinePanel(
         if (roots.isEmpty()) {
             Text(
                 "正文里还没有标题。\n用 # 写一个小标题，这里就会出现目录。",
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
                 modifier = Modifier.padding(12.dp),
             )
@@ -246,6 +247,7 @@ private fun OutlineRowView(
     onToggle: (OutlineItem) -> Unit,
     onJump: (OutlineItem) -> Unit,
 ) {
+    val tokens = LocalTrellisTokens.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -264,7 +266,7 @@ private fun OutlineRowView(
             if (row.hasChildren) {
                 Text(
                     if (row.expanded) "▾" else "▸",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.caption,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -276,7 +278,7 @@ private fun OutlineRowView(
             style = when (row.item.level) {
                 1 -> MaterialTheme.typography.bodyMedium
                 2 -> MaterialTheme.typography.bodySmall
-                else -> MaterialTheme.typography.labelSmall
+                else -> tokens.type.meta
             },
             fontWeight = if (row.item.level == 1) FontWeight.SemiBold else FontWeight.Normal,
             color = if (row.item.level <= 2) {
@@ -293,9 +295,10 @@ private fun OutlineRowView(
 
 @Composable
 private fun OutlineIconAction(label: String, onClick: () -> Unit) {
+    val tokens = LocalTrellisTokens.current
     Text(
         label,
-        style = MaterialTheme.typography.labelSmall,
+        style = tokens.type.control,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier
             .clip(ControlShape)

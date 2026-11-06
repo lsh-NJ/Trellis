@@ -7,6 +7,9 @@ import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -155,7 +158,7 @@ private fun Pill(text: String, background: Color, foreground: Color) {
             .background(background)
             .padding(horizontal = 10.dp, vertical = 6.dp),
     ) {
-        Text(text, style = MaterialTheme.typography.labelSmall, color = foreground)
+        Text(text, style = LocalTrellisTokens.current.type.meta, color = foreground)
     }
 }
 
@@ -317,7 +320,7 @@ private fun NavRailItem(runtime: AppRuntime, icon: ChromeIcon, label: String, ta
                 )
             }
         }
-        Text(label, style = MaterialTheme.typography.labelSmall, color = content)
+        Text(label, style = LocalTrellisTokens.current.type.meta, color = content)
     }
 }
 
@@ -340,55 +343,181 @@ private fun TasksTab(runtime: AppRuntime, modifier: Modifier) {
     // 输入框的焦点请求器放在 runtime 上：任务卡现在是插件贡献的，
     // 宿主这边按 Ctrl+K 也得能聚焦到同一个输入框。
     val taskFocus = runtime.taskFocus
-    // Ctrl+K：不用鼠标也能直接开始写任务（评审里的快捷键项）。
-    LazyColumn(
-        modifier = modifier.onPreviewKeyEvent { event ->
-            if (event.type == KeyEventType.KeyDown && event.isCtrlPressed && event.key == Key.K) {
-                runCatching { taskFocus.requestFocus() }
-                true
-            } else {
-                false
+    val keyModifier = modifier.onPreviewKeyEvent { event ->
+        if (event.type == KeyEventType.KeyDown && event.isCtrlPressed && event.key == Key.K) {
+            runCatching { taskFocus.requestFocus() }
+            true
+        } else {
+            false
+        }
+    }
+    // 两栏：左边是「今天要做的事」（一整列可滚），右边是「本周的样子」（进度 + 盘点 + 报表）。
+    // 原来一列 LazyColumn 把两种东西上下叠着，下半屏一大片空白；窗口不够宽就退回单列，
+    // 断点先给一个够用的值（< 900dp 单列），精细的三档断点留批 6。
+    BoxWithConstraints(keyModifier.fillMaxSize()) {
+        val twoColumn = maxWidth >= TrellisBreakpoints.medium.dp
+        if (!twoColumn) {
+            Column(
+                modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                TaskHeaderSlot(runtime)
+                TaskBoardSlot(runtime)
+                ReportChartSlot(runtime)
             }
-        },
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        // 页面顶部的横幅（插件可能会往这里放一句「今天还剩 3 条」）
-        item {
-            SlotArea(
-                runtime.kernel.extensions,
-                Slots.HomeHeader,
-                refreshKey = runtime.tick,
-                onAction = { owner, action -> runtime.performSlotAction(owner, action) },
-                layout = runtime.layoutFor(Slots.HomeHeader.id),
-            )
-        }
-
-        // 任务区（今日盘点 + 待办清单）也是插件贡献的卡片：
-        // 由 dev.planui 这个内置插件注册到 HomeSection，agent 能像别的卡一样排序、改样式。
-        item {
-            SlotArea(
-                runtime.kernel.extensions,
-                Slots.HomeSection,
-                refreshKey = runtime.tick,
-                onAction = { owner, action -> runtime.performSlotAction(owner, action) },
-                layout = runtime.layoutFor(Slots.HomeSection.id),
-            )
-        }
-
-        // 报表挂载点：插件可以往这里放图表、趋势、复盘卡片。
-        // 没有任何插件往这里放东西时整张卡不出现——空卡片比没有更难看。
-        if (runtime.kernel.extensions.contributionsAt(Slots.ReportChart).isNotEmpty()) {
-            item {
-                BentoCard(kicker = "TREND", title = "近七天") {
-                    SlotArea(
-                        runtime.kernel.extensions,
-                        Slots.ReportChart,
-                        refreshKey = runtime.tick,
-                        onAction = { owner, action -> runtime.performSlotAction(owner, action) },
-                        layout = runtime.layoutFor(Slots.ReportChart.id),
-                    )
+        } else {
+            Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Column(
+                    modifier = Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    TaskBoardSlot(runtime)
+                }
+                Column(
+                    modifier = Modifier.width(340.dp).fillMaxHeight().verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    TaskHeaderSlot(runtime)
+                    WeekProgressCard(runtime)
+                    ReportChartSlot(runtime)
                 }
             }
+        }
+    }
+}
+
+/** 今日盘点（插件贡献到 HomeHeader 的卡）。 */
+@Composable
+private fun TaskHeaderSlot(runtime: AppRuntime) {
+    SlotArea(
+        runtime.kernel.extensions,
+        Slots.HomeHeader,
+        refreshKey = runtime.tick,
+        onAction = { owner, action -> runtime.performSlotAction(owner, action) },
+        layout = runtime.layoutFor(Slots.HomeHeader.id),
+    )
+}
+
+/** 任务区（待办清单，插件贡献到 HomeSection 的卡）。 */
+@Composable
+private fun TaskBoardSlot(runtime: AppRuntime) {
+    SlotArea(
+        runtime.kernel.extensions,
+        Slots.HomeSection,
+        refreshKey = runtime.tick,
+        onAction = { owner, action -> runtime.performSlotAction(owner, action) },
+        layout = runtime.layoutFor(Slots.HomeSection.id),
+    )
+}
+
+/** 报表挂载点：没有插件贡献就整张卡不出现（空卡片比没有更难看）。 */
+@Composable
+private fun ReportChartSlot(runtime: AppRuntime) {
+    if (runtime.kernel.extensions.contributionsAt(Slots.ReportChart).isEmpty()) return
+    BentoCard(title = "近七天") {
+        SlotArea(
+            runtime.kernel.extensions,
+            Slots.ReportChart,
+            refreshKey = runtime.tick,
+            onAction = { owner, action -> runtime.performSlotAction(owner, action) },
+            layout = runtime.layoutFor(Slots.ReportChart.id),
+        )
+    }
+}
+
+/**
+ * 右栏「本周进度」：本周排了几件、做完几件、估时多少，再给一个计时入口。
+ *
+ * 数字来自 `runtime.planWeekProgress`（后端算的当前周，不是页面选中的周）。
+ * 没有计划时不留空卡：直接给「去对话里安排」这一个动作。
+ */
+@Composable
+private fun WeekProgressCard(runtime: AppRuntime) {
+    val tokens = LocalTrellisTokens.current
+    val progress = runtime.planWeekProgress
+    // 实际投入来自活动归因，异步取；取不到（没开活动采集/没授权）就不显示这一行，
+    // 不拿 0 分钟冒充「没学」。
+    var attributedMinutes by remember(runtime.planSelectedWeek, runtime.planDays) {
+        mutableStateOf<Long?>(null)
+    }
+    LaunchedEffect(runtime.planSelectedWeek, runtime.planDays) {
+        attributedMinutes = runCatching { runtime.planWeekAttributedMinutes() }.getOrNull()
+    }
+    // 大数字是「全部节点」，右上角就不再挂「第 1 周」（会让人以为数字是本周的）。
+    BentoCard(title = "完成情况") {
+        if (progress == null) {
+            Text(
+                "还没有学习计划。在对话里说「我想学 xx」，管家会把周次和单元排好。",
+                style = tokens.type.meta,
+                color = tokens.colors.ink3,
+            )
+            Spacer(Modifier.height(tokens.space.m))
+            ChromeButton(
+                label = "去对话里安排",
+                filled = false,
+                onClick = { runtime.currentTab = TAB_CHAT },
+            )
+            return@BentoCard
+        }
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                progress.allDone.toString() + "/" + progress.allTotal,
+                style = tokens.type.stat,
+                color = tokens.colors.ink,
+            )
+            if (progress.allTotal > 0 && progress.allDone == progress.allTotal) {
+                Spacer(Modifier.width(tokens.space.s))
+                BlockCheck(size = 26.dp)
+            }
+            Spacer(Modifier.weight(1f))
+            Text("全部节点", style = tokens.type.meta, color = tokens.colors.ink3)
+        }
+        Spacer(Modifier.height(tokens.space.s))
+        // 进度条：底是 sunken，条是 accent；0 时不画条（fillMaxWidth(0) 不合法）。
+        Box(
+            Modifier.fillMaxWidth().height(6.dp)
+                .clip(RoundedCornerShape(percent = 50))
+                .background(tokens.colors.sunken),
+        ) {
+            if (progress.allProgress > 0f) {
+                Box(
+                    Modifier.fillMaxWidth(progress.allProgress).fillMaxHeight()
+                        .clip(RoundedCornerShape(percent = 50))
+                        .background(tokens.colors.accent),
+                )
+            }
+        }
+        Spacer(Modifier.height(tokens.space.s))
+        Text(
+            "本周 " + progress.done + "/" + progress.total +
+                (if (progress.allRemaining > 0) " · 全部还剩 " + progress.allRemaining + " 件" else " · 全部做完"),
+            style = tokens.type.meta,
+            color = tokens.colors.ink3,
+        )
+        if (progress.plannedMinutes > 0) {
+            Text(
+                "本周已完成预估 " + progress.plannedMinutes + " 分钟",
+                style = tokens.type.meta,
+                color = tokens.colors.ink3,
+            )
+        }
+        val invested = attributedMinutes
+        if (invested != null && invested > 0) {
+            Text(
+                "本周实际投入 " + invested + " 分钟（窗口活动归因）",
+                style = tokens.type.meta,
+                color = tokens.colors.ink3,
+            )
+        }
+        Spacer(Modifier.height(tokens.space.m))
+        val nextNode = runtime.todoPlanNodes.firstOrNull()?.nodes?.firstOrNull()
+        when {
+            nextNode != null -> ChromeButton(
+                label = if (runtime.timerRunning) "计时中…" else "开始计时",
+                onClick = { runtime.openNodeTimer(nextNode) },
+            )
+            progress.total == 0 -> Text("这一周还没排节点。", style = tokens.type.meta, color = tokens.colors.ink3)
+            else -> Text("没排到具体日期的节点在计划页的待安排里。", style = tokens.type.meta, color = tokens.colors.ink3)
         }
     }
 }
@@ -396,8 +525,9 @@ private fun TasksTab(runtime: AppRuntime, modifier: Modifier) {
 /** 房主画的外壳：硬边小圆角 + 细边 + 贴纸阴影，全部跟着卡片样式走。 */
 @Composable
 private fun BentoCard(
-    kicker: String,
     title: String,
+    /** 旧样片在标题上方有一行等宽大写英文小标；2026-11-06 批 2 起默认不画。 */
+    kicker: String? = null,
     modifier: Modifier = Modifier,
     trailing: @Composable () -> Unit = {},
     /** false：外面已经有一层宿主卡片（插件卡槽），这里只画内容，别再套一层壳。 */
@@ -431,14 +561,15 @@ private fun BentoCard(
     Column(modifier = framedModifier) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text(
-                    kicker,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    // 大字号下「DAILY SNAPSHOT」这种等宽小标不该折成两行占两行高。
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                if (kicker != null) {
+                    Text(
+                        kicker,
+                        style = LocalTrellisTokens.current.type.meta,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 Text(
                     title,
                     style = MaterialTheme.typography.titleMedium,
@@ -458,13 +589,12 @@ internal fun TaskBoard(runtime: AppRuntime, taskFocus: FocusRequester, framed: B
     val scope = rememberCoroutineScope()
     val tasks = runtime.tasks
     BentoCard(
-        kicker = "TASKS",
         title = "待办",
         framed = framed,
         trailing = {
             Text(
                 tasks.count { !it.isDone }.toString() + " 条未完成",
-                style = MaterialTheme.typography.labelSmall,
+                style = LocalTrellisTokens.current.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         },
@@ -559,9 +689,7 @@ internal fun TaskBoard(runtime: AppRuntime, taskFocus: FocusRequester, framed: B
                     style = MaterialTheme.typography.labelMedium,
                 )
                 Spacer(Modifier.weight(1f))
-                TextButton(onClick = { scope.launch { runtime.undoDelete() } }) {
-                    Text("撤销")
-                }
+                ChromeTextLink("撤销", onClick = { scope.launch { runtime.undoDelete() } })
             }
         }
     }
@@ -591,13 +719,14 @@ private fun TaskBoardPlanNodes(runtime: AppRuntime) {
             Spacer(Modifier.width(8.dp))
             Text(
                 group.nodes.size.toString() + " 个节点 · 约 " + group.minutes + " 分钟",
-                style = MaterialTheme.typography.labelSmall,
+                style = LocalTrellisTokens.current.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
             )
         }
         group.nodes.forEach { node ->
             PlanNodeRowView(
                 node = node,
+                onComplete = { runtime.completeTodoPlanNode(node) },
                 onTimer = { runtime.openNodeTimer(node) },
                 onClick = { runtime.openPlanNode(group.planId) },
             )
@@ -605,7 +734,7 @@ private fun TaskBoardPlanNodes(runtime: AppRuntime) {
         if (group.hidden > 0) {
             Text(
                 "还有 " + group.hidden + " 个节点，去计划页看",
-                style = MaterialTheme.typography.labelSmall,
+                style = LocalTrellisTokens.current.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                 modifier = Modifier.padding(start = 18.dp, bottom = 4.dp),
             )
@@ -614,13 +743,19 @@ private fun TaskBoardPlanNodes(runtime: AppRuntime) {
 }
 
 /**
- * 一条节点：圆点 + 标题 + 章与预估 + 今天/逾期几天。节点在待办里不可勾，勾选走计划页。
+ * 一条节点：勾选框 + 标题 + 章与预估 + 行尾「日期 · ⏱」。
  *
- * 能进待办的都是排到过具体某天的节点，所以每一行都给 ⏱：计时要落成 session，而 session
- * 只能挂在 occurrence 上。
+ * 2026-11-06 批 3 起节点也能直接勾（决策 2）：勾掉 = 在计划页把这一天的 occurrence 勾完，
+ * 走的是同一个后端命令，所以两处数字永远一致。⏱ 和任务行一样常显：
+ * 能进待办的都是排到过具体某天的节点，session 只能挂在 occurrence 上。
  */
 @Composable
-private fun PlanNodeRowView(node: PlanNodeRow, onTimer: () -> Unit, onClick: () -> Unit) {
+private fun PlanNodeRowView(
+    node: PlanNodeRow,
+    onComplete: () -> Unit,
+    onTimer: () -> Unit,
+    onClick: () -> Unit,
+) {
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     Row(
         modifier = Modifier
@@ -630,12 +765,7 @@ private fun PlanNodeRowView(node: PlanNodeRow, onTimer: () -> Unit, onClick: () 
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            modifier = Modifier.size(18.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Box(Modifier.size(6.dp).clip(RoundedCornerShape(3.dp)).background(muted.copy(alpha = 0.5f)))
-        }
+        ChromeCheckbox(checked = false, onCheckedChange = onComplete)
         Spacer(Modifier.width(6.dp))
         Column(Modifier.weight(1f)) {
             Text(
@@ -647,31 +777,32 @@ private fun PlanNodeRowView(node: PlanNodeRow, onTimer: () -> Unit, onClick: () 
                 if (node.chapter.isNotBlank()) {
                     Text(
                         node.chapter,
-                        style = MaterialTheme.typography.labelSmall,
+                        style = LocalTrellisTokens.current.type.meta,
                         color = muted.copy(alpha = 0.8f),
                     )
                 }
                 Text(
                     node.minutes.toString() + " 分钟",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = LocalTrellisTokens.current.type.meta,
                     color = muted.copy(alpha = 0.8f),
                 )
             }
         }
-        IconAction("⏱", "对这个节点开计时器") { onTimer() }
         Text(
             if (node.today) "今天" else "逾期 " + node.daysLate + " 天",
-            style = MaterialTheme.typography.labelSmall,
+            style = LocalTrellisTokens.current.type.meta,
             color = if (node.today) {
-                MaterialTheme.colorScheme.primary
+                MaterialTheme.colorScheme.onSurfaceVariant
             } else {
                 MaterialTheme.colorScheme.error.copy(alpha = 0.8f)
             },
         )
+        Spacer(Modifier.width(2.dp))
+        IconAction("⏱", "对这个节点开计时器") { onTimer() }
     }
 }
 
-/** 分组小标：等宽大写 + 条数，像样片里每个卡片的 kicker。点了能折叠的会带下划线暗示。 */
+/** 分组小标：标签字 + 条数。点了能折叠的会带下划线暗示。 */
 @Composable
 private fun GroupLabel(text: String, count: Int?, onClick: (() -> Unit)? = null) {
     Row(
@@ -682,16 +813,15 @@ private fun GroupLabel(text: String, count: Int?, onClick: (() -> Unit)? = null)
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text.uppercase(),
-            style = MaterialTheme.typography.labelSmall,
-            fontFamily = AppFonts.mono,
+            text,
+            style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (count != null) {
             Spacer(Modifier.width(6.dp))
             Text(
                 count.toString(),
-                style = MaterialTheme.typography.labelSmall,
+                style = LocalTrellisTokens.current.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
             )
         }
@@ -711,7 +841,6 @@ internal fun Header(runtime: AppRuntime, framed: Boolean = true) {
         Quad("已投入", s.spentMinutes.toString(), "分钟", MaterialTheme.colorScheme.onSurface),
     )
     BentoCard(
-        kicker = "DAILY SNAPSHOT",
         title = "今日盘点",
         framed = framed,
         trailing = {
@@ -730,27 +859,29 @@ internal fun Header(runtime: AppRuntime, framed: Boolean = true) {
             }
         },
     ) {
-        // 大字号下四个数字横排会被挤爆：标签压成两行（「今天到 / 期」）、数字贴边。
-        // 字体缩放过一档就改 2×2 —— 宁可多占一行高度，也不让文字互相挤。
-        // 判定用 LocalDensity.fontScale：手机把应用的字号偏好乘进来了，桌面也一样。
-        val bigFont = LocalDensity.current.fontScale >= 1.2f
-        if (bigFont) {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                cells.chunked(2).forEach { pair ->
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-                        pair.forEachIndexed { index, cell ->
-                            if (index > 0) QuadDivider()
-                            QuadCell(cell, Modifier.weight(1f))
+        // 大字号 / 窄栏（右栏 340dp 时）四个数字横排会被挤爆：标签压成两行、数字贴边。
+        // 字体缩放过一档、或者这一栏本身不够宽，就改 2×2 —— 宁可多占一行高度，也不让文字互相挤。
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val bigFont = LocalDensity.current.fontScale >= 1.2f
+            val narrow = maxWidth < 420.dp
+            if (bigFont || narrow) {
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    cells.chunked(2).forEach { pair ->
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+                            pair.forEachIndexed { index, cell ->
+                                if (index > 0) QuadDivider()
+                                QuadCell(cell, Modifier.weight(1f))
+                            }
+                            if (pair.size == 1) Spacer(Modifier.weight(1f))
                         }
-                        if (pair.size == 1) Spacer(Modifier.weight(1f))
                     }
                 }
-            }
-        } else {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-                cells.forEachIndexed { index, cell ->
-                    if (index > 0) QuadDivider()
-                    QuadCell(cell, Modifier.weight(1f))
+            } else {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+                    cells.forEachIndexed { index, cell ->
+                        if (index > 0) QuadDivider()
+                        QuadCell(cell, Modifier.weight(1f))
+                    }
                 }
             }
         }
@@ -772,7 +903,7 @@ private fun QuadCell(cell: Quad, modifier: Modifier) {
     Column(modifier) {
         Text(
             cell.label,
-            style = MaterialTheme.typography.labelSmall,
+            style = LocalTrellisTokens.current.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Row(verticalAlignment = Alignment.Bottom) {
@@ -785,7 +916,7 @@ private fun QuadCell(cell: Quad, modifier: Modifier) {
             Spacer(Modifier.width(4.dp))
             Text(
                 cell.unit,
-                style = MaterialTheme.typography.labelSmall,
+                style = LocalTrellisTokens.current.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -825,35 +956,17 @@ private fun TaskRow(
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // 点击区 44dp，视觉框 20dp：勾选框是整行里最常点的东西，不能只有 20px。
-        Box(
-            modifier = Modifier.size(44.dp).clickable { onToggle(task) },
-            contentAlignment = Alignment.Center,
-        ) {
-            val shape = RoundedCornerShape(4.dp)
+        // 做完的行换成堆出来的对勾：完成应该像被奖励，不像被禁用（方框里打勾仍是「未完成的框」）。
+        if (task.isDone) {
             Box(
-                modifier = Modifier.size(20.dp)
-                    .clip(shape)
-                    .background(
-                        if (task.isDone) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-                    )
-                    .border(
-                        1.dp,
-                        if (task.isDone) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-                        shape,
-                    ),
+                modifier = Modifier.size(40.dp).clickable { onToggle(task) },
                 contentAlignment = Alignment.Center,
             ) {
-                if (task.isDone) {
-                    Text(
-                        "✓",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
-                }
+                BlockCheck(size = 18.dp)
             }
+        } else {
+            ChromeCheckbox(checked = false, onCheckedChange = { onToggle(task) })
         }
-
         Spacer(Modifier.width(6.dp))
 
         Column(Modifier.weight(1f)) {
@@ -864,39 +977,39 @@ private fun TaskRow(
                 textDecoration = if (task.isDone) TextDecoration.LineThrough else null,
                 color = if (task.isDone) muted else MaterialTheme.colorScheme.onSurface,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (due != null) {
-                    // 逾期三重编码：行首红点（位置/形状）+ 红字（文字），不只靠颜色。
-                    if (overdue) {
-                        Box(Modifier.size(6.dp).clip(RoundedCornerShape(3.dp)).background(extra.danger))
-                    }
-                    Text(
-                        due,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (overdue) extra.danger else muted.copy(alpha = 0.8f),
-                    )
-                }
-                if (task.spentMinutes > 0) {
-                    Text(
-                        "已投入 " + task.spentMinutes + " 分钟",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = muted.copy(alpha = 0.8f),
-                    )
-                }
+            if (task.spentMinutes > 0) {
+                Text(
+                    "已投入 " + task.spentMinutes + " 分钟",
+                    style = LocalTrellisTokens.current.type.meta,
+                    color = muted.copy(alpha = 0.8f),
+                )
             }
         }
 
-        // 行内操作只在悬停时出现：不悬停时那一整行都是「任务」，不是「按钮条」。
-        if (hovered) {
-            // 一个任务只有一个计时入口（原来那个「记 25 分钟」并进计时窗口里）。
-            if (!task.isDone) IconAction("⏱", "开计时器") { onTimer(task) }
-            IconAction("⌫", "删除", tint = extra.danger) { onDelete(task) }
+        // 行尾和计划节点对齐：先日期、再 ⏱。⏱ 常显（悬停才加深）——同一种动作不该在两张卡里两种脾气。
+        // 逾期三重编码：红点（形状/位置）+ 红字，不只靠颜色。
+        if (due != null) {
+            if (overdue) {
+                Box(Modifier.size(6.dp).clip(RoundedCornerShape(3.dp)).background(extra.danger))
+                Spacer(Modifier.width(4.dp))
+            }
+            Text(
+                due,
+                style = LocalTrellisTokens.current.type.meta,
+                color = if (overdue) extra.danger else muted.copy(alpha = 0.8f),
+            )
+            Spacer(Modifier.width(4.dp))
         }
+        if (!task.isDone) {
+            IconAction("⏱", "开计时器", alpha = if (hovered) 1f else 0.45f) { onTimer(task) }
+        }
+        // 删除只在悬停时出现：不悬停时那一整行都是「任务」，不是「按钮条」。
+        if (hovered) IconAction("⌫", "删除", tint = extra.danger) { onDelete(task) }
     }
 }
 
 @Composable
-private fun IconAction(glyph: String, label: String, tint: Color? = null, onClick: () -> Unit) {
+private fun IconAction(glyph: String, label: String, tint: Color? = null, alpha: Float = 1f, onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .size(28.dp)
@@ -907,7 +1020,7 @@ private fun IconAction(glyph: String, label: String, tint: Color? = null, onClic
         Text(
             glyph,
             style = MaterialTheme.typography.bodyMedium,
-            color = tint ?: MaterialTheme.colorScheme.onSurfaceVariant,
+            color = (tint ?: MaterialTheme.colorScheme.onSurfaceVariant).copy(alpha = alpha),
         )
     }
 }
@@ -953,7 +1066,7 @@ private fun AddTaskRow(runtime: AppRuntime, focus: FocusRequester) {
                 } else {
                     "ENTER 添加 · ESC 清空"
                 },
-                style = MaterialTheme.typography.labelSmall,
+                style = LocalTrellisTokens.current.type.meta,
                 fontFamily = AppFonts.mono,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
             )

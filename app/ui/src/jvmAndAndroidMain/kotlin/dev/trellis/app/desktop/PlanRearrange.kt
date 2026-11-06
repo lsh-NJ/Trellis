@@ -20,7 +20,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -187,6 +186,7 @@ internal fun PlanRearrangeDrawer(
     val backlog = overdue?.backlog.orEmpty()
     val pool = runtime.planPool
     val shape = RoundedCornerShape(14.dp)
+    val tokens = LocalTrellisTokens.current
     Column(
         modifier = modifier
             .width(296.dp)
@@ -208,13 +208,11 @@ internal fun PlanRearrangeDrawer(
                 )
                 Text(
                     "拖到下面某一天的日期格，或者拖进「今天」的列表",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            TextButton(onClick = { runtime.closePlanRearrange() }) {
-                Text("收起", style = MaterialTheme.typography.labelMedium)
-            }
+            ChromeTextLink("收起", onClick = { runtime.closePlanRearrange() })
         }
         if (thisWeek.isEmpty() && backlog.isEmpty() && pool.isEmpty()) {
             Text(
@@ -289,10 +287,11 @@ internal fun PlanRearrangeDrawer(
 /** 侧栏底部的操作结果提示：成功绿、失败红。 */
 @Composable
 private fun PlanRearrangeHintText(runtime: AppRuntime) {
+    val tokens = LocalTrellisTokens.current
     runtime.planRearrangeHint?.let { hint ->
         Text(
             hint,
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.meta,
             color = if (runtime.planRearrangeHintIsError) {
                 MaterialTheme.colorScheme.error
             } else {
@@ -304,9 +303,10 @@ private fun PlanRearrangeHintText(runtime: AppRuntime) {
 
 @Composable
 private fun SectionLabel(text: String) {
+    val tokens = LocalTrellisTokens.current
     Text(
         text,
-        style = MaterialTheme.typography.labelSmall,
+        style = tokens.type.meta,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(top = 2.dp),
     )
@@ -323,6 +323,7 @@ private fun DraggablePlanRow(
 ) {
     val dragging = controller.payload == payload
     val shape = RoundedCornerShape(8.dp)
+    val tokens = LocalTrellisTokens.current
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -361,7 +362,7 @@ private fun DraggablePlanRow(
             )
             Text(
                 hint,
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -369,7 +370,7 @@ private fun DraggablePlanRow(
         }
         Text(
             payload.minutes.toString() + "′",
-            style = MaterialTheme.typography.labelSmall,
+            style = tokens.type.caption,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
@@ -384,6 +385,7 @@ private fun DraggablePlanRow(
 @Composable
 internal fun PlanDragGhost(controller: PlanDragController, containerOrigin: Offset) {
     val payload = controller.payload ?: return
+    val tokens = LocalTrellisTokens.current
     val density = LocalDensity.current
     val width = 190.dp
     val height = 44.dp
@@ -432,7 +434,7 @@ internal fun PlanDragGhost(controller: PlanDragController, containerOrigin: Offs
             )
             Text(
                 payload.minutes.toString() + "′",
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.caption,
                 color = MaterialTheme.colorScheme.onPrimaryContainer,
             )
         }

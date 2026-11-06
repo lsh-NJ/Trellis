@@ -13,7 +13,14 @@ enum class UiTextStyle { Title, Body, Caption }
  * `Hint` 是插件对用户说的话（「今天已经记过了」），不该吓人；
  * `Problem` 是宿主诊断出来的问题（认不出的节点、画不出来的卡片），要显眼。
  */
-enum class UiNoticeTone { Hint, Problem }
+enum class UiNoticeTone {
+    Hint,
+
+    /** 不算错、但值得注意：快到截止、数据缺失之类。宿主用警告色画。 */
+    Warning,
+
+    Problem,
+}
 
 /**
  * 内容的语气：普通、弱化、强调、警告、成功。
@@ -89,6 +96,13 @@ sealed interface UiNode {
         val size: UiTextSize = UiTextSize.Normal,
         val weight: UiTextWeight = UiTextWeight.Normal,
         val font: UiFont = UiFont.Default,
+        /**
+         * 最多显示几行，超了用省略号。
+         *
+         * 插件卡片的宽度由宿主排版决定（12 栏里的某几栏），插件自己不知道最后多宽；
+         * 长标题不封顶就会把卡片撑坏。null = 不限制。
+         */
+        val maxLines: Int? = null,
     ) : UiNode
 
     /**
@@ -206,6 +220,29 @@ sealed interface UiNode {
         val max: Int = 5,
         val labels: List<String> = emptyList(),
     ) : UiNode
+
+    /**
+     * 列表行：标题 + 副标题 + 右侧值。
+     *
+     * 宿主自营的清单（待办、插件列表）都长这样；插件原先要用 row/column 手拼，
+     * 行高、缩进、尾值对齐每次都靠猜。给一个节点，风格自动跟宿主一致。
+     */
+    data class ListRow(
+        val title: String,
+        val subtitle: String? = null,
+        val trailing: String? = null,
+        val onTap: UiTap? = null,
+    ) : UiNode
+
+    /**
+     * 开关：`label` + 当前状态。点一下把「取反后的意图」交给 onTap，由插件决定要不要翻。
+     *
+     * 宿主不替插件记状态：`checked` 是插件渲染时给的，点完重新渲染才是新状态。
+     */
+    data class Switch(val label: String, val checked: Boolean, val onTap: UiTap) : UiNode
+
+    /** 选择片：互斥/多选组里的一项。`selected` 由插件给，点了要不要切也由插件决定。 */
+    data class Chip(val label: String, val selected: Boolean = false, val onTap: UiTap? = null) : UiNode
 
     data class Button(val label: String, val onTap: UiTap) : UiNode
 

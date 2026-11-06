@@ -27,7 +27,7 @@ trellis.register({
       onSurface: '#141414',
       surfaceVariant: '#EFEBDD',
       onSurfaceVariant: '#4B473C',
-      outline: '#B9B3A2',
+      outline: '#8E897C',
       outlineVariant: '#E2DED2',
       error: '#B3261E',
       onError: '#FFFFFF'

@@ -20,7 +20,7 @@ class UiStyleTools(private val runtime: AppRuntime) {
     val guidance: String = listOf(
         "<how_to_style_the_ui>",
         "1. 用户说「界面不好看 / 优化一下 / 换个主题 / 字太小 / 导航放左边」时，先 list_ui_options 看现在什么样、能改什么，再 set_ui。",
-        "2. 能改的有八样：外观 appearance（auto 跟随系统 / light 浅色 / dark 深色）、配色 palette（default/ocean/forest/sunset/mono/custom）、密度 density、卡片外观 card、圆角 radius（0-24）、字号 font_scale（0.85-1.25）、导航位置 nav（top 顶栏 / left 左侧栏）、导航底色 nav_tone（default 跟随主题 / dark 深色 / accent 主色）。",
+        "2. 能改的有八样：外观 appearance（auto 跟随系统 / light 浅色 / dark 深色）、配色 palette（default/ocean/forest/sunset/mono/custom）、密度 density、卡片外观 card、圆角 radius（-1 跟随主题 / 0-24）、字号 font_scale（0.85-1.25）、导航位置 nav（top 顶栏 / left 左侧栏）、导航底色 nav_tone（default 跟随主题 / dark 深色 / accent 主色）。",
         "2.0 用户问「为什么一半深色一半浅色 / 怎么不跟随系统」时：整页只认 appearance 这一个开关，先 list_ui_options 看它是 auto 还是被固定成了 light/dark；dark 卡片的文字用主题的 onSurface，别自己写颜色。",
         "2.1 想要「更冷/更暖/更安静」的配色时，把 palette 设成 custom，再用 hue（0-359，越大越偏暖紫→红→黄→绿→蓝→紫）和 chroma（0-100，0 是灰阶）调；先给一版，再按 describe_screen / take_screenshot 看效果微调，别一次跳到极端值。",
         "3. 不要一次改六样：先改一两样，再用 take_screenshot 或 describe_screen 核对，不满意再调。",
@@ -47,7 +47,7 @@ class UiStyleTools(private val runtime: AppRuntime) {
                 appendLine("配色：default 默认紫 / ocean 海蓝 / forest 森林 / sunset 晚霞 / mono 灰阶 / custom 自定义（配 hue 色相 0-359 与 chroma 彩度 0-100）")
                 appendLine("密度：compact 紧凑 / normal 标准 / relaxed 宽松")
                 appendLine("卡片：bordered 描边圆角 / flat 扁平无边框 / filled 浅底填充")
-                appendLine("圆角：0-24dp")
+                appendLine("圆角：-1 跟随主题（推荐）/ 0-24dp")
                 appendLine("字号：0.85-1.25（85%-125%）")
                 appendLine("导航：top 顶部标签栏 / left 左侧边栏（默认）")
                 appendLine("导航底色：default 跟随主题 / dark 深色 / accent 主色")
@@ -55,7 +55,7 @@ class UiStyleTools(private val runtime: AppRuntime) {
                     appendLine("单个插件的卡片样式（没列出的跟随全局）：")
                     runtime.pluginCardStyles.forEach { (id, style) ->
                         appendLine("- " + id.value + "：" + style.card +
-                            (style.radius?.let { "，圆角 " + it + "dp" } ?: ""))
+                            (style.radius?.let { if (it < 0) "，圆角跟随主题" else "，圆角 " + it + "dp" } ?: ""))
                     }
                 }
             }
@@ -71,7 +71,7 @@ class UiStyleTools(private val runtime: AppRuntime) {
             "appearance：auto 跟随系统 / light 浅色 / dark 深色；" +
                 "palette：default/ocean/forest/sunset/mono/custom；hue：palette=custom 时的色相 0-359；" +
                 "chroma：palette=custom 时的彩度 0-100（0 灰阶）；density：compact/normal/relaxed；" +
-                "card：bordered/flat/filled；radius：0-24 的整数；font_scale：0.85-1.25 的小数；" +
+                "card：bordered/flat/filled；radius：-1 跟随主题（推荐）或 0-24 的整数；font_scale：0.85-1.25 的小数；" +
                 "nav：top（顶部标签栏）/ left（左侧边栏，默认）；nav_tone：default/dark/accent（导航底色）。全部可选。"
 
         override suspend fun call(arguments: JsonObject): ToolResult {
@@ -102,7 +102,7 @@ class UiStyleTools(private val runtime: AppRuntime) {
             "只改某一个插件的卡片外框样式（bordered/flat/filled，可带圆角）。别的插件不受影响；没点名的插件保持全局样式。"
         override val parameters: String =
             "plugin：插件 id（如 ai.pushups，先用 list_plugins 或 list_cards 查）；" +
-                "card：bordered 描边圆角 / flat 扁平无边框 / filled 浅底填充；radius：0-24（可选）。"
+                "card：bordered 描边圆角 / flat 扁平无边框 / filled 浅底填充；radius：-1 跟随主题或 0-24（可选）。"
 
         override suspend fun call(arguments: JsonObject): ToolResult {
             val plugin = arguments["plugin"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()

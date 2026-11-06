@@ -438,6 +438,30 @@ class KnowledgeGraphLayoutTest {
         assertEquals(40f, custom.nodes.getValue("k_short").bounds.width, 0.01f)
     }
 
+    /**
+     * 未分类虚拟根下的散概念折成 4 行一列的网格。
+     *
+     * 33 个未分类概念单行排开会把画布拉成一条线（评审 §3.7），所以按列优先排：
+     * 一列最多 4 行，列内水平居中，列与列之间留 nodeGapX。
+     */
+    @Test
+    fun unclassifiedConceptsWrapIntoColumns() {
+        val graph = graphOf(*(1..9).map { concept("k_$it", "概念$it") }.toTypedArray())
+        val layout = layoutOf(graph)
+        val root = layout.nodes.getValue(GRAPH_UNCLASSIFIED_KEY)
+        val children = (1..9).map { layout.nodes.getValue("k_$it") }
+        // 一列 4 行：9 个概念铺成 3 列（4 + 4 + 1 行）。
+        val rows = children.map { it.bounds.top }.distinct().sorted()
+        assertEquals(4, rows.size, "应折成 4 行：" + rows)
+        val columns = children.map { it.bounds.left }.distinct().sorted()
+        assertEquals(3, columns.size, "应排成 3 列：" + columns)
+        // 第一列第 1 行在虚拟根正下方一层；第 4 行比第 1 行低 3 个（概念高 + 网格行距）。
+        assertEquals(rowStep, children[0].bounds.top - root.bounds.top, 0.01f)
+        assertEquals(3 * (LayoutOptions().nodeHeight + 10f), children[3].bounds.top - children[0].bounds.top, 0.01f)
+        // 第二列从第一列右边一个 nodeGapX 开始。
+        assertEquals(LayoutOptions().nodeGapX, columns[1] - columns[0] - children[0].bounds.width, 0.01f)
+    }
+
     // ------------------------------------------------------------------ 构造工具
 
     /** 一层的纵向步长（与实现同口径：`max(概念高, 分类高) + 层间距`）。 */

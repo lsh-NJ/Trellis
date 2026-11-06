@@ -150,6 +150,9 @@ class ScriptPluginFlowTest {
         is UiNode.Button -> node.label
         is UiNode.Input -> node.hint
         is UiNode.Stepper -> node.label + " " + node.value
+        is UiNode.ListRow -> node.title + (node.trailing?.let { " " + it } ?: "")
+        is UiNode.Switch -> node.label + (if (node.checked) " 开" else " 关")
+        is UiNode.Chip -> node.label
         is UiNode.HeatStrip -> node.values.joinToString(",")
         is UiNode.Spacer -> ""
         UiNode.Divider -> ""

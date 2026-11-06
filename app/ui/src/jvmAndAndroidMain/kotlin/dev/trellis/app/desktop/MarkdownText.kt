@@ -853,7 +853,7 @@ private fun AiBlockView(
             Modifier.padding(start = 26.dp, end = 24.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Text("AI 补充", style = MaterialTheme.typography.labelSmall, color = aiGreen)
+            Text("AI 补充", style = LocalTrellisTokens.current.type.meta, color = aiGreen)
             for (item in items) {
                 Row(verticalAlignment = Alignment.Top) {
                     MarkdownInlineText(
@@ -953,7 +953,7 @@ private fun MarkdownTableRow(cells: List<String>, header: Boolean, conceptNames:
                             MaterialTheme.colorScheme.onSurface
                         },
                     ),
-                    style = if (header) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
+                    style = if (header) LocalTrellisTokens.current.type.meta else MaterialTheme.typography.bodySmall,
                     fontWeight = if (header) FontWeight.Bold else FontWeight.Normal,
                     color = if (header) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
                 )
@@ -1034,7 +1034,7 @@ private fun MarkdownTaskRow(
             if (checked) {
                 Text(
                     "✓",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = LocalTrellisTokens.current.type.meta,
                     color = MaterialTheme.colorScheme.onPrimary,
                 )
             }

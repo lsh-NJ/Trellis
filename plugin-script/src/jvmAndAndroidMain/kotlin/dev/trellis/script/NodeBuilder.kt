@@ -73,6 +73,8 @@ internal object NodeBuilder {
                 size = textSize(value),
                 weight = textWeight(value),
                 font = font(value),
+                // maxLines 只在插件明确写了才封顶；没写就是老行为（不限制）。
+                maxLines = string(value, "maxLines")?.trim()?.toIntOrNull()?.takeIf { it > 0 },
             )
             "bars" -> bars(value)
             "sparkline" -> sparkline(value)
@@ -91,7 +93,19 @@ internal object NodeBuilder {
             "table" -> table(value)
             "heat" -> heat(value)
             "spacer" -> UiNode.Spacer(int(value, "height", 8).coerceIn(0, 64))
-            "notice" -> UiNode.Notice(clip(string(value, "text") ?: string(value, "content") ?: ""))
+            "notice" -> notice(value)
+            "listrow" -> UiNode.ListRow(
+                title = clip(string(value, "title") ?: string(value, "text") ?: ""),
+                subtitle = string(value, "subtitle")?.let { clip(it) },
+                trailing = string(value, "trailing")?.let { clip(it) },
+                onTap = optionalTap(value),
+            )
+            "switch" -> switch(value)
+            "chip" -> UiNode.Chip(
+                label = clip(string(value, "label") ?: string(value, "text") ?: ""),
+                selected = boolean(value, "selected") ?: false,
+                onTap = optionalTap(value),
+            )
             "divider" -> UiNode.Divider
             "button" -> button(value)
             "input" -> input(value)
@@ -99,6 +113,19 @@ internal object NodeBuilder {
             else -> UiNode.Notice("插件用了宿主不认识的界面元素：" + type, UiNoticeTone.Problem)
         }
     }
+
+    /**
+     * 提示条：插件可以说「这是警告」而不是只有「普通 / 出错」两档。
+     * 词表里 tone 允许 hint（默认）/ warning / problem。
+     */
+    private fun notice(value: Scriptable): UiNode = UiNode.Notice(
+        clip(string(value, "text") ?: string(value, "content") ?: ""),
+        when (string(value, "tone")) {
+            "warning", "warn" -> UiNoticeTone.Warning
+            "problem", "error", "danger" -> UiNoticeTone.Problem
+            else -> UiNoticeTone.Hint
+        },
+    )
 
     private fun children(value: Scriptable, depth: Int, budget: IntArray): List<UiNode> {
         val raw = ScriptableObject.getProperty(value, "children")
@@ -330,6 +357,28 @@ internal object NodeBuilder {
         )
     }
 
+    /** 开关：必须有 on（点了要告诉插件），checked 由插件渲染时给。 */
+    private fun switch(value: Scriptable): UiNode {
+        val label = clip(string(value, "label") ?: string(value, "text") ?: "开关")
+        val on = string(value, "on")
+        val action = string(value, "action")
+        val tap = when {
+            on != null -> UiTap.Plugin(on, args(value))
+            action != null -> UiTap.Host(ActionCall(action, args(value)))
+            else -> return UiNode.Notice("开关「" + label + "」没说要干什么", UiNoticeTone.Problem)
+        }
+        return UiNode.Switch(label, boolean(value, "checked") ?: false, tap)
+    }
+
+    /** 行/片上的可选动作：写了 on / action 才可点。 */
+    private fun optionalTap(value: Scriptable): UiTap? {
+        val on = string(value, "on")
+        if (on != null) return UiTap.Plugin(on, args(value))
+        val action = string(value, "action")
+        if (action != null) return UiTap.Host(ActionCall(action, args(value)))
+        return null
+    }
+
     private fun button(value: Scriptable): UiNode {
         val label = clip(string(value, "label") ?: "按钮", MAX_LABEL)
         val on = string(value, "on")
@@ -404,6 +453,15 @@ internal object NodeBuilder {
         "center" -> UiAlign.Center
         "end" -> UiAlign.End
         else -> UiAlign.Start
+    }
+
+    /** 布尔字段：插件可能写 true / "true" / 1，都认。 */
+    private fun boolean(value: Scriptable, name: String): Boolean? = when (val raw = ScriptableObject.getProperty(value, name)) {
+        null, is Undefined -> null
+        is Boolean -> raw
+        is Number -> raw.toDouble() != 0.0
+        is String -> raw.equals("true", ignoreCase = true) || raw == "1"
+        else -> null
     }
 
     private fun gap(value: Scriptable): Int =

@@ -13,7 +13,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -37,6 +36,7 @@ import dev.trellis.kernel.capability.Capabilities
 @Composable
 fun AskDialogs(runtime: AppRuntime) {
     val request = runtime.pendingApproval ?: return
+    val tokens = LocalTrellisTokens.current
 
     Card(
         modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
@@ -55,16 +55,16 @@ fun AskDialogs(runtime: AppRuntime) {
                     "　插件 " + request.pluginId.value +
                     "　能力 " + Capabilities.describe(request.capability) +
                     "　动作 " + request.action,
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
             )
             Spacer(Modifier.height(6.dp))
             Text(
                 "规则是后台触发的，它正卡在这里等你点头；不理它，它就一直不动。",
-                style = MaterialTheme.typography.labelSmall,
+                style = tokens.type.meta,
             )
             Spacer(Modifier.height(14.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = { runtime.answerApproval(false) }) { Text("拒绝") }
+                ChromeTextLink("拒绝", onClick = { runtime.answerApproval(false) })
                 Spacer(Modifier.width(8.dp))
                 Button(onClick = { runtime.answerApproval(true) }) { Text("允许") }
             }

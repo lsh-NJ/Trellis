@@ -20,7 +20,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -55,6 +54,7 @@ import kotlinx.coroutines.launch
 fun PluginsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     val scope = rememberCoroutineScope()
     var expanded by remember { mutableStateOf(emptySet<String>()) }
+    val tokens = LocalTrellisTokens.current
 
     Column(modifier) {
         // 二级页统一头部：返回箭头贴在标题左边（之前是一行小字「← 返回设置」，像脚注）。
@@ -63,7 +63,7 @@ fun PluginsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
             subtitle = runtime.pluginsDir.absolutePath + "　·　把两份 JSON 丢进去，重启就会多一张卡片",
             onBack = { runtime.currentTab = TAB_SETTINGS },
             trailing = {
-                TextButton(onClick = { runtime.openPluginsFolder() }) { Text("打开插件目录") }
+                ChromeButton(label = "打开插件目录", onClick = { runtime.openPluginsFolder() }, filled = false)
             },
         )
         Spacer(Modifier.height(12.dp))
@@ -114,7 +114,7 @@ fun PluginsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                     Text("已停用", style = MaterialTheme.typography.titleSmall)
                     Text(
                         "不加载，但文件和数据都还在。启用一次就回来。",
-                        style = MaterialTheme.typography.labelSmall,
+                        style = tokens.type.meta,
                     )
                 }
                 items(disabled.map { it.value }.sorted(), key = { "disabled-" + it }) { rawId ->
@@ -135,7 +135,7 @@ fun PluginsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                         "删掉的插件在这里等 7 天，到期连插件文件带数据一起清掉。" +
                             "点「还原」就全回来；不想等这 7 天就点「彻底删除」，" +
                             "那一下不可撤销，只有日志留着。",
-                        style = MaterialTheme.typography.labelSmall,
+                        style = tokens.type.meta,
                     )
                 }
                 items(bin, key = { "bin-" + it.id.value }) { entry ->
@@ -166,6 +166,7 @@ private fun RecycleRow(
     onRestore: () -> Unit,
     onPurge: () -> Unit,
 ) {
+    val tokens = LocalTrellisTokens.current
     Card(
         Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -174,7 +175,7 @@ private fun RecycleRow(
             Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(Modifier.size(10.dp).background(Color(0xFFBDBDBD), CircleShape))
+            Box(Modifier.size(10.dp).background(LocalTrellisTokens.current.colors.ink3, CircleShape))
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(entry.name, style = MaterialTheme.typography.titleSmall)
@@ -184,20 +185,15 @@ private fun RecycleRow(
                     } else {
                         entry.id.value + "　还有 " + entry.daysLeft(System.currentTimeMillis()) + " 天"
                     },
-                    style = MaterialTheme.typography.labelSmall,
+                    style = tokens.type.meta,
                 )
             }
             if (armed) {
-                TextButton(onClick = onCancel) { Text("算了") }
-                TextButton(onClick = onPurge) {
-                    Text(
-                        "确认彻底删除",
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
+                ChromeTextLink("算了", onClick = onCancel)
+                ChromeButton("确认彻底删除", onClick = onPurge, destructive = true)
             } else {
-                TextButton(onClick = onRestore) { Text("还原") }
-                TextButton(onClick = onArm) { Text("彻底删除") }
+                ChromeTextLink("还原", onClick = onRestore)
+                ChromeTextLink("彻底删除", onClick = onArm, danger = true)
             }
         }
     }
@@ -210,6 +206,7 @@ private fun DisabledRow(
     onEnable: () -> Unit,
     onRemove: () -> Unit,
 ) {
+    val tokens = LocalTrellisTokens.current
     val id = dev.trellis.kernel.core.PluginId(rawId)
     Card(
         Modifier.fillMaxWidth(),
@@ -219,14 +216,14 @@ private fun DisabledRow(
             Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(Modifier.size(10.dp).background(Color(0xFF9E9E9E), CircleShape))
+            Box(Modifier.size(10.dp).background(LocalTrellisTokens.current.colors.ink3, CircleShape))
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(runtime.nameOf(id), style = MaterialTheme.typography.titleSmall)
-                Text(rawId, style = MaterialTheme.typography.labelSmall)
+                Text(rawId, style = tokens.type.meta)
             }
-            TextButton(onClick = onEnable) { Text("启用") }
-            TextButton(onClick = onRemove) { Text("删除") }
+            ChromeTextLink("启用", onClick = onEnable)
+            ChromeTextLink("删除", onClick = onRemove, danger = true)
         }
     }
 }
@@ -248,6 +245,7 @@ private fun PluginCard(
     onDisable: () -> Unit,
     onRemove: () -> Unit,
 ) {
+    val tokens = LocalTrellisTokens.current
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
 
@@ -280,13 +278,13 @@ private fun PluginCard(
                 if (hovered) {
                     val hint = usageHint(System.currentTimeMillis(), lastUsedMs, providesTheme, themeActive)
                     if (hint != null) {
-                        Text(hint, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(hint, style = tokens.type.meta, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.width(10.dp))
                     }
                 }
                 Text(stateLabel(info.state), style = MaterialTheme.typography.labelMedium, color = stateColor(info.state))
                 Spacer(Modifier.width(4.dp))
-                TextButton(onClick = onToggle) { Text(if (expanded) "收起" else "详情") }
+                ChromeTextLink(if (expanded) "收起" else "详情", onClick = onToggle)
             }
 
             // ---- 展开后的详情 ----
@@ -332,7 +330,11 @@ private fun PluginCard(
                     }
                     val missing = declared - granted
                     if (missing.isNotEmpty()) {
-                        TextButton(onClick = onGrant) { Text("授予缺少的 " + missing.size + " 项（会重载插件）") }
+                        ChromeButton(
+                            label = "授予缺少的 " + missing.size + " 项（会重载插件）",
+                            onClick = onGrant,
+                            filled = false,
+                        )
                     }
                 }
 
@@ -368,16 +370,16 @@ private fun PluginCard(
                 if (!info.manifest.required && info.state != PluginState.DISPOSED) {
                     Spacer(Modifier.height(6.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(onClick = onEdit) { Text("让 AI 改") }
-                        TextButton(onClick = onDisable) { Text("停用") }
+                        ChromeTextLink("让 AI 改", onClick = onEdit)
+                        ChromeTextLink("停用", onClick = onDisable)
                         if (info.manifest.builtin) {
                             // 内置插件的代码编译在应用里，删不掉  只能停用
                             Text(
                                 "内置插件无法删除（代码在应用里）",
-                                style = MaterialTheme.typography.labelSmall,
+                                style = tokens.type.meta,
                             )
                         } else {
-                            TextButton(onClick = onRemove) { Text("删除") }
+                            ChromeTextLink("删除", onClick = onRemove, danger = true)
                         }
                     }
                 }
@@ -388,8 +390,9 @@ private fun PluginCard(
 
 @Composable
 private fun Field(label: String, value: String) {
+    val tokens = LocalTrellisTokens.current
     Row(Modifier.padding(vertical = 1.dp)) {
-        Text(label, style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(48.dp))
+        Text(label, style = tokens.type.meta, modifier = Modifier.width(48.dp))
         Text(value, style = MaterialTheme.typography.bodySmall)
     }
 }
@@ -405,11 +408,20 @@ private fun StatusDot(state: PluginState) {
     Box(Modifier.size(10.dp).background(stateColor(state), CircleShape))
 }
 
-private fun stateColor(state: PluginState): Color = when (state) {
-    PluginState.ACTIVE -> Color(0xFF2E7D32)
-    PluginState.FAILED -> Color(0xFFC62828)
-    PluginState.SKIPPED, PluginState.UNAVAILABLE -> Color(0xFFEF6C00)
-    else -> Color(0xFF757575)
+/**
+ * 插件状态色走 token（批 5）：原来写死的 #2E7D32/#C62828/#EF6C00 在深色主题下
+ * 只有 3.0–3.4:1，换主题也不跟着变。`ok` 角色在 Bento（荧光青柠对白底不够）会退回
+ * primary，这正是想要的行为——状态点永远清楚，不靠一种特定颜色认状态。
+ */
+@Composable
+private fun stateColor(state: PluginState): Color {
+    val tokens = LocalTrellisTokens.current
+    return when (state) {
+        PluginState.ACTIVE -> tokens.colors.ok
+        PluginState.FAILED -> tokens.colors.danger
+        PluginState.SKIPPED, PluginState.UNAVAILABLE -> tokens.colors.warn
+        else -> tokens.colors.ink3
+    }
 }
 
 private fun stateLabel(state: PluginState): String = when (state) {
