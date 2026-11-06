@@ -2,6 +2,7 @@ package dev.trellis.app.mobile
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
@@ -10,12 +11,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.trellis.app.desktop.AppFonts
+import dev.trellis.ui.ExtraColors
+import dev.trellis.ui.LocalExtraColors
 
 /**
  * 手机端的设计底座。
@@ -49,7 +54,7 @@ private val ClayLight = Color(0xFFE08B6A)
  * 主题包 / 用户配色会覆盖这些语义色，所以页面里**只读 MaterialTheme.colorScheme**，
  * 不要写死颜色常量。
  */
-private val LightScheme = lightColorScheme(
+internal val LightScheme = lightColorScheme(
     primary = Pine,
     onPrimary = Color.White,
     primaryContainer = Color(0xFFDCE8DF),
@@ -67,7 +72,7 @@ private val LightScheme = lightColorScheme(
     error = Clay,
 )
 
-private val DarkScheme = darkColorScheme(
+internal val DarkScheme = darkColorScheme(
     primary = PineLight,
     onPrimary = Color(0xFF10231A),
     primaryContainer = Color(0xFF2A4436),
@@ -87,6 +92,35 @@ private val DarkScheme = darkColorScheme(
 
 /** 卡片底色（比页面底略亮一档，浅色下几乎看不出差别，暗色下才有层次）。 */
 val LocalCardColor = staticCompositionLocalOf { Card }
+
+/** 当前外观对应的配色方案：预览器、手机壳、对比度测试都从这一个入口取。 */
+internal fun phoneScheme(dark: Boolean): ColorScheme = if (dark) DarkScheme else LightScheme
+
+/**
+ * 手机端的「岗位色」：数据 / 逾期 / 状态。
+ *
+ * 桌面用主题包给的那一套（`AppRuntime.extraColors`）；手机不接主题包，
+ * 就按**手机自己的**方案推一组 —— 换外观时对比度关系跟着一起换，
+ * 不会出现「底是暗的、字还是浅色那套」。
+ *
+ * 容器色用主色/错误色兑 14% 透明度，和 `PhoneKit.Pill` 的用法一致：
+ * 它们只当底用，真正保证可读性的是配在一起的前景色。
+ */
+internal fun phoneExtraColors(dark: Boolean): ExtraColors {
+    val scheme = phoneScheme(dark)
+    return ExtraColors(
+        data = scheme.primary,
+        dataMuted = scheme.onSurfaceVariant,
+        dataTrack = scheme.outlineVariant,
+        accentText = scheme.onPrimaryContainer,
+        danger = scheme.error,
+        dangerContainer = scheme.error.copy(alpha = 0.14f),
+        warning = scheme.secondary,
+        warningContainer = scheme.secondary.copy(alpha = 0.14f),
+        success = scheme.primary,
+        successContainer = scheme.primary.copy(alpha = 0.14f),
+    )
+}
 
 /** 等宽字体：数字、状态、栏目标签。 */
 val PhoneMono: FontFamily get() = AppFonts.mono
@@ -117,14 +151,27 @@ private val PhoneTypography = Typography(
 )
 
 @Composable
-fun PhoneTheme(appearance: String, content: @Composable () -> Unit) {
+fun PhoneTheme(appearance: String, fontScale: Float = 1f, content: @Composable () -> Unit) {
     val dark = when (appearance) {
         "light" -> false
         "dark" -> true
         else -> isSystemInDarkTheme()
     }
-    val scheme = if (dark) DarkScheme else LightScheme
-    CompositionLocalProvider(LocalCardColor provides if (dark) NightCard else Card) {
+    val scheme = phoneScheme(dark)
+    // 字号要**乘**系统的缩放，和桌面 AppTheme 一个道理：
+    // 手机排版是写死的 sp，不乘的话「小/标准/大/特大」四个档就是四个假开关
+    // （实测：切到「特大」截图逐字节不变）。系统字号本身已经由 density 带着，
+    // 这里只叠加应用自己的偏好。
+    val base = LocalDensity.current
+    val density = Density(base.density, base.fontScale * fontScale)
+    CompositionLocalProvider(
+        LocalCardColor provides if (dark) NightCard else Card,
+        // 手机页自己几乎不用岗位色，但**插件贡献的卡片**（今日盘点、待办清单、UiNode 图表）
+        // 读的是 LocalExtraColors。以前这里没提供，它们拿到的是浅色默认值 ——
+        // 暗色下靛蓝字压在近黑底上只有 1.6:1，等于没写。
+        LocalExtraColors provides phoneExtraColors(dark),
+        LocalDensity provides density,
+    ) {
         MaterialTheme(
             colorScheme = scheme,
             typography = PhoneTypography,

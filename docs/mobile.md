@@ -65,7 +65,8 @@
 .\build-mobile.cmd install         # 连上手机后 adb 安装
 .\preview-mobile.cmd               # 电脑上开 390×844 窗口，能真的点
 .\preview-mobile.cmd --seed        # 先灌演示数据（空界面看不出排版问题）
-.\preview-mobile.cmd --shots       # 不出窗，渲染 8 页 × 手机/平板 PNG 到 build/preview
+.\preview-mobile.cmd --shots       # 不出窗，渲染 9 页 × 手机/平板 PNG 到 build/preview
+.\gradlew :app:mobile:assembleRelease   # release APK（演示密钥签名，见第 7 节）
 ```
 
 预览器环境变量：`TRELLIS_SEED=1`、`TRELLIS_SHOT_DIR=…`、`TRELLIS_PREVIEW_HOME=…`（默认
@@ -74,8 +75,9 @@
 **验收顺序（缺一不算完成）**
 
 1. `./gradlew :app:mobile:assembleDebug` 通过；
-2. `./gradlew :app:ui:jvmTest` 通过（600+ 用例，含 `SharedSourceCompatibilityTest`）；
-3. `preview-mobile.cmd --shots` 出图，逐张看：折行、裁切、点击区 <48dp、空态没文案；
+2. `./gradlew :app:ui:jvmTest` 通过（612 用例 / 66 suites，含 `SharedSourceCompatibilityTest`）；
+3. `preview-mobile.cmd --shots` 出浅色与深色两轮图（各 18 张），逐张看：
+   折行、裁切、点击区 <48dp、空态没文案、暗色下有没有「深底深字」；
 4. 涉及真实数据的改动，`--seed` 后开窗手点一遍；
 5. 交付写明：改了什么、验证结果、还剩什么。
 
@@ -121,18 +123,25 @@
 
 ## 7. 已知缺口
 
-1. **计划页没有真实计划的演示数据**：预览器只灌任务与笔记，计划页显示空态。
-   要覆盖它得跑一遍学习计划后端的 createProcess → acceptDraft 命令。
-2. **知识网络的画布在手机上只是总览**：默认「结构」树才是主要形态；大图（数百概念）在
+1. **知识网络的画布在手机上只是总览**：默认「结构」树才是主要形态；大图（数百概念）在
    canvas 上仍需缩放操作，且窄屏下标签会按 `zoom >= 0.75` 才显示。
-3. **Markdown 编辑器**：手机用「阅读 + 编辑」两态（`PhoneField`），不是桌面的整篇投影编辑器；
+2. **Markdown 编辑器**：手机用「阅读 + 编辑」两态（`PhoneField`），不是桌面的整篇投影编辑器；
    `{{…}}` 折叠、gutter 标记、斜杠菜单、`[[` 补全在手机上都没有。
-4. **活动采集**：安卓上仍要靠局域网里的 ActivityWatch（设置 → 活动数据源），
-   没有本机采集（那要前台服务与使用情况权限，是另一个量级的工程）。
-5. **没有手机端自动化测试**：现在靠 `-jvmTest`（600+ 用例，覆盖共享运行时）+ 预览截图 +
-   `SharedSourceCompatibilityTest`。`PhoneApp` 的导航、页签状态靠手点。
-6. **只有 debug 包**：没有 signingConfig、`isMinifyEnabled = false`（内核与插件靠反射/序列化按名字找东西）。
-7. **iOS 没有 target**：`HostPlatform` 已经是 expect/actual，扩 iOS 时按同一处补。
+3. **活动采集**：安卓上仍要靠局域网里的 ActivityWatch（设置 → 活动数据源），没有本机采集
+   —— 那要 `UsageStatsManager` + `PACKAGE_USAGE_STATS` 引导授权 + 前台服务，是另一个量级的工程。
+4. **自动化只到 JVM 层**：`PhoneScreenContractTest`（入口清单）、`PhoneRenderSmokeTest`
+   （离屏渲染）、`PluginArchiveTest`（插件包校验）、`PhoneThemeContrastTest`（配色对比度）
+   都在 `:app:ui:jvmTest` / `:app:mobile-preview:test` 里。**没有** instrumentation / Espresso / Maestro，
+   `PhoneApp` 的导航、页签状态、表单校验仍靠预览器手点。
+5. **真机验收没做过**：`adb install`、通知权限（API 33+ `POST_NOTIFICATIONS`）、点通知跳指定页签、
+   SAF 选 zip 装插件、暗色模式，目前都只在预览器里验过。
+6. **iOS 没有 target**：`HostPlatform` 已经是 expect/actual，扩 iOS 时按同一处补。
+7. **release 用的是仓库内的演示密钥**：`app/mobile/trellis-release.jks` 与根目录
+   `keystore.properties`（明文口令）。`.gitignore` 已经排除两者，但上架前必须换成自己的密钥，
+   并把口令移出版本控制 —— 任何人拿到仓库都能出可安装的 release 包。
+8. **无障碍只做了一部分**：`contentDescription` 共 12 处（ChatPage / MePage / PhoneKit / PlanPage），
+   `TodayPage`、`KnowledgePage`、`KnowledgeGraphPage`、`PluginsPage` 还没标；TalkBack 实测、
+   大字号下 48dp 控件会不会撑破，都没验。
 
 ## 8. 与第一版（`mobile-debug.apk`）的差异
 

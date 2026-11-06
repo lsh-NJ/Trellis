@@ -430,18 +430,12 @@ internal class SqliteLearningPlanService(
 
     override fun todos(planId: String?): List<dev.trellis.domain.plan.TodoView> = queryTodos(planId)
 
-    override fun asOfCompletedCount(planId: String, week: String, seq: Long): Int {
-        connection.prepareStatement(
-            "SELECT COUNT(DISTINCT json_extract(payload_json, '$.unitId')) FROM event " +
-                "WHERE type = 'occurrence.completed' AND plan_id = ? AND seq <= ? " +
-                "AND json_extract(payload_json, '$.week') = ?",
-        ).use { ps ->
-            ps.setString(1, planId)
-            ps.setLong(2, seq)
-            ps.setString(3, week)
-            ps.executeQuery().use { rs -> return if (rs.next()) rs.getInt(1) else 0 }
-        }
-    }
+    override fun asOfCompletedCount(planId: String, week: String, seq: Long): Int =
+        EventPayloads.of(connection, "occurrence.completed", planId, maxSeq = seq)
+            .filter { it.str("week") == week }
+            .mapNotNull { it.str("unitId") }
+            .distinct()
+            .size
 
     // ---------------------------------------------------------------- 命令（转交 PlanCommands）
 

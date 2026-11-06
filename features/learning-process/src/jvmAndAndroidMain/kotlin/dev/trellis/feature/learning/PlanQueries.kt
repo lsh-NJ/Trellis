@@ -368,30 +368,18 @@ internal fun SqliteLearningPlanService.buildMapView(planId: String): MapView {
 // ---------------------------------------------------------------------------
 
 internal fun SqliteLearningPlanService.reviewExists(planId: String, week: String): Boolean =
-    connection.prepareStatement(
-        "SELECT 1 FROM event WHERE type = 'review.generated' AND plan_id = ? " +
-            "AND json_extract(payload_json, '$.week') = ? LIMIT 1",
-    ).use { ps ->
-        ps.setString(1, planId)
-        ps.setString(2, week)
-        ps.executeQuery().use { it.next() }
-    }
+    EventPayloads.of(connection, "review.generated", planId).any { it.str("week") == week }
 
 internal fun SqliteLearningPlanService.buildReviewView(planId: String, week: String): ReviewView {
-    val payload = connection.prepareStatement(
-        "SELECT payload_json FROM event WHERE type = 'review.generated' AND plan_id = ? " +
-            "AND json_extract(payload_json, '$.week') = ? ORDER BY seq DESC LIMIT 1",
-    ).use { ps ->
-        ps.setString(1, planId)
-        ps.setString(2, week)
-        ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
-    } ?: return ReviewView(
-        week = week,
-        state = "not_ready",
-        narrative = "这周的复盘还没生成。",
-        question = "",
-    )
-    val obj = json().parseToJsonElement(payload).jsonObject
+    val payload = EventPayloads.of(connection, "review.generated", planId, newestFirst = true)
+        .firstOrNull { it.str("week") == week }
+        ?: return ReviewView(
+            week = week,
+            state = "not_ready",
+            narrative = "这周的复盘还没生成。",
+            question = "",
+        )
+    val obj = payload
     val suggestion = obj["suggestion"]?.takeIf { it is JsonObject }?.jsonObject?.let {
         SuggestionView(
             action = it["action"]?.jsonPrimitive?.contentOrNull ?: "",

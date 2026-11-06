@@ -3,6 +3,9 @@
 build/
 .dev/
 *.log
+*.jks
+*.keystore
+keystore.properties
 .idea/
 local.properties
 *.iml

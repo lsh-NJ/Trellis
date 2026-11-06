@@ -29,10 +29,15 @@
           在手机上那就是一次明显的卡顿和一次闪白。Compose 自己会跟着尺寸重排，
           不需要靠重建来换布局 —— 这正好也是「自适应」的实现方式。
         -->
+        <!--
+          launchMode=singleTop：点通知回来复用现有实例（onNewIntent），
+          而不是再起一个 Activity 把内核重新 boot 一遍 —— 那会是一次几秒的白屏。
+        -->
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density"
             android:exported="true"
+            android:launchMode="singleTop"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

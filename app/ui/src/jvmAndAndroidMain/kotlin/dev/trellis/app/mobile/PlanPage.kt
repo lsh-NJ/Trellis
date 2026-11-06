@@ -30,11 +30,13 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.trellis.app.desktop.AppRuntime
 import dev.trellis.app.desktop.AutoCompletionEntry
+import dev.trellis.domain.plan.DayOccurrence
 import kotlinx.coroutines.launch
 
 /**
@@ -51,7 +53,9 @@ import kotlinx.coroutines.launch
 @Composable
 fun PlanPage(runtime: AppRuntime) {
     var planSheet by remember { mutableStateOf(false) }
-    var unitSheetId by remember { mutableStateOf<String?>(null) }
+    // 存整个 DayOccurrence 而不是 id：弹层里的「开始计时」需要标题，
+    // 再按 id 去 dayView 里找一遍既绕又容易在刷新后找不到。
+    var unitSheet by remember { mutableStateOf<DayOccurrence?>(null) }
     var settingsOpen by remember { mutableStateOf(false) }
     var placeTarget by remember { mutableStateOf<PlaceTarget?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -109,7 +113,9 @@ fun PlanPage(runtime: AppRuntime) {
                     val selected = !runtime.planPendingSelected && runtime.planSelectedWeek == card.week
                     WeekChip(
                         label = card.label,
-                        sub = if (card.unitCount > 0) card.unitCount.toString() else "·",
+                        // 「3 个」而不是「3」：卡片上只有一个数字时，人不知道它是单元数、
+                        // 日期还是进度。多一个字就不用猜。
+                        sub = if (card.unitCount > 0) card.unitCount.toString() + " 个" else "·",
                         selected = selected,
                         muted = false,
                     ) { runtime.selectPlanWeek(card.week) }
@@ -117,7 +123,7 @@ fun PlanPage(runtime: AppRuntime) {
                 if (runtime.planPendingNodes.isNotEmpty()) {
                     WeekChip(
                         label = "待安排",
-                        sub = runtime.planPendingNodes.size.toString(),
+                        sub = runtime.planPendingNodes.size.toString() + " 个",
                         selected = runtime.planPendingSelected,
                         muted = true,
                     ) { runtime.selectPlanPending() }
@@ -299,7 +305,7 @@ fun PlanPage(runtime: AppRuntime) {
                                 Spacer(Modifier.width(Gap.s))
                                 PhoneButton(
                                     "处理",
-                                    { unitSheetId = occ.id },
+                                    { unitSheet = occ },
                                     filled = false,
                                 )
                             }
@@ -356,7 +362,12 @@ fun PlanPage(runtime: AppRuntime) {
                             .padding(vertical = Gap.m, horizontal = Gap.s),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("·", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.primary)
+                        Text(
+                            "·",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.clearAndSetSemantics { },
+                        )
                         Spacer(Modifier.width(Gap.s))
                         Text(
                             unit.title,
@@ -428,10 +439,10 @@ fun PlanPage(runtime: AppRuntime) {
         }
     }
 
-    val unit = unitSheetId
+    val unit = unitSheet
     if (unit != null) {
         ModalBottomSheet(
-            onDismissRequest = { unitSheetId = null },
+            onDismissRequest = { unitSheet = null },
             sheetState = sheetState,
             containerColor = MaterialTheme.colorScheme.background,
         ) {
@@ -439,26 +450,37 @@ fun PlanPage(runtime: AppRuntime) {
                 SheetHeading("这个单元", "完成会记一条事件；挪一天只改排期，不改内容")
                 Spacer(Modifier.height(Gap.m))
                 PhoneButton("标记完成", {
-                    runtime.completePlanOccurrence(unit)
+                    runtime.completePlanOccurrence(unit.id)
                     scope.launch { runtime.refreshPlan() }
-                    unitSheetId = null
+                    unitSheet = null
                 }, modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(Gap.s))
+                // 计划节点计时：和任务共用同一个小窗，落账走 session（计划侧只关心
+                // 「这段时间在做什么」，分钟由起止自己算）。
+                PhoneButton("开始计时", {
+                    runtime.openOccurrenceTimer(
+                        planId = runtime.planFocusId ?: "",
+                        occurrenceId = unit.id,
+                        title = unit.title,
+                    )
+                    unitSheet = null
+                }, modifier = Modifier.fillMaxWidth(), filled = false)
                 Spacer(Modifier.height(Gap.s))
                 Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {
                     PhoneButton("今天做", {
-                        runtime.planDoToday(unit); scope.launch { runtime.refreshPlan() }; unitSheetId = null
+                        runtime.planDoToday(unit.id); scope.launch { runtime.refreshPlan() }; unitSheet = null
                     }, modifier = Modifier.weight(1f), filled = false)
                     PhoneButton("挪一天", {
-                        runtime.planDeferOneDay(unit); scope.launch { runtime.refreshPlan() }; unitSheetId = null
+                        runtime.planDeferOneDay(unit.id); scope.launch { runtime.refreshPlan() }; unitSheet = null
                     }, modifier = Modifier.weight(1f), filled = false)
                     PhoneButton("跳过", {
-                        runtime.planSkipToday(unit); scope.launch { runtime.refreshPlan() }; unitSheetId = null
+                        runtime.planSkipToday(unit.id); scope.launch { runtime.refreshPlan() }; unitSheet = null
                     }, modifier = Modifier.weight(1f), filled = false)
                 }
                 Spacer(Modifier.height(Gap.s))
                 PhoneButton("排到指定的一天", {
-                    placeTarget = PlaceTarget.Occurrence(unit)
-                    unitSheetId = null
+                    placeTarget = PlaceTarget.Occurrence(unit.id)
+                    unitSheet = null
                 }, modifier = Modifier.fillMaxWidth(), filled = false)
             }
         }
@@ -668,6 +690,17 @@ private fun AutoCompletionCard(runtime: AppRuntime, entries: List<AutoCompletion
                         "“" + entry.evidence + "”",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    // 证据看完了，下一步必然是「这篇笔记到底写了什么」。
+                    // 桌面是滚到正文里选中那句；手机上打开笔记、把原句顶到第一屏（见 KnowledgePage）。
+                    Text(
+                        "打开《" + entry.noteTitle.ifBlank { "未命名笔记" } + "》",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable { runtime.openAutoCompletionNote(entry.id) }
+                            .padding(vertical = 6.dp, horizontal = 2.dp),
                     )
                 }
             }
