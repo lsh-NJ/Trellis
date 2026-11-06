@@ -20,6 +20,7 @@ internal actual fun PlatformMarkdownEditor(
     onDeleteAiLine: ((String) -> Unit)?,
     reveal: TextRange?,
     revealToken: Int,
+    @Suppress("UNUSED_PARAMETER") onPageShortcut: ((String) -> Unit)?,
     onEditingFinished: (() -> Unit)?,
 ) {
     MarkdownDocumentEditor(

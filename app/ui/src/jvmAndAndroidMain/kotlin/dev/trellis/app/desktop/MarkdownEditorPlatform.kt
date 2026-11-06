@@ -23,5 +23,6 @@ internal expect fun PlatformMarkdownEditor(
     onDeleteAiLine: ((String) -> Unit)?,
     reveal: TextRange?,
     revealToken: Int,
+    onPageShortcut: ((String) -> Unit)?,
     onEditingFinished: (() -> Unit)?,
 )

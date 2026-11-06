@@ -249,17 +249,21 @@ marktext / Typora / Notion 能做到，是因为正文是浏览器里的**块级
 所以加了一个实验开关（默认关闭，不影响现有编辑器）：`TRELLIS_EDITOR=webview`。
 
 - 依赖：`app/desktop/build.gradle.kts` 的 JavaFX 21.0.4（base/graphics/controls/web/media/swing，按 os/arch 选 classifier）；jar 全在 Maven，无运行时下载，macOS arm64 约 40MB。
-- 页面：`app/desktop/src/main/resources/editor/index.html` + `editor.js`（esbuild 打包 Tiptap + marked + turndown，约 372KB）；`{{…}}`/`[[…]]` 用自定义 mark 往返（支持 `[[原文 => 概念名]]`：显示只留原文，`=> 概念名` 存在 mark 的 `data-target` 里，序列化时拼回去）。
+- 页面：`app/ui/src/jvmMain/resources/editor/index.html` + `editor.js`（esbuild 打包 Tiptap + marked + turndown，约 385KB）；`{{…}}`/`[[…]]` 用自定义 mark 往返（支持 `[[原文 => 概念名]]`：显示只留原文，`=> 概念名` 存在 mark 的 `data-target` 里，序列化时拼回去）。
 - 字体/排版（P2 第一轮）：对齐 Compose 的 `bodyLarge`——`-apple-system, sans-serif`、16px / 1.5 行高、段落 `margin: 0 0 10px`（段落 pitch ≈1.42 倍行距）、标题 24/21/19px + 1.32 行高。
 - 主题：CSS 变量 + `window.setTheme({background,onBackground,onSurfaceVariant,accent,accentSoft,codeBackground,border})`，由 Compose 的 `MaterialTheme.colorScheme` 和 `LocalExtraColors.accentText` 注入。
 - 失焦触发 AI 整理：WebView 的 DOM 不会因点 Compose 控件而失焦，所以在 AWT 层挂了全局鼠标监听（`MarkdownWebHost.globalClickWatcher`）——按下点不在 `JFXPanel` 里就当编辑器失焦，回调 `onEditingFinished`；`Esc` 在 JS 里也会主动 `notifyBridge('onBlur')`。
-- gutter：ProseMirror widget decoration 在光标所在段落开头插一个零宽 `span.gutter-glyph`，CSS 挪到左边距，显示 ¶/H1–H6/•/1./▍/{ } 等标记（每次选区变化重算）。
+- gutter（2026-11-06 改）：ProseMirror **node decoration** 给光标所在顶层块挂 `class="gutter-current" data-marker="…"`，CSS 用 `::before` 绝对定位画到左边距（`left:-36px`），显示 ¶/H1–H6/•/1./▍/{ } 等标记。原先是行内 widget，列表要跨 `listItem → paragraph` 下钻算位置，算错就整块不显示。
 - `[[` 补全：Compose 把概念名（本文标注 + 概念库）通过 `window.setConcepts([...])` 灌进页面；输入 `[[` 弹候选浮层，点选或键盘认领后插入 concept mark（显示只有概念名，序列化回 `[[名字]]`）。
 - 补全键盘认领（P2 第二轮）：新增 Tiptap `TrellisKeys` extension，用 `addKeyboardShortcuts` 把 Enter/Tab/ArrowDown/ArrowUp/Escape 转交页面的 `window.__trellisHandleKey`——`handleKeyDown` 在 ProseMirror 默认处理之前跑，比在 DOM 上抢 `keydown` 可靠。认领不依赖菜单是否渲染：直接从光标前文本解析 `[[query`，↑↓ 在候选里移动、Enter/Tab 插入、Esc 关闭。
 - `/` 斜杠菜单（P2 第二轮）：行首或空白后敲 `/` 弹出（代码块里不触发）；命令用 Tiptap 自带 chain：标题 1/2/3、无序列表、有序列表、引用、代码块、分隔线；↑↓ 选、Enter/Tab 执行、Esc 关闭、也可以鼠标点选；执行前先删掉敲的 `/query` 再 `deleteRange` + `toggle*`。
-- 未对齐（后续）：快捷键（Cmd+E 等）、AI 定位跳转、代码块/表格/公式的专门渲染、Windows/Linux 打包与 IME 回归。
+- 编辑器快捷键（2026-11-06）：格式键（`Cmd/Ctrl+B/I/K`、`Cmd/Ctrl+Shift+X/C`、`Cmd/Ctrl+1/2/3/0`）由 Tiptap keymap 处理（`markdownKeyBindings` 是清单），已在 WebView 里验证 `Cmd+B` 能落 `**…**`。
+- 页面级快捷键桥（2026-11-06）：WebView 有焦点时 Compose 收不到键，所以 JS 在 `window` 上 capture 阶段监听 keydown，命中 `Cmd/Ctrl+S/N//` 就 `preventDefault()` + `notifyBridge('onShortcut', 'save'|'newNote'|'menu')`；Kotlin 侧桥方法 `MarkdownEditorBridge.onShortcut(name)` → `MarkdownWebHost.onShortcut` → `MarkdownWebEditor(onPageShortcut=…)` → `KnowledgeScreen` 执行保存/新建/开关菜单。注意 JavaFX WebView 在 macOS 上给 Cmd 组合键的 `event.key` 是空串，必须用 `event.keyCode` 兜底（65–90 → 字母、48–57 → 数字、191/111 → `/`）。
+- AI 定位跳转（2026-11-06 接线）：编辑器多两个参数 `reveal: TextRange?` / `revealToken: Int`；Kotlin 侧 `host.reveal(start, end)` 调 JS `window.revealRange(start, end)`，JS 用 `locateOffset()` 把 Markdown 偏移换算成 ProseMirror 位置后 `setTextSelection` + `scrollIntoView`；桥未就绪时先存 `pendingReveal`，`installBridge()` 后补执行。
+- 未对齐（后续）：代码块/表格/公式的专门渲染、Windows/Linux 打包与 IME 回归；AI 定位跳转的端到端（搜索命中/概念反查触发）还需真机确认。
 - 坑：CSS 不能写具体字体名（`"PingFang SC"` 会让 JavaFX WebView 中文变乱码），用 `-apple-system, sans-serif`；程序化 `setContent` 偶尔有重绘不同步；`Box` 在 `verticalScroll` 里高度约束无限，`SwingPanel` 必须显式给最小高度（当前 560dp）。
-- 坑（gutter 间距，2026-11-04 修）：ProseMirror 的 widget decoration 必须插在**块内第一段文字的行内位置**（段落 `pos + 1`；列表要沿 `firstChild` 下钻到第一项段落）。插在块与块之间时 JavaFX WebView 会给行内 widget 生成一个匿名行，表现是「光标所在段落与上一段的间距突然变成两倍、下方正常」。
+- 坑（gutter 间距，2026-11-04 修；2026-11-06 被 node decoration 取代）：行内 widget 必须插在**块内第一段文字的行内位置**（段落 `pos + 1`；列表要沿 `firstChild` 下钻到第一项段落），插在块与块之间时 JavaFX WebView 会给行内 widget 生成一个匿名行，表现是「光标所在段落与上一段的间距突然变成两倍、下方正常」。改成 node decoration + `::before` 后不再有这个问题。
+- 坑（Cmd 组合键，2026-11-06）：JavaFX WebView（macOS）在按住 Cmd 时 `KeyboardEvent.key` 为空串，自己写的 keydown 监听拿不到字母；要补 `keyCode` 兜底。ProseMirror 的 keymap 内部已自带兜底，所以格式快捷键一直能用、页面级快捷键一开始没反应。
 
 ## 12. 编辑器交互（2026-11-02 定稿：整篇单字段）
 
