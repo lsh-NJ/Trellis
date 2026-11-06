@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.awt.SwingPanel
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.unit.dp
 import dev.trellis.ui.LocalExtraColors
 import javafx.application.Platform
@@ -55,12 +56,16 @@ internal fun MarkdownWebEditor(
     onBodyChange: (String) -> Unit,
     modifier: Modifier = Modifier,
     conceptNames: List<String> = emptyList(),
+    reveal: TextRange? = null,
+    revealToken: Int = 0,
+    onPageShortcut: ((String) -> Unit)? = null,
     onEditingFinished: (() -> Unit)? = null,
 ) {
     // 只建一个宿主：切笔记时用 setMarkdown 换内容，重建 WebView 会留下空白/重复的面板。
     val host = remember { MarkdownWebHost() }
     val latestChange by rememberUpdatedState(onBodyChange)
     val latestFinished by rememberUpdatedState(onEditingFinished)
+    val latestShortcut by rememberUpdatedState(onPageShortcut)
     val scheme = MaterialTheme.colorScheme
     val conceptGreen = LocalExtraColors.current.accentText
     val theme = remember(scheme.background, scheme.onBackground, scheme.onSurfaceVariant, conceptGreen) {
@@ -77,6 +82,8 @@ internal fun MarkdownWebEditor(
     LaunchedEffect(theme) { host.setTheme(theme) }
     // `[[` 补全用的概念名（来自本文已有标注 + 概念库），变化时重灌一次。
     LaunchedEffect(conceptNames) { host.setConcepts(conceptNames) }
+    // AI 补全 / 搜索命中 / 概念反查的定位跳转（Compose 侧传的是 Markdown 原文偏移）。
+    LaunchedEffect(revealToken) { reveal?.let { host.reveal(it.min, it.max) } }
     // WebView 自己发上来的正文；记下来避免把它再灌回 WebView（否则每次击键都会 setContent）。
     var applied by remember { mutableStateOf(body) }
 
@@ -88,6 +95,7 @@ internal fun MarkdownWebEditor(
             }
         }
         host.onEditingFinished = { latestFinished?.invoke() }
+        host.onShortcut = { latestShortcut?.invoke(it) }
     }
 
     LaunchedEffect(noteId, body) {
@@ -114,6 +122,7 @@ private class MarkdownWebHost {
 
     var onMarkdownChanged: ((String) -> Unit)? = null
     var onEditingFinished: (() -> Unit)? = null
+    var onShortcut: ((String) -> Unit)? = null
 
     private val fxPanel = JFXPanel()
     private var webView: WebView? = null
@@ -122,6 +131,7 @@ private class MarkdownWebHost {
     private var pendingTheme: WebTheme? = null
     private var pendingConcepts: List<String>? = null
     private var pendingMarkdown: String? = null
+    private var pendingReveal: Pair<Int, Int>? = null
 
     /** 上一次鼠标按下时，指针是不是落在 WebView 里（用来判断「点到编辑器外面了」）。 */
     private var pointerWasInside = false
@@ -187,6 +197,16 @@ private class MarkdownWebHost {
         }
     }
 
+    fun reveal(start: Int, end: Int) {
+        Platform.runLater {
+            if (!bridgeInstalled) {
+                pendingReveal = start to end
+                return@runLater
+            }
+            runCatching { webView?.engine?.executeScript("window.revealRange($start, $end)") }
+        }
+    }
+
     fun dispose() {
         runCatching { Toolkit.getDefaultToolkit().removeAWTEventListener(globalClickWatcher) }
         Platform.runLater {
@@ -201,6 +221,7 @@ private class MarkdownWebHost {
         val jxb = MarkdownEditorBridge().also { b ->
             b.markdownListener = { markdown -> SwingUtilities.invokeLater { onMarkdownChanged?.invoke(markdown) } }
             b.blurListener = { SwingUtilities.invokeLater { onEditingFinished?.invoke() } }
+            b.shortcutListener = { name -> SwingUtilities.invokeLater { onShortcut?.invoke(name) } }
         }
         bridge = jxb
         window.setMember("trellisEditorBridge", jxb)
@@ -217,6 +238,10 @@ private class MarkdownWebHost {
             pendingMarkdown = null
             runCatching { webView?.engine?.executeScript("window.setMarkdown(${jsString(markdown)})") }
         }
+        pendingReveal?.let { (start, end) ->
+            pendingReveal = null
+            runCatching { webView?.engine?.executeScript("window.revealRange($start, $end)") }
+        }
     }
 
 }
@@ -230,6 +255,7 @@ private class MarkdownWebHost {
 internal class MarkdownEditorBridge {
     var markdownListener: ((String) -> Unit)? = null
     var blurListener: (() -> Unit)? = null
+    var shortcutListener: ((String) -> Unit)? = null
 
     fun onUpdate(markdown: String) {
         markdownListener?.invoke(markdown)
@@ -240,6 +266,10 @@ internal class MarkdownEditorBridge {
     }
 
     fun onFocus() = Unit
+
+    fun onShortcut(name: String) {
+        shortcutListener?.invoke(name)
+    }
 }
 
 /** 把 index.html 和打包好的 editor.js 拼成一页，直接 loadContent（不走临时文件）。 */

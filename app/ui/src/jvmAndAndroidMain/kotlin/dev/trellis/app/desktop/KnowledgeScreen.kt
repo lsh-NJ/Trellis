@@ -909,6 +909,18 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                                         modifier = Modifier.fillMaxWidth(),
                                         reveal = revealRange,
                                         revealToken = revealToken,
+                                        // WebView 模式有焦点时页面收不到键，由 JS 桥转发回来；
+                                        // Compose 模式这两条页面快捷键本来就能收到，这里不会重复触发。
+                                        onPageShortcut = { name ->
+                                            when (name) {
+                                                "save" -> {
+                                                    persistNow(); message = "已保存"
+                                                }
+
+                                                "newNote" -> createNote()
+                                                "menu" -> shortcutsOpen = !shortcutsOpen
+                                            }
+                                        },
                                         conceptNames = conceptHighlightNames(),
                                         onDeleteAiLine = { line ->
                                             val next = removeAiBlockLine(body, line)

@@ -340,7 +340,6 @@ internal val markdownShortcutHints: List<ShortcutHint> = buildList {
     }
     add(ShortcutHint(action = "保存", keys = platformShortcutLabel("Ctrl/Cmd+S"), owned = false))
     add(ShortcutHint(action = "新建笔记", keys = platformShortcutLabel("Ctrl/Cmd+N"), owned = false))
-    add(ShortcutHint(action = "编辑 / 预览切换", keys = platformShortcutLabel("Ctrl/Cmd+E"), owned = false))
     add(ShortcutHint(action = "打开 / 关闭这份菜单", keys = platformShortcutLabel("Ctrl/Cmd+/"), owned = false))
     add(ShortcutHint(action = "在光标处打开命令菜单", keys = "/"))
     add(ShortcutHint(action = "在命令菜单里选择", keys = "↑ ↓ · 回车"))

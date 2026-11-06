@@ -50,22 +50,18 @@
   .ai::after  { content: "\201D"; font-size: 22px; }
   /* [[概念]]：绿色 + 下划线（和 Compose 编辑器的标注样式保持一致）。 */
   .concept { color: var(--accent-soft); text-decoration: underline; }
-  /* 段落标记（gutter）：ProseMirror widget decoration 插一个零宽 span，CSS 挪到左边距。 */
-  /* 零宽钩子：只负责定位，不参与行高（inline-block 的 0 尺寸盒子如果放在块之间，
-     浏览器会生成一行匿名行，把间距撑大；所以 widget 放在段落内部，这里保持零尺寸）。 */
-  .gutter-glyph {
-    display: inline-block;
-    width: 0;
-    height: 0;
+  /* 段落标记（gutter）：给光标所在的顶层块挂 class + data-marker，
+     由 CSS 的 ::before 画到左边距。用 node decoration 而不是 widget：
+     列表项里 widget 的落点要跨 listItem/paragraph 下钻，位置算错就整块不显示。
+     伪元素绝对定位，不占行高、不影响段间距。 */
+  .ProseMirror .gutter-current {
     position: relative;
-    overflow: visible;
-    vertical-align: baseline;
   }
-  .gutter-glyph::before {
+  .ProseMirror .gutter-current::before {
     content: attr(data-marker);
     position: absolute;
     left: -36px;
-    top: -0.8em;
+    top: 0.05em;
     width: 26px;
     text-align: right;
     font-family: "SF Mono", Menlo, monospace;

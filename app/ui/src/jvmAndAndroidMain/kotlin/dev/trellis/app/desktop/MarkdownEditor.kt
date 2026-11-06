@@ -57,6 +57,7 @@ internal fun MarkdownEditor(
     onDeleteAiLine: ((String) -> Unit)? = null,
     reveal: TextRange? = null,
     revealToken: Int = 0,
+    onPageShortcut: ((String) -> Unit)? = null,
     onEditingFinished: (() -> Unit)? = null,
 ) {
     // 真正落到哪个编辑器由平台决定：桌面可以选 JavaFX WebView（`TRELLIS_EDITOR=webview`），
@@ -70,6 +71,7 @@ internal fun MarkdownEditor(
         onDeleteAiLine = onDeleteAiLine,
         reveal = reveal,
         revealToken = revealToken,
+        onPageShortcut = onPageShortcut,
         onEditingFinished = onEditingFinished,
     )
 }

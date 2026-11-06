@@ -18,6 +18,7 @@ internal actual fun PlatformMarkdownEditor(
     onDeleteAiLine: ((String) -> Unit)?,
     reveal: TextRange?,
     revealToken: Int,
+    onPageShortcut: ((String) -> Unit)?,
     onEditingFinished: (() -> Unit)?,
 ) {
     if (useWebViewEditor()) {
@@ -27,6 +28,9 @@ internal actual fun PlatformMarkdownEditor(
             onBodyChange = onBodyChange,
             modifier = modifier,
             conceptNames = conceptNames,
+            reveal = reveal,
+            revealToken = revealToken,
+            onPageShortcut = onPageShortcut,
             onEditingFinished = onEditingFinished,
         )
     } else {
