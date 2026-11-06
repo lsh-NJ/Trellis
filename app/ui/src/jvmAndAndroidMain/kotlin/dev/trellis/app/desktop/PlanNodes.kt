@@ -13,6 +13,15 @@ import java.time.temporal.ChronoUnit
  *
  * 每行都带 [planTitle]：待办板是跨计划的，只写节点名看不出它属于哪个计划。
  */
+/** 今天已勾掉的计划节点（任务页「今日完成」用，来源见 AppRuntime.collectTodayDonePlanNodes）。 */
+data class TodayDoneNode(
+    val planId: String,
+    val planTitle: String,
+    val occurrenceId: String,
+    val title: String,
+    val minutes: Int,
+)
+
 internal data class PlanNodeRow(
     val planId: String,
     val planTitle: String,

@@ -895,6 +895,15 @@ private fun DayChip(
         },
         label = "day-chip-border",
     )
+    val done = day.items.count { it.status == "done" }
+    val total = day.items.size
+    val full = total > 0 && done == total
+    // 全做完：背景慢慢浮出一枚大对勾（不是整格变色），给「今天收工了」一点动静。
+    val checkAlpha by animateFloatAsState(
+        targetValue = if (full) 1f else 0f,
+        animationSpec = tween(durationMillis = 260),
+        label = "day-chip-check",
+    )
     val background = when {
         hovering -> MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
         selected -> MaterialTheme.colorScheme.primaryContainer
@@ -905,7 +914,9 @@ private fun DayChip(
     } else {
         MaterialTheme.colorScheme.onSurface
     }
-    Column(
+    val weekday = day.label.substringBefore(" ")
+    val dayOfMonth = day.day.substringAfterLast("-").trimStart('0').ifBlank { "0" }
+    Box(
         modifier = modifier
             .onGloballyPositioned { coordinates ->
                 bounds = coordinates.boundsInRoot()
@@ -921,28 +932,42 @@ private fun DayChip(
             .border(1.dp, borderColor, shape)
             .clickable(onClick = onClick)
             .padding(vertical = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(2.dp),
+        contentAlignment = Alignment.Center,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(day.label.substringBefore(" "), style = tokens.type.meta, color = foreground)
-            if (day.today) {
-                Box(
-                    Modifier.size(4.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary),
-                )
+        val watermark = if (selected) {
+            MaterialTheme.colorScheme.onPrimaryContainer
+        } else {
+            MaterialTheme.colorScheme.primary
+        }
+        if (checkAlpha > 0.02f) {
+            // 对勾做成右下角的「盖章」，不当整格水印：44dp 铺满会把「周一 · day 2 / 4/4」
+            // 压在勾上，看着像脏了。盖章只在角落露一点，完成感有了，字还是字。
+            Box(Modifier.align(Alignment.BottomEnd).padding(end = 6.dp, bottom = 4.dp)) {
+                CheckMark(size = 18.dp, tint = watermark.copy(alpha = 0.5f * checkAlpha))
             }
         }
-        Text(
-            day.label.substringAfter(" ", "").ifBlank { day.day.takeLast(5) },
-            style = MaterialTheme.typography.labelMedium,
-            fontFamily = AppFonts.mono,
-            color = foreground,
-        )
-        Text(
-            if (day.items.isEmpty()) "—" else day.items.size.toString() + " 件",
-            style = tokens.type.caption,
-            color = if (selected) foreground else MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                // 周几和 day N 同级：都是「这是哪天」的单位，不再让裸数字单独占一行。
+                Text("$weekday · day $dayOfMonth", style = tokens.type.meta, color = foreground)
+                if (day.today) {
+                    Box(
+                        Modifier.size(4.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary),
+                    )
+                }
+            }
+            Text(
+                if (total == 0) "—" else done.toString() + "/" + total,
+                style = tokens.type.caption,
+                color = if (selected) foreground else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

@@ -2369,6 +2369,15 @@ class AppRuntime private constructor() {
         private set
 
     /**
+     * 今天已经在计划里勾掉的节点。
+     *
+     * 任务页勾完节点后，`todoPlanNodes` 会立刻把它摘掉——行凭空消失，用户不知道勾成功没有。
+     * 所以任务页还留一张「今日完成」的小清单，勾完从待办挪到这里，而不是原地蒸发。
+     */
+    var todayDonePlanNodes by mutableStateOf<List<TodayDoneNode>>(emptyList())
+        private set
+
+    /**
      * 本周进度：本周排到天里的节点数、已经做完几件、估时合计。
      *
      * 首页右栏只需要这三个数，但「本周」和后端算的当前周必须是同一周——所以由
@@ -2557,6 +2566,28 @@ class AppRuntime private constructor() {
         )
     }.getOrDefault(emptyList())
 
+    /** 各计划「今天已完成的节点」：任务页勾完要能看见结果，不能勾完就消失。 */
+    private fun collectTodayDonePlanNodes(service: LearningPlanService): List<TodayDoneNode> = runCatching {
+        val today = clock.today().toString()
+        planAll.filter { it.status != "ended" }.flatMap { plan ->
+            runCatching { service.today(plan.id, today) }.getOrNull()
+                // `occurrences` 只装 status=planned 的；做完的在 `completed` 里（含「安排在今天、
+                // 之前就勾掉」的那些）。这里要的是「今天完成的」，所以读 completed。
+                ?.completed
+                ?.map { occurrence ->
+                    TodayDoneNode(
+                        planId = plan.id,
+                        planTitle = plan.title,
+                        occurrenceId = occurrence.id,
+                        title = occurrence.title,
+                        // completed 只带标题不带分钟；分钟数交给计划页看，这里不硬凑。
+                        minutes = 0,
+                    )
+                }
+                ?: emptyList()
+        }
+    }.getOrDefault(emptyList())
+
     /** 进计划页、切周切天、写完一条之后都走这里：一次取齐整页要显示的 view model。 */
     fun refreshPlan() {
         val service = learningPlan() ?: return
@@ -2566,6 +2597,7 @@ class AppRuntime private constructor() {
             // 否则今天新铺出来的节点要等下一次刷新才出现在待办板上。
             val rhythmReports = advancePlanRhythm(service)
             todoPlanNodes = collectTodoPlanNodes(service)
+            todayDonePlanNodes = collectTodayDonePlanNodes(service)
             planCategories = planCategoryStore.load()
             val today = clock.today().toString()
             val planId = planFocusId?.takeIf { id -> planAll.any { it.id == id } }

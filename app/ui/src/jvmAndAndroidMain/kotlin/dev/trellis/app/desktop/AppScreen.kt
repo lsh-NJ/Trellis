@@ -672,6 +672,7 @@ internal fun TaskBoard(runtime: AppRuntime, taskFocus: FocusRequester, framed: B
         }
 
         TaskBoardPlanNodes(runtime)
+        TaskBoardTodayDone(runtime)
 
         Spacer(Modifier.height(14.dp))
         AddTaskRow(runtime, taskFocus)
@@ -741,6 +742,51 @@ private fun TaskBoardPlanNodes(runtime: AppRuntime) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                 modifier = Modifier.padding(start = 18.dp, bottom = 4.dp),
             )
+        }
+    }
+}
+
+/**
+ * 「今日完成」：今天在计划里勾掉的节点。
+ *
+ * 勾完就从待办里摘掉是对的（它不再是待办），但不能让它凭空消失——否则用户不知道自己
+ * 刚才那一下成没成。做完的节点挪到这张小清单里，给对勾、给标题，点一下回计划页看当天。
+ */
+@Composable
+private fun TaskBoardTodayDone(runtime: AppRuntime) {
+    val done = runtime.todayDonePlanNodes
+    if (done.isEmpty()) return
+    val tokens = LocalTrellisTokens.current
+
+    GroupLabel("今日完成", done.size)
+    done.forEach { node ->
+        Row(
+            modifier = Modifier.fillMaxWidth()
+                .clip(RoundedCornerShape(3.dp))
+                .clickable {
+                    runtime.currentTab = TAB_PLAN
+                }
+                .padding(horizontal = 6.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) {
+                CheckMark(size = 16.dp)
+            }
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    node.title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    node.planTitle + if (node.minutes > 0) " · " + node.minutes + " 分钟" else "",
+                    style = tokens.type.meta,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                )
+            }
         }
     }
 }
