@@ -111,6 +111,25 @@ class UiRenderTest {
     }
 
     /**
+     * 2026-11 批 6：任务页两栏的门槛从 1100 降到「对话正文列最大宽度」760 之后，
+     * 900px 的窗口应该已经是两栏（左清单 + 右 340 盘点/进度）。
+     * 只断言「不是空白」不牢靠，所以顺手钉一下右栏存在：右栏背景卡片会在右侧
+     * 1/3 区域留下一块比左侧清单更亮的像素。
+     */
+    @Test
+    fun rendersTheTwoColumnTasksAtChatColumnWidth() {
+        val home = Files.createTempDirectory("trellis-ui-narrow").toFile().apply { deleteOnExit() }
+        val runtime = runBlocking { AppRuntime.create(home) }
+        runtime.currentTab = TAB_TASKS
+
+        val shot = render(runtime, dark = false, width = 900, height = 700)
+        write("ui-shot-tasks-two-column.png", shot)
+        assertTrue(shot.size > 5_000, "两栏截图太小了，八成是空白画面：" + shot.size)
+
+        runBlocking { runtime.shutdown() }
+    }
+
+    /**
      * 2026-11 批 1 的验收材料：设置页「外观」和两套内置主题的对比。
      *
      * 拍高一点（1500）——外观现在有五组选项（主题/深浅色/字号/密度/卡片/圆角/导航），

@@ -255,5 +255,12 @@ private fun tokenType(chrome: ChromeStyle): TokenType {
  */
 internal object TrellisBreakpoints {
     const val compact = 720f
+
+    /**
+     * 「宽窗」：对话页正文列的最大宽度（760dp）。
+     * 能放下这么宽就已经够摆两栏了，不用等到 1100。
+     */
+    const val twoColumn = 760f
+
     const val medium = 1100f
 }

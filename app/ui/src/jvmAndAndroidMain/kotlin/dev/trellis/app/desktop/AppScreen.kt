@@ -355,7 +355,10 @@ private fun TasksTab(runtime: AppRuntime, modifier: Modifier) {
     // 原来一列 LazyColumn 把两种东西上下叠着，下半屏一大片空白；窗口不够宽就退回单列，
     // 断点先给一个够用的值（< 900dp 单列），精细的三档断点留批 6。
     BoxWithConstraints(keyModifier.fillMaxSize()) {
-        val twoColumn = maxWidth >= TrellisBreakpoints.medium.dp
+        // 门槛按「对话正文列最大宽度」算：760 已经是正常阅读宽度，再往上才分栏太苛刻。
+        val twoColumn = maxWidth >= TrellisBreakpoints.twoColumn.dp
+        // 刚过门槛时右栏收窄一点，别把左边清单挤成 300 多 dp。
+        val railWidth = if (maxWidth < 900.dp) 300.dp else 340.dp
         if (!twoColumn) {
             Column(
                 modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
@@ -374,7 +377,7 @@ private fun TasksTab(runtime: AppRuntime, modifier: Modifier) {
                     TaskBoardSlot(runtime)
                 }
                 Column(
-                    modifier = Modifier.width(340.dp).fillMaxHeight().verticalScroll(rememberScrollState()),
+                    modifier = Modifier.width(railWidth).fillMaxHeight().verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
                     TaskHeaderSlot(runtime)
