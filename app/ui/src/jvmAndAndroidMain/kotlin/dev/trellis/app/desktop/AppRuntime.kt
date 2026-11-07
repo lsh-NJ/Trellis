@@ -46,8 +46,12 @@ import dev.trellis.feature.learning.LearningPlanStore
 import dev.trellis.feature.learning.PlanDocStore
 import dev.trellis.feature.exams.ExamSeed
 import dev.trellis.feature.exams.Exercise
+import dev.trellis.feature.exams.ExerciseAttempt
+import dev.trellis.feature.exams.ExerciseAttemptStore
 import dev.trellis.feature.exams.ExerciseBank
 import dev.trellis.feature.exams.ExerciseFileStore
+import dev.trellis.feature.exams.SubjectMastery
+import dev.trellis.feature.exams.masteryOf
 import dev.trellis.activity.ActivityAggregator
 import dev.trellis.activity.ActivityClassifier
 import dev.trellis.activity.ActivitySettings
@@ -741,7 +745,24 @@ class AppRuntime private constructor() {
     internal var practiceAnswerVisible by mutableStateOf(false)
         private set
 
+    /** 作答记录文件（`<home>/exams/attempts.jsonl`）；题库加载后初始化。 */
+    private var attemptStore: ExerciseAttemptStore? = null
+
+    /** 当前这道题是否已记录作答（一次练习只记一条，重复点「看答案」不重复记账）。 */
+    private var practiceRecorded by mutableStateOf(false)
+
+    /** 历史作答（`<home>/exams/attempts.jsonl`）；掌握度与推荐都从这里现算。 */
+    internal var practiceAttempts by mutableStateOf(emptyList<ExerciseAttempt>())
+        private set
+
     internal val practiceActive: Boolean get() = practiceExercise != null
+
+    /** 当前这道题是否已经记过作答（决定知识点题的自评按钮还显不显示）。 */
+    internal val practiceAnswered: Boolean get() = practiceRecorded
+
+    /** 当前这道题所属学科的掌握度小计；没做过就是 null。 */
+    internal val practiceMastery: SubjectMastery?
+        get() = practiceExercise?.let { masteryOf(practiceAttempts, it.subject) }
 
     internal fun togglePracticeOption(label: String) {
         if (practiceAnswerVisible) return
@@ -749,7 +770,46 @@ class AppRuntime private constructor() {
     }
 
     internal fun revealPracticeAnswer() {
+        if (practiceAnswerVisible) return
         practiceAnswerVisible = true
+        // 客观题在揭示答案时自动判分；知识点/简答没有可核对的标签，留给用户自评。
+        val exercise = practiceExercise ?: return
+        if (exercise.kind.isObjective) {
+            val expected = exercise.normalizedAnswerLabels().map { it.uppercase() }.toSet()
+            val chosen = practiceSelected.map { it.uppercase() }.toSet()
+            recordPracticeAttempt(correct = expected.isNotEmpty() && chosen == expected, selfReported = false)
+        }
+    }
+
+    /**
+     * 知识点/简答题的「记住了 / 没记住」自评。
+     *
+     * 这类题没有可自动核对的标准答案，用自评也能给出可演示的掌握度；记录里
+     * 用 `selfReported = true` 标出来，统计口径上不会被当成客观判分。
+     */
+    internal fun ratePracticeAnswer(remembered: Boolean) {
+        val exercise = practiceExercise ?: return
+        if (exercise.kind.isObjective) return
+        recordPracticeAttempt(correct = remembered, selfReported = true)
+    }
+
+    /** 记一条作答（一次练习最多一条）；写盘失败只记日志，不影响做题。 */
+    private fun recordPracticeAttempt(correct: Boolean, selfReported: Boolean) {
+        if (practiceRecorded) return
+        val exercise = practiceExercise ?: return
+        practiceRecorded = true
+        val attempt = ExerciseAttempt(
+            at = clock.nowMs(),
+            exerciseId = exercise.id,
+            subject = exercise.subject,
+            course = exercise.course,
+            kind = exercise.kind,
+            correct = correct,
+            selfReported = selfReported,
+        )
+        runCatching { attemptStore?.append(attempt) }
+            .onFailure { appendAppLog("练习记录没写进去：" + (it.message ?: it.javaClass.simpleName)) }
+        practiceAttempts = practiceAttempts + attempt
     }
 
     /** 关闭练习页：回会话页；下次接受新提议会重新打开。 */
@@ -757,6 +817,7 @@ class AppRuntime private constructor() {
         practiceExercise = null
         practiceSelected = emptySet()
         practiceAnswerVisible = false
+        practiceRecorded = false
         currentTab = TAB_CHAT
     }
 
@@ -779,6 +840,7 @@ class AppRuntime private constructor() {
         practiceExercise = exercise
         practiceSelected = emptySet()
         practiceAnswerVisible = false
+        practiceRecorded = false
         currentTab = TAB_PRACTICE
     }
 
@@ -817,8 +879,9 @@ class AppRuntime private constructor() {
                 .mapNotNull { line -> line.practiceProposal?.takeIf { it.planId == planId }?.exerciseId }
                 .toSet()
         }.getOrDefault(emptySet()) + proposedPracticeExerciseIds
-        val exercise = examBank.suggestFor(
+        val exercise = examBank.recommendFor(
             text = listOf(planTitle, occurrence.title, occurrence.chapter).joinToString(" "),
+            attempts = practiceAttempts,
             limit = 5,
             excludeIds = alreadyProposed,
         ).firstOrNull() ?: return
@@ -830,7 +893,12 @@ class AppRuntime private constructor() {
             subject = exercise.subjectLabel,
             exerciseId = exercise.id,
             title = "学完「" + occurrence.title + "」，练一道题？",
-            detail = "题库里有匹配「" + exercise.subject + "」的练习，只显示这一道；做完就回会话。",
+            detail = buildString {
+                append("题库里有匹配「" + exercise.subject + "」的练习，只显示这一道；做完就回会话。")
+                masteryOf(practiceAttempts, exercise.subject)?.let {
+                    append("你在这科" + it.label() + "。")
+                }
+            },
         )
         val text = "学完「" + occurrence.title + "」了。" +
             "题库里有匹配「" + exercise.subject + "」的练习，现在练一道吗？"
@@ -872,6 +940,13 @@ class AppRuntime private constructor() {
         examBank = ExerciseBank(merged.values.toList())
         examLoadNotes = notes
         notes.forEach { appendAppLog("题库：" + it) }
+        runCatching {
+            val store = ExerciseAttemptStore(File(home, "exams/attempts.jsonl").toPath())
+            attemptStore = store
+            practiceAttempts = store.load()
+        }.onFailure {
+            appendAppLog("练习记录没读出来：" + (it.message ?: it.javaClass.simpleName))
+        }
     }
 
     private var nextChatLineId = 1L
@@ -2038,6 +2113,17 @@ class AppRuntime private constructor() {
                 clock = clock,
                 onChanged = { refreshPlan() },
             )
+            // 「只有目标、没有现成材料」时的第一只手：先调研出路径和两周安排，再落计划。
+            // create_learning_plan 负责「已有材料」（bvid / 手写大纲），两者不要同时用。
+            val researchTools = ResearchTools(
+                service = { runCatching { learningPlan() }.getOrNull() },
+                planDocStore = { if (::planDocStore.isInitialized) planDocStore else null },
+                planDbError = { planDbError },
+                weeklyCapacity = { studyPrefs.weeklyMinutes },
+                clock = clock,
+                llm = llm,
+                onChanged = { refreshPlan() },
+            )
             val diagnosticsTools = DiagnosticsTools { diagnosticsReport() }
             // 跨会话记忆也是手：用户说出长期目标/偏好时写进管家日志，要回忆过去时再检索。
             // 和管家仪式共用同一份 append-only 记忆 —— 目标不该只有晨/夜仪式才有机会落盘。
@@ -2059,13 +2145,13 @@ class AppRuntime private constructor() {
             }
             val allTools = tools.all + screenToolList + layoutTools.all + styleTools.all +
                 workflowTools.all + bilibiliTools.all + taskTools.all + planTools.all +
-                planAdminTools.all + planDocTools.all + diagnosticsTools.all + memoryTools.all
+                planAdminTools.all + planDocTools.all + researchTools.all + diagnosticsTools.all + memoryTools.all
             val guidance = tools.guidance + "\n\n" + screenGuidance +
                 "\n\n" + layoutTools.guidance + "\n\n" + styleTools.guidance +
                 "\n\n" + workflowTools.guidance + "\n\n" + bilibiliTools.guidance +
-                "\n\n" + taskTools.guidance + "\n\n" + planTools.guidance +
-                "\n\n" + planAdminTools.guidance + "\n\n" + planDocTools.guidance + "\n\n" + diagnosticsTools.guidance +
-                "\n\n" + memoryTools.guidance
+                "\n\n" + taskTools.guidance + "\n\n" + researchTools.guidance + "\n\n" + planTools.guidance +
+                "\n\n" + planAdminTools.guidance + "\n\n" + planDocTools.guidance +
+                "\n\n" + diagnosticsTools.guidance + "\n\n" + memoryTools.guidance
             // 跨会话记忆块只随记忆内容变化，接在 guidance 最末尾：两条路径（普通 / 管家）
             // 都用同一份 promptGuidance，静态前缀逐字节稳定，前缀缓存只从记忆块开始失效。
             val memorySection = memoryBlock()

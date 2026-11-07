@@ -138,6 +138,7 @@ private val TOOL_INTENTS: Map<String, Set<AgentIntent>> = mapOf(
     "add_tasks" to setOf(AgentIntent.FindResource),
     // 计划页：用户点「排成学习计划」时要真的写进计划库，不是只写这一轮的动作清单
     "create_learning_plan" to setOf(AgentIntent.FindResource),
+    "research_plan" to setOf(AgentIntent.FindResource, AgentIntent.PlanManage),
 
     // 学习计划维护：读现状、推进周节奏、勾节点、顺延、复盘、改每天投入。
     // 这几只新工具必须**显式登记**：没登记的会落进 DEFAULT_INTENTS，

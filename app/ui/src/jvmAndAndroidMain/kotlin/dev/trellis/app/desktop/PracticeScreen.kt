@@ -64,6 +64,14 @@ internal fun PracticeScreen(runtime: AppRuntime, modifier: Modifier = Modifier) 
                 .align(Alignment.CenterHorizontally),
         ) {
             ExerciseCard(runtime, exercise)
+            runtime.practiceMastery?.let { mastery ->
+                Spacer(Modifier.height(tokens.space.s))
+                Text(
+                    "${mastery.subject}：${mastery.label()}",
+                    style = tokens.type.caption,
+                    color = colors.ink2,
+                )
+            }
             Spacer(Modifier.height(tokens.space.m))
             Text(
                 "这道题来自题库，只在这一次练习里显示。",
@@ -136,7 +144,33 @@ private fun ExerciseCard(runtime: AppRuntime, exercise: Exercise) {
             }
         } else {
             AnswerPanel(runtime, exercise)
+            if (!exercise.kind.isObjective) {
+                SelfReportRow(runtime)
+            }
             ChromeButton(label = "回到会话", onClick = { runtime.closePractice() })
+        }
+    }
+}
+
+/**
+ * 知识点/简答题没有被判分的选项，用一句话自评给掌握度提供数据。
+ *
+ * 只影响演示用的最小掌握度，不承诺「掌握度=会了」；一次练习只记一条。
+ */
+@Composable
+private fun SelfReportRow(runtime: AppRuntime) {
+    val tokens = LocalTrellisTokens.current
+    val colors = tokens.colors
+    if (runtime.practiceAnswered) {
+        Text("这次的自评已经记下了。", style = tokens.type.caption, color = colors.ink3)
+    } else {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(tokens.space.m),
+        ) {
+            Text("记住了吗？", style = tokens.type.body, color = colors.ink2)
+            ChromeTextLink("记住了", onClick = { runtime.ratePracticeAnswer(remembered = true) })
+            ChromeTextLink("没记住", onClick = { runtime.ratePracticeAnswer(remembered = false) })
         }
     }
 }

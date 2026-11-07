@@ -182,11 +182,9 @@
   - 影响：「拆解我的理想/项目」只能靠模型单次输出，无法追踪演进、无法把「目标」注入推荐与管家。
   - 涉及：`features/learning-process`（schema/新命令）、`sdk-domain/.../plan/LearningPlanService.kt`、计划页/计划文档。
   - 验证：能建目标/项目并从计划引用；目标页/计划头显示目标；旧库迁移测试。
-- [ ] **G-A2 `research_plan` 工具缺失（P0，1–2 天）**
-  - 现状：只有建计划（`create_learning_plan`）与计划文档工具（`read_plan_doc`/`write_plan_doc`/`sync_plan_week`），没有「先调研→出路径草案」；B 站检索现成，其它资源/自写大纲没有调研工具。
-  - 影响：「想学 X → agent 找资料 → 拆成学习点」的「找资料」一环没有正式工具，靠提示词即兴。
-  - 涉及：`app/ui/.../PlanTools.kt`、`ai/.../ManagerPrompt.kt`（提示词与工具清单）、测试。
-  - 验证：给定想学主题，工具产出结构化草案（来源/单元/周建议），可落进计划文档或直接建计划；失败可重试。
+- [x] **G-A2 `research_plan` 工具（2026-11-07 已落地最小版）**
+  - 现状：`app/ui/.../ResearchTools.kt` 提供 `research_plan(goal, dailyMinutes)`：模型产出结构化草案（title/units/周建议）→ 校验 → `createProcess/saveDraft/acceptDraft` 建计划 + 写计划文档（`PlanDocStore`）；缺 weeks 时按每天预算自动排；`ManagerRouter` 已登记（FindResource / PlanManage）。
+  - 由面到点主链路已通：目标式说法（「两周复习完 X」）→ research_plan → 计划 + 计划文档 + 本周/下周安排。仍缺：外部来源引用（B 站/书籍）与先修依赖；纯目标话术要靠提示词引导，模型仍可能先走 B 站全量导入。
 - [ ] **G-A3 拆解缺结构（P1，1–2 天）**
   - 无先修依赖、无难度/时长校准（单元分钟数由模型拍，后端 `CHECK` 只保证 10–45）、无拆解模板/参考资料库；同类目标重复建计划无模板复用。
 - [ ] **G-A4 项目型计划未建模（P1，依赖 G-A1）**
@@ -200,16 +198,15 @@
 
 ### 3.2 由点到面（知识点+目标 → 推荐练习/项目）
 
-- [ ] **G-B1 练习 attempt/证据层缺失（P0，1–2 天）**
-  - 现状：`PracticeScreen.kt` 只即时判对错（`答对了/答错了`），不留档；计划完成也没有 `done_kind`/session 证据。
-  - 影响：没有证据就无法算掌握度，「因材施教」的输入不存在。
-  - 涉及：`features/exams`（attempt 表/JSONL）、`PracticeScreen`/`AppRuntime`、计划完成后端（`done_kind`）。
-  - 验证：答一题落一条记录（exerciseId/planId/unitId/对错/耗时/时间）；重启后还在；可导出。
-- [ ] **G-B2 掌握度模型缺失（P0，依赖 G-B1，1–2 天）**
-  - `docs/knowledge-base-draft.md` 明确「不做掌握度」因为缺证据链；补 G-B1 后做最小版：每概念/学科答对率、最近练习、衰减权重。
-- [ ] **G-B3 推荐器缺失（P0，依赖 G-B2，1–2 天）**
-  - 设计过 4 条规则（已学未练 / 概念邻接 / 目标路径 / 项目候选），代码没有；目前「下一步」靠管家随口说。
-  - 涉及：`features/exams` 或新 `features/recommend`、管家/练习提议、`docs/steward.md`。
+- [x] **G-B1 练习 attempt 记录（2026-11-07 已落地最小版）**
+  - 现状：`features/exams/.../ExerciseAttempt.kt`（`ExerciseAttempt` + `ExerciseAttemptStore`）落 `<home>/exams/attempts.jsonl`；客观题揭示答案时按 `normalizedAnswerLabels()` 自动判分并记录，知识点/简答题在答案下方「记住了/没记住」自评（`selfReported=true`）；一次练习只记一条；重启后从文件恢复。
+  - 仍缺：记录里没有 planId/unitId/耗时（当前正确性证据够用，跨模块归因待补）；计划完成仍无 `done_kind`/session 证据。
+- [x] **G-B2 掌握度最小版（2026-11-07 已落地）**
+  - 现状：`summarizeMastery(attempts)` / `masteryOf(attempts, subject)` 现算；练习页卡下显示「数据结构：近 N 题答对 M（X%）」，练习提议的摘要里也带该科正确率。
+  - 仍缺：概念级掌握度、时间衰减权重、与计划完成度联动。
+- [x] **G-B3 推荐器最小版（2026-11-07 已落地）**
+  - 现状：`ExerciseBank.recommendFor(text, attempts, excludeIds)` — 学科/课程/标签命中后按「上次做错 > 没做过 > 做对」排序；`maybeProposePractice` 已改用它（原 `suggestFor` 保留给无历史场景）。单测覆盖「错题优先 → 新题 → 做对」。
+  - 仍缺：概念邻接、目标路径、项目候选三类规则；仍是一次一道、无连练。
 - [ ] **G-B4 目标推断缺失（P1，文档已记）**
   - 只有显式 `goal` 才有方向；从对话/笔记推断目标、不确定时主动问，未做（`docs/plan-rhythm-draft.md`）。
 - [ ] **G-B5 题库覆盖与匹配质量（P1，2–3 天 + 抓取）**

@@ -49,6 +49,17 @@ enum class ExerciseKind {
             RecallCard -> "知识点"
         }
 
+    /** 落库用的 snake_case 名称，与 JSONL 里写的一致（数据契约的一部分）。 */
+    val wireName: String
+        get() = when (this) {
+            SingleChoice -> "single_choice"
+            MultipleChoice -> "multiple_choice"
+            TrueFalse -> "true_false"
+            ShortAnswer -> "short_answer"
+            Essay -> "essay"
+            RecallCard -> "recall_card"
+        }
+
     companion object {
         /** 解析 JSONL / 命令行里写的字符串；认不出返回 null，调用方负责报错。 */
         fun fromWire(value: String): ExerciseKind? {
