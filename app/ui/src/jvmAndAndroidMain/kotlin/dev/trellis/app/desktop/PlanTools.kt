@@ -4,6 +4,7 @@ import dev.trellis.ai.tool.AgentTool
 import dev.trellis.ai.tool.ToolResult
 import dev.trellis.domain.plan.Actor
 import dev.trellis.domain.plan.CommandEnvelope
+import java.time.LocalDate
 import dev.trellis.domain.plan.CommitmentDraft
 import dev.trellis.domain.plan.LearningPlanService
 import dev.trellis.domain.plan.UnitDraft
@@ -71,7 +72,7 @@ private fun takeWeekBatch(units: List<UnitDraft>, start: Int, budgetMinutes: Int
     val picked = mutableListOf<Int>()
     var used = 0
     var index = start
-    while (index < units.size && picked.size < 7) {
+    while (index < units.size) {
         val minutes = units[index].estimateMinutes
         if (picked.isNotEmpty() && used + minutes > budgetMinutes) break
         picked += index
@@ -82,8 +83,12 @@ private fun takeWeekBatch(units: List<UnitDraft>, start: Int, budgetMinutes: Int
 }
 
 /**
- * source 模式（bvid 全量导入）的排周：本周按 dailyMinutes×7×0.8 的预算取一批，
- * 下一周再取一批；取不到就不建承诺，剩下的都留在「待安排」池里。
+ * source 模式（bvid 全量导入）的排周：**全局周表**——从本周起一周接一周地排，
+ * 每周按 dailyMinutes×7×0.8 的预算、最多 7 个单元，直到所有单元都排完。
+ *
+ * 之前这里只排本周+下周、其余留在池里，结果是「计划永远只活在前两周」，
+ * 看不到整体路线。现在把整条路线一次排完：未来周只是「已承诺、还没铺到天」，
+ * 等那一周到了再由节奏引擎把该周铺到每天（materializeWeek）。
  *
  * 周号由调用方从注入时钟算好传进来：工具不能自己取系统时间，
  * 否则开发者模式拨日期后，AI 建出来的计划仍按真实日期排。
@@ -92,15 +97,43 @@ private fun autoCommitments(
     units: List<UnitDraft>,
     dailyMinutes: Int,
     thisWeek: String,
-    nextWeek: String,
+    lastWeek: String? = null,
 ): List<CommitmentDraft> {
+    val firstMonday = isoWeekStart(thisWeek) ?: return emptyList()
     val budgetMinutes = (dailyMinutes * 7 * 0.8).toInt()
-    val firstBatch = takeWeekBatch(units, 0, budgetMinutes)
-    val secondBatch = takeWeekBatch(units, firstBatch.size, budgetMinutes)
-    return buildList {
-        if (firstBatch.isNotEmpty()) add(CommitmentDraft(week = thisWeek, unitIndexes = firstBatch))
-        if (secondBatch.isNotEmpty()) add(CommitmentDraft(week = nextWeek, unitIndexes = secondBatch))
+    val weeks = mutableListOf<CommitmentDraft>()
+    var start = 0
+    var index = 0
+    while (start < units.size) {
+        val week = isoWeekOf(firstMonday.plusWeeks(index.toLong()))
+        // 有截止日期：只排到那周为止，剩下的一律留在「待安排」池。
+        if (lastWeek != null && week > lastWeek) break
+        val batch = takeWeekBatch(units, start, budgetMinutes)
+        if (batch.isEmpty()) break
+        weeks += CommitmentDraft(week = week, unitIndexes = batch)
+        start = batch.last() + 1
+        index++
     }
+    return weeks
+}
+
+/** deadline 参数校验结果：要么给出「最后一周」，要么给出错误文案。 */
+private class DeadlineCheck(val lastWeek: String?, val error: String?)
+
+/**
+ * 解析可选的 deadline（YYYY-MM-DD）：格式错、已过去都直接报错。
+ *
+ * 截止日期只影响**排到哪一周**：宿主不会把它换算成「先排两周」，
+ * 也不会因为截止日期近就把用户的每日投入偷偷调高——排不下就留在待安排池。
+ */
+private fun checkDeadline(arguments: JsonObject, today: LocalDate): DeadlineCheck {
+    val raw = arguments.textArg("deadline") ?: return DeadlineCheck(null, null)
+    val date = runCatching { LocalDate.parse(raw) }.getOrNull()
+        ?: return DeadlineCheck(null, "deadline 要写成 YYYY-MM-DD，现在是「$raw」。")
+    if (date < today) {
+        return DeadlineCheck(null, "deadline（$raw）已经过去了；不要给过去的截止日期。")
+    }
+    return DeadlineCheck(isoWeekOf(date), null)
 }
 
 /** 参数里的字符串（去空白）；没有或是 null 就是 null。 */
@@ -141,9 +174,6 @@ class PlanTools(
     /** 今天所在的 ISO 周，比如 "2026-W44"。 */
     private fun currentIsoWeek(): String = clock.isoWeek()
 
-    /** 下一 ISO 周。 */
-    private fun nextIsoWeek(): String = isoWeekOf(clock.today().plusWeeks(1))
-
     val guidance: String = listOf(
         "<how_to_create_learning_plan>",
         "1. `set_plan` 只写这一轮的动作；**计划页要的是 create_learning_plan**。",
@@ -151,15 +181,18 @@ class PlanTools(
         "2. 用户只有目标、没有指定课程/BV/链接时，**先 research_plan 调研出路径**（见 how_to_research_plan），不要一上来搜 B 站。",
         "   用户明确指定了课程/视频/BV 号，或要求「用某门课速通」时，才把 bvid 直接交给 create_learning_plan(bvid=...)，",
         "   可选 fromPart/toPart 只导入第几集到第几集。宿主会自己拉分集、按分集标题生成全部单元，",
-        "   并把本周+下周排好，其余留在「待安排」。**总路线要全**：不要替用户挑「前面几集」，也不要逐条抄分集标题。",
+        "   并把**从本周起的全局周表**一次排好（每周按每天分钟数估算，最多 14 个；整门课不会只排前两周）。**总路线要全**：不要替用户挑「前面几集」，也不要逐条抄分集标题。",
         "   走 add_tasks 那条路才从目录里挑 6-12 集；排计划不要挑。",
-        "3. 用了 bvid 就不要再写 units / weeks：单元和排周都由宿主自动做。手写会和分集对不上，工具会直接报错让你删掉。",
-        "4. 排计划前先问一句「你每天大概能投入多少分钟」（15–240），拿到的值填 dailyMinutes。",
-        "   不知道就先按 60 分钟建，并在回复里说明「按每天 60 分钟排的，要改跟我说」。",
-        "5. 来源不是 B 站（自己的书 / 网课章节 / 其它资料）才手写 units + weeks；也可以先用 write_plan_doc 写计划文档（目标 + 每周条目），再用 sync_plan_week 按周排进计划：",
-        "   单元时间按真实时长估（10–45 分钟）；第一次只给**本周和下一周**建承诺（最多 2 周、每周 1–7 个），其余单元留在池里。",
-        "6. 手写 units + weeks 时第一周必须是**本周**（今天所在的那一周）：计划从今天开始排，不要从下周开始。",
-        "7. 写完说清「计划页第 X 周有多少单元、待安排还剩几个」；不要去改用户别的数据。",
+        "3. 用了 bvid 就不要再写 units / weeks：单元和全局周表都由宿主自动做。手写会和分集对不上，工具会直接报错让你删掉。",
+        "4. dailyMinutes 只是**建议**：用户主动说了就用用户的值；没说就用设置页「每天预计投入」（默认 60）。",
+        "   不要为这个值单独问用户、更不要弹选项；排完在回复里说一句「按每天 X 分钟排的，想改随时说（也可以直接让我调节奏）」。",
+        "5. 计划先做**整体**、再做**每周局部**：先把整条路线按周排全（覆盖到目标/截止日期），之后每周由节奏引擎把该周铺到天；不要让计划只活在前两周。",
+        "6. 来源不是 B 站（自己的书 / 网课章节 / 其它资料）才手写 units + weeks：单元时间按真实时长估（10–45 分钟）；",
+        "   weeks 从本周起、周与周连续、每周 1–14 个；把能覆盖到目标的周表一次给全（**不设周数上限**）。",
+        "7. 用户给了考试/截止日期（「还有两周考试」「月底前学完」）：把 deadline 传给 create_learning_plan / research_plan，",
+        "   宿主会按截止周倒排全局周表；最后 1–2 周留复习/模考。排不下就少排、其余留在待安排，不要为此擅自抬高每天投入。",
+        "8. 手写 units + weeks 时第一周必须是**本周**（今天所在的那一周）：计划从今天开始排，不要从下周开始。",
+        "9. 写完说清「全局排了多少周、本周 X 个、待安排还剩几个」；不要去改用户别的数据。",
         "</how_to_create_learning_plan>",
     ).joinToString("\n")
 
@@ -169,16 +202,19 @@ class PlanTools(
         override val name: String = "create_learning_plan"
         override val description: String =
             "在「计划」页建一份学习计划。排 B 站课程时优先传 bvid：宿主会直接拉分集，" +
-                "把整门课**全量**变成单元（总路线要全），并自动把本周+下周排好，其余进「待安排」；" +
-                "传了 bvid 就不要手写 units/weeks。非 B 站来源才手写 units + weeks（第一周必须是本周，最多 2 周、每周 1–7 个）。" +
-                "dailyMinutes 是用户每天能投入的分钟数（15–240，拿不准就按 60）。会写用户数据；长期学习计划用这个，一次性任务用 add_tasks。"
+                "把整门课**全量**变成单元（总路线要全），并按**从本周起的全局周表**把整门课排到未来各周（每周按每天分钟数估算，最多 14 个）；" +
+                "传了 bvid 就不要手写 units/weeks。非 B 站来源才手写 units + weeks（第一周必须是本周、周与周连续、每周 1–14 个，" +
+                "周数按整个计划周期给全，不设上限）。dailyMinutes 是建议值（15–240；用户没主动说就别单独问）；传 deadline 时宿主按截止周倒排、排不下留待安排。" +
+                "会写用户数据；长期学习计划用这个，一次性任务用 add_tasks。"
         override val parameters: String =
-            "bvid：B 站视频 BV 号（首选，例：BV1YE411D7nH）；传了就不要再传 units/weeks，单元由宿主按分集生成、排周也由宿主自动做。" +
+            "bvid：B 站视频 BV 号（首选，例：BV1YE411D7nH）；传了就不要再传 units/weeks，单元由宿主按分集生成、全局周表也由宿主自动排。" +
                 "fromPart / toPart：可选，只导入第几集到第几集（1-based，省略=全部集）。" +
                 "title：计划标题（如「操作系统速通」）；" +
-                "dailyMinutes：每天投入分钟数（15–240，默认 60）；" +
+                "dailyMinutes：建议值，每天投入分钟数（15–240；没说就按设置里的每天预计投入/60）；" +
+                "deadline：可选截止日期（YYYY-MM-DD）。用户说「还有两周考试」「月底前学完」就传给 create_learning_plan，" +
+                "宿主会把全局周表排到那个周为止，排不下的留在待安排；" +
                 "units：数组，每项 {title, minutes?, chapter?}（title 必填，minutes 10–45，默认 25），只在手写路径用；" +
-                "weeks：数组，每项 {week: \"2026-W44\", units: [单元 title...]}（最多 2 周，每周 1–7 个），只在手写 units 时用。"
+                "weeks：数组，每项 {week: \"2026-W44\", units: [单元 title...]}（从本周起、周与周连续、每周 1–14 个；周数按整个计划周期给全，不设上限），只在手写 units 时用。"
 
         override suspend fun call(arguments: JsonObject): ToolResult {
             val plan = service() ?: return ToolResult(
@@ -226,13 +262,8 @@ class PlanTools(
 
             val rawWeeks = arguments["weeks"] as? JsonArray
                 ?: return ToolResult("weeks 要写成数组：[{week, units: [标题...]}, …]", isError = true)
-            if (rawWeeks.size > 2) {
-                return ToolResult(
-                    "第一次只排本周和下一周（最多 2 周），剩下的单元留在「待安排」池里；现在写了 ${rawWeeks.size} 周。",
-                    isError = true,
-                )
-            }
 
+            val thisWeek = currentIsoWeek()
             val indexByTitle = units.mapIndexed { index, unit -> unit.title to index }.toMap()
             val commitments = rawWeeks.mapIndexedNotNull { position, element ->
                 val obj = element as? JsonObject ?: return@mapIndexedNotNull null
@@ -243,7 +274,6 @@ class PlanTools(
                         isError = true,
                     )
                 }
-                val thisWeek = currentIsoWeek()
                 if (position == 0 && week != thisWeek) {
                     return@call ToolResult(
                         "第 1 周要写本周 $thisWeek（计划从今天开始排）；现在写的是 $week。" +
@@ -261,8 +291,8 @@ class PlanTools(
                     ?.mapNotNull { it.jsonPrimitive.contentOrNull?.trim() }
                     ?.filter { it.isNotEmpty() }
                     .orEmpty()
-                if (names.size !in 1..7) {
-                    return@call ToolResult("$week 这一周要有 1–7 个单元，现在有 ${names.size} 个", isError = true)
+                if (names.size !in 1..14) {
+                    return@call ToolResult("$week 这一周要有 1–14 个单元，现在有 ${names.size} 个", isError = true)
                 }
                 val indexes = names.map { name ->
                     indexByTitle[name] ?: return@call ToolResult(
@@ -282,6 +312,18 @@ class PlanTools(
             if (weekOrder != weekOrder.sorted() || weekOrder.distinct().size != weekOrder.size) {
                 return ToolResult("weeks 要按时间从早到晚写、不能重复；现在是：${weekOrder.joinToString("、")}", isError = true)
             }
+            // 全局周表：从本周起一周接一周，中间不跳周（周数本身不限）。
+            val firstMonday = isoWeekStart(thisWeek) ?: return ToolResult("本周格式不对：$thisWeek", isError = true)
+            commitments.forEachIndexed { position, draft ->
+                val expected = isoWeekOf(firstMonday.plusWeeks(position.toLong()))
+                if (draft.week != expected) {
+                    return ToolResult(
+                        "weeks 要从本周 $thisWeek 起一周接一周（周数不限），" +
+                            "第 ${position + 1} 周应该是 $expected，现在是 ${draft.week}。",
+                        isError = true,
+                    )
+                }
+            }
 
             writePlan(plan, title, dailyMinutes, units, commitments)?.let { return it }
 
@@ -289,10 +331,11 @@ class PlanTools(
                 val count = draft.unitIndexes.size
                 "${draft.week} $count 个单元"
             }
+            val placed = commitments.sumOf { it.unitIndexes.size }
             return ToolResult(
-                "计划「$title」建好了：${units.size} 个单元，其中 ${commitments.sumOf { it.unitIndexes.size }} 个排在 " +
-                    "${commitments.size} 周里（$weekLines），其余 ${units.size - commitments.sumOf { it.unitIndexes.size }} 个" +
-                    "留在「待安排」池。每天按 $dailyMinutes 分钟排；去「计划」页能看到周卡片、待安排集合和每天安排。",
+                "计划「$title」建好了：${units.size} 个单元，全局周表共 ${commitments.size} 周" +
+                    "（${commitments.first().week} 起：$weekLines）；其余 ${units.size - placed} 个留在「待安排」池。" +
+                    "每天按 $dailyMinutes 分钟排（只是建议，想改随时说）；去「计划」页能看到全局周卡片和每天安排。",
             )
         }
     }
@@ -355,10 +398,14 @@ class PlanTools(
             )
         }
 
+        val deadlineText = arguments.textArg("deadline")
+        val deadline = checkDeadline(arguments, clock.today())
+        deadline.error?.let { return ToolResult(it, isError = true) }
+
         val allUnits = unitsFromParts(selected)
         val truncated = allUnits.size > UNIT_LIMIT
         val units = allUnits.take(UNIT_LIMIT)
-        val commitments = autoCommitments(units, dailyMinutes, currentIsoWeek(), nextIsoWeek())
+        val commitments = autoCommitments(units, dailyMinutes, currentIsoWeek(), deadline.lastWeek)
         if (commitments.isEmpty()) {
             return ToolResult("（$bvid）没生成出可排的单元，换一个视频或检查分集时长。", isError = true)
         }
@@ -373,9 +420,11 @@ class PlanTools(
             buildString {
                 append("计划「$title」建好了：按 B 站 $bvid 的分集全量导入 ${units.size} 个单元")
                 if (truncated) append("（超过 $UNIT_LIMIT 个，已截断：只取前 $UNIT_LIMIT 个）")
-                append("，其中 $placed 个排在 ${commitments.size} 周里（$weekLines），其余 ${units.size - placed} 个留在「待安排」池。")
-                append("总路线是全的，之后每周会从池子里自动补；每天按 $dailyMinutes 分钟排。")
-                append("去「计划」页能看到周卡片、待安排集合和每天安排。")
+                append("，全局周表共 ${commitments.size} 周（$weekLines）")
+                deadline.lastWeek?.let { append("，按截止日 $deadlineText 排到 $it") }
+                if (placed < units.size) append("；按每天 $dailyMinutes 分钟的节奏，截止日前排不下的 ${units.size - placed} 个留在「待安排」池（之后再说）")
+                append("。总路线一次排完，之后每周到点会自动铺到天；每天按 $dailyMinutes 分钟排（只是建议，想改随时说）。")
+                append("去「计划」页能看到全局周卡片和每天安排。")
             },
         )
     }

@@ -27,8 +27,8 @@ import kotlinx.serialization.json.jsonPrimitive
  *
  * 和 [PlanTools] 的分工：
  * - `create_learning_plan` 处理「已经有材料」的情况（B 站 bvid / 用户给的大纲）——结构是确定的；
- * - `research_plan` 处理「只有一句目标」的情况——让模型先把目标拆成单元和两周安排，
- *   宿主负责校验、落库、写计划文档。模型只出内容，落库仍走同一套命令
+ * - `research_plan` 处理「只有一句目标」的情况——让模型先做**全局规划**：把目标拆成阶段/单元，
+ *   排出从本周起的完整周表；宿主负责校验、落库、写计划文档。模型只出内容，落库仍走同一套命令
  *   （`createProcess → saveDraft → acceptDraft`），失败路径与手工建计划一致。
  *
  * 调研结果同时写成计划文档（`<home>/plans/docs/<planId>.md`），
@@ -47,8 +47,9 @@ class ResearchTools(
     val guidance: String = listOf(
         "<how_to_research_plan>",
         "1. 用户用**目标式说法**且没指定材料时（「我想学会 Python 数据分析」「两周复习完数据结构」「系统掌握概率论」），",
-        "   **先调 `research_plan(goal=...)`**，不要先 search_bilibili 或 create_learning_plan：宿主会先把目标拆成单元与两周安排，",
-        "   写成计划文档并直接建好计划（本周/下周已排、其余进待安排）。",
+        "   **先调 `research_plan(goal=...)`**，不要先 search_bilibili 或 create_learning_plan：宿主会先做**全局规划**——",
+        "   把目标拆成阶段/单元、排出从本周起的完整周表，写成计划文档并直接建好计划（之后每周局部推进）。",
+        "   用户提到考试/截止日期（「还有两周考试」）就把 deadline 一起传进去，不要自己把它换算成「先排两周」。",
         "2. 用户**明确指定了材料**（给了 bvid/链接、点名某门课、说「用这个视频速通」）才走 `create_learning_plan(bvid=...)`；",
         "   用户给了大纲/书单就手写 `units + weeks`。",
         "3. research_plan 失败（模型超时/输出不可用）时退回 `create_learning_plan` 手写路径，并把原因说清楚，不要假装建好了。",
@@ -61,13 +62,14 @@ class ResearchTools(
     private inner class ResearchPlan : AgentTool {
         override val name: String = "research_plan"
         override val description: String =
-            "先调研再落计划：给一句学习目标，宿主会让模型拆成单元和前两周安排，" +
-                "写成计划文档并直接建好计划（本周/下周已排、其余进待安排）。" +
+            "先调研再落计划：给一句学习目标，宿主会让模型做**全局规划**——把目标拆成阶段/单元、" +
+                "排出从本周起的完整周表，写成计划文档并直接建好计划（之后每周自动铺到天）。" +
                 "适合「只有目标、没有现成材料」的情况；已有 B 站课程用 create_learning_plan(bvid=...)，" +
                 "已有大纲用 create_learning_plan(units/weeks)。会写用户数据。"
         override val parameters: String =
             "goal：用户的学习目标原话（必填，越具体越好，例：「两周内复习完数据结构」）；" +
-                "dailyMinutes：每天能投入的分钟数（15–240，默认先问用户；拿不准按 60）。"
+                "dailyMinutes：建议值，每天能投入的分钟数（15–240；没说就按设置里的每天预计投入/60，不要单独问用户）；" +
+                "deadline：可选截止日期（YYYY-MM-DD）。用户说「XX 天后考试」「月底前学完」就传，周表会覆盖到那天并留出复习。"
 
         override suspend fun call(arguments: JsonObject): ToolResult {
             val plan = service() ?: return ToolResult(
@@ -84,17 +86,25 @@ class ResearchTools(
             if (goal.length < 2) return ToolResult("goal 太短了，写清要学什么。", isError = true)
             val dailyMinutes = arguments.intArg("dailyMinutes")?.coerceIn(15, 240)
                 ?: (weeklyCapacity()?.div(7)?.takeIf { it >= 15 } ?: 60)
+            val deadlineText = arguments.textArg("deadline")
+            val deadline = deadlineText?.let { raw ->
+                runCatching { java.time.LocalDate.parse(raw) }.getOrNull()
+                    ?: return ToolResult("deadline 要写成 YYYY-MM-DD，现在是「$raw」。", isError = true)
+            }
 
             val today = clock.today()
+            if (deadline != null && deadline < today) {
+                return ToolResult("deadline（$deadlineText）已经过去了；不要给过去的截止日期。", isError = true)
+            }
             val thisWeek = isoWeekOf(today)
-            val nextWeek = isoWeekOf(today.plusWeeks(1))
+            val deadlineWeek = deadline?.let { isoWeekOf(it) }
 
             val raw = runCatching {
                 withTimeoutOrNull(30_000) {
                     llm.complete(
                         listOf(
-                            LlmMessage(LlmRole.System, researchSystemPrompt(dailyMinutes, thisWeek, nextWeek)),
-                            LlmMessage(LlmRole.User, researchUserPrompt(goal, today.toString(), thisWeek, nextWeek, dailyMinutes)),
+                            LlmMessage(LlmRole.System, researchSystemPrompt(dailyMinutes, thisWeek, deadlineText)),
+                            LlmMessage(LlmRole.User, researchUserPrompt(goal, today.toString(), thisWeek, deadlineText, dailyMinutes)),
                         ),
                     )
                 }
@@ -106,16 +116,17 @@ class ResearchTools(
                 )
             }
 
-            val draft = parseDraft(raw, thisWeek, nextWeek, fallbackTitle = goal.take(20))
+            val draft = parseDraft(raw, thisWeek, deadlineWeek, fallbackTitle = goal.take(20))
                 ?: return ToolResult(
                     "调研结果没解析成合法计划（模型输出不符合 JSON 约定：" +
-                        "总单元 3–40、两三周内每周 1–7 个且标题一致）。可以重试一次；还不行就用 create_learning_plan 手写。",
+                        "总单元 3–60、周表从本周起一周接一周、每周 1–14 个、每个单元都要且只能出现在一周里）。" +
+                        "可以重试一次；还不行就用 create_learning_plan 手写。",
                     isError = true,
                 )
 
-            val weeks = draft.weeks ?: packWeeks(draft.units, dailyMinutes, thisWeek, nextWeek)
+            val weeks = draft.weeks ?: packWeeks(draft.units, dailyMinutes, thisWeek)
             if (weeks.isEmpty()) {
-                return ToolResult("调研结果里没有可排进本周/下周的单元，用 create_learning_plan 手写吧。", isError = true)
+                return ToolResult("调研结果里没有可排的单元，用 create_learning_plan 手写吧。", isError = true)
             }
 
             val title = draft.title
@@ -133,24 +144,35 @@ class ResearchTools(
 
             val placedTitles = commitments.flatMap { draft2 -> draft2.unitIndexes.map { units[it].title } }.toSet()
             val poolCount = units.count { it.title !in placedTitles }
-            val weekLines = commitments.joinToString("、") { "${it.week} 排 ${it.unitIndexes.size} 个" }
+            val weekLines = if (commitments.size <= 3) {
+                commitments.joinToString("、") { "${it.week} 排 ${it.unitIndexes.size} 个" }
+            } else {
+                commitments.take(2).joinToString("、") { "${it.week} 排 ${it.unitIndexes.size} 个" } +
+                    " … 最后 " + commitments.last().week
+            }
             return ToolResult(
                 buildString {
                     append("调研完了。计划「").append(title).append("」已建好：共 ").append(units.size).append(" 个单元，")
-                    append(weekLines)
+                    append("全局周表 ").append(commitments.size).append(" 周（").append(weekLines).append("）")
                     if (poolCount > 0) append("，其余 ").append(poolCount).append(" 个进「待安排」池")
-                    append("。每天按 ").append(dailyMinutes).append(" 分钟排。")
+                    if (deadlineText != null) append("，覆盖到 ").append(deadlineText).append(" 的截止日")
+                    append("。每天按 ").append(dailyMinutes).append(" 分钟排（只是建议，想改随时说）。")
                     if (docPath != null) {
                         append("计划文档写在 plans/docs/").append(planId).append(".md（计划页「计划文档」可改条目再同步）。")
                     }
-                    append("去「计划」页能看到周卡片和每天安排。")
+                    append("去「计划」页能看到全局周卡片和每天安排。")
                 },
             )
         }
     }
 
-    /** 调研目标 → 计划草案；解析失败返回 null，由调用方退回到手写路径。 */
-    private fun parseDraft(raw: String, thisWeek: String, nextWeek: String, fallbackTitle: String): ResearchDraftPlan? {
+    /** 调研目标 → 全局计划草案；解析失败返回 null，由调用方退回到手写路径。 */
+    private fun parseDraft(
+        raw: String,
+        thisWeek: String,
+        deadlineWeek: String?,
+        fallbackTitle: String,
+    ): ResearchDraftPlan? {
         val start = raw.indexOf('{')
         val end = raw.lastIndexOf('}')
         if (start < 0 || end <= start) return null
@@ -160,7 +182,7 @@ class ResearchTools(
 
         val title = root.textOrNull("title")?.take(30)?.takeIf { it.isNotEmpty() } ?: fallbackTitle
         val rawUnits = root["units"] as? JsonArray ?: return null
-        if (rawUnits.size !in 3..40) return null
+        if (rawUnits.size !in 3..60) return null
 
         val units = ArrayList<ResearchUnitDraft>(rawUnits.size)
         for (element in rawUnits) {
@@ -177,44 +199,56 @@ class ResearchTools(
         val weeks: List<Pair<String, List<String>>>? = when (weeksElement) {
             null -> null
             is JsonObject -> {
-                val allowed = setOf(thisWeek, nextWeek)
                 val entries = weeksElement.entries
                     .map { (week, value) -> week.trim() to value }
                     .sortedBy { it.first }
-                if (entries.isEmpty() || entries.size > 2) return null
-                if (entries.any { it.first !in allowed }) return null
+                if (entries.isEmpty()) return null
                 if (entries.first().first != thisWeek) return null
-                val parsed = entries.map { (week, value) ->
+                if (deadlineWeek != null && entries.any { it.first > deadlineWeek }) return null
+                val firstMonday = isoWeekStart(thisWeek) ?: return null
+                val covered = mutableSetOf<String>()
+                entries.forEachIndexed { position, (week, value) ->
+                    if (isoWeekStart(week) == null) return null
+                    if (week != isoWeekOf(firstMonday.plusWeeks(position.toLong()))) return null
                     val names = (value as? JsonArray)
                         ?.mapNotNull { it.jsonPrimitive.contentOrNull?.trim()?.takeIf { name -> name.isNotEmpty() } }
                         .orEmpty()
-                    if (names.size !in 1..7) return null
+                    if (names.size !in 1..14) return null
                     if (names.any { it !in unitTitles }) return null
                     if (names.distinct().size != names.size) return null
+                    if (!covered.addAll(names)) return null
+                }
+                if (covered != unitTitles) return null
+                entries.map { (week, value) ->
+                    val names = (value as JsonArray)
+                        .mapNotNull { it.jsonPrimitive.contentOrNull?.trim()?.takeIf { name -> name.isNotEmpty() } }
                     week to names
                 }
-                parsed
             }
             else -> return null
         }
         return ResearchDraftPlan(title = title, units = units, weeks = weeks)
     }
 
-    /** 模型没给 weeks（或给的不合规）时，按每天投入预算把单元塞进本周/下周。 */
+    /** 模型没给周表（或给的不合规）时，按每天投入预算把单元排成全局周表。 */
     private fun packWeeks(
         units: List<ResearchUnitDraft>,
         dailyMinutes: Int,
         thisWeek: String,
-        nextWeek: String,
     ): List<Pair<String, List<String>>> {
+        val firstMonday = isoWeekStart(thisWeek) ?: return emptyList()
         val budget = (dailyMinutes * 7 * 0.8).toInt()
-        val first = takeWeek(units, start = 0, budgetMinutes = budget)
-        val secondStart = first.size
-        val second = takeWeek(units, start = secondStart, budgetMinutes = budget)
-        return buildList {
-            if (first.isNotEmpty()) add(thisWeek to first.map { it.title })
-            if (second.isNotEmpty()) add(nextWeek to second.map { it.title })
+        val weeks = mutableListOf<Pair<String, List<String>>>()
+        var start = 0
+        var index = 0
+        while (start < units.size) {
+            val picked = takeWeek(units, start, budget)
+            if (picked.isEmpty()) break
+            weeks += isoWeekOf(firstMonday.plusWeeks(index.toLong())) to picked.map { it.title }
+            start += picked.size
+            index++
         }
+        return weeks
     }
 
     private fun takeWeek(
@@ -293,7 +327,7 @@ class ResearchTools(
         ): String = buildString {
             appendLine("# 目标与验收")
             appendLine("- $goal")
-            appendLine("- 验收：学完后能讲清「$title」每个单元的要点，并按计划完成本周、下周的安排。")
+            appendLine("- 验收：学完后能讲清「$title」每个单元的要点，并按全局周表逐周完成。")
             appendLine()
             val placedTitles = mutableSetOf<String>()
             commitments.forEach { commitment ->
@@ -312,29 +346,35 @@ class ResearchTools(
             }
         }.trimEnd() + "\n"
 
-        private fun researchSystemPrompt(dailyMinutes: Int, thisWeek: String, nextWeek: String): String = """
-            你是一位学习路径规划师。用户会给你一个学习目标；请把它拆成可执行的单元，并排出前两周的安排。
+        private fun researchSystemPrompt(dailyMinutes: Int, thisWeek: String, deadline: String?): String = """
+            你是一位学习路径规划师。用户会给你一个学习目标；请先做**全局**规划：
+            把目标拆成阶段/单元，再把**全部单元**分配到从本周开始的连续各周，直到达成目标。
             只输出一个 JSON 对象，不要 Markdown 代码块，不要解释，不要多余文字。
             JSON 结构：
-            {"title":"计划标题（不超过 20 字）","units":[{"title":"单元标题（不超过 24 字）","minutes":25,"chapter":"可选章节名"}],"weeks":{"$thisWeek":["单元标题"],"$nextWeek":["单元标题"]}}
+            {"title":"计划标题（不超过 20 字）","units":[{"title":"单元标题（不超过 24 字）","minutes":25,"chapter":"可选章节名"}],"weeks":{"$thisWeek":["单元标题","…"]}}
             规则：
-            - 总单元 6–24 个，覆盖从入门到目标的完整关键路径，按依赖顺序排列；
-            - 每周 2–6 个单元，按每天 $dailyMinutes 分钟的节奏；只排本周和下一周，其余单元不出现在 weeks 里；
+            - 总单元 3–60 个，覆盖从入门到目标的完整关键路径，按依赖顺序排列；
+            - weeks 必须从 $thisWeek 开始、一周接一周连续（中间不跳周）；周数不设上限，但要与单元数量匹配；
+            - 每周 1–14 个单元，按每天 $dailyMinutes 分钟的节奏估算（只是建议，可以灵活）；
+            - 每个单元必须且只能出现在一周里：units 里的每个标题都要在 weeks 里出现一次；
             - 单元 minutes 取 10–45 的整数；
-            - weeks 的键必须是 $thisWeek 和 $nextWeek 中至少一个，且标题必须与 units 完全一致；
-            - 不要虚构不存在的前置知识，不要输出用户没要求的资源链接。
-        """.trimIndent()
+            - weeks 里写的标题必须与 units 完全一致；不要输出用户没要求的资源链接。""" +
+            if (deadline != null) {
+                "\n            - 用户给了截止日期 $deadline：最后一周不能晚于截止日所在周，并留出 1–2 周复习/模考（可以是复习类单元）。"
+            } else {
+                ""
+            }
 
         private fun researchUserPrompt(
             goal: String,
             today: String,
             thisWeek: String,
-            nextWeek: String,
+            deadline: String?,
             dailyMinutes: Int,
         ): String = """
             目标：$goal
-            今天：$today（本周 $thisWeek，下一周 $nextWeek），每天预计投入 $dailyMinutes 分钟。
-            请给出前两周的计划草案 JSON。
+            今天：$today（本周 $thisWeek）${if (deadline != null) "；截止日期：$deadline" else ""}，每天预计投入 $dailyMinutes 分钟（建议值）。
+            请给出从本周起的**全局**周表草案 JSON（覆盖到目标达成/截止日期）。
         """.trimIndent()
     }
 }

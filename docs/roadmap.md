@@ -184,7 +184,8 @@
   - 验证：能建目标/项目并从计划引用；目标页/计划头显示目标；旧库迁移测试。
 - [x] **G-A2 `research_plan` 工具（2026-11-07 已落地最小版）**
   - 现状：`app/ui/.../ResearchTools.kt` 提供 `research_plan(goal, dailyMinutes)`：模型产出结构化草案（title/units/周建议）→ 校验 → `createProcess/saveDraft/acceptDraft` 建计划 + 写计划文档（`PlanDocStore`）；缺 weeks 时按每天预算自动排；`ManagerRouter` 已登记（FindResource / PlanManage）。
-  - 由面到点主链路已通：目标式说法（「两周复习完 X」）→ research_plan → 计划 + 计划文档 + 本周/下周安排。仍缺：外部来源引用（B 站/书籍）与先修依赖；纯目标话术要靠提示词引导，模型仍可能先走 B 站全量导入。
+  - 由面到点主链路已通：目标式说法（「两周复习完 X」）→ research_plan → 计划 + 计划文档 + **全局周表**（2026-11-07 口径：不设周数上限、先整体后每周局部；`deadline` 按截止周倒排，排不下留待安排；`dailyMinutes` 只是建议，不再追问/弹选项；bvid 全量导入同样一次排出全局周表）。
+  - 仍缺：外部来源引用（B 站/书籍）与先修依赖；纯目标话术要靠提示词引导，模型仍可能先搜 B 站再走 bvid 路径（但 bvid 路径也会遵循 deadline 与全局周表）。
 - [ ] **G-A3 拆解缺结构（P1，1–2 天）**
   - 无先修依赖、无难度/时长校准（单元分钟数由模型拍，后端 `CHECK` 只保证 10–45）、无拆解模板/参考资料库；同类目标重复建计划无模板复用。
 - [ ] **G-A4 项目型计划未建模（P1，依赖 G-A1）**
