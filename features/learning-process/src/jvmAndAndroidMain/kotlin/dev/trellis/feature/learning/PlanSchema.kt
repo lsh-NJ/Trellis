@@ -29,8 +29,24 @@ internal val PLAN_SCHEMA_V1: List<String> = listOf(
     "CREATE TABLE IF NOT EXISTS segment (" +
         "id TEXT PRIMARY KEY, material_version_id TEXT NOT NULL REFERENCES material_version(id), " +
         "locator TEXT NOT NULL, excerpt_hash TEXT NOT NULL, heading TEXT NULL, created_at TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS goal (" +
+        "id TEXT PRIMARY KEY, title TEXT NOT NULL, " +
+        "kind TEXT NOT NULL DEFAULT 'goal' CHECK (kind IN ('goal','project')), " +
+        "intent TEXT NOT NULL DEFAULT '', success TEXT NOT NULL DEFAULT '', " +
+        "deadline TEXT NULL, " +
+        "status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','archived')), " +
+        "parent_id TEXT NULL REFERENCES goal(id), " +
+        "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_goal_status ON goal(status, updated_at)",
+    "CREATE TABLE IF NOT EXISTS goal_milestone (" +
+        "id TEXT PRIMARY KEY, goal_id TEXT NOT NULL REFERENCES goal(id), " +
+        "title TEXT NOT NULL, deadline TEXT NULL, " +
+        "status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','done')), " +
+        "sort_order INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_goal_milestone_goal ON goal_milestone(goal_id, sort_order)",
     "CREATE TABLE IF NOT EXISTS process (" +
         "id TEXT PRIMARY KEY, title TEXT NOT NULL, goal TEXT NOT NULL, deadline TEXT NULL, " +
+        "goal_id TEXT NULL REFERENCES goal(id), " +
         "weekly_capacity_minutes INTEGER NULL CHECK (weekly_capacity_minutes IS NULL OR " +
         "weekly_capacity_minutes BETWEEN 30 AND 3000), " +
         "status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','ended')), " +

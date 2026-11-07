@@ -147,3 +147,17 @@
   应用启动/进计划页/跨天时天然覆盖；失败只跳过那一份节奏。
 - 测试：`LearningPlanRhythmTest`（4 周滚动、结转 + 铺天共存、周日预铺不重复、改承诺保留其它周、
   选量上限 7、暂停不推进）与既有 18 个用例全绿。
+
+## 9. 2026-11-07：目标 / 项目实体（G-A1）
+
+- 新表：`goal`（`kind` 只认 `goal`/`project`；`status` 只认 `active`/`paused`/`archived`）与
+  `goal_milestone`（`open`/`done`，按 `sort_order` 排）；`process` 加 `goal_id`（可空，NULL = 还没挂目标）。
+- 迁移：只加表/加列。新表走 `PLAN_SCHEMA_V1` 的 `CREATE TABLE IF NOT EXISTS`；`process.goal_id` 在
+  `PlanDatabase.migrate()` 里用 `PRAGMA table_info(process)` 检测，缺了才 `ALTER TABLE ... ADD COLUMN`。
+- 命令与事件：建/改目标、加/完成/重开/删里程碑、计划挂目标（或解绑），分别写
+  `goal.created`、`goal.updated`、`goal.milestone_added/completed/reopened/removed`、`plan.goal_linked`
+  （`planId` 只在关联事件里带）。里程碑完成与计划关联登记 5 秒撤销。
+- 视图：`GoalView` 带 `milestones` 与 `plans`（该目标下所有计划，按创建时间）；`goals(includeArchived = false)`
+  默认不返回归档目标，归档目标也不能再挂新计划（`E_INVALID`）。
+- 语义边界：目标只回答「为什么做、怎么算做到」，周表/逾期/复盘仍在计划层；计划的 `goal` 自由文本保留不动，
+  目标实体是额外索引，用于计划页头部、目标页、AI 工具（`list_goals` 等）和后续推荐上下文。

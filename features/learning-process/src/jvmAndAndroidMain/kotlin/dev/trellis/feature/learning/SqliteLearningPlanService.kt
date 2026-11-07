@@ -5,6 +5,9 @@ import dev.trellis.domain.plan.CommandEnvelope
 import dev.trellis.domain.plan.CommandError
 import dev.trellis.domain.plan.CommandResult
 import dev.trellis.domain.plan.ErrorCode
+import dev.trellis.domain.plan.GoalRef
+import dev.trellis.domain.plan.GoalView
+import dev.trellis.domain.plan.MilestoneRef
 import dev.trellis.domain.plan.LearningPlanService
 import dev.trellis.domain.plan.PlanStateView
 import dev.trellis.domain.plan.LearningPlanInfo
@@ -387,6 +390,33 @@ internal class SqliteLearningPlanService(
         }
     }
 
+    override fun goals(includeArchived: Boolean): List<GoalView> = buildGoals(includeArchived)
+
+    override fun goal(goalId: String): GoalView? = buildGoal(goalId)
+
+    override fun createGoal(
+        env: CommandEnvelope, title: String, kind: String, intent: String, success: String,
+        deadline: String?, parentId: String?,
+    ) = cmdCreateGoal(env, title, kind, intent, success, deadline, parentId)
+
+    override fun updateGoal(
+        env: CommandEnvelope, goalId: String, title: String?, intent: String?, success: String?,
+        deadline: String?, status: String?,
+    ) = cmdUpdateGoal(env, goalId, title, intent, success, deadline, status)
+
+    override fun addMilestone(env: CommandEnvelope, goalId: String, title: String, deadline: String?) =
+        cmdAddMilestone(env, goalId, title, deadline)
+
+    override fun completeMilestone(env: CommandEnvelope, milestoneId: String) = cmdCompleteMilestone(env, milestoneId)
+
+    override fun uncompleteMilestone(env: CommandEnvelope, milestoneId: String) =
+        cmdUncompleteMilestone(env, milestoneId)
+
+    override fun removeMilestone(env: CommandEnvelope, milestoneId: String) = cmdRemoveMilestone(env, milestoneId)
+
+    override fun linkPlanToGoal(env: CommandEnvelope, planId: String, goalId: String?) =
+        cmdLinkPlanToGoal(env, planId, goalId)
+
     override fun openNodes(planId: String, untilDay: String): List<OpenNode> = openNodesOf(planId, untilDay)
 
     override fun overdue(planId: String, today: String): OverdueView = overdueOf(planId, today)
@@ -533,6 +563,68 @@ internal class SqliteLearningPlanService(
         db.close()
     }
 
+    // ---------------------------------------------------------------- 目标 / 项目（G-A1）
+
+    internal fun goalRow(goalId: String): GoalRow? =
+        connection.prepareStatement(
+            "SELECT id,title,kind,intent,success,deadline,status,parent_id FROM goal WHERE id = ?",
+        ).use { ps ->
+            ps.setString(1, goalId)
+            ps.executeQuery().use { rs ->
+                if (!rs.next()) {
+                    null
+                } else {
+                    GoalRow(
+                        id = rs.getString(1),
+                        title = rs.getString(2),
+                        kind = rs.getString(3),
+                        intent = rs.getString(4),
+                        success = rs.getString(5),
+                        deadline = rs.getString(6),
+                        status = rs.getString(7),
+                        parentId = rs.getString(8),
+                    )
+                }
+            }
+        }
+
+    internal fun milestoneRow(milestoneId: String): MilestoneRow? =
+        connection.prepareStatement(
+            "SELECT id,goal_id,title,deadline,status,sort_order FROM goal_milestone WHERE id = ?",
+        ).use { ps ->
+            ps.setString(1, milestoneId)
+            ps.executeQuery().use { rs ->
+                if (!rs.next()) {
+                    null
+                } else {
+                    MilestoneRow(
+                        id = rs.getString(1),
+                        goalId = rs.getString(2),
+                        title = rs.getString(3),
+                        deadline = rs.getString(4),
+                        status = rs.getString(5),
+                        sortOrder = rs.getInt(6),
+                    )
+                }
+            }
+        }
+
+    internal fun processIdOfPlan(planId: String): String? =
+        connection.prepareStatement(
+            "SELECT process_id FROM plan WHERE id = ?",
+        ).use { ps ->
+            ps.setString(1, planId)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+        }
+
+    internal fun goalIdOfPlan(planId: String): String? =
+        connection.prepareStatement(
+            "SELECT pr.goal_id FROM plan p JOIN process pr ON pr.id = p.process_id WHERE p.id = ?",
+        ).use { ps ->
+            ps.setString(1, planId)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+        }
+
     internal fun newActorSuffix(): Long = syntheticActor.incrementAndGet()
 
     internal fun json() = json
@@ -596,3 +688,23 @@ internal fun ResultSet.toOccurrence(): OccurrenceRow = OccurrenceRow(
 
 internal fun CommandResult<*>.errorMessage(): String? = error?.message
 internal fun CommandError.asFailure(): CommandResult<Unit> = fail(code, message, retryable, latestSeq)
+
+internal data class GoalRow(
+    val id: String,
+    val title: String,
+    val kind: String,
+    val intent: String,
+    val success: String,
+    val deadline: String?,
+    val status: String,
+    val parentId: String?,
+)
+
+internal data class MilestoneRow(
+    val id: String,
+    val goalId: String,
+    val title: String,
+    val deadline: String?,
+    val status: String,
+    val sortOrder: Int,
+)

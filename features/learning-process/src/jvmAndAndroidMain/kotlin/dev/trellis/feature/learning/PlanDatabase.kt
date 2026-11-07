@@ -44,6 +44,8 @@ internal class PlanDatabase private constructor(val connection: Connection) : Au
                 rs.next(); rs.getInt(1)
             }
         }
+        ensureColumn("process", "goal_id", "ALTER TABLE process ADD COLUMN goal_id TEXT NULL")
+
         if (applied == 0) {
             // `INSERT OR IGNORE` 而不是先查再插：手机上启动时计划库会被开两次
             // （运行时创建与管家的首个 tick 撞在一起），两个连接都读到「还没迁移」，
@@ -56,6 +58,18 @@ internal class PlanDatabase private constructor(val connection: Connection) : Au
                 ps.executeUpdate()
             }
         }
+    }
+
+
+    /** 旧库缺列时补上；新库在建表时就带了，这里查一下再决定。 */
+    private fun ensureColumn(table: String, column: String, ddl: String) {
+        val existing = mutableSetOf<String>()
+        connection.createStatement().use { st ->
+            st.executeQuery("PRAGMA table_info($table)").use { rs ->
+                while (rs.next()) existing += rs.getString("name").lowercase()
+            }
+        }
+        if (column.lowercase() !in existing) connection.createStatement().use { st -> st.execute(ddl) }
     }
 
     override fun close() = connection.close()
