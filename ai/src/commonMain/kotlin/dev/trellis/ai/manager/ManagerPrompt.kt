@@ -13,7 +13,7 @@ import dev.trellis.ai.tool.ToolAgent
  * 2026-11-07：意图分类器删掉之后只剩一种拼法 ——「一个静态前缀 + 动态状态 + 历史 + 这一句」：
  *
  * ```
- * [system] 静态前缀：设计规则 + 工具工作守则 + 工具清单 + 管理员守则 + 通用工作流
+ * [system] 静态前缀：管理员身份 + 产品与插件说明书 + 工具工作守则 + 工具清单 + 通用工作流
  * [system] 动态状态：当前装了哪些插件、内核状态
  * ...历史对话...
  * [user]   这一句请求
@@ -52,9 +52,11 @@ class ManagerPrompt(
             "<current_state>\n" + state.trim() + "\n</current_state>"
 
         /**
-         * 静态前缀 = 设计规则（[PromptBuilder.system]，已装插件传空 —— 那是动态状态）
-         * + 工具工作守则 + 工具清单 + 管理员守则 + 通用工作流 [WORKFLOW]。
+         * 静态前缀 = 身份（[MANAGER_ROLE]）+ 产品与插件说明书（[PromptBuilder.system]，
+         * 已装插件传空 —— 那是动态状态）+ 工具工作守则 + 工具清单 + 通用工作流 [WORKFLOW]。
          *
+         * 顺序按 prompt-architect 的约束：角色一行开头。以前身份在最后、说明书在最前，
+         * 模型读到的第一句是「你是一个写插件的作者」，与后面的「你是管理员」互相打架。
          * 工具目录是全量的，工作流也必须覆盖所有本事，不能只描述某一类任务。
          */
         fun buildBase(
@@ -62,6 +64,8 @@ class ManagerPrompt(
             tools: List<AgentTool>,
             guidance: String = "",
         ): String = buildString {
+            append(MANAGER_ROLE)
+            append("\n\n")
             append(PromptBuilder.system(catalog, existing = emptyList()))
             if (guidance.isNotBlank()) {
                 append("\n\n")
@@ -69,8 +73,6 @@ class ManagerPrompt(
             }
             append("\n\n")
             append(ToolAgent.catalogueOf(tools))
-            append("\n\n")
-            append(MANAGER_ROLE)
             append("\n\n")
             append(WORKFLOW)
         }

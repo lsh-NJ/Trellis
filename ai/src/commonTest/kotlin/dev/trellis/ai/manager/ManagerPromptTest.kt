@@ -50,6 +50,21 @@ class ManagerPromptTest {
     }
 
     @Test
+    fun theIdentityComesBeforeThePluginManual() {
+        // 以前第一句是「你是一个为 Trellis 写声明式插件的作者」，把管理员框成了插件作者；
+        // 现在身份必须在最前，插件说明书只作为「要造插件时才看」的分支。
+        val base = prompt.base
+        val role = base.indexOf("你是这个应用的管理员")
+        val pluginManual = base.indexOf("<when_you_make_a_plugin>")
+        check(role >= 0) { "系统提示词开头要有管理员身份" }
+        check(pluginManual > role) { "身份要排在插件说明书前面" }
+        assertFalse(
+            base.trimStart().startsWith("你是一个为 Trellis 写声明式插件的作者"),
+            "第一句不能再是插件作者",
+        )
+    }
+
+    @Test
     fun theWorkflowIsInTheStaticPrefixAndCoversTheWholeSurface() {
         // 工具全量之后，工作流也必须覆盖所有本事 —— 少写一条，那一类活就会被判成「不该做」。
         val base = prompt.base

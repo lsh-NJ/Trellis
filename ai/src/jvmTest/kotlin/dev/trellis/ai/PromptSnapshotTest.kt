@@ -24,7 +24,8 @@ class PromptSnapshotTest {
         out.writeText(prompt)
 
         println("提示词 ${prompt.length} 字符 -> ${out.absolutePath}")
-        // 上限从 9k 放到 12k：给脚本例子留了位置。例子比叮嘱管用，但不能无节制地加。
-        assertTrue(prompt.length in 4_500..12_000, "提示词 ${prompt.length} 字符，超出 4.5k~12k 预算")
+        // 上限从 9k → 12k → 12.5k：脚本例子、身份与「插件说明书」框架各占了一点。
+        // 例子比叮嘱管用，但不能无节制地加；再涨就要先删旧内容，而不是继续放预算。
+        assertTrue(prompt.length in 4_500..12_500, "提示词 ${prompt.length} 字符，超出 4.5k~12.5k 预算")
     }
 }
