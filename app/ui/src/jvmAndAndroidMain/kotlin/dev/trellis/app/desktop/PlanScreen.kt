@@ -15,6 +15,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -27,6 +30,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -123,8 +128,8 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
         // 等于把周卡糊掉一半，且日期格被压在抽屉后面反而更难拖。
         val drawerOverlays = maxWidth < TrellisBreakpoints.medium.dp
         Row(Modifier.fillMaxSize().padding(end = if (drawerOverlays) 0.dp else panelWidth)) {
-            PlanList(runtime, Modifier.width(232.dp).fillMaxHeight())
-            Spacer(Modifier.width(20.dp))
+            PlanList(runtime)
+            ListSidebarSplitter()
             LazyColumn(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -163,70 +168,73 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     if (runtime.planSettingsOpen) PlanSettingsDialog(runtime)
 }
 
-/** 左侧计划列表：按大类分组（没有大类归「未分类」）。已结束的计划不占列表。 */
+/** 左侧计划列表：和对话页/知识库共用 `ListSidebar` 骨架（贴边、可拖宽、同一套行样式）。 */
 @Composable
-private fun PlanList(runtime: AppRuntime, modifier: Modifier = Modifier) {
-    val tokens = LocalTrellisTokens.current
+private fun PlanList(runtime: AppRuntime) {
     val visible = runtime.planAll.filter { it.status != "ended" }
     val grouped = visible.groupBy { runtime.planCategories[it.id] ?: "未分类" }
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        // 左栏是「清单」，页面标题在上方内容列里（批 3 补的 PlanHeader）：
-        // 两处都叫「计划」会让左栏看起来像页标题，实际只是这一列的名字。
-        Text(
-            "学习计划",
-            style = tokens.type.meta,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(4.dp))
-        grouped.forEach { (category, plans) ->
-            Text(
-                category,
-                style = tokens.type.meta,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
-            )
-            plans.forEach { plan ->
-                ListRow(
-                    text = plan.title,
-                    sub = when {
-                        plan.id == runtime.planFocusId -> "进行中"
-                        plan.status == "draft" -> "草稿"
-                        else -> ""
-                    },
-                    selected = runtime.planFocusId == plan.id,
-                    onClick = { runtime.selectPlan(plan.id) },
+    ListSidebar(
+        title = "学习计划",
+        count = visible.size,
+        actionLabel = "",
+        onAction = null,
+    ) {
+        Column(Modifier.fillMaxHeight().verticalScroll(rememberScrollState())) {
+            grouped.forEach { (category, plans) ->
+                Text(
+                    category,
+                    style = LocalTrellisTokens.current.type.meta,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 2.dp),
                 )
+                plans.forEach { plan ->
+                    PlanSidebarRow(
+                        title = plan.title,
+                        sub = when {
+                            plan.id == runtime.planFocusId -> "进行中"
+                            plan.status == "draft" -> "草稿"
+                            else -> "已排"
+                        },
+                        selected = runtime.planFocusId == plan.id,
+                        onClick = { runtime.selectPlan(plan.id) },
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun ListRow(text: String, sub: String, selected: Boolean, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(6.dp)
+private fun PlanSidebarRow(title: String, sub: String, selected: Boolean, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
     val tokens = LocalTrellisTokens.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(shape)
-            .background(if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
+            .hoverable(interaction)
+            .listRowSurface(selected, hovered)
+            .clickable(onClick = onClick),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text(
-            text,
-            style = MaterialTheme.typography.bodyMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
-        Text(
-            sub,
-            style = tokens.type.meta,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        ListRowSelectionBar(selected)
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (sub.isNotBlank()) {
+                Text(
+                    sub,
+                    style = tokens.type.meta,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                )
+            }
+        }
     }
 }
 
