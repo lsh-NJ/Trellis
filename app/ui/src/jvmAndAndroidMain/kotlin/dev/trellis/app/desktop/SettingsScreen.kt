@@ -547,9 +547,13 @@ private fun StewardSection(runtime: AppRuntime) {
             if (!settings.autoAdopt) {
                 "关闭：所有建议都要你点「一键采纳」。"
             } else {
-                "只在应用不在前台时执行，只自动采纳「挪动逾期」这一类（补排欠账仍留给你点）；" +
-                    "每天最多 " + settings.autoAdoptDailyLimit + " 条，今天已自动采纳 " +
-                    runtime.stewardAutoAdoptedToday + " 条。"
+                if (settings.autoAdoptDailyLimit <= 0) {
+                    "只在应用不在前台时执行；不限条数，挪动逾期和补排欠账都会自动做。" +
+                        "今天已自动采纳 " + runtime.stewardAutoAdoptedToday + " 条。"
+                } else {
+                    "只在应用不在前台时执行；每天最多 " + settings.autoAdoptDailyLimit +
+                        " 条，今天已自动采纳 " + runtime.stewardAutoAdoptedToday + " 条。"
+                }
             },
         )
 

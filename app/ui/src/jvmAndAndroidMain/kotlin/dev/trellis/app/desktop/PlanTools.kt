@@ -161,7 +161,7 @@ private fun JsonObject.intArg(name: String): Int? =
 class PlanTools(
     private val service: () -> LearningPlanService?,
     /** 计划落库后回调新建的 planId：调用方拿它把计划页切到新计划。 */
-    private val onChanged: (String) -> Unit,
+    private val onChanged: suspend (String) -> Unit,
     /** 设置页里的「每天预计投入」×7；没设置就是 null，计划就只记标题和目标。 */
     private val weeklyCapacity: () -> Int? = { null },
     /** 只读的 B 站客户端；`bvid` 模式直接拉分集生成全部单元。测试可注入假 fetch。 */
@@ -434,7 +434,7 @@ class PlanTools(
      * 三条命令真正落库；失败返回错误 [ToolResult]，成功返回 null（由调用方拼成功文案）。
      * 两条路径（手写 / bvid）共用，避免写库流程各写一遍。
      */
-    private fun writePlan(
+    private suspend fun writePlan(
         plan: LearningPlanService,
         title: String,
         dailyMinutes: Int,

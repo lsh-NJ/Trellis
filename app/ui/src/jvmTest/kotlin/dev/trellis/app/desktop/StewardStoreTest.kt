@@ -21,8 +21,8 @@ class StewardStoreTest {
         assertEquals("22:30", store.settings().eveningTime)
         assertTrue(store.settings().morningEnabled)
 
-        assertEquals(false, store.settings().autoAdopt)
-        assertEquals(3, store.settings().autoAdoptDailyLimit)
+        assertTrue(store.settings().autoAdopt)
+        assertEquals(0, store.settings().autoAdoptDailyLimit)
 
         store.saveSettings(
             StewardSettings(
