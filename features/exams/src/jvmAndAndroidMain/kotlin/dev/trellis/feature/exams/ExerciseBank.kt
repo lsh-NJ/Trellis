@@ -84,6 +84,55 @@ class ExerciseBank(exercises: List<Exercise>) {
             .toList()
     }
 
+    /**
+     * 带作答历史的推荐：同样只按学科/课程/标签匹配，但排序时优先「没做过」「上次做错」的题。
+     *
+     * 这是「由点到面」最小的闭环：完成单元 → 提议一道 → 作答记录 → 下次优先错题/新题。
+     * 历史不足时行为退化为 [suggestFor]（按命中数 + 题型 + id）。
+     */
+    fun recommendFor(
+        text: String,
+        attempts: List<ExerciseAttempt> = emptyList(),
+        excludeIds: Set<String> = emptySet(),
+        limit: Int = 1,
+    ): List<Exercise> {
+        val tokens = suggestionTokens(text)
+        if (tokens.isEmpty()) return emptyList()
+        val latestAttempt = HashMap<String, ExerciseAttempt>()
+        for (attempt in attempts) {
+            val current = latestAttempt[attempt.exerciseId]
+            if (current == null || attempt.at >= current.at) {
+                latestAttempt[attempt.exerciseId] = attempt
+            }
+        }
+        data class Candidate(val exercise: Exercise, val hits: Int, val practiceBonus: Int)
+        return exercises.asSequence()
+            .filter { it.id !in excludeIds }
+            .mapNotNull { exercise ->
+                val hits = tokens.count { token -> exercise.matchesTopic(token) }
+                if (hits == 0) {
+                    null
+                } else {
+                    val last = latestAttempt[exercise.id]
+                    val bonus = when {
+                        last == null -> 2 // 没做过：优先于做对过的
+                        !last.correct -> 3 // 上次做错：最优先
+                        else -> 0
+                    }
+                    Candidate(exercise, hits, bonus)
+                }
+            }
+            .sortedWith(
+                compareByDescending<Candidate> { it.hits }
+                    .thenByDescending { it.practiceBonus }
+                    .thenBy { if (it.exercise.kind.isQuestion) 0 else 1 }
+                    .thenBy { it.exercise.id },
+            )
+            .take(limit.coerceIn(1, 20))
+            .map { it.exercise }
+            .toList()
+    }
+
     /** 分词用的分隔符：中英文标点、空白与常见符号（正则原样传给 Regex）。 */
     private val suggestionSeparators = Regex(
         """[\s，。、；：！？,.;:!?()（）\[\]【】「」『』/\\|·\-—_~]+""",
