@@ -854,6 +854,72 @@ private fun WeekDetail(runtime: AppRuntime, controller: PlanDragController) {
             ) {
                 DayBody(runtime, controller)
             }
+            PlanReviewSection(runtime)
+        }
+    }
+}
+
+/**
+ * 周复盘：本周结束时由系统生成（`advanceRhythm`），也可以在欠着的时候手动补一份。
+ *
+ * 结构完全按后端 `ReviewView` 的字段摆：narrative 是给人看的那段话，facts 是数字
+ * （完成/逾期/投入），question 是要用户回答的问题，suggestion 是「要不要调整」的建议。
+ */
+@Composable
+private fun PlanReviewSection(runtime: AppRuntime) {
+    val tokens = LocalTrellisTokens.current
+    val pendingWeek = runtime.planPendingReviewWeek
+    val review = runtime.planReview
+    if (pendingWeek == null && review == null) return
+    PlanCard {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "周复盘",
+                    style = tokens.type.meta,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.weight(1f))
+                if (pendingWeek != null) {
+                    ChromeTextLink("生成复盘", onClick = { runtime.generatePlanReview() })
+                }
+            }
+            if (review != null) {
+                Text(review.narrative, style = MaterialTheme.typography.bodyMedium)
+                if (review.facts.isNotEmpty()) {
+                    review.facts.forEach { fact ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                fact.label,
+                                style = tokens.type.meta,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(fact.value, style = tokens.type.meta)
+                        }
+                    }
+                }
+                if (review.question.isNotBlank()) {
+                    Text(
+                        review.question,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                review.suggestion?.let { suggestion ->
+                    Text(
+                        "建议：" + suggestion.action +
+                            (if (suggestion.cost.isBlank()) "" else "（代价：" + suggestion.cost + "）") +
+                            (if (suggestion.expectedEffect.isBlank()) "" else "，预期：" + suggestion.expectedEffect),
+                        style = tokens.type.meta,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else if (pendingWeek != null) {
+                Text(
+                    pendingWeek + " 已经结束，复盘还没生成。点「生成复盘」补一份。",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
         }
     }
 }

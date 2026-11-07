@@ -38,6 +38,7 @@ import dev.trellis.domain.plan.LearningPlanService
 import dev.trellis.domain.plan.LearningPlanInfo
 import dev.trellis.domain.plan.OverdueView
 import dev.trellis.domain.plan.PoolUnit
+import dev.trellis.domain.plan.ReviewView
 import dev.trellis.domain.plan.RhythmResult
 import dev.trellis.domain.plan.UnitDraft
 import dev.trellis.domain.plan.WeekDay
@@ -2076,7 +2077,7 @@ class AppRuntime private constructor() {
             // 真正的周/单元要 createProcess → saveDraft → acceptDraft 才写得进去。
             val planTools = PlanTools(
                 { learningPlan() },
-                { refreshPlan() },
+                { created -> refreshPlan(focus = created) },
                 { studyPrefs.weeklyMinutes },
                 planDbError = { planDbError },
                 clock = clock,
@@ -2106,7 +2107,7 @@ class AppRuntime private constructor() {
                 weeklyCapacity = { studyPrefs.weeklyMinutes },
                 clock = clock,
                 llm = llm,
-                onChanged = { refreshPlan() },
+                onChanged = { created -> refreshPlan(focus = created) },
             )
             val diagnosticsTools = DiagnosticsTools { diagnosticsReport() }
             // 跨会话记忆也是手：用户说出长期目标/偏好时写进管家日志，要回忆过去时再检索。
@@ -2734,6 +2735,19 @@ class AppRuntime private constructor() {
         planRhythmReport = null
     }
 
+    /**
+     * 当前选中周的复盘（后端 `review(planId, week)`）。
+     *
+     * 没生成过时后端返回 `state = "not_ready"`；这里只保留 ready 的，页面据此决定
+     * 是显示复盘卡还是「生成复盘」按钮。
+     */
+    internal var planReview by mutableStateOf<ReviewView?>(null)
+        private set
+
+    /** 已经结束但还没生成复盘的那一周（`planState.pendingReviewWeek`）；null = 不欠复盘。 */
+    internal var planPendingReviewWeek by mutableStateOf<String?>(null)
+        private set
+
     private fun learningPlan(): LearningPlanService? {
         learningPlanService?.let { return it }
         val file = File(home, "plans/plan.db")
@@ -2886,9 +2900,15 @@ class AppRuntime private constructor() {
         }
     }.getOrDefault(emptyList())
 
-    /** 进计划页、切周切天、写完一条之后都走这里：一次取齐整页要显示的 view model。 */
-    fun refreshPlan() {
+    /**
+     * 进计划页、切周切天、写完一条之后都走这里：一次取齐整页要显示的 view model。
+     *
+     * @param focus 新建计划后要切过去的 planId（`PlanTools`/`ResearchTools` 落库后回调传入）。
+     *   不传就沿用当前聚焦的计划 —— 用户手动切计划时走 [selectPlan]。
+     */
+    fun refreshPlan(focus: String? = null) {
         val service = learningPlan() ?: return
+        if (focus != null) planFocusId = focus
         runCatching {
             planAll = service.plans()
             // 先让计划自己往前滚（结算旧周 / 补下周承诺 / 铺天），再取待办与页面数据：
@@ -2911,11 +2931,14 @@ class AppRuntime private constructor() {
                 planPool = emptyList()
                 planRhythmReport = null
                 planOverdue = null
+                planReview = null
+                planPendingReviewWeek = null
                 planMessage = null
                 return
             }
             planRhythmReport = rhythmReports[planId]
             val state = service.planState(planId)
+            planPendingReviewWeek = state.pendingReviewWeek
             planDailyMinutes = state.dailyMinutes
             planOverdue = runCatching { service.overdue(planId, today) }.getOrNull()
 
@@ -2973,6 +2996,10 @@ class AppRuntime private constructor() {
                     ?: days.firstOrNull()?.day
                 planSelectedDay = day
                 planDayView = day?.let { service.today(planId, it) }
+                planReview = runCatching { service.review(planId, week) }.getOrNull()
+                    ?.takeIf { review -> review.state == "ready" }
+            } else {
+                planReview = null
             }
             // 首页右栏的完成情况：大数字对「所有未结束计划」，本周数字对后端「当前周」。
             planWeekProgress = runCatching {
@@ -3590,6 +3617,28 @@ class AppRuntime private constructor() {
         }
         refreshPlan()
         tick++
+    }
+
+    /**
+     * 生成周复盘（计划页「生成复盘」按钮）。
+     *
+     * 优先补「已经结束但还没复盘」的那一周（后端 `pendingReviewWeek` 给出具体周号）；
+     * 没有欠账时就给当前选中的周生成一份。
+     */
+    fun generatePlanReview() {
+        val service = learningPlan() ?: return
+        val planId = planFocusId ?: service.activePlanId() ?: return
+        val week = planPendingReviewWeek ?: planSelectedWeek ?: return
+        val result = runCatching {
+            service.generateReview(planAdjustCommand(planId), planId, week, clock.today().toString())
+        }.getOrNull()
+        if (result?.ok == true) {
+            refreshPlan()
+            planMessage = "复盘已生成：$week"
+            tick += 1
+        } else {
+            planMessage = result?.error?.message ?: "复盘没生成，稍后再试。"
+        }
     }
 
     private fun planMoveOccurrence(occurrenceId: String, toDay: String, reason: String): Boolean {

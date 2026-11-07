@@ -59,7 +59,9 @@ class PlanToolsTest {
     fun createLearningPlanWritesWeeksIntoThePlanDatabase() = runTest {
         val service = LearningPlanStore.inMemory()
         var refreshed = 0
-        val tool = PlanTools({ service }, { refreshed++ }).all.single { it.name == "create_learning_plan" }
+        var focusedPlanId: String? = null
+        val tool = PlanTools({ service }, { id -> refreshed++; focusedPlanId = id })
+            .all.single { it.name == "create_learning_plan" }
 
         val result = tool.call(
             buildJsonObject {
@@ -93,6 +95,7 @@ class PlanToolsTest {
         assertEquals(1, refreshed, "写完要通知界面刷新计划页")
 
         val planId = service.activePlanId()
+        assertEquals(planId, focusedPlanId, "新建计划后要把计划页焦点切到新计划")
         assertTrue(planId != null, "计划库里应该有一个活跃计划")
         val map = service.map(planId!!)
         assertEquals(listOf(weekOffset(), weekOffset(1)), map.weeks.map { it.week })

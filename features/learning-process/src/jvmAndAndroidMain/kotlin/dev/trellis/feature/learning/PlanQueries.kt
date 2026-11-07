@@ -417,16 +417,17 @@ internal fun SqliteLearningPlanService.buildPlanState(planId: String): PlanState
         ps.setString(1, planId)
         ps.executeQuery().use { it.next() }
     }
-    val lastWeek = connection.prepareStatement(
+    // 复盘欠账看「最近一个已经结束的周」，而不是最大承诺周：
+    // 全局周表会把未来几周也建出来，取最大周会把这个信号永久压成 false。
+    val lastEndedWeek = connection.prepareStatement(
         "SELECT DISTINCT c.week FROM commitment c JOIN plan_version pv ON pv.id = c.plan_version_id " +
-            "WHERE pv.plan_id = ? ORDER BY c.week DESC LIMIT 1",
+            "WHERE pv.plan_id = ? AND c.week < ? ORDER BY c.week DESC LIMIT 1",
     ).use { ps ->
         ps.setString(1, planId)
+        ps.setString(2, currentWeek())
         ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
     }
-    val pendingReview = lastWeek != null &&
-        PlanTime.weekEnd(lastWeek).isBefore(today()) &&
-        !reviewExists(planId, lastWeek)
+    val pendingReview = lastEndedWeek != null && !reviewExists(planId, lastEndedWeek)
     val carryPending = connection.prepareStatement(
         "SELECT COUNT(*) FROM event WHERE type = 'carry.pending' AND plan_id = ?",
     ).use { ps ->
@@ -450,6 +451,7 @@ internal fun SqliteLearningPlanService.buildPlanState(planId: String): PlanState
         week = currentWeek(),
         pendingDraft = pendingDraft,
         pendingReview = pendingReview,
+        pendingReviewWeek = lastEndedWeek.takeIf { pendingReview },
         carryPending = carryPending,
         title = planTitle(planId),
         dailyMinutes = dailyMinutes,

@@ -236,6 +236,13 @@ data class PlanStateView(
     val week: String,
     val pendingDraft: Boolean,
     val pendingReview: Boolean,
+    /**
+     * 还没生成复盘的那一周（`pendingReview` 为真时给出具体是哪周，否则 null）。
+     *
+     * 计划页的「生成复盘」按钮需要知道给哪一周生成 —— 只给布尔值的话，
+     * 前端只能猜「上一周」，而「上一周」在跨周/补周之后不一定对得上。
+     */
+    val pendingReviewWeek: String? = null,
     val carryPending: Int,
     val title: String = "",
     /** 计划里「每天投入多少分钟」：由 `process.weekly_capacity_minutes / 7` 反推；没设就是 null。 */

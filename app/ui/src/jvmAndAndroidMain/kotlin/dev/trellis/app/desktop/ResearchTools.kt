@@ -41,7 +41,8 @@ class ResearchTools(
     private val weeklyCapacity: () -> Int? = { null },
     private val clock: TrellisClock = SystemTrellisClock(),
     private val llm: LlmClient,
-    private val onChanged: () -> Unit = {},
+    /** 计划落库后回调新建的 planId：调用方拿它把计划页切到新计划。 */
+    private val onChanged: (String) -> Unit = {},
 ) {
 
     val guidance: String = listOf(
@@ -140,7 +141,7 @@ class ResearchTools(
                 ?: return ToolResult("建计划失败（写库没成功）。可以用 create_learning_plan 手写路径重试。", isError = true)
 
             val docPath = writePlanDoc(planId, title, goal, units, commitments)
-            onChanged()
+            onChanged(planId)
 
             val placedTitles = commitments.flatMap { draft2 -> draft2.unitIndexes.map { units[it].title } }.toSet()
             val poolCount = units.count { it.title !in placedTitles }
