@@ -40,6 +40,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.Canvas
@@ -75,6 +76,7 @@ fun PlanSidebar(
     onDiff: () -> Unit,
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
+    width: Dp = 296.dp,
 ) {
     val plan = line.plan
     val status = planStatus(plan, running)
@@ -94,7 +96,7 @@ fun PlanSidebar(
 
     Column(
         modifier
-            .width(296.dp)
+            .width(width)
             .fillMaxHeight()
             .padding(top = 8.dp, bottom = 12.dp)
             .clip(RoundedCornerShape(8.dp))

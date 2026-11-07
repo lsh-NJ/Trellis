@@ -949,7 +949,16 @@ class AppRuntime private constructor() {
             attempts = practiceAttempts,
             limit = 5,
             excludeIds = alreadyProposed,
-        ).firstOrNull() ?: return
+        ).firstOrNull()
+        if (exercise == null) {
+            // 别静默：现场出现过「完成 24 条、一次练习提议都没弹」，事后只能靠日志判断是
+            // 题库没匹配上、还是都被去重了。
+            appendAppLog(
+                "练习提议：题库里没有匹配（计划=" + planTitle + "，单元=" + occurrence.title +
+                    "，章节=" + occurrence.chapter + "，已提议 " + alreadyProposed.size + " 条）",
+            )
+            return
+        }
         proposedPracticeExerciseIds += exercise.id
         val proposal = PracticeProposal(
             id = "practice-" + clock.nowMs(),
@@ -1206,6 +1215,8 @@ class AppRuntime private constructor() {
         currentChatId = null
         chat.clear()
         chatHistory.clear()
+        // 选项属于上一轮对话：换会话后还留着，点一下会当成新会话的提问发出去。
+        chatChoices = emptyList()
         // 行 id 是**整个进程**单调递增的：会话之间、重启前后都不能撞，
         // 否则界面按 id 做 key、按 id 找行（采纳建议）都会指错行。
     }
@@ -1217,6 +1228,7 @@ class AppRuntime private constructor() {
         currentChatId = session.id
         chat.clear()
         chat += session.lines
+        chatChoices = emptyList()
         // 只升不降：从任意一段历史会话切过来，新行都不能复用别的会话已有的 id。
         nextChatLineId = maxOf(nextChatLineId, (session.lines.maxOfOrNull { it.id } ?: 0L) + 1)
         chatHistory.clear()
@@ -1448,6 +1460,10 @@ class AppRuntime private constructor() {
                 runWeeklyPlanRound(StewardRuntime.STEWARD_SESSION_ID, plan.id, plan.title, asSteward = true)
             }
         }
+        // 后台排完这一周，计划页要立刻看到：以前用户回到计划页还是旧的条目数，
+        // 得退出重进（或等下一次刷新）才出现，现场测试当成「没排」。
+        refreshPlan()
+        tick++
         runCatching { stewardStore.saveCheckpoints(checkpoints.copy(weeklyPlanWeek = isoWeekOf(today))) }
             .onFailure { appendAppLog("记录周计划日期失败：$it") }
     }
@@ -2088,19 +2104,21 @@ class AppRuntime private constructor() {
         if (line.plan.isEmpty() || line.planFinishedMs != 0L) return
         val running = line.plan.indexOfFirst { it.state == PlanStepState.Running }
         val now = System.currentTimeMillis()
-        val plan = if (running < 0) {
-            line.plan
-        } else {
-            line.plan.mapIndexed { index, step ->
-                if (index != running) {
-                    step
-                } else {
-                    step.copy(
-                        state = if (ok) PlanStepState.Done else PlanStepState.Failed,
-                        note = if (ok) "本轮结束" else "这一轮没走完",
-                        ms = if (step.startedMs > 0) now - step.startedMs else 0L,
-                    )
-                }
+        val plan = line.plan.mapIndexed { index, step ->
+            when {
+                index == running -> step.copy(
+                    state = if (ok) PlanStepState.Done else PlanStepState.Failed,
+                    note = if (ok) "本轮结束" else "这一轮没走完",
+                    ms = if (step.startedMs > 0) now - step.startedMs else 0L,
+                )
+                // 本轮没走到的步骤也要收尾：一直挂在「待执行」会让清单永远停在 2/4，
+                // 用户看不出这一轮到底结束了没有。跳过不是失败，文案写清「本轮没执行到」。
+                step.state == PlanStepState.Pending -> step.copy(
+                    state = PlanStepState.Skipped,
+                    note = "本轮没执行到",
+                    ms = 0L,
+                )
+                else -> step
             }
         }
         chat[at] = line.copy(plan = plan, planFinishedMs = now)
@@ -3001,6 +3019,15 @@ class AppRuntime private constructor() {
         private set
 
     /**
+     * 计划设置弹窗里的错误文案（保存失败时显示在弹窗内部）。
+     *
+     * 为什么不用 [planMessage]：它是页面级的、渲染在周条一行小字里，弹窗打开时被 scrim
+     * 盖住看不见；而且 [refreshPlan] 末尾会清空它——失败提示会闪一下就消失。
+     */
+    var planSettingsError by mutableStateOf<String?>(null)
+        private set
+
+    /**
      * 待办板上的「学习计划节点」：所有没结束的计划各一组。
      *
      * 和 [planPool] 的区别：那个只看当前聚焦的计划、只给计划页用；这个跨全部计划，
@@ -3037,6 +3064,8 @@ class AppRuntime private constructor() {
         private set
 
     var planSelectedWeek by mutableStateOf<String?>(null)
+    /** 上一次刷新时「今天」所在的 ISO 周：用来判断是否自然跨周（含调试 +1 周）。 */
+    private var lastPlanTodayWeek: String? = null
         private set
 
     var planSelectedDay by mutableStateOf<String?>(null)
@@ -3048,6 +3077,24 @@ class AppRuntime private constructor() {
     /** 库打不开 / 读失败时的一句话；成功时清空。 */
     var planMessage by mutableStateOf<String?>(null)
         private set
+
+    /**
+     * 计划页的错误提示条：**不会**被 `refreshPlan()` 清掉，只有用户点关闭或下一次成功动作才消失。
+     *
+     * 为什么另建一个：[planMessage] 渲染在周条里的一行小字上，而且每次刷新末尾都清空；
+     * 任何「先写错误再刷新」的路径都会让提示闪一下就没了（弹窗里的错误还会被 scrim 挡住）。
+     */
+    var planNotice by mutableStateOf<String?>(null)
+        private set
+
+    fun dismissPlanNotice() {
+        planNotice = null
+    }
+
+    private fun reportPlanProblem(text: String) {
+        planNotice = text
+        planMessage = text
+    }
 
     // ---------------------------------------------------------------- 计划文档
     // 「想法」层：先在文档里写目标、按周条目、待安排，再确认落进计划库。
@@ -3438,6 +3485,15 @@ class AppRuntime private constructor() {
             planPendingReviewWeek = state.pendingReviewWeek
             planReviewableWeek = state.reviewableWeek
             planDailyMinutes = state.dailyMinutes
+            // 自然跨周（含 dev 的 +1 周）时页面跟着到新的一周：
+            // 用户自己点过别的周就不动，只有还停在上一次的「今天这周」才跟随。
+            val todayWeek = isoWeekOf(clock.today())
+            val previousTodayWeek = lastPlanTodayWeek
+            if (previousTodayWeek != null && previousTodayWeek != todayWeek) {
+                val selected = planSelectedWeek
+                if (selected == null || selected == previousTodayWeek) planSelectedWeek = todayWeek
+            }
+            lastPlanTodayWeek = todayWeek
             // 阶段是页面上的「计划形状」，读失败只丢阶段条，不把整页拖进错误态。
             planStages = runCatching { service.stages(planId) }.getOrElse { emptyList() }
             planOverdue = runCatching { service.overdue(planId, today) }.getOrNull()
@@ -3591,11 +3647,13 @@ class AppRuntime private constructor() {
     fun openPlanSettings() {
         if (planTitle == null) return
         planDailyDraft = planDailyMinutes ?: 60
+        planSettingsError = null
         planSettingsOpen = true
     }
 
     fun closePlanSettings() {
         planSettingsOpen = false
+        planSettingsError = null
     }
 
     fun bumpPlanDailyDraft(delta: Int) {
@@ -3611,7 +3669,7 @@ class AppRuntime private constructor() {
         val service = learningPlan() ?: return
         val planId = learningPlanId
         if (planId == null) {
-            planMessage = "还没有选中的计划。"
+            planSettingsError = "还没有选中的计划。"
             return
         }
         val command = CommandEnvelope(
@@ -3622,13 +3680,15 @@ class AppRuntime private constructor() {
         )
         val result = runCatching { service.setPlanDailyMinutes(command, planId, planDailyDraft) }
             .getOrElse {
-                planMessage = "没存上：" + (it.message ?: "未知原因")
-                null
+                // 失败就停在弹窗里：不能把异常吞掉再显示「已改成」。
+                planSettingsError = "没存上：" + (it.message ?: "未知原因")
+                return
             }
-        if (result != null && !result.ok) {
-            planMessage = result.error?.message
+        if (!result.ok) {
+            planSettingsError = result.error?.message ?: "这次没存成。"
             return
         }
+        planSettingsError = null
         planSettingsOpen = false
         planMessage = "每天投入已改成 " + planDailyDraft + " 分钟。"
         refreshPlan()
@@ -3713,7 +3773,7 @@ class AppRuntime private constructor() {
                 planMessage = "这次没记上：" + (it.message ?: "未知原因")
                 null
             }
-        if (result != null && !result.ok) planMessage = result.error?.message
+        if (result != null && !result.ok) reportPlanProblem(result.error?.message ?: "这次没挪成。")
         if (result != null && result.ok && occurrence != null) {
             maybeProposePractice(planId, occurrence)
         }
@@ -3858,8 +3918,15 @@ class AppRuntime private constructor() {
             origin = "ui.auto-completion",
         )
         val result = runCatching { service.uncompleteOccurrence(command, entry.occurrenceId) }
-            .getOrElse { error -> planMessage = "这次没改回来：" + (error.message ?: "未知原因"); null }
-        if (result != null && !result.ok) planMessage = result.error?.message
+            .getOrElse { error ->
+                // 失败必须停在这里：不能一边改账本一边报「已撤销」。
+                reportPlanProblem("这次没改回来：" + (error.message ?: "未知原因"))
+                return
+            }
+        if (!result.ok) {
+            reportPlanProblem(result.error?.message ?: "这次没改回来。")
+            return
+        }
         saveAutoCompletionLedger(ledger.withUndone(entryId, clock.nowMs()).withBlocked(entry.occurrenceId))
         refreshPlan()
         tick++
@@ -3973,7 +4040,7 @@ class AppRuntime private constructor() {
             planMessage = "这次没跳过：" + (it.message ?: "未知原因")
             null
         }
-        if (result != null && !result.ok) planMessage = result.error?.message
+        if (result != null && !result.ok) reportPlanProblem(result.error?.message ?: "这次没跳过。")
         refreshPlan()
         tick++
     }
@@ -4004,11 +4071,11 @@ class AppRuntime private constructor() {
         val today = clock.today()
         val target = runCatching { LocalDate.parse(day) }.getOrNull()
         if (target == null) {
-            planMessage = "日期看不懂：$day"
+            reportPlanProblem("日期看不懂：$day")
             return null
         }
         if (target < today) {
-            planMessage = "过去的日期不能重排；从今天开始往后放。"
+            reportPlanProblem("过去的日期不能重排；从今天开始往后放。")
             return null
         }
         return day
@@ -4170,7 +4237,7 @@ class AppRuntime private constructor() {
             service.abandonPlan(planAdjustCommand(planId), planId)
         }.getOrNull()
         if (result?.ok != true) {
-            planMessage = result?.error?.message ?: "放弃没成功，稍后再试。"
+            reportPlanProblem(result?.error?.message ?: "放弃没成功，稍后再试。")
             return
         }
         planSettingsOpen = false
@@ -5229,7 +5296,7 @@ class AppRuntime private constructor() {
             runtime.pluginStyleStore = PluginStyleStore(home)
             runtime.pluginCardStyles = runtime.pluginStyleStore.load()
             runtime.planDocStore = PlanDocStore(home)
-            runtime.chatStore = ChatStore(home)
+            runtime.chatStore = ChatStore(home) { line -> runtime.appendAppLog(line) }
             runtime.planSessionStore = PlanSessionStore(home)
             runtime.knowledgeStore = KnowledgeStore(home, runtime.clock)
             runtime.stewardStore = StewardStore(home)

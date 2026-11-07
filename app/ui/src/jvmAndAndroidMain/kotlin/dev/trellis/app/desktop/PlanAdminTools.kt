@@ -44,7 +44,9 @@ class PlanAdminTools(
         "   待安排数量、上周复盘和 carryPending。勾完成、顺延都用这个 id，不要自己编。",
         "2. 完成/顺延/改每天投入都会改用户数据：先得到明确同意，再带 confirmed=true 调；",
         "   不确定就先 ask_choices 问一句，别替用户拍板。",
-        "3. 排下周/跨周对账调 plan_next_week（系统节奏，幂等，会补承诺 + 结算 + 复盘 + 铺天），",
+        "3. 用户说「排下周 / 把下周排一下」时调 plan_week（week 传下周的 ISO 周，如 2026-W46）；",
+        "   plan_week 会按天预算生成条目并铺到天，已经排过的周会明确拒绝、不会重复追加。",
+        "   plan_next_week 只用于跨周对账（结算/补承诺/复盘/幂等推进），它**不重新生成周内容**；",
         "   不要自己算周号、也不要为了排下周重建计划；复盘调 review_last_week；一次只动一个计划。",
         "4. 文案不羞辱：说「上周完成 2/4，这周先排 3 个」，不说「落后 N 天」「欠了 N 个」。",
         "5. 新建计划走 create_learning_plan（「找资源 → 排成学习计划」那条路）；这里只维护已有的。",
@@ -213,7 +215,8 @@ class PlanAdminTools(
         override val name: String = "plan_next_week"
         override val description: String =
             "让计划按周节奏往前滚一步（系统命令，幂等）：结算已经结束的周、从待安排池给本周/下周补承诺、" +
-                "生成复盘、把该铺的周铺到天。用户说「排下周」「这周先这样，下周排一下」时调它；不用自己算周号。"
+                "生成复盘、把该铺的周铺到天。它**不会重新生成一周的条目**；用户要「排下周 / 排本周内容」用 plan_week。" +
+                "结果会写清这次到底有没有新增/移动节点，没有就说没有，不要替它宣称完成了什么。"
         override val parameters: String = "不需要参数。"
 
         override suspend fun call(arguments: JsonObject): ToolResult = withActivePlan { svc, planId ->
@@ -223,7 +226,19 @@ class PlanAdminTools(
                 return@withActivePlan ToolResult("节奏没推进：" + (result.error?.message ?: "未知原因"), isError = true)
             }
             onChanged()
-            val note = value.note.ifBlank { "节奏检查过了，没有需要动的地方（${value.week}）。" }
+            val changed = value.appendedWeeks.isNotEmpty() ||
+                value.scheduledWeeks.isNotEmpty() ||
+                value.settledWeeks.isNotEmpty() ||
+                value.reviewedWeeks.isNotEmpty() ||
+                value.carried > 0 ||
+                value.missed > 0
+            val note = if (!changed) {
+                "这次没有新增或移动任何节点（" + value.week + "）：这一周已经排过了，待安排池还剩 " +
+                    value.poolRemaining + " 个。别说「池子清空了 / 补了 N 个单元」这类没发生的事。" +
+                    "要改内容就用 plan_week（已排过的周会拒绝）或让用户拖节点。"
+            } else {
+                value.note.ifBlank { "节奏检查过了，没有需要动的地方（" + value.week + "）。" }
+            }
             val detail = buildString {
                 append("周：").append(value.week)
                 if (value.settledWeeks.isNotEmpty()) {

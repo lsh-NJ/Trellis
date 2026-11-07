@@ -171,3 +171,15 @@
   之后 `appendUnits` 可以继续往里加单元；每周的 `plan_week` 就是「追加本周单元 + `placeUnit` 铺到天」。
 - `research_plan` 不再一次生成全部单元：只出阶段表（`stages`），宿主建空壳计划、写大纲文档、
   建目标与里程碑，并返回每天投入建议；具体条目由每周的 `plan_week` 决定。
+
+## 11 2026-11-08 晚：跨周顺延的承诺归属 + `materializeWeek` 不回填 moved-away
+
+- **`cmdMoveOccurrence` 跨周**：日期落到别的 ISO 周时，同步把 occurrence 挂到**目标周**的 commitment
+  （没有就建；单元没排队就补 `commitment_unit`，`sort_order` 取 max+1）。事件 `occurrence.moved` 的
+  `week` 记目标周，另带 `fromWeek` 说明从哪周挪来；撤销仍回原承诺与原日期。
+  不这么做会出现「日期在下一周、承诺还在上一周」：周卡把这条算进旧周，日条按日期把它显示在新周。
+- **`materializeWeek` 判重再加一类**：`status='planned' AND moved_from IS NOT NULL AND day 不在本周` 的单元
+  视为「已被挪走」，不得回填。只按本承诺判重不够：顺延时旧行 `superseded`、新行挂在目标周，
+  旧周铺天会误以为「这个单元还没排」，再插回原来那天（现场：顺延 9 条后当天仍 20 件，
+  同一 unit 同时存在旧日与次日两条 planned）。
+- 两条都有回归测试：`LearningPlanServiceTest.aUnitMovedToTheNextWeekIsNotRefilledIntoTheOldWeek`。

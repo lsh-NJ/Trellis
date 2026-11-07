@@ -41,6 +41,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -67,6 +68,8 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -96,6 +99,7 @@ import kotlinx.coroutines.delay
  * - L4 过程细节：等宽小字，机器语法只允许出现在这一层；
  * - L5 元信息：时间 · 步数 · 耗时，以及「撤销 / 看差异 / 复制」。
  */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun ChatScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     val focus = remember { FocusRequester() }
@@ -118,6 +122,15 @@ fun ChatScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
         } == true
         if (fresh) planOpen = true
     }
+
+    // 窄窗（最小 880×600）里左右两条 296 栏会把对话列挤到不足 200dp：
+    // 按窗口宽度收窄右栏、缩小对话区左右留白，正文至少还能读。
+    val containerWidthDp = with(LocalDensity.current) {
+        LocalWindowInfo.current.containerSize.width.toDp().value
+    }
+    val narrowChat = containerWidthDp < 1024f
+    val planPanelWidth = if (narrowChat) 232.dp else 296.dp
+    val conversationPadding = if (narrowChat) 12.dp else 24.dp
 
     // 右栏是否占位决定对话区要不要留右边距（不留时正文直接贴到窗口右边界）。
     val planSidebarVisible = planOpen && planLine != null && planLine.plan.isNotEmpty()
@@ -146,7 +159,7 @@ fun ChatScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
             planLine = if (planOpen) null else planLine,
             onOpenPlan = { planOpen = true },
             note = planNote,
-            modifier = Modifier.weight(1f).fillMaxHeight().padding(horizontal = 24.dp),
+            modifier = Modifier.weight(1f).fillMaxHeight().padding(horizontal = conversationPadding),
         )
         if (planSidebarVisible) {
             PlanSidebar(
@@ -159,7 +172,8 @@ fun ChatScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                 },
                 onDiff = { diffOpen = true },
                 onStop = { runtime.stopChat() },
-                modifier = Modifier.padding(start = 14.dp, end = 4.dp),
+                modifier = Modifier.padding(start = if (narrowChat) 8.dp else 14.dp, end = 4.dp),
+                width = planPanelWidth,
             )
         }
     }
@@ -557,15 +571,23 @@ internal fun ChoiceBar(
                 color = tokens.colors.ink3.copy(alpha = 0.72f),
             )
         }
-        choices.forEachIndexed { index, choice ->
-            if (index > 0) {
-                HorizontalDivider(
-                    modifier = Modifier.padding(horizontal = 14.dp),
-                    thickness = 1.dp,
-                    color = tokens.colors.rule.copy(alpha = 0.55f),
-                )
+        // 最多 6 条、每条一整句话：限高 + 滚动，别把对话区和输入条挤出窗口。
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 264.dp)
+                .verticalScroll(rememberScrollState()),
+        ) {
+            choices.forEachIndexed { index, choice ->
+                if (index > 0) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 14.dp),
+                        thickness = 1.dp,
+                        color = tokens.colors.rule.copy(alpha = 0.55f),
+                    )
+                }
+                ChoiceOptionRow(index = index, choice = choice, tokens = tokens, onClick = { onPick(choice) })
             }
-            ChoiceOptionRow(index = index, choice = choice, tokens = tokens, onClick = { onPick(choice) })
         }
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 2.dp),

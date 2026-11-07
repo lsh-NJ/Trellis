@@ -463,4 +463,29 @@ class LearningPlanServiceTest {
         assertTrue(lines.first().contains("\"entity\""))
         assertTrue(lines.last().contains("\"type\":\"snapshot\""))
     }
+
+    /**
+     * 顺延到下周的单元不能被旧周的「铺本周」回填：materializeWeek 以前只看本承诺下的
+     * occurrence，挪走之后旧周以为“还没排”，又插回原来那天（现场复现：顺延后当天仍是 20 件）。
+     */
+    @Test
+    fun aUnitMovedToTheNextWeekIsNotRefilledIntoTheOldWeek() {
+        val svc = service()
+        val (planId, _, _) = seedTwoWeekPlan(svc)
+        val moved = svc.today(planId, "2026-10-26").occurrences.first()
+
+        val result = svc.moveOccurrence(env(planId), moved.id, "2026-11-02", "顺延到下周")
+        assertTrue(result.ok, result.error?.message)
+
+        // 旧周再跑一次「铺本周」：已经挪走的单元不能又被插回 10-26。
+        assertTrue(svc.scheduleWeek(env(planId), "2026-W44").ok)
+        val titlesToday = svc.today(planId, "2026-10-26").occurrences.map { it.title }
+        assertTrue(moved.title !in titlesToday, "挪到下周的单元被回填了：$titlesToday")
+
+        // 旧周里也不该还留着这个单元的任何 planned 条目。
+        val week = svc.week(planId, "2026-W44")
+        val stillInWeek = week.days.flatMap { it.items }.count { it.title == moved.title }
+        assertEquals(0, stillInWeek, "旧周里还留着 ${moved.title}：$week")
+    }
+
 }

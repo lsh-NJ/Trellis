@@ -29,6 +29,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.trellis.domain.plan.GoalView
 import dev.trellis.domain.plan.MilestoneView
@@ -130,16 +131,26 @@ private fun GoalCard(
         verticalArrangement = Arrangement.spacedBy(tokens.space.s),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(goal.title, style = tokens.type.title, color = colors.ink)
-            Spacer(Modifier.width(tokens.space.s))
-            Text(
-                if (goal.kind == "project") "项目" else "目标",
-                style = tokens.type.caption,
-                color = colors.ink3,
-            )
+            // 标题占满中间、最多两行：目标名常常很长，不给它 weight 会把右边的
+            // 「加里程碑 / 归档」挤到 0 宽（窄窗口下甚至完全点不到）。
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    goal.title,
+                    style = tokens.type.title,
+                    color = colors.ink,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(tokens.space.s)) {
+                    Text(
+                        if (goal.kind == "project") "项目" else "目标",
+                        style = tokens.type.caption,
+                        color = colors.ink3,
+                    )
+                    goal.deadline?.let { Text("截止 $it", style = tokens.type.caption, color = colors.ink3) }
+                }
+            }
             Spacer(Modifier.width(tokens.space.m))
-            goal.deadline?.let { Text("截止 $it", style = tokens.type.caption, color = colors.ink3) }
-            Spacer(Modifier.weight(1f))
             if (onAddMilestone != null) {
                 ChromeTextLink("加里程碑", onClick = onAddMilestone)
                 Spacer(Modifier.width(tokens.space.s))
@@ -154,7 +165,7 @@ private fun GoalCard(
         if (goal.success.isNotBlank()) {
             Text("验收：" + goal.success, style = tokens.type.body, color = colors.ink2)
         }
-        if (goal.intent.isNotBlank()) {
+        if (goal.intent.isNotBlank() && goal.intent.trim() != goal.title.trim() && goal.intent.trim() != goal.success.trim()) {
             Text("为了：" + goal.intent, style = tokens.type.body, color = colors.ink2)
         }
         if (goal.milestones.isNotEmpty()) {
@@ -221,8 +232,18 @@ private fun PlanRow(plan: LearningPlanInfo, runtime: AppRuntime) {
     ) {
         Text(plan.title, style = tokens.type.body, color = colors.ink)
         Spacer(Modifier.weight(1f))
-        Text(plan.status, style = tokens.type.caption, color = colors.ink3)
+        // 状态用中文：卡片上直接露 `active` 会被当成没翻译的漏网字段（验收 P1）。
+        Text(planStatusLabel(plan.status), style = tokens.type.caption, color = colors.ink3)
     }
+}
+
+private fun planStatusLabel(status: String): String = when (status) {
+    "active" -> "进行中"
+    "paused" -> "暂停"
+    "ended" -> "已结束"
+    "abandoned" -> "已放弃"
+    "planned" -> "已排"
+    else -> status
 }
 
 @Composable

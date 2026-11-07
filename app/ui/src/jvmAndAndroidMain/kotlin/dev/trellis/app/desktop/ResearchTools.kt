@@ -238,8 +238,10 @@ class ResearchTools(
             val name = obj["name"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
             val weeks = obj["weeks"]?.jsonPrimitive?.intOrNull ?: return@mapNotNull null
             if (weeks !in 1..MAX_STAGE_WEEKS) return@mapNotNull null
-            val focus = obj["focus"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-            ShellStage(name = name.take(40), weeks = weeks, focus = focus)
+            val focus = sanitizeStageText(obj["focus"]?.jsonPrimitive?.contentOrNull)
+            val deliverable = sanitizeStageText(obj["deliverable"]?.jsonPrimitive?.contentOrNull)
+            val acceptance = sanitizeStageText(obj["acceptance"]?.jsonPrimitive?.contentOrNull)
+            ShellStage(name = name.take(40).trim(), weeks = weeks, focus = focus, deliverable = deliverable, acceptance = acceptance)
         }
         if (stages.size != stagesElement.size) return null
         val totalWeeks = stages.sumOf { it.weeks }
@@ -272,24 +274,50 @@ class ResearchTools(
     private fun buildOutline(goal: String, draft: ShellDraft): String = buildString {
         appendLine("# 目标与验收")
         appendLine("- 目标：" + goal)
-        appendLine("- 验收：每个阶段的里程碑都完成，并按周推进（每周用 plan_week 排这一周的内容）。")
+        appendLine("- 验收：下面每个阶段都有自己的「交付物」和「过关标准」，逐条自测；")
+        appendLine("  全部阶段过关 + 最后做出一件能给别人演示的东西，才算完成这份计划。")
         appendLine()
         appendLine("## 阶段")
         draft.stages.forEachIndexed { index, stage ->
             append("- 阶段 ").append(index + 1).append(" · ").append(stage.name).append("（约 ").append(stage.weeks).append(" 周）")
             if (stage.focus.isNotBlank()) append("：").append(stage.focus)
             appendLine()
+            append("  - 交付物：").appendLine(stage.deliverable.ifBlank { fallbackDeliverable(index) })
+            append("  - 过关标准：").appendLine(stage.acceptance.ifBlank { fallbackAcceptance() })
         }
+    }
+
+    /** 模型没给可交付物时的兜底：能看见/能运行的东西，不再用「掌握/了解」这类不可验收动词。 */
+    private fun fallbackDeliverable(index: Int): String =
+        if (index == 0) "一份用自己的话写的基础笔记 + 一次能跑通的最小示例" else "一个能运行或能展示的小作品/文档，说明这一阶段学到的东西"
+
+    /** 兜底过关标准：可观察、可自测，且不引用内部工具名。 */
+    private fun fallbackAcceptance(): String =
+        "能不看资料复述核心概念，并独立完成本阶段交付物；卡壳时能说出卡在哪一步"
+
+    /** 阶段文案清洗：去掉来源标签（如「（Zpedu）」「(GitHub)」）和宿主内部工具名，避免漏进用户可见文档。 */
+    private fun sanitizeStageText(raw: String?): String {
+        val text = raw?.trim().orEmpty()
+        if (text.isEmpty()) return ""
+        val withoutSourceTags = SOURCE_TAG_PATTERN.replace(text, "")
+        val withoutTools = text.replace("plan_week", "").replace("research_plan", "").replace("sync_plan_week", "")
+        return withoutTools.replace(SOURCE_TAG_PATTERN, "").trim().take(60)
     }
 
     private fun shellSystemPrompt(thisWeek: String, deadline: String?, dailyMinutes: Int, hasSources: Boolean): String =
         buildString {
             appendLine("你是学习规划师。用户只有一句目标，你要先做**全局规划**（不是排具体单元）：把目标拆成阶段，估算每个阶段的周数。")
             appendLine("只输出一个 JSON 对象，不要 markdown、不要解释：")
-            appendLine("{\"title\":\"计划标题（≤16 字）\",\"dailyMinutes\":" + dailyMinutes + ",\"stages\":[{\"name\":\"阶段名（≤16 字）\",\"weeks\":2,\"focus\":\"这一阶段聚焦什么（≤30 字）\"}]}")
+            appendLine("{\"title\":\"计划标题（≤16 字）\",\"dailyMinutes\":" + dailyMinutes + ",\"stages\":[{\"name\":\"阶段名（≤16 字）\",\"weeks\":2,\"focus\":\"聚焦什么（≤30 字）\",\"deliverable\":\"这一阶段结束时要拿出的东西（≤30 字）\",\"acceptance\":\"怎么算过关（可自测，≤30 字）\"}]}")
             appendLine("约束：阶段 1–8 个，每个阶段 1–12 周，总周数 ≤ 40；这个计划从 " + thisWeek + " 这一周开始。")
             if (deadline != null) appendLine("用户给了截止日期 " + deadline + "，总周数要能覆盖到那个日期之前。")
             appendLine("阶段要覆盖从入门到能做出东西的完整路线：通识/理论学习在前，动手实践（写代码、做项目）后置。")
+            appendLine("写法要求（很重要）：")
+            appendLine("1. 每个阶段必须有可交付物（能运行/能展示/能给别人看的东西）和可自测的过关标准；")
+            appendLine("   不要用「掌握 / 熟悉 / 了解 / 跑通」这类无法验收的词当交付物。")
+            appendLine("2. name / focus / deliverable / acceptance 里不要出现来源站点名或括号标注（如「（Zpedu）」「(GitHub)」「（阿里云）」）；")
+            appendLine("   来源只在正文里参考，不要写进这四段文案。")
+            appendLine("3. 不要写任何内部工具名（如 plan_week / research_plan / sync_plan_week），用户看不到这些。")
             if (hasSources) {
                 appendLine("用户消息里会附一段 <research_sources>（宿主从网上搜到的资料）。")
                 appendLine("优先用它里面的事实与结构（比如岗位要求、常见学习顺序、真实项目），引用时写出站点名；")
@@ -311,11 +339,19 @@ class ResearchTools(
         appendLine("请按上述 JSON 格式输出阶段表。")
     }
 
-    private data class ShellStage(val name: String, val weeks: Int, val focus: String)
+    private data class ShellStage(
+        val name: String,
+        val weeks: Int,
+        val focus: String = "",
+        val deliverable: String = "",
+        val acceptance: String = "",
+    )
 
     private data class ShellDraft(val title: String, val dailyMinutes: Int, val stages: List<ShellStage>)
 
     private companion object {
+        /** 括号里带拉丁字母的，基本是来源站点标注：写作「（Zpedu）」或「(GitHub)」。 */
+        val SOURCE_TAG_PATTERN = Regex("[（(][^）)]*[A-Za-z][^）)]*[）)]")
         const val PLAN_TIMEOUT_MS = 30_000L
         const val DEFAULT_DAILY_MINUTES = 90
         const val MAX_STAGES = 8

@@ -105,14 +105,14 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     BoxWithConstraints(
         modifier = modifier.onGloballyPositioned { coordinates -> rootOrigin = coordinates.positionInRoot() },
     ) {
-        // 中窗及以下：抽屉改「覆盖」，不再把内容列挤窄——880 宽的窗口里 296 的抽屉
-        // 等于把周卡糊掉一半，且日期格被压在抽屉后面反而更难拖。
-        val drawerOverlays = maxWidth < TrellisBreakpoints.medium.dp
         // 右栏的显示条件看**窗口**宽度：本页被外壳限宽成 1120dp（还得减左右各 20dp 内边距），
         // 1440pt 的窗口里 maxWidth 最多 1080dp，拿页面宽度判永远够不到 medium 断点。
         val windowWidthDp = with(LocalDensity.current) {
             LocalWindowInfo.current.containerSize.width.toDp().value
         }
+        // 抽屉是不是「盖在内容上」：只有窗口真的放不下 296 抽屉 + 一列可读的日卡时才覆盖，
+        // 否则把内容列让开——不然宽屏也会盖住右侧阶段栏和周末的日期格，拖不过去。
+        val drawerOverlays = windowWidthDp < 1280f
         Row(Modifier.fillMaxSize().padding(end = if (drawerOverlays) 0.dp else panelWidth)) {
             PlanList(runtime)
             ListSidebarSplitter()
@@ -123,6 +123,8 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                 // 页头：计划页此前没有页标题，左边 232dp 的列表里孤零零一个「计划」。
                 // 计划级动作（重排 / 计划设置）从周卡标题行搬到页头右上角，和周卡内容解耦。
                 item { PlanHeader(runtime) }
+                // 错误提示条：不随 refreshPlan 消失，用户点「知道了」才收。
+                runtime.planNotice?.let { notice -> item { PlanErrorBanner(notice) { runtime.dismissPlanNotice() } } }
                 if (runtime.isSimulatingTime) item { PlanSimulatedBanner(runtime) }
                 if (runtime.planRhythmHasNews) item { PlanRhythmCard(runtime) }
 
@@ -142,8 +144,9 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                     }
                 }
             }
-            // 宽屏右栏：阶段进度常驻。窄窗（抽屉会覆盖内容）就不放，免得被挤成一列字。
-            if (shouldShowStageRail(windowWidthDp, runtime.planStages.size)) {
+            // 宽屏右栏：阶段进度常驻。抽屉打开时先让位——296 抽屉 + 232 列表 + 196 右栏
+            // 会把中间内容列压成一列字（现场复现过「计划」一字一行）；收起抽屉再回来。
+            if (!runtime.planRearrangeOpen && shouldShowStageRail(windowWidthDp, runtime.planStages.size)) {
                 PlanStageRail(runtime)
             }
         }
@@ -434,6 +437,29 @@ private fun PlanSimulatedBanner(runtime: AppRuntime) {
 }
 
 /**
+ * 计划页错误提示条：失败原因在页面上停住，不被 `refreshPlan` 的清理和弹窗的 scrim 吞掉。
+ *
+ * 计划页以前只有周条里那一行 `planMessage`：它 maxLines=1、每次刷新都清空，
+ * 弹窗里的保存失败也被弹窗盖住——用户看到的就是「点了保存，什么也没发生」。
+ */
+@Composable
+private fun PlanErrorBanner(message: String, onDismiss: () -> Unit) {
+    val tokens = LocalTrellisTokens.current
+    PlanCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                message,
+                style = tokens.type.body,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(10.dp))
+            ChromeTextLink("知道了", onClick = onDismiss)
+        }
+    }
+}
+
+/**
  * 计划设置：只放「这个计划自己的属性」。
  *
  * 为什么不做成全局设置页的一项：每天投入是计划属性——同一台机器上「考研」和「读书」的节奏不一样，
@@ -477,6 +503,13 @@ private fun PlanSettingsDialog(runtime: AppRuntime) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                runtime.planSettingsError?.let { error ->
+                    Text(
+                        error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
                 // 危险区放在最后、和上面的「改数字」隔开：放弃是这一页唯一不可撤销的动作。
                 Spacer(Modifier.height(4.dp))
                 Text(

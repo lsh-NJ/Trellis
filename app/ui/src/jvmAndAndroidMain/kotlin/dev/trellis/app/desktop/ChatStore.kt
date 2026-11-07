@@ -1,6 +1,8 @@
 package dev.trellis.app.desktop
 
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -23,9 +25,13 @@ import kotlinx.serialization.json.putJsonArray
  * 的编译器插件（`@Serializable` 生成不了 serializer），而会话结构很小、字段稳定，
  * 手写 30 行比为一个文件引入插件+版本迁移划算。
  *
+ * 写盘必须原子：先写同目录的 `.tmp` 再 `ATOMIC_MOVE` 覆盖，避免进程崩溃/磁盘满时
+ * 留下半截 JSON、让整段会话从列表里无声消失。读失败的文件改名成 `.bad-<时间戳>`
+ * 留档（不删），下次 `list()` 不再看见它。
+ *
  * 读失败一律当「没有这段会话」：聊天记录坏一个文件，不能把程序带崩。
  */
-internal class ChatStore(home: File) {
+internal class ChatStore(home: File, private val log: (String) -> Unit = {}) {
     private val dir = File(home, "chat")
 
     init {
@@ -38,15 +44,58 @@ internal class ChatStore(home: File) {
             .sortedByDescending { it.updatedAt }
     }
 
-    fun read(id: String): ChatSession? = runCatching {
+    fun read(id: String): ChatSession? {
         val file = File(dir, "$id.json")
-        if (!file.isFile) return@runCatching null
-        parse(file.readText(Charsets.UTF_8).removePrefix("\uFEFF"))
-    }.getOrNull()
+        if (!file.isFile) return null
+        val raw = runCatching { file.readText(Charsets.UTF_8).removePrefix("\uFEFF") }.getOrElse { error ->
+            log("会话文件读不出来（$id）：${error.message ?: error::class.simpleName}")
+            quarantine(file, id)
+            return null
+        }
+        val session = runCatching { parse(raw) }.getOrElse { error ->
+            log("会话文件解析失败（$id）：${error.message ?: error::class.simpleName}")
+            quarantine(file, id)
+            return null
+        }
+        if (session == null) {
+            log("会话文件格式不对，已留档（$id）")
+            quarantine(file, id)
+        }
+        return session
+    }
 
     fun save(session: ChatSession) {
         dir.mkdirs()
-        File(dir, "${session.id}.json").writeText(encode(session).toString(), Charsets.UTF_8)
+        val target = File(dir, "${session.id}.json")
+        val tmp = File(dir, "${session.id}.json.tmp")
+        runCatching {
+            tmp.writeText(encode(session).toString(), Charsets.UTF_8)
+            try {
+                Files.move(
+                    tmp.toPath(),
+                    target.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING,
+                )
+            } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                // 极少数文件系统不支持原子替换：退化成普通替换，至少不会留下半截文件。
+                Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+        }.onFailure { error ->
+            runCatching { tmp.delete() }
+            log("会话没能写进磁盘（${session.id}）：${error.message ?: error::class.simpleName}")
+        }
+    }
+
+    /** 坏文件改名留档，避免下一次 `list()` 继续把它当会话读。 */
+    private fun quarantine(file: File, id: String) {
+        runCatching {
+            val stamp = System.currentTimeMillis()
+            val backup = File(dir, "$id.json.bad-$stamp")
+            if (file.renameTo(backup)) {
+                log("坏掉的会话文件已留档：${backup.name}")
+            }
+        }
     }
 
     fun delete(id: String) {
