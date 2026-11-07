@@ -70,6 +70,11 @@ private data class PendingReveal(val noteId: String, val start: Int, val end: In
 @Composable
 @OptIn(ExperimentalComposeUiApi::class)
 internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
+    // 计划页「计划文档」跳过来时，知识库整页让给只读的计划文档。
+    runtime.planDocBrowseId?.let { planId ->
+        PlanDocPage(runtime, planId) { runtime.closePlanDocs() }
+        return
+    }
     val tokens = LocalTrellisTokens.current
     val store = runtime.knowledgeStore
     val metaStore = remember(runtime) { ConceptMetaStore(runtime.home) }

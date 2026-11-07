@@ -37,6 +37,8 @@ data class DayOccurrence(
      * 普通待办勾掉不算。
      */
     val unitId: String? = null,
+    /** 单元类型：study 学习 / practice 实践 / review 复习；待办型 occurrence 按 learn 算。 */
+    val kind: String = "study",
 )
 
 @Serializable
@@ -75,6 +77,7 @@ data class CommitmentUnitView(
     val estimateMinutes: Int,
     val state: String,
     val stateLabel: String,
+    val kind: String = "study",
 )
 
 @Serializable
@@ -91,6 +94,7 @@ data class WeekDayItem(
     val status: String,
     val minutes: Int,
     val carried: Boolean = false,
+    val kind: String = "study",
 )
 
 @Serializable
@@ -138,6 +142,7 @@ data class PoolUnit(
     val title: String,
     val chapter: String,
     val estimateMinutes: Int,
+    val kind: String = "study",
 )
 
 /**

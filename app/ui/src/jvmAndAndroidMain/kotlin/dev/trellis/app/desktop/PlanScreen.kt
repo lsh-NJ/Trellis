@@ -81,6 +81,13 @@ import kotlinx.coroutines.launch
  */
 
 /** 一周一格的卡片数据。字段全部来自 `MapView` + `WeekView`，这里只是拼在一起好排。 */
+/** 单元类型的界面后缀：学习 / 实践 / 复习。 */
+internal fun unitKindLabel(kind: String): String = when (kind) {
+    "practice" -> "实践"
+    "review" -> "复习"
+    else -> "学习"
+}
+
 internal data class PlanWeekCard(
     val week: String,
     val label: String,
@@ -154,7 +161,6 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
         PlanDragGhost(dragController, rootOrigin)
     }
     if (runtime.planSettingsOpen) PlanSettingsDialog(runtime)
-    if (runtime.planDocOpen) PlanDocDialog(runtime)
 }
 
 /** 左侧计划列表：按大类分组（没有大类归「未分类」）。已结束的计划不占列表。 */
@@ -485,7 +491,7 @@ private fun PlanHeader(runtime: AppRuntime) {
                     onClick = { runtime.openGoalScreen() },
                 )
                 Spacer(Modifier.width(tokens.space.s))
-                ChromeTextLink("计划文档", onClick = { runtime.openPlanDoc() })
+                ChromeTextLink("计划文档", onClick = { runtime.openPlanDocs(runtime.planFocusId) })
                 Spacer(Modifier.width(tokens.space.s))
                 ChromeTextLink(
                     label = when {
@@ -797,7 +803,7 @@ private fun PendingDetail(runtime: AppRuntime) {
                         )
                         Text(unit.title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                         Text(
-                            unit.estimateMinutes.toString() + " 分钟",
+                            unit.estimateMinutes.toString() + " 分钟 · " + unitKindLabel(unit.kind),
                             style = tokens.type.caption,
                             fontFamily = AppFonts.mono,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1217,6 +1223,7 @@ private fun OccurrenceRow(
                 buildString {
                     if (occurrence.chapter.isNotBlank()) append(occurrence.chapter).append(" · ")
                     append(occurrence.minutes).append(" 分钟")
+                    append(" · ").append(unitKindLabel(occurrence.kind))
                     if (occurrence.carried) append(" · 上周顺延")
                     if (occurrence.movedCount > 0) append(" · 改过 ").append(occurrence.movedCount).append(" 次")
                 },

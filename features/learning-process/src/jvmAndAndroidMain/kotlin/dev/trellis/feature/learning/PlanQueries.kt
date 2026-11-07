@@ -72,7 +72,7 @@ internal fun SqliteLearningPlanService.buildDayView(planId: String?, day: String
 private fun SqliteLearningPlanService.plannedOccurrences(planId: String, day: String): List<DayOccurrence> =
     connection.prepareStatement(
         "SELECT d.id, d.unit_title, d.chapter, d.estimate_minutes, d.mode, d.status, d.min_version_minutes, " +
-            "d.moved_from, d.carried_from, d.todo_title, d.unit_id FROM v_occurrence_detail d " +
+            "d.moved_from, d.carried_from, d.todo_title, d.unit_id, d.unit_kind FROM v_occurrence_detail d " +
             "LEFT JOIN plan_unit pu ON pu.id = d.unit_id " +
             "WHERE d.plan_id = ? AND d.day = ? AND d.status = 'planned' " +
             // 排期顺序 = 路线顺序（plan_unit.sort_order），同一天里靠前的单元先出现；
@@ -104,6 +104,7 @@ private fun SqliteLearningPlanService.plannedOccurrences(planId: String, day: St
                             ),
                             actions = listOf("complete", "move", "split", "shorten", "skip"),
                             unitId = rs.getString(11),
+                            kind = rs.getString(12) ?: "study",
                         ),
                     )
                 }
@@ -161,6 +162,7 @@ internal fun SqliteLearningPlanService.buildWeekView(planId: String, week: Strin
                 title = unit.second,
                 chapter = unit.third,
                 estimateMinutes = unit.fourth,
+                kind = unit.fifth,
                 state = state,
                 stateLabel = when (state) {
                     "done" -> "已完成"
@@ -224,7 +226,7 @@ internal fun SqliteLearningPlanService.buildWeekView(planId: String, week: Strin
 private fun SqliteLearningPlanService.commitmentUnitsOf(planId: String, week: String): List<Quad> {
     val version = currentVersion(planId) ?: return emptyList()
     return connection.prepareStatement(
-        "SELECT u.id, u.title, u.chapter, u.estimate_minutes FROM commitment c " +
+        "SELECT u.id, u.title, u.chapter, u.estimate_minutes, u.kind FROM commitment c " +
             "JOIN commitment_unit cu ON cu.commitment_id = c.id " +
             "JOIN plan_unit u ON u.id = cu.unit_id " +
             "WHERE c.plan_version_id = ? AND c.week = ? ORDER BY cu.sort_order",
@@ -233,7 +235,7 @@ private fun SqliteLearningPlanService.commitmentUnitsOf(planId: String, week: St
         ps.setString(2, week)
         ps.executeQuery().use { rs ->
             buildList {
-                while (rs.next()) add(Quad(rs.getString(1), rs.getString(2), rs.getString(3), rs.getInt(4)))
+                while (rs.next()) add(Quad(rs.getString(1), rs.getString(2), rs.getString(3), rs.getInt(4), rs.getString(5) ?: "study"))
             }
         }
     }
@@ -280,7 +282,7 @@ internal fun SqliteLearningPlanService.openNodesOf(planId: String, untilDay: Str
 
 private fun SqliteLearningPlanService.dayItems(planId: String, day: String): List<WeekDayItem> =
     connection.prepareStatement(
-        "SELECT d.id, COALESCE(d.unit_title, d.todo_title), d.status, d.estimate_minutes, d.carried_from " +
+        "SELECT d.id, COALESCE(d.unit_title, d.todo_title), d.status, d.estimate_minutes, d.carried_from, d.unit_kind " +
             "FROM v_occurrence_detail d LEFT JOIN plan_unit pu ON pu.id = d.unit_id " +
             "WHERE d.plan_id = ? AND d.day = ? AND d.status <> 'superseded' " +
             // 同上：天条里的顺序也按路线顺序，保证「索引靠前的节点排在当天前面」。
@@ -298,6 +300,7 @@ private fun SqliteLearningPlanService.dayItems(planId: String, day: String): Lis
                             status = rs.getString(3),
                             minutes = rs.getInt(4),
                             carried = rs.getString(5) != null,
+                            kind = rs.getString(6) ?: "study",
                         ),
                     )
                 }
@@ -482,7 +485,13 @@ internal fun SqliteLearningPlanService.queryTodos(planId: String?): List<TodoVie
         }
     }
 
-internal data class Quad(val first: String, val second: String, val third: String, val fourth: Int)
+internal data class Quad(
+    val first: String,
+    val second: String,
+    val third: String,
+    val fourth: Int,
+    val fifth: String = "study",
+)
 
 private fun SqliteLearningPlanService.planExists(planId: String?): Boolean =
     planId != null && planStatus(planId) != null

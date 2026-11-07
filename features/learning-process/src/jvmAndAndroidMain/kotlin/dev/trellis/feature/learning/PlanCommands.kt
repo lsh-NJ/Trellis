@@ -32,6 +32,75 @@ import kotlinx.serialization.json.jsonPrimitive
 // 计划层命令
 // ---------------------------------------------------------------------------
 
+internal fun SqliteLearningPlanService.cmdCreateShell(
+    env: CommandEnvelope,
+    title: String,
+    goal: String,
+    deadline: String?,
+): CommandResult<CreatedProcess> {
+    if (title.isBlank()) return fail(ErrorCode.E_INVALID, "计划得有个名字。")
+    if (goal.isBlank()) return fail(ErrorCode.E_INVALID, "写一句目标，之后复盘要对照它。")
+    if (deadline != null && PlanTime.parseDay(deadline) == null) {
+        return fail(ErrorCode.E_INVALID, "截止日期要写成 2026-12-31 这种格式。")
+    }
+    return write(env) {
+        val now = nowIso()
+        val processId = Ids.next("prc_")
+        val planId = Ids.next("pln_")
+        connection.prepareStatement(
+            "INSERT INTO process(id,title,goal,deadline,weekly_capacity_minutes,status,created_at) " +
+                "VALUES(?,?,?,?,?, 'active', ?)",
+        ).use { ps ->
+            ps.setString(1, processId)
+            ps.setString(2, title)
+            ps.setString(3, goal)
+            ps.setString(4, deadline)
+            ps.setNull(5, java.sql.Types.INTEGER)
+            ps.setString(6, now)
+            ps.executeUpdate()
+        }
+        connection.prepareStatement(
+            "INSERT INTO plan(id,process_id,status,created_at) VALUES(?,?, 'active', ?)",
+        ).use { ps ->
+            ps.setString(1, planId)
+            ps.setString(2, processId)
+            ps.setString(3, now)
+            ps.executeUpdate()
+        }
+        val versionId = Ids.next("pv_")
+        connection.prepareStatement(
+            "INSERT INTO plan_version(id,plan_id,parent_id,reason,diff_json,effective_from_week,status,created_at) " +
+                "VALUES(?,?,?,?,?,?, 'active', ?)",
+        ).use { ps ->
+            ps.setString(1, versionId)
+            ps.setString(2, planId)
+            ps.setString(3, null)
+            ps.setString(4, "空壳计划：先定阶段，单元每周再排")
+            ps.setString(5, null)
+            ps.setString(6, currentWeek())
+            ps.setString(7, now)
+            ps.executeUpdate()
+        }
+        connection.prepareStatement("UPDATE plan SET current_version_id = ? WHERE id = ?").use { ps ->
+            ps.setString(1, versionId)
+            ps.setString(2, planId)
+            ps.executeUpdate()
+        }
+        appendEvent("process.created", "process", processId, planId, eventJson(
+            "title" to JsonPrimitive(title),
+            "goal" to JsonPrimitive(goal),
+            "deadline" to JsonPrimitive(deadline ?: ""),
+        ), env.actor, env.commandId)
+        appendEvent("plan.created", "plan", planId, planId, eventJson(
+            "processId" to JsonPrimitive(processId),
+        ), env.actor, env.commandId)
+        appendEvent("plan.shell_created", "plan", planId, planId, eventJson(
+            "versionId" to JsonPrimitive(versionId),
+        ), env.actor, env.commandId)
+        ok(CreatedProcess(processId, planId), warnings = if (env.dryRun) listOf("dry-run：没有落库。") else emptyList())
+    }
+}
+
 internal fun SqliteLearningPlanService.cmdCreateProcess(
     env: CommandEnvelope,
     title: String,
@@ -159,7 +228,7 @@ internal fun SqliteLearningPlanService.cmdSaveDraft(
             unitIds += id
             connection.prepareStatement(
                 "INSERT INTO plan_unit(id,plan_version_id,chapter,title,sort_order,estimate_minutes," +
-                    "min_version_minutes,material_segment_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    "min_version_minutes,material_segment_id,created_at,kind) VALUES(?,?,?,?,?,?,?,?,?,?)",
             ).use { ps ->
                 ps.setString(1, id)
                 ps.setString(2, version)
@@ -170,6 +239,7 @@ internal fun SqliteLearningPlanService.cmdSaveDraft(
                 ps.setInt(7, draft.minVersionMinutes)
                 ps.setString(8, draft.materialSegmentId)
                 ps.setString(9, nowIso())
+                ps.setString(10, unitKindOrStudy(draft.kind))
                 ps.executeUpdate()
             }
         }
@@ -419,7 +489,7 @@ internal fun SqliteLearningPlanService.cmdChangeCommitment(
             ps.executeUpdate()
         }
         val parentUnits = connection.prepareStatement(
-            "SELECT id, chapter, title, sort_order, estimate_minutes, min_version_minutes, material_segment_id " +
+            "SELECT id, chapter, title, sort_order, estimate_minutes, min_version_minutes, material_segment_id, kind " +
                 "FROM plan_unit WHERE plan_version_id = ? ORDER BY sort_order",
         ).use { ps ->
             ps.setString(1, versionId)
@@ -435,6 +505,7 @@ internal fun SqliteLearningPlanService.cmdChangeCommitment(
                                 estimateMinutes = rs.getInt(5),
                                 minVersionMinutes = rs.getInt(6),
                                 materialSegmentId = rs.getString(7),
+                                kind = rs.getString(8),
                             ),
                         )
                     }
@@ -447,7 +518,7 @@ internal fun SqliteLearningPlanService.cmdChangeCommitment(
             mapping[unit.id] = newId
             connection.prepareStatement(
                 "INSERT INTO plan_unit(id,plan_version_id,chapter,title,sort_order,estimate_minutes," +
-                    "min_version_minutes,material_segment_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    "min_version_minutes,material_segment_id,created_at,kind) VALUES(?,?,?,?,?,?,?,?,?,?)",
             ).use { ps ->
                 ps.setString(1, newId)
                 ps.setString(2, newVersion)
@@ -458,6 +529,7 @@ internal fun SqliteLearningPlanService.cmdChangeCommitment(
                 ps.setInt(7, unit.minVersionMinutes)
                 ps.setString(8, unit.materialSegmentId)
                 ps.setString(9, nowIso())
+                ps.setString(10, unitKindOrStudy(unit.kind))
                 ps.executeUpdate()
             }
         }
@@ -1473,7 +1545,7 @@ internal fun SqliteLearningPlanService.cmdAppendUnits(
             unitIds += id
             connection.prepareStatement(
                 "INSERT INTO plan_unit(id,plan_version_id,chapter,title,sort_order,estimate_minutes," +
-                    "min_version_minutes,material_segment_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    "min_version_minutes,material_segment_id,created_at,kind) VALUES(?,?,?,?,?,?,?,?,?,?)",
             ).use { ps ->
                 ps.setString(1, id)
                 ps.setString(2, version)
@@ -1486,6 +1558,7 @@ internal fun SqliteLearningPlanService.cmdAppendUnits(
                 ps.setInt(7, draft.minVersionMinutes.coerceIn(5, 15))
                 ps.setString(8, draft.materialSegmentId)
                 ps.setString(9, createdAt)
+                ps.setString(10, unitKindOrStudy(draft.kind))
                 ps.executeUpdate()
             }
         }
@@ -1810,4 +1883,11 @@ internal fun SqliteLearningPlanService.cmdLinkPlanToGoal(
         }
         ok(Unit, undo = undo)
     }
+}
+
+/** 单元类型：study 学习 / practice 实践 / review 复习；空白与未知值一律按学习算。 */
+internal fun unitKindOrStudy(raw: String?): String = when (raw?.trim()?.lowercase()) {
+    "practice", "实践" -> "practice"
+    "review", "复习" -> "review"
+    else -> "study"
 }

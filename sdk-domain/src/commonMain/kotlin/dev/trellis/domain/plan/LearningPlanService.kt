@@ -148,6 +148,14 @@ interface LearningPlanService {
      *
      * @return 新单元的 id，顺序与 [drafts] 一致；`dryRun` 时只校验不落库。
      */
+    /**
+     * 建一个**空壳计划**：有 process/plan/生效版本，但还没有任何单元。
+     *
+     * 「由面到点」的第一步只出大纲（阶段、里程碑、计划文档）；具体的单元等每周
+     * `plan_week` 排计划时再追加进来。空壳计划可以被 `appendUnits` 继续填。
+     */
+    fun createShell(env: CommandEnvelope, title: String, goal: String, deadline: String? = null): CommandResult<CreatedProcess>
+
     suspend fun appendUnits(env: CommandEnvelope, planId: String, drafts: List<UnitDraft>): CommandResult<List<String>>
 
     // ---------------- 日层命令（只减/移/缩，不加） ----------------
@@ -239,6 +247,8 @@ data class UnitDraft(
     val title: String,
     val estimateMinutes: Int = 25,
     val minVersionMinutes: Int = 10,
+    /** 单元类型：study 学习 / practice 实践 / review 复习。 */
+    val kind: String = "study",
     val materialSegmentId: String? = null,
 )
 

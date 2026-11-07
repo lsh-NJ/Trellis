@@ -161,3 +161,13 @@
   默认不返回归档目标，归档目标也不能再挂新计划（`E_INVALID`）。
 - 语义边界：目标只回答「为什么做、怎么算做到」，周表/逾期/复盘仍在计划层；计划的 `goal` 自由文本保留不动，
   目标实体是额外索引，用于计划页头部、目标页、AI 工具（`list_goals` 等）和后续推荐上下文。
+
+## 10 2026-11-08：单元类型与空壳计划
+
+- `plan_unit.kind`：`study` / `practice` / `review`（CHECK 约束；旧库 `ALTER TABLE` 补列并重建
+  `v_occurrence_detail` / `v_week_commitment`）。视图与 `DayOccurrence` / `CommitmentUnitView` /
+  `WeekDayItem` / `PoolUnit` 都带 `kind`，界面统一后缀「· 学习 / · 实践 / · 复习」。
+- `createShell(env, title, goal, deadline?)`：建 process/plan/**生效版本**（0 单元、无承诺）。
+  之后 `appendUnits` 可以继续往里加单元；每周的 `plan_week` 就是「追加本周单元 + `placeUnit` 铺到天」。
+- `research_plan` 不再一次生成全部单元：只出阶段表（`stages`），宿主建空壳计划、写大纲文档、
+  建目标与里程碑，并返回每天投入建议；具体条目由每周的 `plan_week` 决定。
