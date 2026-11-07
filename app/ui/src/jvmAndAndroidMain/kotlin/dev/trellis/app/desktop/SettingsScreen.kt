@@ -558,6 +558,33 @@ private fun StewardSection(runtime: AppRuntime) {
         )
 
         Spacer(Modifier.height(6.dp))
+        SettingsSubLabel("每周自动排周计划")
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            EditorChip(
+                label = "开",
+                active = settings.weeklyPlan,
+                onClick = { runtime.updateStewardSettings(settings.copy(weeklyPlan = true)) },
+            )
+            EditorChip(
+                label = "关",
+                active = !settings.weeklyPlan,
+                onClick = { runtime.updateStewardSettings(settings.copy(weeklyPlan = false)) },
+            )
+        }
+        SettingsStatusLine(
+            if (settings.weeklyPlan) {
+                "周日 18:00 后、周一早上，在每条计划自己的会话里跑一次「排本周」；" +
+                    "没有绑定会话（或会话被删了）就由管家代排，结果直接出现在对应会话里。"
+            } else {
+                "关闭：不会自动排周计划；要用时在会话里说「排本周」，或点计划页的每周计划。"
+            },
+        )
+
+        Spacer(Modifier.height(6.dp))
         SettingsLinkRow(label = "打开管家会话", status = "每天早晚问候") {
             runtime.ensureStewardSession()
             runtime.openChat(StewardRuntime.STEWARD_SESSION_ID)

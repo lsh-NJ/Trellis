@@ -23,6 +23,7 @@ class StewardStoreTest {
 
         assertTrue(store.settings().autoAdopt)
         assertEquals(0, store.settings().autoAdoptDailyLimit)
+        assertTrue(store.settings().weeklyPlan)
 
         store.saveSettings(
             StewardSettings(
@@ -31,6 +32,7 @@ class StewardStoreTest {
                 notifyDesktop = false,
                 autoAdopt = true,
                 autoAdoptDailyLimit = 5,
+                weeklyPlan = false,
             ),
         )
 
@@ -41,6 +43,7 @@ class StewardStoreTest {
         assertEquals(false, again.notifyDesktop)
         assertEquals(true, again.autoAdopt)
         assertEquals(5, again.autoAdoptDailyLimit)
+        assertEquals(false, again.weeklyPlan)
     }
 
     @Test
