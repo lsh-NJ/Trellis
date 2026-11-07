@@ -21,13 +21,26 @@ class StewardStoreTest {
         assertEquals("22:30", store.settings().eveningTime)
         assertTrue(store.settings().morningEnabled)
 
-        store.saveSettings(StewardSettings(morningTime = "09:15", eveningTime = "23:00", notifyDesktop = false))
+        assertEquals(false, store.settings().autoAdopt)
+        assertEquals(3, store.settings().autoAdoptDailyLimit)
+
+        store.saveSettings(
+            StewardSettings(
+                morningTime = "09:15",
+                eveningTime = "23:00",
+                notifyDesktop = false,
+                autoAdopt = true,
+                autoAdoptDailyLimit = 5,
+            ),
+        )
 
         // 换实例读：设置要能落盘。
         val again = StewardStore(home).settings()
         assertEquals("09:15", again.morningTime)
         assertEquals("23:00", again.eveningTime)
         assertEquals(false, again.notifyDesktop)
+        assertEquals(true, again.autoAdopt)
+        assertEquals(5, again.autoAdoptDailyLimit)
     }
 
     @Test
@@ -47,11 +60,18 @@ class StewardStoreTest {
     fun checkpointsSurviveAReload() {
         val home = tempHome()
         StewardStore(home).saveCheckpoints(
-            StewardCheckpoints(lastMorningDay = "2026-11-04", lastEveningDay = "2026-11-03"),
+            StewardCheckpoints(
+                lastMorningDay = "2026-11-04",
+                lastEveningDay = "2026-11-03",
+                autoAdoptDay = "2026-11-04",
+                autoAdoptCount = 2,
+            ),
         )
         val again = StewardStore(home).checkpoints()
         assertEquals("2026-11-04", again.lastMorningDay)
         assertEquals("2026-11-03", again.lastEveningDay)
+        assertEquals("2026-11-04", again.autoAdoptDay)
+        assertEquals(2, again.autoAdoptCount)
     }
 
     @Test

@@ -24,6 +24,28 @@ data class StewardProposal(
 
 enum class ProposalState { Open, Adopted, Dismissed }
 
+/**
+ * 自动采纳的准入判断（G-C1 最小版）：开关打开、应用不在前台、今天还没到上限。
+ *
+ * 三个条件同时成立才允许尝试；真正执行前还要过 [isAutoAdoptable] 的类型白名单。
+ */
+internal fun autoAdoptAllowed(
+    settings: StewardSettings,
+    appFocused: Boolean,
+    adoptedToday: Int,
+): Boolean = settings.autoAdopt &&
+    !appFocused &&
+    adoptedToday < settings.autoAdoptDailyLimit
+
+/**
+ * 类型白名单：整条建议只含「挪动」才允许自动采纳。
+ *
+ * 补排（[StewardChange.Place]）会往待安排池外拉单元、影响承诺，仍要用户点一下。
+ * 「只挪动」这一类也有撤销兜底（计划页可再拖回去），自动做风险最低。
+ */
+internal fun StewardProposal.isAutoAdoptable(): Boolean =
+    changes.isNotEmpty() && changes.all { it is StewardChange.Move }
+
 /** 一条可执行的改动。日期都是 `YYYY-MM-DD`（应用内日期，时钟可被开发者模式拨动）。 */
 sealed interface StewardChange {
     val title: String

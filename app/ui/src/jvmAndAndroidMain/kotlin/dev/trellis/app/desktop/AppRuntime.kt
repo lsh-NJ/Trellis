@@ -999,6 +999,14 @@ class AppRuntime private constructor() {
     internal var stewardSettings by mutableStateOf(StewardSettings())
         private set
 
+    /** 今天已经自动采纳了几条管家建议（设置页显示用；换天归零）。 */
+    internal val stewardAutoAdoptedToday: Int
+        get() {
+            if (!::stewardStore.isInitialized) return 0
+            val checkpoints = runCatching { stewardStore.checkpoints() }.getOrNull() ?: return 0
+            return if (checkpoints.autoAdoptDay == clock.today().toString()) checkpoints.autoAdoptCount else 0
+        }
+
     internal fun updateStewardSettings(settings: StewardSettings) {
         if (!::stewardStore.isInitialized) return
         stewardStore.saveSettings(settings)
@@ -1193,6 +1201,13 @@ class AppRuntime private constructor() {
 
     fun onWindowLostFocus() {
         windowFocused = false
+        // 用户刚离开：如果挂着一份「只挪动」的建议，这是自动采纳最合适的时机。
+        if (::stewardRuntime.isInitialized && ::chatStore.isInitialized) {
+            chatScope.launch {
+                runCatching { autoAdoptStewardProposalIfAllowed() }
+                    .onFailure { appendAppLog("自动采纳失败：$it") }
+            }
+        }
     }
 
     /** 回到应用时检查一次：该发就发，不该发由 checkpoint 决定。 */
@@ -1216,6 +1231,11 @@ class AppRuntime private constructor() {
         runCatching { stewardRuntime.check() }
             .onSuccess { result ->
                 if (result != StewardRunResult.Nothing) appendAppLog("管家：$result")
+                // 仪式可能刚追加了一条建议；应用不在前台时顺手看看能不能自动采纳。
+                if (result != StewardRunResult.Nothing && result != StewardRunResult.Busy) {
+                    runCatching { autoAdoptStewardProposalIfAllowed() }
+                        .onFailure { appendAppLog("自动采纳失败：$it") }
+                }
             }
             .onFailure { appendAppLog("管家仪式失败：$it") }
     }
@@ -1294,14 +1314,30 @@ class AppRuntime private constructor() {
      * 不让模型来执行：建议是模板生成的、改动是明确的，直接调命令比再跑一轮模型
      * 便宜也更可预测；失败条数照实说，成功的不会因为旁边失败而回滚。
      */
-    internal suspend fun adoptStewardProposal(lineId: Long) {
-        val index = chat.indexOfFirst { it.id == lineId }
-        if (index < 0) return
-        val line = chat[index]
-        val proposal = line.proposal ?: return
-        if (line.proposalState != ProposalState.Open) return
-        val service = learningPlan() ?: return
-        val planId = planFocusId ?: service.activePlanId() ?: return
+    /** 一条建议执行完的统计：挪动几件、补排几个、几条没成。 */
+    private data class ProposalAdoption(val moved: Int, val placed: Int, val failed: Int) {
+        fun summary(prefix: String): String = buildString {
+            append(prefix)
+            if (moved > 0) append("挪 $moved 件")
+            if (placed > 0) {
+                if (moved > 0) append("、")
+                append("补排 $placed 个")
+            }
+            if (failed > 0) append("，$failed 条没成")
+            append("。")
+        }
+    }
+
+    /**
+     * 执行一条建议里的全部改动：逐条走计划后端命令，成功失败分别计数（不整批回滚）。
+     *
+     * 建议是模板生成的、改动是明确的，直接调命令比再跑一轮模型便宜也更可预测。
+     */
+    private fun executeProposal(
+        service: LearningPlanService,
+        planId: String,
+        proposal: StewardProposal,
+    ): ProposalAdoption {
         var moved = 0
         var placed = 0
         var failed = 0
@@ -1327,22 +1363,78 @@ class AppRuntime private constructor() {
                 failed++
             }
         }
+        return ProposalAdoption(moved, placed, failed)
+    }
+
+    /**
+     * 采纳一条管家建议：逐条走计划后端已有命令。
+     *
+     * 不让模型来执行：建议是模板生成的、改动是明确的，直接调命令比再跑一轮模型
+     * 便宜也更可预测；失败条数照实说，成功的不会因为旁边失败而回滚。
+     */
+    internal suspend fun adoptStewardProposal(lineId: Long) {
+        val index = chat.indexOfFirst { it.id == lineId }
+        if (index < 0) return
+        val line = chat[index]
+        val proposal = line.proposal ?: return
+        if (line.proposalState != ProposalState.Open) return
+        val service = learningPlan() ?: return
+        val planId = planFocusId ?: service.activePlanId() ?: return
+        val stats = executeProposal(service, planId, proposal)
         chat[index] = line.copy(proposalState = ProposalState.Adopted)
-        val summary = buildString {
-            append("已采纳管家建议：")
-            if (moved > 0) append("挪 $moved 件")
-            if (placed > 0) {
-                if (moved > 0) append("、")
-                append("补排 $placed 个")
-            }
-            if (failed > 0) append("，$failed 条没成")
-            append("。")
-        }
+        val summary = stats.summary("已采纳管家建议：")
         addChatLine(ChatRole.Status, "—— " + summary)
         refreshPlan()
         runCatching { stewardRuntime.rememberProposalDecision(clock.today(), adopted = true, summary = summary) }
         persistChat()
         appendAppLog(summary)
+    }
+
+    /**
+     * 自动采纳（G-C1 最小版）：应用不在前台 + 开关打开 + 今天没到上限时，
+     * 自动执行「只挪动逾期」这一类建议（补排欠账仍等用户点）。
+     *
+     * 不碰界面态：只改落盘的管家会话（建议行标 Adopted + 追加一条状态行）、写记忆、
+     * 刷新计划页。用户回来翻管家会话就能看到「它替你挪了什么」。
+     */
+    internal suspend fun autoAdoptStewardProposalIfAllowed(): String? {
+        if (!::stewardStore.isInitialized || !::chatStore.isInitialized) return null
+        val today = clock.today()
+        val checkpoints = runCatching { stewardStore.checkpoints() }.getOrNull() ?: return null
+        val adoptedToday = if (checkpoints.autoAdoptDay == today.toString()) checkpoints.autoAdoptCount else 0
+        if (!autoAdoptAllowed(stewardSettings, windowFocused, adoptedToday)) return null
+        val session = runCatching { chatStore.read(StewardRuntime.STEWARD_SESSION_ID) }.getOrNull() ?: return null
+        val line = session.lines.lastOrNull { it.proposal != null && it.proposalState == ProposalState.Open }
+            ?: return null
+        val proposal = line.proposal ?: return null
+        if (!proposal.isAutoAdoptable()) return null
+        val service = learningPlan() ?: return null
+        val planId = planFocusId ?: service.activePlanId() ?: return null
+        val stats = executeProposal(service, planId, proposal)
+        if (stats.moved + stats.placed == 0) {
+            // 一条都没动成：别把建议标成「已采纳」，用户回来还该看到它。
+            appendAppLog("自动采纳失败：" + stats.summary(""))
+            return null
+        }
+        val summary = stats.summary("自动采纳管家建议：")
+        val stamp = clock.nowMs()
+        val statusText = "—— " + summary + "（应用不在前台，只动了「挪动逾期」这一类）"
+        val updatedLines = session.lines.map { item ->
+            if (item.id == line.id) item.copy(proposalState = ProposalState.Adopted) else item
+        } + ChatLine(id = nextChatLineId++, role = ChatRole.Status, text = statusText, atMs = stamp)
+        runCatching { chatStore.save(session.copy(lines = updatedLines, updatedAt = stamp)) }
+        if (currentChatId == StewardRuntime.STEWARD_SESSION_ID) {
+            chat.clear()
+            chat.addAll(updatedLines)
+        }
+        loadChatSessions()
+        stewardStore.saveCheckpoints(
+            checkpoints.copy(autoAdoptDay = today.toString(), autoAdoptCount = adoptedToday + 1),
+        )
+        runCatching { stewardRuntime.rememberProposalDecision(today, adopted = true, summary = summary) }
+        refreshPlan()
+        appendAppLog(summary)
+        return summary
     }
 
     /** 界面按钮点「一键采纳」：采纳要在协程里跑（落盘 + 刷新计划）。 */
