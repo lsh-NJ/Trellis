@@ -938,7 +938,8 @@ private fun DayChip(
             }
             .alpha(if (controller.payload != null && !droppable) 0.45f else 1f)
             .clickable(onClick = onClick)
-            .padding(vertical = 12.dp),
+            .height(76.dp)
+            .padding(vertical = 10.dp),
         contentAlignment = Alignment.Center,
     ) {
         Box(
@@ -962,8 +963,7 @@ private fun DayChip(
         // 左中：周几 + 今天的小圆点
         Row(
             modifier = Modifier.align(Alignment.CenterStart)
-                .padding(start = 12.dp)
-                .offset(y = (-2).dp),
+                .padding(start = 12.dp).offset(y = (-4).dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
@@ -975,7 +975,7 @@ private fun DayChip(
             }
         }
         // 右下：完成 / 未完成；全做完换成黄字黑边的总数
-        Box(Modifier.align(Alignment.BottomEnd).padding(end = 10.dp, bottom = 4.dp)) {
+        Box(Modifier.align(Alignment.BottomEnd).padding(end = 10.dp, bottom = 8.dp)) {
             Crossfade(targetState = full, animationSpec = tween(220), label = "day-chip-count") { allDone ->
                 when {
                     total == 0 -> Text("—", style = tokens.type.page, color = MaterialTheme.colorScheme.onSurfaceVariant)
