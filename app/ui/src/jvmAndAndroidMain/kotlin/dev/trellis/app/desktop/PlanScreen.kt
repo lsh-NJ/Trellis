@@ -154,6 +154,7 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
         PlanDragGhost(dragController, rootOrigin)
     }
     if (runtime.planSettingsOpen) PlanSettingsDialog(runtime)
+    if (runtime.planDocOpen) PlanDocDialog(runtime)
 }
 
 /** 左侧计划列表：按大类分组（没有大类归「未分类」）。已结束的计划不占列表。 */
@@ -478,6 +479,8 @@ private fun PlanHeader(runtime: AppRuntime) {
         subtitle = runtime.planTitle ?: "还没有计划",
         actions = {
             if (runtime.planTitle != null) {
+                ChromeTextLink("计划文档", onClick = { runtime.openPlanDoc() })
+                Spacer(Modifier.width(tokens.space.s))
                 ChromeTextLink(
                     label = when {
                         runtime.planRearrangeOpen -> "收起重排"

@@ -19,6 +19,7 @@
 | [`activity.md`](activity.md) | 活动分类：AW 原始事件 → SQLite → 分层分类（大类/小类/颜色/规则优先级）→ 日汇总；标签页 URL 匹配、时间口径、已知缺口 | 实现记录（2026-10-29） | 改 `:features:activity` / 接分类 UI / 做任务与计划追溯 |
 | [`time-conventions.md`](time-conventions.md) | **时间与时钟规范**：墙钟/单调钟、唯一时间源 `TrellisClock`、ISO 周与时区、后端注入契约、开发者跳日期、时间逻辑的测试要求、存量迁移批次与自检清单 | **规范（要遵守）**（2026-10-29） | 任何涉及「今天/本周/跨周/时长/超时」的改动之前；新同学进计划/活动/计时器相关代码前 |
 | [`steward.md`](steward.md) | **管家会话**：置顶常驻会话 + 晨/夜仪式（幂等、合并规则、模板兜底、跨平台桌面通知）+ 记忆（append-only jsonl + 每日摘要，先不做语义检索）+ 建议卡（模板生成改动 → 一键采纳/调整/先这样，采纳直接调后端命令）；含数据目录、设置页、代码地图与测试 | 实现记录（2026-11-03，P1） | 改管家/晨夜消息/通知/建议卡前；讨论「主动 AI 反馈」时 |
+| [`../tools/exams/README.md`](../tools/exams/README.md) | **练习题库抓取/OCR/种子管线**：上游 NJUPT-Free-Exams 结构（2.6GB，不整克隆）、按需下载（`fetch.py`）、PDF 文本抽取/扫描件 OCR（`extract_pdfs.py` + `pdf_extract.swift`）、种子 JSONL 格式与 505 题/5 学科现状、加学科步骤、已知限制 | 实现记录（2026-11-07） | 改题库数据/加学科/抓新题前 |
 | [`conversation-redesign.md`](conversation-redesign.md) | 会话页五层信息、三态、三动作、撤销语义 | 实现记录（2026-10-24） | 改会话页 UI / 理解「过程与结论分离」 |
 | [`roadmap.md`](roadmap.md) | 已知缺口与优先级（能力面、视觉、插件市场、端） | 活文档 | 动手前先查有没有人记过这个坑 |
 | [`eval-prompts.md`](eval-prompts.md) | 验收题库（送检用，与提示词里的示例互为镜像） | 活文档（测试配套） | 调提示词后自测、验收 AI 能力 |
@@ -48,6 +49,7 @@
 - **要让计划自己推进 / 接计划工具**：`plan-rhythm-draft.md`（背景与分阶段方案）→ `plan-backend.md` §8（`advanceRhythm` 契约）→ `PlanAdvance.kt` / `AppRuntime.refreshPlan` / `PlanAdminTools.kt`。
 - **要讨论知识库 / 做笔记与概念索引**：`knowledge-base-draft.md`（口径、数据模型、P0/P1/P2）。
 - **要做知识网络 / 概念间关系**：`knowledge-graph-design.md`（分类树+浮窗+拖动链接、三类事实、AI 只建议、双 json 存储、G0/G1/G2、测试与附录 E 实现记录）→ `knowledge-base-draft.md` §2/§3（概念/笔记/出处口径）→ `KnowledgeStore.kt`。
+- **要加练习题库 / 抓题**：`../tools/exams/README.md`（管线、种子格式、已知限制）→ `features/exams/.../ExerciseBank.kt`（模型与筛选）→ `app/ui/.../ExamsScreen.kt`（练习页）；外部题库丢 `<home>/exams/*.jsonl` 自动合并。
 - **要改活动分类 / 时间汇总**：`activity.md`（规则语义、时间口径、已知缺口）→ `ActivityTaxonomy.kt` / `ActivityAggregator.kt` → `:features:activity:test`。
 - **要碰「今天/本周/跨周/时长/超时」**：`time-conventions.md`（规范，先读 §0 和 §8）→ 计划链路看 `LearningPlanRhythmTest` → 要调试时间推移看 §7（开发者跳日期）。
 - **要改界面/主题/布局**：`../AGENTS.md` §3「按问题找文件」→ `examples/bento-style.md`（三层边界）→ `conversation-redesign.md`（若改会话页）。

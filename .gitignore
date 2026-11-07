@@ -10,3 +10,7 @@ keystore.properties
 local.properties
 *.iml
 .DS_Store
+# 题库抓取/OCR 管线的下载缓存与中间产物：体积大、可重跑生成，不入库。
+tools/exams/.cache/
+# 题库管线的 Python 字节码缓存
+tools/exams/__pycache__/
