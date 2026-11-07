@@ -948,9 +948,11 @@ private fun DayChip(
                 .background(background)
                 .border(1.dp, borderColor, shape),
         )
-        // 右上：day N 做成压在边框上的刻签，全做完时换成印章色
+        // 右上：day N 做成压在边框上的刻签，全做完时换成印章色。
+        // 小圆角（4dp）——大圆角会变成药丸，和下面 6dp 的卡片角打架。
         Box(
             Modifier.align(Alignment.TopEnd).offset(y = (-10).dp).padding(end = 6.dp)
+                .clip(RoundedCornerShape(4.dp))
                 .background(sealBackground),
         ) {
             Text(
