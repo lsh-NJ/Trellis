@@ -42,6 +42,8 @@ internal val THEME_EXTRA_TOKENS: List<String> = listOf(
     "success", "successContainer",
     // 荧光笔：只当底（AI 撰写、概念高亮），所以 onMark 是「压在 mark 上的字」。
     "mark", "onMark",
+    // 计划页天格「这天全做完」的印章底色：书桌粉、Bento 柠青。
+    "dayDone", "onDayDone",
 )
 
 internal val THEME_ALL_TOKENS: List<String> =
@@ -139,6 +141,8 @@ private val THEME_EXTRA_PAIRS: List<Triple<String, String, Double>> = listOf(
     Triple("warning", "warningContainer", 3.0),
     // 荧光笔上的字：mark 是底，onMark 必须压得住。
     Triple("onMark", "mark", 4.5),
+    // 天格印章上的字：dayDone 是底，onDayDone 必须压得住。
+    Triple("onDayDone", "dayDone", 4.5),
 )
 
 /**
@@ -200,6 +204,9 @@ internal fun extraColorsOf(theme: ThemeContribution?, dark: Boolean, scheme: Col
         // 主题没给荧光笔就用「强调底 + 它上面的字」，至少语义是对的。
         mark = scheme.primaryContainer,
         onMark = scheme.onPrimaryContainer,
+        // 天格印章同理：没主题就给强调底。
+        dayDone = scheme.primaryContainer,
+        onDayDone = scheme.onPrimaryContainer,
     )
     val extra = theme?.extra
     if (extra.isNullOrEmpty()) return base
@@ -237,6 +244,18 @@ internal fun extraColorsOf(theme: ThemeContribution?, dark: Boolean, scheme: Col
                 inverted.remove("onMark")
             }
         }
+        // 印章也是「底」，同样重推它上面的字；推不达标就退回 base。
+        val dayDone = inverted["dayDone"]
+        val onDayDone = inverted["onDayDone"]
+        if (dayDone != null && onDayDone != null) {
+            val fixed = pushApart(onDayDone, dayDone, 4.5)
+            if (contrastRatio(fixed, dayDone) >= 4.5) {
+                inverted["onDayDone"] = fixed
+            } else {
+                inverted.remove("dayDone")
+                inverted.remove("onDayDone")
+            }
+        }
         inverted
     } else {
         extra.mapNotNull { (name, value) -> parseHexColor(value)?.let { name to it } }.toMap()
@@ -255,6 +274,8 @@ internal fun extraColorsOf(theme: ThemeContribution?, dark: Boolean, scheme: Col
         successContainer = resolved["successContainer"] ?: base.successContainer,
         mark = resolved["mark"] ?: base.mark,
         onMark = resolved["onMark"] ?: base.onMark,
+        dayDone = resolved["dayDone"] ?: base.dayDone,
+        onDayDone = resolved["onDayDone"] ?: base.onDayDone,
     )
 }
 

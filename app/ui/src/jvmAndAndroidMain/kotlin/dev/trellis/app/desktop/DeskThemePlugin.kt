@@ -131,6 +131,9 @@ internal class DeskThemePlugin : Plugin {
             "successContainer" to "#EEF4E8",
             "mark" to "#F3D35B",
             "onMark" to "#1C2124",
+            // 天格「这天收工了」的印章：书桌用粉。
+            "dayDone" to "#F4CBD5",
+            "onDayDone" to "#4A1420",
         ),
     )
 

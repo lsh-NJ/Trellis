@@ -126,6 +126,9 @@ internal class BentoThemePlugin : Plugin {
             // 有了明确岗位，之前它是 success、又是 primaryContainer，语义全靠猜。
             "mark" to "#D6F24B",
             "onMark" to "#141414",
+            // 天格「这天收工了」的印章：Bento 用柠青。
+            "dayDone" to "#D6F24B",
+            "onDayDone" to "#141414",
         ),
     )
 
