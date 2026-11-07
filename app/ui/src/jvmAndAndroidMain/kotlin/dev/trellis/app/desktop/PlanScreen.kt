@@ -1,6 +1,7 @@
 package dev.trellis.app.desktop
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -51,6 +53,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
@@ -898,11 +901,16 @@ private fun DayChip(
     val done = day.items.count { it.status == "done" }
     val total = day.items.size
     val full = total > 0 && done == total
-    // 全做完：背景慢慢浮出一枚大对勾（不是整格变色），给「今天收工了」一点动静。
-    val checkAlpha by animateFloatAsState(
-        targetValue = if (full) 1f else 0f,
+    // 这天全做完时，右上角 day 标签换成主题的「印章底色」（书桌粉、Bento 柠青）。
+    val sealBackground by animateColorAsState(
+        targetValue = if (full) tokens.colors.dayDone else tokens.colors.bg,
         animationSpec = tween(durationMillis = 260),
-        label = "day-chip-check",
+        label = "day-chip-seal",
+    )
+    val sealForeground by animateColorAsState(
+        targetValue = if (full) tokens.colors.onDayDone else tokens.colors.ink3,
+        animationSpec = tween(durationMillis = 260),
+        label = "day-chip-seal-text",
     )
     val background = when {
         hovering -> MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
@@ -916,6 +924,8 @@ private fun DayChip(
     }
     val weekday = day.label.substringBefore(" ")
     val dayOfMonth = day.day.substringAfterLast("-").trimStart('0').ifBlank { "0" }
+    // 外层不 clip：`day N` 刻签要能压出去盖住标题栏的边；卡片自己的圆角/底色/边框
+    // 交给里面那层 matchParentSize 的 Box 画。
     Box(
         modifier = modifier
             .onGloballyPositioned { coordinates ->
@@ -927,47 +937,78 @@ private fun DayChip(
                 scaleY = scale
             }
             .alpha(if (controller.payload != null && !droppable) 0.45f else 1f)
-            .clip(shape)
-            .background(background)
-            .border(1.dp, borderColor, shape)
             .clickable(onClick = onClick)
-            .padding(vertical = 8.dp),
+            .padding(vertical = 12.dp),
         contentAlignment = Alignment.Center,
     ) {
-        val watermark = if (selected) {
-            MaterialTheme.colorScheme.onPrimaryContainer
-        } else {
-            MaterialTheme.colorScheme.primary
-        }
-        if (checkAlpha > 0.02f) {
-            // 对勾做成右下角的「盖章」，不当整格水印：44dp 铺满会把「周一 · day 2 / 4/4」
-            // 压在勾上，看着像脏了。盖章只在角落露一点，完成感有了，字还是字。
-            Box(Modifier.align(Alignment.BottomEnd).padding(end = 6.dp, bottom = 4.dp)) {
-                CheckMark(size = 18.dp, tint = watermark.copy(alpha = 0.5f * checkAlpha))
-            }
-        }
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+        Box(
+            Modifier.matchParentSize()
+                .clip(shape)
+                .background(background)
+                .border(1.dp, borderColor, shape),
+        )
+        // 右上：day N 做成压在边框上的刻签，全做完时换成印章色
+        Box(
+            Modifier.align(Alignment.TopEnd).offset(y = (-10).dp).padding(end = 6.dp)
+                .background(sealBackground),
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                // 周几和 day N 同级：都是「这是哪天」的单位，不再让裸数字单独占一行。
-                Text("$weekday · day $dayOfMonth", style = tokens.type.meta, color = foreground)
-                if (day.today) {
-                    Box(
-                        Modifier.size(4.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary),
-                    )
-                }
-            }
             Text(
-                if (total == 0) "—" else done.toString() + "/" + total,
-                style = tokens.type.caption,
-                color = if (selected) foreground else MaterialTheme.colorScheme.onSurfaceVariant,
+                "day " + dayOfMonth,
+                style = tokens.type.meta,
+                color = sealForeground,
+                modifier = Modifier.padding(horizontal = 4.dp),
             )
         }
+        // 左中：周几 + 今天的小圆点
+        Row(
+            modifier = Modifier.align(Alignment.CenterStart)
+                .padding(start = 12.dp)
+                .offset(y = (-2).dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(weekday, style = tokens.type.title, color = foreground)
+            if (day.today) {
+                Box(
+                    Modifier.size(5.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary),
+                )
+            }
+        }
+        // 右下：完成 / 未完成；全做完换成黄字黑边的总数
+        Box(Modifier.align(Alignment.BottomEnd).padding(end = 10.dp, bottom = 4.dp)) {
+            Crossfade(targetState = full, animationSpec = tween(220), label = "day-chip-count") { allDone ->
+                when {
+                    total == 0 -> Text("—", style = tokens.type.page, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    allDone -> OutlinedDayCount(total)
+                    else -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(done.toString(), style = tokens.type.page, color = tokens.colors.accent)
+                        Text(" ｜ ", style = tokens.type.caption, color = tokens.colors.ruleStrong)
+                        Text((total - done).toString(), style = tokens.type.page, color = foreground)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 全做完的天：数字填荧光黄、外面一圈细黑边。
+ *
+ * 描边字在 Compose 里没有现成样式，就用「黑描边字打底 + 黄字叠上去」两层文字实现；
+ * 故意不引图片/字体，缩放不会糊。
+ */
+@Composable
+private fun OutlinedDayCount(value: Int) {
+    val tokens = LocalTrellisTokens.current
+    val text = value.toString()
+    val style = tokens.type.page
+    Box(contentAlignment = Alignment.Center) {
+        Text(
+            text,
+            style = style.copy(drawStyle = Stroke(width = 2.4f)),
+            color = tokens.colors.ink,
+        )
+        Text(text, style = style, color = tokens.colors.mark)
     }
 }
 

@@ -91,6 +91,8 @@ internal data class TokenColors(
     /** 荧光笔：只用来标 AI 撰写与概念高亮，绝不当正文色。 */
     val mark: Color,
     val onMark: Color,
+    val dayDone: Color,
+    val onDayDone: Color,
     val danger: Color,
     val warn: Color,
     /** 完成/通过，保证对表面可读（主题给的是底色的场合退回 accent）。 */
@@ -206,6 +208,8 @@ private fun tokenColors(scheme: ColorScheme, extra: ExtraColors): TokenColors {
         onAccentSoft = scheme.onPrimaryContainer,
         mark = extra.mark,
         onMark = extra.onMark,
+        dayDone = extra.dayDone,
+        onDayDone = extra.onDayDone,
         danger = extra.danger,
         warn = extra.warning,
         ok = ok,
