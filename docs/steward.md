@@ -157,3 +157,14 @@
   通知开关仍然受设置页「桌面通知」控制。
 - 触发后自动跳到管家会话；日志写在 `<home>/app.log` 的「管家调试：…」行。
   入口：`AppRuntime.debugStewardRitual(morning: Boolean)` → `StewardRuntime.forceRun(ritual)`。
+
+## 5.2 每周自动排周计划（2026-11-08）
+
+用户口径：每周开始时，在**这条计划自己的会话**里跑一轮「排本周」；管家可以代跑。
+
+- 触发：管家 ticker（60s）与窗口回到前台时都会走 `runStewardCheck`，随后调 `AppRuntime.maybeRunWeeklyPlanWeek()`；
+  判断规则在 `WeeklyPlan.kt` 的 `shouldRunWeeklyPlan`：默认开、**周日 18:00 后或周一**、同一 ISO 周只跑一次（`StewardCheckpoints.weeklyPlanWeek`）。
+- 绑定：建计划时如果人在普通会话里，`AppRuntime.bindPlanSession` 把 `planId → chatId` 记进 `<home>/plans/sessions.json`；管家会话不绑定。
+- 执行：每条未结束的计划优先进它绑定的会话；会话不存在/没绑定则由管家代跑（请求开头是「【代排】」）。
+  这一轮用的是完整的工具与提示词（`buildChatRig`），和用户自己说话完全同一条链路；结果写回目标会话（用户和管家的消息都留痕，带「—— 本周已排 / 本周没排成」状态行）。
+- 开关：设置页「管家 · 每周自动排周计划」，关掉后不会再自动跑；用户仍可在会话里说「排本周」。

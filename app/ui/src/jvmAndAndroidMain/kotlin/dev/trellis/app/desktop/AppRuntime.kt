@@ -18,6 +18,7 @@ import dev.trellis.ai.LlmConfigLoader
 import dev.trellis.ai.LlmMessage
 import dev.trellis.ai.LlmRole
 import dev.trellis.ai.manager.ManagerAgent
+import dev.trellis.ai.tool.AgentTool
 import dev.trellis.ai.tool.DeepSeekMarkup
 import dev.trellis.ai.manager.ManagerPrompt
 import dev.trellis.ai.manager.ManagerRouter
@@ -1235,6 +1236,156 @@ class AppRuntime private constructor() {
         }
     }
 
+    /**
+     * 计划 ↔ 会话绑定：建计划时如果人在某个普通会话里，就把这个会话记成它的「周计划会话」。
+     *
+     * 管家会话不绑定 —— 管家是代跑的人，不能既是执行者又是计划的长期上下文。
+     */
+    internal fun bindPlanSession(planId: String) {
+        if (planId.isBlank()) return
+        val sessionId = currentChatId ?: return
+        val kind = chatSessions.firstOrNull { it.id == sessionId }?.kind ?: SessionKind.Manager
+        if (kind == SessionKind.Steward) return
+        runCatching { planSessionStore.bind(planId, sessionId) }
+            .onFailure { appendAppLog("计划会话绑定失败：$it") }
+    }
+
+    /**
+     * 在指定会话里跑一轮「排本周」：工具、提示词与普通对话完全一样，只是没有用户敲的那一句。
+     *
+     * 返回这一轮有没有成功；失败不抛（ticker 里调它，抛出去只会把管家循环带停）。
+     */
+    private suspend fun runWeeklyPlanRound(
+        sessionId: String,
+        planId: String,
+        planTitle: String,
+        asSteward: Boolean,
+    ): Boolean {
+        if (chatBusy) return false
+        val config = LlmConfigLoader.load(home) ?: return false
+        val llm = llmOverride ?: HttpLlmClient(config)
+        val researchGateway: ResearchGateway? =
+            if (llmOverride == null && config.apiKey.isNotBlank()) {
+                webResearchLog = { message -> appendAppLog(message) }
+                createWebResearch(config)
+            } else {
+                null
+            }
+        selectPlan(planId)
+        val rig = buildChatRig(llm, researchGateway)
+        val request = if (asSteward) {
+            "【代排】计划「$planTitle」这一周开始了。请用 plan_week 排本周：先读计划文档和上周完成情况，" +
+                "排完用一句话说明本周重点。"
+        } else {
+            "【周计划】这一周开始了。请用 plan_week 排本周：先读计划文档和上周完成情况，" +
+                "排完用一句话说明本周重点。"
+        }
+        val router = if (asSteward) {
+            val base = buildString {
+                append(StewardPrompt.systemPrompt())
+                append("\n\n")
+                append(ToolAgent.catalogueOf(rig.allTools))
+                if (rig.promptGuidance.isNotBlank()) {
+                    append("\n\n")
+                    append(rig.promptGuidance)
+                }
+            }
+            ManagerRouter(prompt = ManagerPrompt(base = base), tools = rig.allTools)
+        } else {
+            ManagerRouter(rig.catalog, rig.allTools, rig.promptGuidance)
+        }
+        rig.pluginTools.beginRound()
+        val agent = ManagerAgent(
+            llm = llm,
+            router = router,
+            maxSteps = null,
+            beforeFinishing = { message -> rig.pluginTools.reviewAfterRound(message) },
+        )
+        val result = runCatching {
+            agent.respond(
+                state = managerState(),
+                request = request,
+                history = emptyList(),
+                onDelta = {},
+                onLog = {},
+            )
+        }.getOrElse { error ->
+            appendAppLog("周计划回合失败（$planTitle）：$error")
+            return false
+        }
+        val now = clock.nowMs()
+        appendSessionLines(
+            sessionId,
+            listOf(
+                ChatLine(id = nextChatLineId++, role = ChatRole.User, text = request, atMs = now),
+                ChatLine(
+                    id = nextChatLineId++,
+                    role = ChatRole.Assistant,
+                    text = result.text.ifBlank { "（这一轮没有输出）" },
+                    atMs = now,
+                ),
+                ChatLine(
+                    id = nextChatLineId++,
+                    role = ChatRole.Status,
+                    text = if (result.ok) "—— 本周已排" else "—— 本周没排成，详见过程",
+                    atMs = now,
+                ),
+            ),
+        )
+        if (result.ok) refresh()
+        return result.ok
+    }
+
+    /** 往某个会话追几行；那个会话正开着就顺手刷新界面。 */
+    private fun appendSessionLines(sessionId: String, lines: List<ChatLine>) {
+        if (currentChatId == sessionId) {
+            chat.addAll(lines)
+            persistChat()
+            return
+        }
+        val stored = runCatching { chatStore.read(sessionId) }.getOrNull() ?: return
+        runCatching {
+            chatStore.save(
+                stored.copy(
+                    lines = stored.lines + lines,
+                    updatedAt = clock.nowMs(),
+                    unread = true,
+                ),
+            )
+            loadChatSessions()
+        }.onFailure { appendAppLog("写周计划会话失败：$it") }
+    }
+
+    /**
+     * 该跑「每周自动排周计划」的时候跑一次。
+     *
+     * 触发点是管家 ticker（60s）与窗口回到前台（都会走 [runStewardCheck]）。规则见
+     * [shouldRunWeeklyPlan]：默认开、同一周只跑一次、周日 18:00 后或周一。
+     * 每条计划优先进它自己的会话；没绑定/会话没了就由管家代跑并注明「代排」。
+     */
+    internal suspend fun maybeRunWeeklyPlanWeek() {
+        if (!::planSessionStore.isInitialized || !::stewardStore.isInitialized || !::clock.isInitialized) return
+        if (chatBusy) return
+        val settings = stewardSettings
+        val today = clock.today()
+        val zoned = java.time.Instant.ofEpochMilli(clock.nowMs()).atZone(clock.zone)
+        val checkpoints = stewardStore.checkpoints()
+        if (!shouldRunWeeklyPlan(settings.weeklyPlan, today, zoned.hour, checkpoints.weeklyPlanWeek)) return
+        val service = learningPlan() ?: return
+        val plans = runCatching { service.plans() }.getOrElse { return }
+        plans.filter { it.status != "ended" }.forEach { plan ->
+            val bound = runCatching { planSessionStore.sessionFor(plan.id) }.getOrNull()
+            val usable = bound != null && chatSessions.any { it.id == bound }
+            if (usable) {
+                runWeeklyPlanRound(bound!!, plan.id, plan.title, asSteward = false)
+            } else if (::stewardRuntime.isInitialized) {
+                runWeeklyPlanRound(StewardRuntime.STEWARD_SESSION_ID, plan.id, plan.title, asSteward = true)
+            }
+        }
+        runCatching { stewardStore.saveCheckpoints(checkpoints.copy(weeklyPlanWeek = isoWeekOf(today))) }
+            .onFailure { appendAppLog("记录周计划日期失败：$it") }
+    }
+
     private suspend fun runStewardCheck() {
         runCatching { stewardRuntime.check() }
             .onSuccess { result ->
@@ -1244,6 +1395,9 @@ class AppRuntime private constructor() {
                     runCatching { autoAdoptStewardProposalIfAllowed() }
                         .onFailure { appendAppLog("自动采纳失败：$it") }
                 }
+                // 周日 18:00 后 / 周一：给每条计划排本周（在它自己的会话里，没绑定就管家代跑）。
+                runCatching { maybeRunWeeklyPlanWeek() }
+                    .onFailure { appendAppLog("自动排周计划失败：$it") }
             }
             .onFailure { appendAppLog("管家仪式失败：$it") }
     }
@@ -2123,51 +2277,15 @@ class AppRuntime private constructor() {
         return renderCrossSessionMemory(stewardStore, clock.today().toString(), maxChars)
     }
 
-    /**
-     * 和管理员说一句话。
-     *
-     * 它是**插件的主人**，也是唯一入口：造新的、停旧的、改坏的、调布局都走这里。
-     * 它先自己判断这轮该聊天还是该动手，动手时过程逐行吐到对话里，判断和干活
-     * 用的是同一份上下文。
-     *
-     * 没有可空返回：对话页永远有反馈（没 key 时把配置指引当一行过程贴出来）。
-     */
-    suspend fun sendChat(request: String) {
-        val text = request.trim()
-        if (text.isEmpty() || chatBusy) return
+    /** 一轮对话要用的全套工具与提示词；普通会话和「计划会话里的周计划」共用。 */
+    private class ChatRig(
+        val catalog: CapabilityCatalog,
+        val pluginTools: PluginTools,
+        val allTools: List<AgentTool>,
+        val promptGuidance: String,
+    )
 
-        val config = LlmConfigLoader.load(home)
-        if (config == null) {
-            addChatLine(ChatRole.Step, llmSetupHint())
-            return
-        }
-
-        val llm = llmOverride ?: HttpLlmClient(config)
-        // 网络调研只在真跑模型时接（测试通过 llmOverride 注入假模型，不能顺手联网）。
-        val researchGateway: ResearchGateway? =
-            if (llmOverride == null && config.apiKey.isNotBlank()) {
-                webResearchLog = { message -> appendAppLog(message) }
-                createWebResearch(config)
-            } else {
-                null
-            }
-        chatBusy = true
-        activePlanId = null
-        chatChoices = emptyList()
-        addChatLine(ChatRole.User, text)
-        rememberRound(chat.last().id)
-        val answer = addChatLine(ChatRole.Assistant, "")
-        // 原始流和「给人看的文本」分开存：工具协议是给程序读的 JSON，
-        // 边流边糊进聊天气泡的话，用户看到的全是 {"tool": ...}。
-        var answerText = ""
-        var displayText = ""
-
-        fun renderAnswer() {
-            val index = chat.indexOfFirst { it.id == answer.id }
-            if (index >= 0) chat[index] = answer.copy(text = displayText)
-        }
-
-        try {
+    private fun buildChatRig(llm: LlmClient, researchGateway: ResearchGateway?): ChatRig {
             val catalog = CapabilityCatalog.of(kernel.extensions, RENDERED_MOUNT_POINTS)
             val installer = KernelPluginInstaller(pluginsDir, kernel)
             val selfTest = PluginSelfTest()
@@ -2191,6 +2309,7 @@ class AppRuntime private constructor() {
                     refreshPlan(focus = created)
                     // 计划建好就把「想法」落成文档：之后排周/重排时先读文档，不靠对话记忆。
                     ensurePlanDoc(created)
+                    bindPlanSession(created)
                 },
                 { studyPrefs.weeklyMinutes },
                 planDbError = { planDbError },
@@ -2222,7 +2341,10 @@ class AppRuntime private constructor() {
                 clock = clock,
                 llm = llm,
                 research = researchGateway,
-                onChanged = { created -> refreshPlan(focus = created) },
+                onChanged = { created ->
+                    refreshPlan(focus = created)
+                    bindPlanSession(created)
+                },
             )
             // 每周的局部计划：读大纲与上周完成，排这一周的具体条目并铺到天。
             val planWeekTools = PlanWeekTools(
@@ -2269,6 +2391,56 @@ class AppRuntime private constructor() {
             // 都用同一份 promptGuidance，静态前缀逐字节稳定，前缀缓存只从记忆块开始失效。
             val memorySection = memoryBlock()
             val promptGuidance = if (memorySection.isBlank()) guidance else guidance + "\n\n" + memorySection
+        return ChatRig(catalog, tools, allTools, promptGuidance)
+    }
+
+    /**
+     * 和管理员说一句话。
+     *
+     * 它是**插件的主人**，也是唯一入口：造新的、停旧的、改坏的、调布局都走这里。
+     * 它先自己判断这轮该聊天还是该动手，动手时过程逐行吐到对话里，判断和干活
+     * 用的是同一份上下文。
+     *
+     * 没有可空返回：对话页永远有反馈（没 key 时把配置指引当一行过程贴出来）。
+     */
+    suspend fun sendChat(request: String) {
+        val text = request.trim()
+        if (text.isEmpty() || chatBusy) return
+
+        val config = LlmConfigLoader.load(home)
+        if (config == null) {
+            addChatLine(ChatRole.Step, llmSetupHint())
+            return
+        }
+
+        val llm = llmOverride ?: HttpLlmClient(config)
+        // 网络调研只在真跑模型时接（测试通过 llmOverride 注入假模型，不能顺手联网）。
+        val researchGateway: ResearchGateway? =
+            if (llmOverride == null && config.apiKey.isNotBlank()) {
+                webResearchLog = { message -> appendAppLog(message) }
+                createWebResearch(config)
+            } else {
+                null
+            }
+        chatBusy = true
+        activePlanId = null
+        chatChoices = emptyList()
+        addChatLine(ChatRole.User, text)
+        rememberRound(chat.last().id)
+        val answer = addChatLine(ChatRole.Assistant, "")
+        // 原始流和「给人看的文本」分开存：工具协议是给程序读的 JSON，
+        // 边流边糊进聊天气泡的话，用户看到的全是 {"tool": ...}。
+        var answerText = ""
+        var displayText = ""
+
+        fun renderAnswer() {
+            val index = chat.indexOfFirst { it.id == answer.id }
+            if (index >= 0) chat[index] = answer.copy(text = displayText)
+        }
+
+        try {
+            val rig = buildChatRig(llm, researchGateway)
+
 
             // 一份提示词 + 全量工具：不再按意图裁工具、也不再换任务模块。
             // 模型自己决定这一轮是聊天还是动手（2026-11-07 删掉意图分类器）。
@@ -2285,28 +2457,28 @@ class AppRuntime private constructor() {
                 val base = buildString {
                     append(StewardPrompt.systemPrompt())
                     append("\n\n")
-                    append(ToolAgent.catalogueOf(allTools))
-                    if (promptGuidance.isNotBlank()) {
+                    append(ToolAgent.catalogueOf(rig.allTools))
+                    if (rig.promptGuidance.isNotBlank()) {
                         append("\n\n")
-                        append(promptGuidance)
+                        append(rig.promptGuidance)
                     }
                 }
                 ManagerRouter(
                     prompt = ManagerPrompt(base = base),
-                    tools = allTools,
+                    tools = rig.allTools,
                 )
             } else {
-                ManagerRouter(catalog, allTools, promptGuidance)
+                ManagerRouter(rig.catalog, rig.allTools, rig.promptGuidance)
             }
             // 插件工具自己记账：这一轮碰过插件工具、又只看了看没动手，才在收尾时拦。
             // 不再按意图判断（意图分类器已删），也不再无条件要求「必须试过、装上了」。
-            tools.beginRound()
+            rig.pluginTools.beginRound()
             val agent = ManagerAgent(
                 llm = llm,
                 router = router,
                 // 不设步数额度：查五个插件、逐个试跑本来就是十几步的事。
                 maxSteps = null,
-                beforeFinishing = { message -> tools.reviewAfterRound(message) },
+                beforeFinishing = { message -> rig.pluginTools.reviewAfterRound(message) },
             )
 
             val result = agent.respond(
@@ -2816,6 +2988,7 @@ class AppRuntime private constructor() {
     // 文档在 <home>/plans/docs/<planId>.md；计划库仍是执行真相，两边不实时双向同步。
 
     internal lateinit var planDocStore: PlanDocStore
+    internal lateinit var planSessionStore: PlanSessionStore
 
     /** 知识库里「计划文档」二级页当前打开的计划；非空时知识库页整页显示它。 */
     var planDocBrowseId by mutableStateOf<String?>(null)
@@ -4900,6 +5073,7 @@ class AppRuntime private constructor() {
             runtime.pluginCardStyles = runtime.pluginStyleStore.load()
             runtime.planDocStore = PlanDocStore(home)
             runtime.chatStore = ChatStore(home)
+            runtime.planSessionStore = PlanSessionStore(home)
             runtime.knowledgeStore = KnowledgeStore(home, runtime.clock)
             runtime.stewardStore = StewardStore(home)
             // 用户明确说过旧的「计划检查」可以直接删；迁移顺手清掉残留文件。

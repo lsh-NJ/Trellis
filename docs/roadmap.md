@@ -174,7 +174,7 @@
 > **2026-11-08 补（用户 5 点定稿）**：`plan_unit.kind`（学习/实践/复习，界面统一后缀）；`createShell` 空壳计划；
 > `research_plan` 改为「阶段表 + 大纲文档 + 目标/里程碑 + 每日时长建议」；`plan_week` 工具（读大纲与上周完成，
 > 排本周并铺到天、写本周文档）；知识库新增只读「计划文档」区（计划页只做跳转）。
-> **还没做**：计划↔会话映射 `plans/sessions.json`、管家在周一/周日晚自动代跑 `plan_week`。
+> 2026-11-08 补：计划↔会话映射 `plans/sessions.json` 与「每周自动排周计划」已落地（`PlanSessionStore.kt`、`WeeklyPlan.kt`、`AppRuntime.maybeRunWeeklyPlanWeek`；周日 18:00 后 / 周一，优先进计划自己的会话，没绑定就管家代跑）。
 > 2026-11-08 补：`research_plan` 已接 DeepSeek 官方 Search/Fetch（`WebResearch.kt`，搜 3 组 query + 读 2 篇正文；失败降级）。
 
 > 用法：`- [ ]` 勾掉即完成；编号供后续沟通引用。每条写清现状 / 影响 / 涉及文件 / 大致工作量 / 验证方式。
