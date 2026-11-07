@@ -160,4 +160,42 @@ class ChatStoreTest {
         assertEquals(proposal, again.proposal)
         assertEquals(ProposalState.Dismissed, again.proposalState)
     }
+
+    @Test
+    fun aPracticeProposalAndItsDecisionSurviveAReload() {
+        val home = tempHome()
+        val practice = PracticeProposal(
+            id = "practice-1",
+            planId = "pln_1",
+            planTitle = "数据结构速通",
+            subject = "数据结构",
+            exerciseId = "ds-1",
+            title = "学完「线性表」，练一道题？",
+            detail = "题库里有匹配「数据结构」的练习。",
+        )
+        ChatStore(home).save(
+            ChatSession(
+                id = "steward",
+                title = "管家",
+                createdAt = 1_000L,
+                updatedAt = 1_001L,
+                lines = listOf(
+                    ChatLine(1, ChatRole.User, "继续", 1_000L),
+                    ChatLine(
+                        id = 2,
+                        role = ChatRole.Assistant,
+                        text = "学完「线性表」了。",
+                        atMs = 1_001L,
+                        practiceProposal = practice,
+                        practiceState = PracticeProposalState.Accepted,
+                    ),
+                ),
+                kind = SessionKind.Steward,
+            ),
+        )
+
+        val again = ChatStore(home).read("steward")!!.lines[1]
+        assertEquals(practice, again.practiceProposal)
+        assertEquals(PracticeProposalState.Accepted, again.practiceState)
+    }
 }

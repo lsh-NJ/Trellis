@@ -55,6 +55,57 @@ class ExerciseBank(exercises: List<Exercise>) {
         }
     }
 
+    /**
+     * 学完一个单元后，从题库里找一道和这一段学习内容匹配的练习。
+     *
+     * 匹配只做**学科 / 课程 / 标签**的关键词包含，不看题干：计划名、章节、节点标题
+     * 里出现的词才说明「在学什么」；拿题干去匹配会把「以下哪个选项正确」这类
+     * 通用词也算命中，提议就变成随机了。
+     *
+     * 返回按命中词数降序；同分时客观题优先，再按 id 排序（保证可复现）。
+     * 一道都没命中就返回空列表 —— 调用方据此决定「不提议」。
+     */
+    fun suggestFor(text: String, limit: Int = 1, excludeIds: Set<String> = emptySet()): List<Exercise> {
+        val tokens = suggestionTokens(text)
+        if (tokens.isEmpty()) return emptyList()
+        return exercises.asSequence()
+            .filter { it.id !in excludeIds }
+            .mapNotNull { exercise ->
+                val hits = tokens.count { token -> exercise.matchesTopic(token) }
+                if (hits == 0) null else exercise to hits
+            }
+            .sortedWith(
+                compareByDescending<Pair<Exercise, Int>> { it.second }
+                    .thenBy { if (it.first.kind.isQuestion) 0 else 1 }
+                    .thenBy { it.first.id },
+            )
+            .take(limit.coerceIn(1, 20))
+            .map { it.first }
+            .toList()
+    }
+
+    /** 分词用的分隔符：中英文标点、空白与常见符号（正则原样传给 Regex）。 */
+    private val suggestionSeparators = Regex(
+        """[\s，。、；：！？,.;:!?()（）\[\]【】「」『』/\\|·\-—_~]+""",
+    )
+
+    /** 把「计划名 + 章节 + 节点标题」切成 2 字以上的词；中文没空格，靠标点与连续段切。 */
+    private fun suggestionTokens(text: String): List<String> =
+        text.lowercase()
+            .split(suggestionSeparators)
+            .map { it.trim() }
+            .filter { it.length >= 2 }
+            .distinct()
+
+    /** 一个词是否命中这道题的主题（学科 / 课程 / 标签）。 */
+    private fun Exercise.matchesTopic(token: String): Boolean {
+        fun hit(value: String): Boolean {
+            val v = value.trim().lowercase()
+            return v.isNotEmpty() && (v.contains(token) || token.contains(v))
+        }
+        return hit(subject) || hit(course) || tags.any { hit(it) }
+    }
+
     /** 组合筛选：参数为 null 表示不限制；keyword 为空串表示不限制。 */
     fun filter(
         subject: String? = null,

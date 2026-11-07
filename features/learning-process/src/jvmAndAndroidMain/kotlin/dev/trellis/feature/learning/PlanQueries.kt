@@ -69,7 +69,7 @@ internal fun SqliteLearningPlanService.buildDayView(planId: String?, day: String
 private fun SqliteLearningPlanService.plannedOccurrences(planId: String, day: String): List<DayOccurrence> =
     connection.prepareStatement(
         "SELECT d.id, d.unit_title, d.chapter, d.estimate_minutes, d.mode, d.status, d.min_version_minutes, " +
-            "d.moved_from, d.carried_from, d.todo_title FROM v_occurrence_detail d " +
+            "d.moved_from, d.carried_from, d.todo_title, d.unit_id FROM v_occurrence_detail d " +
             "LEFT JOIN plan_unit pu ON pu.id = d.unit_id " +
             "WHERE d.plan_id = ? AND d.day = ? AND d.status = 'planned' " +
             // 排期顺序 = 路线顺序（plan_unit.sort_order），同一天里靠前的单元先出现；
@@ -100,6 +100,7 @@ private fun SqliteLearningPlanService.plannedOccurrences(planId: String, day: St
                                 label = if (rs.getString(9) != null) "从上周结转" else "本周承诺",
                             ),
                             actions = listOf("complete", "move", "split", "shorten", "skip"),
+                            unitId = rs.getString(11),
                         ),
                     )
                 }

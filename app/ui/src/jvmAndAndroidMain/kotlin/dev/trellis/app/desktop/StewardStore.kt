@@ -230,6 +230,22 @@ internal class StewardStore(private val home: File) {
             .take(limit.coerceIn(1, MAX_MEMORY_QUERY_LIMIT))
     }
 
+    /**
+     * 记忆里是否已经有一条「关于这些对象的备注」。
+     *
+     * 用途一是去重：同一次练习提议只记一条，重启后不再反复弹；用途二是让 AI 的
+     * `remember_memory` 能先查后写。只认 [StewardMemoryKind.Note] —— 目标/偏好
+     * 是另一类事实，不参与这里的「这件事已经记过没有」判断。
+     */
+    fun hasNote(topic: String, entities: List<String>): Boolean {
+        val wanted = entities.filter { it.isNotBlank() }
+        return readMemory().any { event ->
+            event.kind == StewardMemoryKind.Note &&
+                topic in event.topics &&
+                wanted.all { entity -> entity in event.entities }
+        }
+    }
+
     /** 每天仪式结束时把当天的摘要写一份；没有就返回 null。 */
     fun digest(day: String): String? = runCatching {
         val file = File(digestDir, "$day.md")

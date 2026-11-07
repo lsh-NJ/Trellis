@@ -49,7 +49,7 @@
 - **要让计划自己推进 / 接计划工具**：`plan-rhythm-draft.md`（背景与分阶段方案）→ `plan-backend.md` §8（`advanceRhythm` 契约）→ `PlanAdvance.kt` / `AppRuntime.refreshPlan` / `PlanAdminTools.kt`。
 - **要讨论知识库 / 做笔记与概念索引**：`knowledge-base-draft.md`（口径、数据模型、P0/P1/P2）。
 - **要做知识网络 / 概念间关系**：`knowledge-graph-design.md`（分类树+浮窗+拖动链接、三类事实、AI 只建议、双 json 存储、G0/G1/G2、测试与附录 E 实现记录）→ `knowledge-base-draft.md` §2/§3（概念/笔记/出处口径）→ `KnowledgeStore.kt`。
-- **要加练习题库 / 抓题**：`../tools/exams/README.md`（管线、种子格式、已知限制）→ `features/exams/.../ExerciseBank.kt`（模型与筛选）→ `app/ui/.../ExamsScreen.kt`（练习页）；外部题库丢 `<home>/exams/*.jsonl` 自动合并。
+- **要加练习题库 / 抓题**：`../tools/exams/README.md`（管线、种子格式、已知限制）→ `features/exams/.../ExerciseBank.kt`（模型与筛选）→ `app/ui/.../PracticeScreen.kt`（学完单元后由管家在会话里提议一道题，接受后进二级页）；外部题库丢 `<home>/exams/*.jsonl` 自动合并。
 - **要改活动分类 / 时间汇总**：`activity.md`（规则语义、时间口径、已知缺口）→ `ActivityTaxonomy.kt` / `ActivityAggregator.kt` → `:features:activity:test`。
 - **要碰「今天/本周/跨周/时长/超时」**：`time-conventions.md`（规范，先读 §0 和 §8）→ 计划链路看 `LearningPlanRhythmTest` → 要调试时间推移看 §7（开发者跳日期）。
 - **要改界面/主题/布局**：`../AGENTS.md` §3「按问题找文件」→ `examples/bento-style.md`（三层边界）→ `conversation-redesign.md`（若改会话页）。
