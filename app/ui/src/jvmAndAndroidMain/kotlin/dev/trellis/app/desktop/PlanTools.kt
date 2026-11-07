@@ -215,7 +215,8 @@ class PlanTools(
                 "deadline：可选截止日期（YYYY-MM-DD）。用户说「还有两周考试」「月底前学完」时，按今天算出日期再传给 create_learning_plan，" +
                 "宿主会把全局周表排到那个周为止，排不下的留在待安排；" +
                 "units：数组，每项 {title, minutes?, chapter?}（title 必填，minutes 10–45，默认 25），只在手写路径用；" +
-                "weeks：数组，每项 {week: \"2026-W44\", units: [单元 title...]}（从本周起、周与周连续、每周 1–14 个；周数按整个计划周期给全，不设上限），只在手写 units 时用。"
+                "weeks：数组，每项 {week: \"2026-W44\", units: [单元 title...]}（从本周起、周与周连续、每周 1–14 个；周数按整个计划周期给全，不设上限），只在手写 units 时用。" +
+                "goalId：可选，目标 id（list_goals 里的值）。传了就顺手把这份计划挂到那个目标上。"
 
         override suspend fun call(arguments: JsonObject): ToolResult {
             val plan = service() ?: return ToolResult(
@@ -326,7 +327,7 @@ class PlanTools(
                 }
             }
 
-            writePlan(plan, title, dailyMinutes, units, commitments)?.let { return it }
+            writePlan(plan, title, dailyMinutes, units, commitments, arguments.textArg("goalId"))?.let { return it }
 
             val weekLines = commitments.joinToString("；") { draft ->
                 val count = draft.unitIndexes.size
@@ -411,7 +412,7 @@ class PlanTools(
             return ToolResult("（$bvid）没生成出可排的单元，换一个视频或检查分集时长。", isError = true)
         }
 
-        writePlan(plan, title, dailyMinutes, units, commitments)?.let { return it }
+        writePlan(plan, title, dailyMinutes, units, commitments, arguments.textArg("goalId"))?.let { return it }
 
         val placed = commitments.sumOf { it.unitIndexes.size }
         val weekLines = commitments.joinToString("；") { draft ->
@@ -440,6 +441,7 @@ class PlanTools(
         dailyMinutes: Int,
         units: List<UnitDraft>,
         commitments: List<CommitmentDraft>,
+        goalId: String? = null,
     ): ToolResult? {
         val created = plan.createProcess(
             env(null, "plan.create"),
@@ -468,6 +470,16 @@ class PlanTools(
         )
         if (accepted.value == null) {
             return ToolResult("生效失败：" + (accepted.error?.message ?: "未知原因"), isError = true)
+        }
+        if (goalId != null) {
+            val linked = plan.linkPlanToGoal(env(createdValue.planId, "plan.link_goal"), createdValue.planId, goalId)
+            if (linked.value == null) {
+                // 计划已经建成了，关联失败不该把整件事判失败；把原因带回去让模型补一次。
+                return ToolResult(
+                    "计划建好了，但挂到目标上没成功：" + (linked.error?.message ?: "未知原因") +
+                        "\n可以用 link_plan_to_goal 补一次。",
+                )
+            }
         }
         onChanged(createdValue.planId)
         return null

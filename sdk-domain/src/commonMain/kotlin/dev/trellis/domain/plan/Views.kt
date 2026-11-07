@@ -256,3 +256,36 @@ data class TodoView(
     val status: String,
     val estimateMinutes: Int? = null,
 )
+
+@Serializable
+data class MilestoneView(
+    val id: String,
+    val title: String,
+    val deadline: String? = null,
+    /** open | done */
+    val status: String = "open",
+    val sortOrder: Int = 0,
+)
+
+/**
+ * 目标 / 项目（2026-11-07，G-A1）。
+ *
+ * 计划文档负责「这一版怎么排」，目标负责「为什么排、做到什么算数」：
+ * 一个目标可以挂多个计划（学课 + 项目 + 练习），里程碑是中间验收点。
+ */
+@Serializable
+data class GoalView(
+    val id: String,
+    val title: String,
+    /** goal | project */
+    val kind: String = "goal",
+    val intent: String = "",
+    val success: String = "",
+    val deadline: String? = null,
+    /** active | paused | archived */
+    val status: String = "active",
+    val parentId: String? = null,
+    val milestones: List<MilestoneView> = emptyList(),
+    /** 关联到它的学习计划。 */
+    val plans: List<LearningPlanInfo> = emptyList(),
+)

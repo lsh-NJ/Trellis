@@ -177,11 +177,11 @@
 
 ### 3.1 由面到点（目标/项目 → 可执行点）
 
-- [ ] **G-A1 目标/项目实体缺失（P0，2–3 天）**
-  - 现状：只有 `process.goal` 一个自由文本（`LearningPlanService.createProcess(..., goal: String, ...)`），没有目标表/里程碑/项目部件/验收标准。
-  - 影响：「拆解我的理想/项目」只能靠模型单次输出，无法追踪演进、无法把「目标」注入推荐与管家。
-  - 涉及：`features/learning-process`（schema/新命令）、`sdk-domain/.../plan/LearningPlanService.kt`、计划页/计划文档。
-  - 验证：能建目标/项目并从计划引用；目标页/计划头显示目标；旧库迁移测试。
+- [x] **G-A1 目标/项目实体（2026-11-07 完成）**
+  - 现状：`plan.db` 增 `goal`（`id,title,kind goal|project,intent,success,deadline,status active|paused|archived,parent_id,created_at,updated_at`）与 `goal_milestone`（`id,goal_id,title,deadline,status open|done,sort_order`）；`process.goal_id` 列（旧库在 `PlanDatabase.migrate()` 里 PRAGMA 检测后 `ALTER TABLE`）。
+  - 契约：`GoalView`/`MilestoneView`（含关联 `plans: List<LearningPlanInfo>`）、`GoalRef`/`MilestoneRef`；七个命令 `createGoal`/`updateGoal`/`addMilestone`/`completeMilestone`/`uncompleteMilestone`/`removeMilestone`/`linkPlanToGoal`（事件 `goal.created/updated`、`goal.milestone_added/completed/reopened/removed`、`plan.goal_linked`；完成与关联带 5 秒撤销）。
+  - UI/工具：计划页头部「目标 · N」进目标二级页（`GoalScreen.kt`：进行中/已归档、验收、里程碑勾选、关联计划跳转、新建目标/加里程碑对话框）；`GoalTools.kt` 6 只（`list_goals`/`create_goal`/`add_milestone`/`complete_milestone`/`link_plan_to_goal`/`archive_goal`，写操作要 confirmed）；`create_learning_plan`/`research_plan` 建计划时可直接带 `goalId` 挂到目标。
+  - 仍未做（并入 G-A4）：项目部件/交付物证据、目标进度百分比、目标页的时间线视图。
 - [x] **G-A2 `research_plan` 工具（2026-11-07 已落地最小版）**
   - 现状：`app/ui/.../ResearchTools.kt` 提供 `research_plan(goal, dailyMinutes)`：模型产出结构化草案（title/units/周建议）→ 校验 → `createProcess/saveDraft/acceptDraft` 建计划 + 写计划文档（`PlanDocStore`）；缺 weeks 时按每天预算自动排；`ManagerRouter` 已登记（FindResource / PlanManage）。
   - 由面到点主链路已通：目标式说法（「两周复习完 X」）→ research_plan → 计划 + 计划文档 + **全局周表**（2026-11-07 口径：不设周数上限、先整体后每周局部；`deadline` 按截止周倒排，排不下留待安排；`dailyMinutes` 只是建议，不再追问/弹选项；bvid 全量导入同样一次排出全局周表）。

@@ -8,6 +8,9 @@ import dev.trellis.domain.plan.DayOccurrence
 import dev.trellis.domain.plan.DayView
 import dev.trellis.domain.plan.EntryView
 import dev.trellis.domain.plan.FactView
+import dev.trellis.domain.plan.GoalView
+import dev.trellis.domain.plan.LearningPlanInfo
+import dev.trellis.domain.plan.MilestoneView
 import dev.trellis.domain.plan.MapUnit
 import dev.trellis.domain.plan.MapView
 import dev.trellis.domain.plan.MapWeek
@@ -485,3 +488,88 @@ private fun SqliteLearningPlanService.planExists(planId: String?): Boolean =
     planId != null && planStatus(planId) != null
 
 internal fun SqliteLearningPlanService.dayDate(day: String): LocalDate? = PlanTime.parseDay(day)
+
+// ---------------------------------------------------------------------------
+// 目标 / 项目（2026-11-07，G-A1）
+// ---------------------------------------------------------------------------
+
+internal fun SqliteLearningPlanService.buildGoals(includeArchived: Boolean): List<GoalView> {
+    val sql = "SELECT id,title,kind,intent,success,deadline,status,parent_id FROM goal " +
+        (if (includeArchived) "" else "WHERE status <> 'archived' ") +
+        "ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END, updated_at DESC"
+    return connection.prepareStatement(sql).use { ps ->
+        ps.executeQuery().use { rs ->
+            buildList {
+                while (rs.next()) {
+                    add(
+                        GoalView(
+                            id = rs.getString(1),
+                            title = rs.getString(2),
+                            kind = rs.getString(3),
+                            intent = rs.getString(4),
+                            success = rs.getString(5),
+                            deadline = rs.getString(6),
+                            status = rs.getString(7),
+                            parentId = rs.getString(8),
+                            milestones = milestonesOf(rs.getString(1)),
+                            plans = plansOfGoal(rs.getString(1)),
+                        ),
+                    )
+                }
+            }
+        }
+    }
+}
+
+internal fun SqliteLearningPlanService.buildGoal(goalId: String): GoalView? =
+    connection.prepareStatement(
+        "SELECT id,title,kind,intent,success,deadline,status,parent_id FROM goal WHERE id = ?",
+    ).use { ps ->
+        ps.setString(1, goalId)
+        ps.executeQuery().use { rs ->
+            if (!rs.next()) {
+                null
+            } else {
+                GoalView(
+                    id = rs.getString(1),
+                    title = rs.getString(2),
+                    kind = rs.getString(3),
+                    intent = rs.getString(4),
+                    success = rs.getString(5),
+                    deadline = rs.getString(6),
+                    status = rs.getString(7),
+                    parentId = rs.getString(8),
+                    milestones = milestonesOf(goalId),
+                    plans = plansOfGoal(goalId),
+                )
+            }
+        }
+    }
+
+internal fun SqliteLearningPlanService.milestonesOf(goalId: String): List<MilestoneView> =
+    connection.prepareStatement(
+        "SELECT id,title,deadline,status,sort_order FROM goal_milestone WHERE goal_id = ? " +
+            "ORDER BY sort_order, created_at",
+    ).use { ps ->
+        ps.setString(1, goalId)
+        ps.executeQuery().use { rs ->
+            buildList {
+                while (rs.next()) {
+                    add(MilestoneView(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getInt(5)))
+                }
+            }
+        }
+    }
+
+internal fun SqliteLearningPlanService.plansOfGoal(goalId: String): List<LearningPlanInfo> =
+    connection.prepareStatement(
+        "SELECT p.id, pr.title, p.status FROM plan p JOIN process pr ON pr.id = p.process_id " +
+            "WHERE pr.goal_id = ? ORDER BY p.created_at",
+    ).use { ps ->
+        ps.setString(1, goalId)
+        ps.executeQuery().use { rs ->
+            buildList {
+                while (rs.next()) add(LearningPlanInfo(rs.getString(1), rs.getString(2), rs.getString(3)))
+            }
+        }
+    }

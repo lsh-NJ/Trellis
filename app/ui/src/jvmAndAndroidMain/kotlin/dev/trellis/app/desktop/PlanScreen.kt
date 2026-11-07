@@ -479,6 +479,12 @@ private fun PlanHeader(runtime: AppRuntime) {
         subtitle = runtime.planTitle ?: "还没有计划",
         actions = {
             if (runtime.planTitle != null) {
+                val activeGoals = runtime.goals.count { it.status == "active" }
+                ChromeTextLink(
+                    if (activeGoals > 0) "目标 · $activeGoals" else "目标",
+                    onClick = { runtime.openGoalScreen() },
+                )
+                Spacer(Modifier.width(tokens.space.s))
                 ChromeTextLink("计划文档", onClick = { runtime.openPlanDoc() })
                 Spacer(Modifier.width(tokens.space.s))
                 ChromeTextLink(

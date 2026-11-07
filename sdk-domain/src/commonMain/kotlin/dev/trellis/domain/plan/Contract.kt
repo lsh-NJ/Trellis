@@ -147,3 +147,9 @@ data class RhythmResult(
 
 @Serializable
 data class ReviewRef(val planId: String, val week: String, val reviewId: String)
+
+@Serializable
+data class GoalRef(val goalId: String)
+
+@Serializable
+data class MilestoneRef(val goalId: String, val milestoneId: String)

@@ -35,6 +35,45 @@ interface LearningPlanService {
     /** 所有计划（不分活跃/归档）；计划页左栏「全部计划」用。 */
     fun plans(): List<LearningPlanInfo>
 
+    // ---------------- 目标 / 项目 ----------------
+
+    /** 所有目标；默认不含已归档。计划页顶部的「目标：X · 里程碑 M/N」用。 */
+    fun goals(includeArchived: Boolean = false): List<GoalView>
+
+    fun goal(goalId: String): GoalView?
+
+    fun createGoal(
+        env: CommandEnvelope,
+        title: String,
+        kind: String = "goal",
+        intent: String = "",
+        success: String = "",
+        deadline: String? = null,
+        parentId: String? = null,
+    ): CommandResult<GoalRef>
+
+    /** 只改传进来的字段；`status` 传 paused/archived/active 可暂停、归档、恢复。 */
+    fun updateGoal(
+        env: CommandEnvelope,
+        goalId: String,
+        title: String? = null,
+        intent: String? = null,
+        success: String? = null,
+        deadline: String? = null,
+        status: String? = null,
+    ): CommandResult<GoalRef>
+
+    fun addMilestone(env: CommandEnvelope, goalId: String, title: String, deadline: String? = null): CommandResult<MilestoneRef>
+
+    fun completeMilestone(env: CommandEnvelope, milestoneId: String): CommandResult<MilestoneRef>
+
+    fun uncompleteMilestone(env: CommandEnvelope, milestoneId: String): CommandResult<MilestoneRef>
+
+    fun removeMilestone(env: CommandEnvelope, milestoneId: String): CommandResult<Unit>
+
+    /** 把计划挂到一个目标上；`goalId = null` 表示解除关联。 */
+    fun linkPlanToGoal(env: CommandEnvelope, planId: String, goalId: String?): CommandResult<Unit>
+
     /** 还没被「本周及以后」的承诺收进去的单元（节点池）；过去周没做完的节点也会回到这里。 */
     fun pool(planId: String): List<PoolUnit>
 

@@ -191,7 +191,9 @@ private fun navIndexOf(tab: Int): Int {
     val index = NAV_TABS.indexOf(tab)
     if (index >= 0) return index
     // 练习二级页从会话页进去：回去也是回会话，点亮「对话」。
-    return NAV_TABS.indexOf(if (tab == TAB_PRACTICE) TAB_CHAT else TAB_SETTINGS)
+    if (tab == TAB_PRACTICE) return NAV_TABS.indexOf(TAB_CHAT)
+    if (tab == TAB_GOALS) return NAV_TABS.indexOf(TAB_PLAN)
+    return NAV_TABS.indexOf(TAB_SETTINGS)
 }
 
 /** 顶栏式导航。 */
@@ -333,6 +335,7 @@ private fun TabContent(runtime: AppRuntime, modifier: Modifier) {
         TAB_PLAN -> PlanScreen(runtime, modifier)
         TAB_KNOWLEDGE -> KnowledgeScreen(runtime, modifier)
         TAB_PRACTICE -> PracticeScreen(runtime, modifier)
+        TAB_GOALS -> GoalScreen(runtime, modifier)
         TAB_CHAT -> ChatScreen(runtime, modifier)
         TAB_ACTIVITY -> ActivityScreen(runtime, modifier)
         TAB_PLUGINS -> PluginsScreen(runtime, modifier)

@@ -1,11 +1,14 @@
 package dev.trellis.feature.learning
 
 import dev.trellis.domain.plan.AcceptedPlan
+import dev.trellis.domain.plan.Actor
 import dev.trellis.domain.plan.CommandEnvelope
 import dev.trellis.domain.plan.CommandResult
 import dev.trellis.domain.plan.CommitmentDraft
 import dev.trellis.domain.plan.CreatedProcess
 import dev.trellis.domain.plan.ErrorCode
+import dev.trellis.domain.plan.GoalRef
+import dev.trellis.domain.plan.MilestoneRef
 import dev.trellis.domain.plan.OccurrenceRef
 import dev.trellis.domain.plan.PlanDiff
 import dev.trellis.domain.plan.ReviewRef
@@ -1500,5 +1503,311 @@ internal fun SqliteLearningPlanService.cmdAppendUnits(
             commandId = env.commandId,
         )
         ok(unitIds, warnings = if (env.dryRun) listOf("dry-run：没有落库。") else emptyList())
+    }
+}
+// ---------------------------------------------------------------------------
+// 目标 / 项目命令（2026-11-07，G-A1）
+// ---------------------------------------------------------------------------
+
+private val goalKinds = setOf("goal", "project")
+private val goalStatuses = setOf("active", "paused", "archived")
+
+internal fun SqliteLearningPlanService.cmdCreateGoal(
+    env: CommandEnvelope,
+    title: String,
+    kind: String,
+    intent: String,
+    success: String,
+    deadline: String?,
+    parentId: String?,
+): CommandResult<GoalRef> {
+    val name = title.trim()
+    if (name.isBlank()) return fail(ErrorCode.E_INVALID, "目标得有个名字。")
+    if (name.length > 80) return fail(ErrorCode.E_INVALID, "目标名太长了，80 字以内。")
+    if (kind !in goalKinds) return fail(ErrorCode.E_INVALID, "kind 只能是 goal 或 project。")
+    if (deadline != null && PlanTime.parseDay(deadline) == null) {
+        return fail(ErrorCode.E_INVALID, "截止日期要写成 2026-12-31 这种格式。")
+    }
+    if (intent.length > 500 || success.length > 500) {
+        return fail(ErrorCode.E_INVALID, "意图和验收各写 500 字以内。")
+    }
+    if (parentId != null && goalRow(parentId) == null) {
+        return fail(ErrorCode.E_INVALID, "找不到上级目标：$parentId")
+    }
+    return write(env) {
+        val goalId = Ids.next("goal_")
+        val now = nowIso()
+        connection.prepareStatement(
+            "INSERT INTO goal(id,title,kind,intent,success,deadline,status,parent_id,created_at,updated_at) " +
+                "VALUES(?,?,?,?,?,?,'active',?,?,?)",
+        ).use { ps ->
+            ps.setString(1, goalId)
+            ps.setString(2, name)
+            ps.setString(3, kind)
+            ps.setString(4, intent.trim())
+            ps.setString(5, success.trim())
+            ps.setString(6, deadline)
+            ps.setString(7, parentId)
+            ps.setString(8, now)
+            ps.setString(9, now)
+            ps.executeUpdate()
+        }
+        appendEvent(
+            type = "goal.created",
+            entity = "goal",
+            entityId = goalId,
+            planId = null,
+            payload = eventJson(
+                "title" to JsonPrimitive(name),
+                "kind" to JsonPrimitive(kind),
+                "deadline" to JsonPrimitive(deadline ?: ""),
+                "parentId" to JsonPrimitive(parentId ?: ""),
+            ),
+            actor = env.actor,
+            commandId = env.commandId,
+        )
+        ok(GoalRef(goalId))
+    }
+}
+
+internal fun SqliteLearningPlanService.cmdUpdateGoal(
+    env: CommandEnvelope,
+    goalId: String,
+    title: String?,
+    intent: String?,
+    success: String?,
+    deadline: String?,
+    status: String?,
+): CommandResult<GoalRef> {
+    val row = goalRow(goalId) ?: return fail(ErrorCode.E_NOT_FOUND, "找不到这个目标：$goalId")
+    val name = title?.trim() ?: row.title
+    if (name.isBlank()) return fail(ErrorCode.E_INVALID, "目标得有个名字。")
+    if (name.length > 80) return fail(ErrorCode.E_INVALID, "目标名太长了，80 字以内。")
+    val nextStatus = status ?: row.status
+    if (nextStatus !in goalStatuses) return fail(ErrorCode.E_INVALID, "status 只能是 active / paused / archived。")
+    val nextDeadline = deadline ?: row.deadline
+    if (nextDeadline != null && PlanTime.parseDay(nextDeadline) == null) {
+        return fail(ErrorCode.E_INVALID, "截止日期要写成 2026-12-31 这种格式。")
+    }
+    val nextIntent = intent?.trim() ?: row.intent
+    val nextSuccess = success?.trim() ?: row.success
+    return write(env) {
+        connection.prepareStatement(
+            "UPDATE goal SET title=?, intent=?, success=?, deadline=?, status=?, updated_at=? WHERE id=?",
+        ).use { ps ->
+            ps.setString(1, name)
+            ps.setString(2, nextIntent)
+            ps.setString(3, nextSuccess)
+            ps.setString(4, nextDeadline)
+            ps.setString(5, nextStatus)
+            ps.setString(6, nowIso())
+            ps.setString(7, goalId)
+            ps.executeUpdate()
+        }
+        appendEvent(
+            type = "goal.updated",
+            entity = "goal",
+            entityId = goalId,
+            planId = null,
+            payload = eventJson(
+                "title" to JsonPrimitive(name),
+                "status" to JsonPrimitive(nextStatus),
+                "deadline" to JsonPrimitive(nextDeadline ?: ""),
+            ),
+            actor = env.actor,
+            commandId = env.commandId,
+        )
+        ok(GoalRef(goalId))
+    }
+}
+
+internal fun SqliteLearningPlanService.cmdAddMilestone(
+    env: CommandEnvelope,
+    goalId: String,
+    title: String,
+    deadline: String?,
+): CommandResult<MilestoneRef> {
+    val goal = goalRow(goalId) ?: return fail(ErrorCode.E_NOT_FOUND, "找不到这个目标：$goalId")
+    if (goal.status == "archived") return fail(ErrorCode.E_INVALID, "这个目标已经归档了，先恢复再改。")
+    val name = title.trim()
+    if (name.isBlank()) return fail(ErrorCode.E_INVALID, "里程碑得有个名字。")
+    if (name.length > 80) return fail(ErrorCode.E_INVALID, "里程碑名太长了，80 字以内。")
+    if (deadline != null && PlanTime.parseDay(deadline) == null) {
+        return fail(ErrorCode.E_INVALID, "截止日期要写成 2026-12-31 这种格式。")
+    }
+    return write(env) {
+        val sortOrder = connection.prepareStatement(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM goal_milestone WHERE goal_id = ?",
+        ).use { ps ->
+            ps.setString(1, goalId)
+            ps.executeQuery().use { rs -> rs.next(); rs.getInt(1) }
+        }
+        val milestoneId = Ids.next("ms_")
+        val now = nowIso()
+        connection.prepareStatement(
+            "INSERT INTO goal_milestone(id,goal_id,title,deadline,status,sort_order,created_at,updated_at) " +
+                "VALUES(?,?,?,?,'open',?,?,?)",
+        ).use { ps ->
+            ps.setString(1, milestoneId)
+            ps.setString(2, goalId)
+            ps.setString(3, name)
+            ps.setString(4, deadline)
+            ps.setInt(5, sortOrder)
+            ps.setString(6, now)
+            ps.setString(7, now)
+            ps.executeUpdate()
+        }
+        appendEvent(
+            type = "goal.milestone_added",
+            entity = "goal_milestone",
+            entityId = milestoneId,
+            planId = null,
+            payload = eventJson(
+                "goalId" to JsonPrimitive(goalId),
+                "title" to JsonPrimitive(name),
+                "deadline" to JsonPrimitive(deadline ?: ""),
+            ),
+            actor = env.actor,
+            commandId = env.commandId,
+        )
+        ok(MilestoneRef(goalId, milestoneId))
+    }
+}
+
+internal fun SqliteLearningPlanService.cmdCompleteMilestone(
+    env: CommandEnvelope,
+    milestoneId: String,
+): CommandResult<MilestoneRef> {
+    val row = milestoneRow(milestoneId) ?: return fail(ErrorCode.E_NOT_FOUND, "找不到这个里程碑：$milestoneId")
+    if (row.status == "done") return fail(ErrorCode.E_INVALID, "这个里程碑已经完成了。")
+    return write(env) {
+        connection.prepareStatement(
+            "UPDATE goal_milestone SET status='done', updated_at=? WHERE id=? AND status='open'",
+        ).use { ps ->
+            ps.setString(1, nowIso())
+            ps.setString(2, milestoneId)
+            ps.executeUpdate()
+        }
+        appendEvent(
+            type = "goal.milestone_completed",
+            entity = "goal_milestone",
+            entityId = milestoneId,
+            planId = null,
+            payload = eventJson("goalId" to JsonPrimitive(row.goalId), "title" to JsonPrimitive(row.title)),
+            actor = env.actor,
+            commandId = env.commandId,
+        )
+        val undo = registerUndo(env, null, "撤销完成里程碑") {
+            connection.prepareStatement(
+                "UPDATE goal_milestone SET status='open', updated_at=? WHERE id=? AND status='done'",
+            ).use { ps ->
+                ps.setString(1, nowIso())
+                ps.setString(2, milestoneId)
+                ps.executeUpdate()
+            }
+            appendEvent(
+                type = "goal.milestone_reopened",
+                entity = "goal_milestone",
+                entityId = milestoneId,
+                planId = null,
+                payload = eventJson("goalId" to JsonPrimitive(row.goalId), "title" to JsonPrimitive(row.title)),
+                actor = Actor.USER,
+                commandId = env.commandId,
+                undoOf = env.commandId,
+            )
+            "已撤销：里程碑改回未完成"
+        }
+        ok(MilestoneRef(row.goalId, milestoneId), undo = undo)
+    }
+}
+
+internal fun SqliteLearningPlanService.cmdUncompleteMilestone(
+    env: CommandEnvelope,
+    milestoneId: String,
+): CommandResult<MilestoneRef> {
+    val row = milestoneRow(milestoneId) ?: return fail(ErrorCode.E_NOT_FOUND, "找不到这个里程碑：$milestoneId")
+    if (row.status != "done") return fail(ErrorCode.E_INVALID, "这个里程碑还没完成。")
+    return write(env) {
+        connection.prepareStatement(
+            "UPDATE goal_milestone SET status='open', updated_at=? WHERE id=? AND status='done'",
+        ).use { ps ->
+            ps.setString(1, nowIso())
+            ps.setString(2, milestoneId)
+            ps.executeUpdate()
+        }
+        appendEvent(
+            type = "goal.milestone_reopened",
+            entity = "goal_milestone",
+            entityId = milestoneId,
+            planId = null,
+            payload = eventJson("goalId" to JsonPrimitive(row.goalId), "title" to JsonPrimitive(row.title)),
+            actor = env.actor,
+            commandId = env.commandId,
+        )
+        ok(MilestoneRef(row.goalId, milestoneId))
+    }
+}
+
+internal fun SqliteLearningPlanService.cmdRemoveMilestone(
+    env: CommandEnvelope,
+    milestoneId: String,
+): CommandResult<Unit> {
+    val row = milestoneRow(milestoneId) ?: return fail(ErrorCode.E_NOT_FOUND, "找不到这个里程碑：$milestoneId")
+    return write(env) {
+        connection.prepareStatement("DELETE FROM goal_milestone WHERE id = ?").use { ps ->
+            ps.setString(1, milestoneId)
+            ps.executeUpdate()
+        }
+        appendEvent(
+            type = "goal.milestone_removed",
+            entity = "goal_milestone",
+            entityId = milestoneId,
+            planId = null,
+            payload = eventJson("goalId" to JsonPrimitive(row.goalId), "title" to JsonPrimitive(row.title)),
+            actor = env.actor,
+            commandId = env.commandId,
+        )
+        ok(Unit)
+    }
+}
+
+internal fun SqliteLearningPlanService.cmdLinkPlanToGoal(
+    env: CommandEnvelope,
+    planId: String,
+    goalId: String?,
+): CommandResult<Unit> {
+    val processId = processIdOfPlan(planId) ?: return fail(ErrorCode.E_NOT_FOUND, "找不到这个计划：$planId")
+    if (goalId != null) {
+        val goal = goalRow(goalId) ?: return fail(ErrorCode.E_NOT_FOUND, "找不到这个目标：$goalId")
+        if (goal.status == "archived") return fail(ErrorCode.E_INVALID, "这个目标已经归档了，先恢复再关联。")
+    }
+    val previous = goalIdOfPlan(planId)
+    return write(env) {
+        connection.prepareStatement("UPDATE process SET goal_id = ? WHERE id = ?").use { ps ->
+            if (goalId == null) ps.setNull(1, java.sql.Types.VARCHAR) else ps.setString(1, goalId)
+            ps.setString(2, processId)
+            ps.executeUpdate()
+        }
+        appendEvent(
+            type = "plan.goal_linked",
+            entity = "plan",
+            entityId = planId,
+            planId = planId,
+            payload = eventJson(
+                "goalId" to JsonPrimitive(goalId ?: ""),
+                "previousGoalId" to JsonPrimitive(previous ?: ""),
+            ),
+            actor = env.actor,
+            commandId = env.commandId,
+        )
+        val undo = registerUndo(env, planId, "撤销关联目标") {
+            connection.prepareStatement("UPDATE process SET goal_id = ? WHERE id = ?").use { ps ->
+                if (previous == null) ps.setNull(1, java.sql.Types.VARCHAR) else ps.setString(1, previous)
+                ps.setString(2, processId)
+                ps.executeUpdate()
+            }
+            "已撤销：计划不挂在那个目标上了"
+        }
+        ok(Unit, undo = undo)
     }
 }

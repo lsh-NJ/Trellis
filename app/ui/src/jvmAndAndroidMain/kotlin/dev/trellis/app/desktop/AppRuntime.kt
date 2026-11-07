@@ -32,6 +32,7 @@ import dev.trellis.domain.TaskId
 import dev.trellis.domain.TaskStatus
 import dev.trellis.domain.plan.Actor
 import dev.trellis.domain.plan.CommandEnvelope
+import dev.trellis.domain.plan.GoalView
 import dev.trellis.domain.plan.DayOccurrence
 import dev.trellis.domain.plan.DayView
 import dev.trellis.domain.plan.LearningPlanService
@@ -177,6 +178,13 @@ internal const val TAB_KNOWLEDGE = 7
  * 序号同样往后放而不是插进中间，理由见 [TAB_ACTIVITY]。
  */
 internal const val TAB_PRACTICE = 8
+
+/**
+ * 目标 / 项目二级页：从计划页标题旁的「目标」进来。
+ *
+ * 序号同样往后放而不是插进中间，理由见 [TAB_ACTIVITY]。
+ */
+internal const val TAB_GOALS = 9
 
 /** 练习提议去重用的 topic；同一单元提过一次就不再提。 */
 private const val PRACTICE_PROPOSAL_TOPIC = "练习提议"
@@ -2030,6 +2038,7 @@ class AppRuntime private constructor() {
         TAB_ACTIVITY -> "活动"
         TAB_KNOWLEDGE -> "知识库"
         TAB_PRACTICE -> "练习"
+        TAB_GOALS -> "目标"
         TAB_PLUGINS -> "插件"
         TAB_SETTINGS -> "设置"
         else -> "诊断"
@@ -2210,6 +2219,7 @@ class AppRuntime private constructor() {
             // 跨会话记忆也是手：用户说出长期目标/偏好时写进管家日志，要回忆过去时再检索。
             // 和管家仪式共用同一份 append-only 记忆 —— 目标不该只有晨/夜仪式才有机会落盘。
             val memoryTools = MemoryTools(stewardStore, clock)
+            val goalTools = GoalTools(this)
             // 手机上「看」可以，「动手」不行：截屏/点击/按键/打字在安卓沙箱里没有对应能力，
             // 四条工具留在清单里只会让模型挑一个注定失败的动作，然后空跑一轮。
             // 所以按平台裁剪工具清单与说明 —— 不是改文案，是不给它做不到的选项。
@@ -2227,13 +2237,14 @@ class AppRuntime private constructor() {
             }
             val allTools = tools.all + screenToolList + layoutTools.all + styleTools.all +
                 workflowTools.all + bilibiliTools.all + taskTools.all + planTools.all +
-                planAdminTools.all + planDocTools.all + researchTools.all + diagnosticsTools.all + memoryTools.all
+                planAdminTools.all + planDocTools.all + researchTools.all + diagnosticsTools.all + memoryTools.all +
+                goalTools.all
             val guidance = tools.guidance + "\n\n" + screenGuidance +
                 "\n\n" + layoutTools.guidance + "\n\n" + styleTools.guidance +
                 "\n\n" + workflowTools.guidance + "\n\n" + bilibiliTools.guidance +
                 "\n\n" + taskTools.guidance + "\n\n" + researchTools.guidance + "\n\n" + planTools.guidance +
                 "\n\n" + planAdminTools.guidance + "\n\n" + planDocTools.guidance +
-                "\n\n" + diagnosticsTools.guidance + "\n\n" + memoryTools.guidance
+                "\n\n" + diagnosticsTools.guidance + "\n\n" + memoryTools.guidance + "\n\n" + goalTools.guidance
             // 跨会话记忆块只随记忆内容变化，接在 guidance 最末尾：两条路径（普通 / 管家）
             // 都用同一份 promptGuidance，静态前缀逐字节稳定，前缀缓存只从记忆块开始失效。
             val memorySection = memoryBlock()
@@ -2896,6 +2907,123 @@ class AppRuntime private constructor() {
         }
     }
 
+    // ---------------------------------------------------------------- 目标 / 项目（G-A1）
+
+    /** 目标/项目（含归档；界面自己按 status 分组）。 */
+    internal var goals by mutableStateOf<List<GoalView>>(emptyList())
+        private set
+
+    /** 目标页的一次性提示（失败原因 / 完成反馈）。 */
+    internal var goalMessage by mutableStateOf<String?>(null)
+
+    internal fun clearGoalMessage() {
+        goalMessage = null
+    }
+
+    /** 重新读目标列表；计划页头部与目标页都靠它。 */
+    internal fun refreshGoals() {
+        val service = learningPlan() ?: run {
+            goals = emptyList()
+            return
+        }
+        runCatching { service.goals(includeArchived = true) }
+            .onSuccess { goals = it }
+            .onFailure {
+                appendAppLog("目标读取失败：$it")
+                goalMessage = "目标读不出来：$it"
+            }
+    }
+
+    internal fun openGoalScreen() {
+        clearGoalMessage()
+        refreshGoals()
+        currentTab = TAB_GOALS
+    }
+
+    internal fun closeGoalScreen() {
+        currentTab = TAB_PLAN
+    }
+
+    private fun goalCommand(): CommandEnvelope = CommandEnvelope(
+        commandId = "cmd_" + java.util.UUID.randomUUID().toString().replace("-", ""),
+        actor = Actor.USER,
+        planId = null,
+        origin = "ui.goals",
+    )
+
+    internal fun createGoal(title: String, kind: String, intent: String, success: String, deadline: String?): String? {
+        val service = learningPlan() ?: return null
+        val result = service.createGoal(goalCommand(), title.trim(), kind, intent.trim(), success.trim(), deadline)
+        if (!result.ok) {
+            goalMessage = result.error?.message ?: "目标没建成。"
+            return null
+        }
+        refreshGoals()
+        goalMessage = "目标建好了：" + title.trim()
+        return result.value?.goalId
+    }
+
+    internal fun setGoalStatus(goalId: String, status: String) {
+        val service = learningPlan() ?: return
+        val result = service.updateGoal(goalCommand(), goalId, status = status)
+        goalMessage = if (result.ok) {
+            "已" + if (status == "archived") "归档" else "恢复"
+        } else {
+            result.error?.message ?: "没改成。"
+        }
+        refreshGoals()
+    }
+
+    internal fun addGoalMilestone(goalId: String, title: String, deadline: String?) {
+        val service = learningPlan() ?: return
+        val result = service.addMilestone(goalCommand(), goalId, title.trim(), deadline)
+        goalMessage = if (result.ok) "加了一条里程碑：$title" else (result.error?.message ?: "没加上。")
+        refreshGoals()
+    }
+
+    internal fun completeGoalMilestone(milestoneId: String) {
+        val service = learningPlan() ?: return
+        val result = service.completeMilestone(goalCommand(), milestoneId)
+        if (!result.ok) goalMessage = result.error?.message ?: "没勾上。"
+        refreshGoals()
+    }
+
+    internal fun uncompleteGoalMilestone(milestoneId: String) {
+        val service = learningPlan() ?: return
+        val result = service.uncompleteMilestone(goalCommand(), milestoneId)
+        if (!result.ok) goalMessage = result.error?.message ?: "没改回来。"
+        refreshGoals()
+    }
+
+    internal fun removeGoalMilestone(milestoneId: String) {
+        val service = learningPlan() ?: return
+        val result = service.removeMilestone(goalCommand(), milestoneId)
+        goalMessage = if (result.ok) "删掉了这条里程碑。" else (result.error?.message ?: "没删成。")
+        refreshGoals()
+    }
+
+    /** 把计划挂到目标上；`goalId = null` 是解绑。 */
+    internal fun linkPlanToGoal(planId: String, goalId: String?) {
+        val service = learningPlan() ?: return
+        val result = service.linkPlanToGoal(
+            CommandEnvelope(
+                commandId = "cmd_" + java.util.UUID.randomUUID().toString().replace("-", ""),
+                actor = Actor.USER,
+                planId = planId,
+                origin = "ui.goals",
+            ),
+            planId,
+            goalId,
+        )
+        goalMessage = if (result.ok) {
+            if (goalId == null) "计划解绑了。" else "计划挂到目标上了。"
+        } else {
+            result.error?.message ?: "没挂上。"
+        }
+        refreshGoals()
+        refreshPlan()
+    }
+
     /**
      * 给 AI 的诊断报告（`get_diagnostics` 工具读它）。
      *
@@ -3006,6 +3134,7 @@ class AppRuntime private constructor() {
     fun refreshPlan(focus: String? = null) {
         val service = learningPlan() ?: return
         if (focus != null) planFocusId = focus
+        refreshGoals()
         runCatching {
             planAll = service.plans()
             // 先让计划自己往前滚（结算旧周 / 补下周承诺 / 铺天），再取待办与页面数据：
