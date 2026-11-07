@@ -41,7 +41,7 @@ P1（路线全量导入）已落地：
 
 P4（Agent 计划管理员）已落地：
 
-- 新意图 `AgentIntent.PlanManage`（管已有计划：看进度/排下周/勾节点/顺延/复盘/改每天投入），
+- （历史，2026-11-07 分类器已删）新意图 `AgentIntent.PlanManage`（管已有计划：看进度/排下周/勾节点/顺延/复盘/改每天投入），
   与 `FindResource`（新建计划）分开；「把视频排成学习计划」仍走资源那条路。
 - 新工具 `PlanAdminTools`（6 只）：`get_learning_plan`、`plan_next_week`、`complete_plan_node`、
   `move_plan_node`、`review_last_week`、`set_plan_pace`；写操作要 `confirmed=true`。
@@ -269,7 +269,7 @@ advanceRhythm(env, planId, today) -> RhythmResult
 
 ### 2.6 Agent 融合：一个计划意图 + 一组计划工具 + 一条主动消息
 
-- 新意图 `AgentIntent.PlanManage`（关键词：计划/复盘/这周/下周/节点/完成/顺延/拖延/没做完/调整/排期；
+- （历史，2026-11-07 分类器已删）新意图 `AgentIntent.PlanManage`（关键词：计划/复盘/这周/下周/节点/完成/顺延/拖延/没做完/调整/排期；
   注意与 FindResource、ArrangeUi 的优先级，用 `ManagerRouterTest`/`IntentToolsTest` 钉住）。
 - 新工具 `PlanAdminTools`（全部转调 `LearningPlanService`，写操作带 `actor=AGENT` + origin）：
   - 读：`get_plan`（当前计划、本周/上周、今日节点、池、carry、复盘）；
@@ -343,7 +343,7 @@ advanceRhythm(env, planId, today) -> RhythmResult
 
 ### P4 Agent 融合（1–2 天）— **已落地**
 
-- 已改：`Intent.kt`（新 `PlanManage` 意图 + 关键词与优先级）、`ManagerRouter.kt`（6 只新工具
+- 已改（历史）：`Intent.kt`（新 `PlanManage` 意图 + 关键词与优先级；该文件 2026-11-07 已删）、`ManagerRouter.kt`（6 只新工具
   显式登记；`set_plan/step_done/ask_choices` 对 PlanManage 开放）、`ManagerPrompt.kt`
   （`<task:plan_manage>` + find_resource 的 bvid 全量导入）、`PlanAdminTools.kt`（新，6 工具）、
   `AppRuntime.sendChat`（并入 allTools/guidance）。

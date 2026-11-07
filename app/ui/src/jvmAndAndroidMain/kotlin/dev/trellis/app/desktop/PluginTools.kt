@@ -56,6 +56,15 @@ class PluginTools(
     /** 这一轮到底动过手没有：装了、停用了、删掉了都算。只有「看了看」不算。 */
     private var acted: Boolean = false
 
+    /** 这一轮碰过插件工具没有（不管动没动手）。用来决定收尾时要不要核对。 */
+    private var touched: Boolean = false
+
+    /** 每一轮开始前清账：上一轮的 touched/acted 不能带进这一轮。 */
+    fun beginRound() {
+        touched = false
+        acted = false
+    }
+
     /**
      * 它说「做完了」之前的核对。
      *
@@ -63,12 +72,25 @@ class PluginTools(
      * 它只是 list_plugins 看了一眼，然后把自己刚才的话当成了事实。
      * 这种话靠提示词防不住，得在交活的时候真的去核对。
      */
-    fun reviewBeforeFinishing(): String? {
-        if (acted) return null
-        return "你这一轮只看了看，没有装、也没有改，所以不能说「已经装好了」。" +
+    /**
+     * 交活前的核对：这一轮**碰过插件工具**、却只看了看没动手，才拦。
+     *
+     * 以前按「意图 = 造插件」就无条件拦，于是「我想做一个 RAG 项目」这种话
+     * 被意图门控判进插件轨道后，模型连说「这件事不该做成插件」都要被驳。
+     * 现在只有真碰了插件工具才管 —— 不碰，就不关它的事。
+     */
+    fun reviewAfterRound(claim: String): String? {
+        if (!touched || acted) return null
+        if (!claimsCompleted(claim)) return null
+        return "你这一轮碰了插件工具，但只是看了看，没有装、也没有改，所以不能说「已经装好了」。" +
             "要么现在就用 try_plugin 试跑、再用 deploy 装上去；" +
-            "要么用 cannotDo 说清楚为什么不做。"
+            "要么用 cannotDo 说清楚为什么不做 —— 或者，如果这件事本来就不该做成插件，" +
+            "就直接告诉用户你的判断，并改用对应的工具（计划 / 待办 / 资源）继续。"
     }
+
+    /** 它是不是在说「已经装上了/改好了」这类话。只有这种话才需要核对落盘。 */
+    private fun claimsCompleted(claim: String): Boolean =
+        claimKeywords.any { it in claim }
 
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -91,7 +113,12 @@ class PluginTools(
         "</how_to_work>",
     ).joinToString("\n")
 
-    val all: List<AgentTool> = listOf(
+    private val claimKeywords = listOf(
+        "装好了", "装上了", "已装", "已经装", "安装好", "部署好", "已经部署", "改好了", "已经改好",
+        "停用了", "已停用", "删掉了", "已经删除", "已经删掉",
+    )
+
+    private val rawTools: List<AgentTool> = listOf(
         ListPlugins(),
         ListEvents(),
         ListActions(),
@@ -101,6 +128,19 @@ class PluginTools(
         TryPlugin(),
         Deploy(),
     )
+
+    /** 对外只给带记账的包装：每次调用都记一笔「这一轮碰过插件工具」。 */
+    val all: List<AgentTool> = rawTools.map { inner -> Tracked(inner) }
+
+    private inner class Tracked(private val inner: AgentTool) : AgentTool {
+        override val name: String get() = inner.name
+        override val description: String get() = inner.description
+        override val parameters: String get() = inner.parameters
+        override suspend fun call(arguments: JsonObject): ToolResult {
+            touched = true
+            return inner.call(arguments)
+        }
+    }
 
     /**
      * 把模型给的 JSON 当成插件草稿读进来。读不出来就是一条能照着改的话。

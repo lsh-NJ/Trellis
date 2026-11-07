@@ -17,7 +17,6 @@ import dev.trellis.ai.LlmClient
 import dev.trellis.ai.LlmConfigLoader
 import dev.trellis.ai.LlmMessage
 import dev.trellis.ai.LlmRole
-import dev.trellis.ai.manager.AgentIntent
 import dev.trellis.ai.manager.ManagerAgent
 import dev.trellis.ai.tool.DeepSeekMarkup
 import dev.trellis.ai.manager.ManagerPrompt
@@ -679,16 +678,6 @@ class AppRuntime private constructor() {
     /** 正在跑一轮（流式回答或工具循环）；界面据此禁用输入。 */
     var chatBusy by mutableStateOf(false)
         private set
-
-    /**
-     * 上一轮留给下一轮的意图：它问完问题、等用户点选项时（`ask_choices`）记下；
-     * 或者那一轮动手中途失败时记下，方便用户说「再试一次」时沿用同一套工具。
-     *
-     * 真实事故：AI 问「每天能投入多少分钟」，用户点「每天 60 分钟」——
-     * 这句没有任何意图关键词，重新分类成 Chat（零工具），模型想调
-     * `create_learning_plan` 却调不到，只能回「我这边没有那只工具」。
-     */
-    private var pendingManagerIntent: AgentIntent? = null
 
     /**
      * 当前在哪一页。
@@ -1764,9 +1753,8 @@ class AppRuntime private constructor() {
     /**
      * 一轮结束时收尾清单。
      *
-     * 真实事故：模型想调一个当前意图没有的工具（「每天 60 分钟」被判成 Chat），
-     * 清单上第 2 步一直停在「正在执行」，右侧写着「本轮没有改动」—— 用户看到的是
-     * 一个永远推进不了的任务。这里把结论同步给清单：
+     * 真实事故：模型在工具循环里建计划，清单上第 2 步却一直停在「正在执行」，
+     * 右侧写着「本轮没有改动」—— 用户看到的是一个永远推进不了的任务。这里把结论同步给清单：
      * - 成功：还没打勾的当前步按完成收尾（它确实做完了，只是没来得及调 step_done）；
      * - 失败/停止：当前步标失败，并记下完成时间（界面据此收起/换文案）。
      */
@@ -2052,10 +2040,6 @@ class AppRuntime private constructor() {
         }
 
         val llm = llmOverride ?: HttpLlmClient(config)
-        // 上一轮「等你点选项 / 等你重试」留下的意图：这一轮如果是没有意图关键词的短句
-        // （「每天 60 分钟」「再试一次」），沿用它的工具和提示词，别退回零工具的聊天。
-        val forcedIntent = pendingManagerIntent
-        pendingManagerIntent = null
         chatBusy = true
         activePlanId = null
         chatChoices = emptyList()
@@ -2157,11 +2141,9 @@ class AppRuntime private constructor() {
             val memorySection = memoryBlock()
             val promptGuidance = if (memorySection.isBlank()) guidance else guidance + "\n\n" + memorySection
 
-            // 意图 → 工具 → 提示词，一次定完：每条工具的目录只出现在它该出现的那一版
-            // 提示词里。以前是把整套工具和整段前缀一股脑塞进去，模型总会挑一个
-            // 「看起来像在干活」的 —— 「我要速通操作系统」变成装插件就是这么来的。
-            // 静态前缀按意图缓存：同一意图的多轮请求逐字节一致，前缀缓存仍能命中。
-            // 管家会话换人格：同一套工具、同一个审批闸门，但每轮都给全量工具，
+            // 一份提示词 + 全量工具：不再按意图裁工具、也不再换任务模块。
+            // 模型自己决定这一轮是聊天还是动手（2026-11-07 删掉意图分类器）。
+            // 管家会话只换人格：同一套工具、同一个审批闸门，
             // 静态前缀换成管家自己的（克制、只基于事实、一次只给一条建议）。
             val stewardSession = currentChatId
                 ?.let { id -> chatSessions.firstOrNull { it.id == id }?.kind } == SessionKind.Steward
@@ -2181,30 +2163,27 @@ class AppRuntime private constructor() {
                     }
                 }
                 ManagerRouter(
-                    prompt = ManagerPrompt(base = base, stableTools = true),
-                    allTools = allTools,
-                    stableTools = true,
+                    prompt = ManagerPrompt(base = base),
+                    tools = allTools,
                 )
             } else {
                 ManagerRouter(catalog, allTools, promptGuidance)
             }
+            // 插件工具自己记账：这一轮碰过插件工具、又只看了看没动手，才在收尾时拦。
+            // 不再按意图判断（意图分类器已删），也不再无条件要求「必须试过、装上了」。
+            tools.beginRound()
             val agent = ManagerAgent(
                 llm = llm,
                 router = router,
                 // 不设步数额度：查五个插件、逐个试跑本来就是十几步的事。
                 maxSteps = null,
-                // 「试过、装上了」只适用于造/改插件。调布局、管理插件用同一道闸，
-                // 会把已经摆好的说成「没做成」—— 实测会连着退六次、烧满 10 步。
-                beforeFinishing = { intent ->
-                    if (intent == AgentIntent.CreatePlugin) tools.reviewBeforeFinishing() else null
-                },
+                beforeFinishing = { message -> tools.reviewAfterRound(message) },
             )
 
             val result = agent.respond(
                 state = managerState(),
                 request = text,
                 history = chatHistory.toList(),
-                forcedIntent = forcedIntent,
                 onDelta = { delta ->
                     answerText += delta
                     displayText = visibleReply(answerText)
@@ -2229,21 +2208,8 @@ class AppRuntime private constructor() {
             // 清单不能一直挂在「进行中」：这一轮结束（成功/没做成）都要收尾。
             settlePlanAfterRound(result.ok)
 
-            // 意图有歧义时不往下走，把「可能的意思」摆成按钮让用户点。
-            // 这是流程里的「先问清楚」：问完再选工具、再拼提示词、再发模型。
-            if (result.choices.isNotEmpty()) {
-                chatChoices = result.choices.map { ChatChoice(it, it) }
-            }
-
-            // 给下一轮留「承接上一轮」的信号：
-            // - 模型用 ask_choices 问了用户（不是意图歧义）→ 用户下一句多半是在回答，沿用本意图；
-            // - 动手中途失败 → 用户说「再试一次」时沿用同一套工具，而不是退回零工具的聊天。
-            pendingManagerIntent = when {
-                result.clarified -> null
-                result.choices.isNotEmpty() && result.intent != AgentIntent.Chat -> result.intent
-                !result.ok && result.intent != AgentIntent.Chat -> result.intent
-                else -> null
-            }
+            // 不再有「意图歧义」这种停顿：模型想先问清楚时会自己调 ask_choices
+            // （它落到 offerChoices），运行时不再替它猜、也不再留一个意图给下一轮。
 
             if (result.ok) {
                 addChatLine(ChatRole.Status, "—— 本轮完成")
@@ -2255,8 +2221,9 @@ class AppRuntime private constructor() {
             chatHistory += LlmMessage(LlmRole.Assistant, displayText)
             while (chatHistory.size > 20) chatHistory.removeAt(0)
 
-            // 动过插件就把界面上的东西重新取一遍：新卡片、停用状态、计数都变了。
-            if (result.intent != AgentIntent.Chat && result.ok) refresh()
+            // 每一轮都重取一次界面数据：工具可能动了插件、计划、样式中的任何一样，
+            // 现在没有意图可以告诉我们「这轮动没动」，重取一遍最稳（开销很小）。
+            if (result.ok) refresh()
 
             // 注意：这里**不再**替模型推断「下一步该问用户什么」。
             // 要问就让模型自己调 ask_choices（它会落到 offerChoices），运行时不猜。

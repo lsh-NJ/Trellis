@@ -1121,7 +1121,7 @@ G0 明确不做：任何 AI 调用、AI 建议 UI、关系编辑、依赖体系�
 1. **合并两个已存在概念**（优先级最高）：一期 2026-11-03 起已有别名（`ConceptIdentity.aliases` 参与匹配/高亮/检索，AI 只合并不覆盖），但「`RAG` 与 `检索增强生成` 是两个独立概念、要合成一个」仍需人工入口；合并后归属/关系/笔记标注一起迁移（标注要改写正文 + `synchronizeConceptMembership` 重算缓存）；做完才能谈「一棵干净的树」；
 2. **依赖体系视图**（可做只读）：复用 v1.0 算法与 `algorithm-sample.svg` 的产物，在「视图：分类/体系」下拉里出现；入口依赖关系边 ≥ 8；维护成本高时可只读或砍掉（§4.7）；
 3. **计划接入**：`unit_concept` 表/事件消费、学习过外圈环、计划页反查「这个节点学自哪个计划」；严格「执行过≠记过」；
-4. **AI 工具**：`KnowledgeTools.kt` 提供 `get_knowledge_graph_summary`/`search_knowledge_graph`/`classify_concept`（写操作要 `confirmed=true`），**必须显式登记 `ManagerRouter.TOOL_INTENTS`**（否则落 DEFAULT_INTENTS，提前踩过计划工具的坑），同时补 `ManagerPrompt` 的 `<task>` 模块与钉住测试；
+4. **AI 工具**：`KnowledgeTools.kt` 提供 `get_knowledge_graph_summary`/`search_knowledge_graph`/`classify_concept`（写操作要 `confirmed=true`），加进 `AppRuntime.allTools` 与 guidance 即可（2026-11-07 起没有 `TOOL_INTENTS` 意图登记表），同时补 `ManagerPrompt` 的 `<task:work>` 守则与钉住测试；
 5. **关系编辑 UI**：用户手动加/删前置、应用、相关（G0 只读、G1 只有确认 AI 的建议）；拖拽节点位置明确不做（位置由布局算）；
 6. **导出**：当前视图导出 PNG/SVG、导出分类树为 Markdown（给复习/印刷用）；
 7. **多选与批量**：框选多个概念批量移动（G0/G1 不做，避免误操作）；
@@ -1318,7 +1318,7 @@ G0 明确不做：任何 AI 调用、AI 建议 UI、关系编辑、依赖体系�
 
 - 需求来源：[pluginization-plan-2026-10-29.md](pluginization-plan-2026-10-29.md) 第 2 条（知识体系是核心）与第 3 条（目标转能力地图，预留）；
 - 一期：[knowledge-base-draft.md](knowledge-base-draft.md)（概念/笔记/点亮/抽取/存储/不做清单；本设计修订其 §5「不画全局图」与 §7「不做全局知识图」为「宿主自绘，不进插件词汇表」）；
-- AI 层：[agent-manager.md](agent-manager.md)（工具装配、`ManagerRouter.TOOL_INTENTS` 登记、`confirmed` 范式）、[agent-harness.md](agent-harness.md)（稳定工具集方向）；
+- AI 层：[agent-manager.md](agent-manager.md)（工具装配、全量工具、`confirmed` 范式）、[agent-harness.md](agent-harness.md)（2026-11-07 已删意图门控）；
 - 计划后端：[plan-backend.md](plan-backend.md)（unit/occurrence/事件溯源；G2 接入）；
 - 时间规范：[time-conventions.md](time-conventions.md)（注入时钟、禁止裸取时间）；
 - 技术调研：[research/tech.md](research/tech.md)（§1.4 GraphRAG 结论：不做全量索引；§5.2 结构化输出校验重试）；

@@ -1,10 +1,9 @@
 # Agent Harness 设计：从「意图门控」到「稳定工具集 + 权限分级」（提案）
 
-> 性质：**设计提案（Draft v0.3，方向已定；P0 完成，P1 开关已落地、默认关，A/B 待跑）**。作者：Lead（2026-10-30）。
+> 性质：**设计提案（Draft v0.4，方向已定；P0/P1/P3 已合并且成为唯一路径）**。作者：Lead（2026-10-30，2026-11-07 更新）。
 > 决策记录：2026-10-30 用户已确认 ①写操作确认粒度按本提案 ②删掉关键词意图分类器
 > ③不做「只聊」模式 ④工具审批并入 `audit.log` ⑤危险工具 allow/deny 不做（硬编码三档，见 §9、§9.1）。
-> 状态：**P1 实验代码已在 `ai/` 落地**（`TRELLIS_MANAGER_STABLE_TOOLS=1` 打开；默认关仍走旧路径）。
-> P2（审批/审计）与 P3（删意图门控）未开工；P3 完成后本文取代 `docs/agent-manager.md` §18 的三条约束，并同步改 `AGENTS.md`。
+> 状态：**P1 + P3 已生效（2026-11-07）**：删掉 `Intent.kt`（`AgentIntent`/`IntentDecision`/`KeywordIntentClassifier`）与 `TOOL_INTENTS`，管理器每轮拿全量工具、只有一份静态前缀；`P2`（审批分级 / `audit.log` 审计）未开工（用户明确「先不做权限」）。
 > 相关：`docs/agent-manager.md`（现状与事故记录）、`docs/eval-prompts.md`（验收题库）、`docs/time-conventions.md`（文档写法样例）。
 
 ---
@@ -196,14 +195,14 @@ sendChat → ManagerAgent.respond（没有 decide）
 | 阶段 | 内容 | 主要文件 | 风险/回滚 |
 |---|---|---|---|
 | **P0** | ✅ **已完成**：本文评审；补 eval 题库（§6 的 12 题已落到 `docs/eval-prompts.md` + `ManagerEvalPrompts.kt` 镜像） | `docs/agent-harness.md`、`docs/eval-prompts.md`、`ManagerEvalPrompts.kt` | 无代码风险 |
-| **P1 实验** | ✅ **已落地、默认关**：`TRELLIS_MANAGER_STABLE_TOOLS=1` 打开后工具集全量、提示词统一；旧路径逐字节保留 | `ManagerHarness.kt`（新）、`ManagerRouter.kt`、`ManagerPrompt.kt`、`ManagerAgent.kt`、相关测试 | 开关不设即回滚；接下来跑 A/B |
+| **P1 实验** | ✅ **已合并为唯一路径（2026-11-07）**：工具集全量、提示词统一；开关与旧路径一并删除 | `ManagerRouter.kt`、`ManagerPrompt.kt`、`ManagerAgent.kt`、相关测试 | 不再需要 A/B 开关 |
 | **P2 权限** | `ToolPolicy.kt` + `GuardedTool` + 审批 UI 接线 + 审计（并入 `audit.log`）+ 测试 | `app/desktop/.../ToolPolicy.kt`、`AppRuntime.kt`、`FileAuditLedger.kt`、`AskDialogs.kt`/审批弹窗 | 可单独上线；工具级 feature flag |
-| **P3 清理** | 删 `Intent.kt`/`TOOL_INTENTS`/意图门控/换路补丁；提示词只留一份；更新文档与测试 | `Intent.kt`（删除）、`ManagerRouter.kt`、`ManagerPrompt.kt`、`ManagerAgent.kt`、`AppRuntime.kt`、`AGENTS.md`、`docs/agent-manager.md` | 依赖 P1 eval 通过 |
+| **P3 清理** | ✅ **已完成（2026-11-07，用户指令「删除意图分类器，都交给模型自己决定」）**：删 `Intent.kt`/`TOOL_INTENTS`/意图门控/换路补丁/`forcedIntent`/歧义反问；提示词只留一份；`beforeFinishing` 改为「本轮碰过插件工具且声称做完」才核对 | `Intent.kt`（已删）、`ManagerRouter.kt`、`ManagerPrompt.kt`、`ManagerAgent.kt`、`AppRuntime.kt`、`PluginTools.kt`、测试与文档 | 已验证：`:ai:jvmTest`、`:app:ui:jvmTest` 绿 |
 | **P4 未来** | 显式模式（plan mode）→ 子 agent/skill → tool search | 视需要 | 单独提案 |
 
 **P1 实际落地（2026-10-30，代码已提交前状态 `:ai:jvmTest` 113 全绿）**：
 
-- `ai/src/commonMain/kotlin/dev/trellis/ai/manager/ManagerHarness.kt`（新）：`const val STABLE_TOOLS_ENV = "TRELLIS_MANAGER_STABLE_TOOLS"`、`expect fun stableToolsEnabled(): Boolean`；
+- （历史，开关已删）`ai/src/commonMain/kotlin/dev/trellis/ai/manager/ManagerHarness.kt`（新）：`const val STABLE_TOOLS_ENV = "TRELLIS_MANAGER_STABLE_TOOLS"`、`expect fun stableToolsEnabled(): Boolean`；
   `ai/src/jvmMain/.../ManagerHarness.jvm.kt`（新）actual 只认环境变量等于 `"1"`（`"true"`/`"yes"` 都算关，避免手滑）。
 - `ManagerRouter`：主构造加 `val stableTools: Boolean = stableToolsEnabled()`；稳定时 `toolsFor()` 对任何意图都返回 `stableToolset(allTools)`（按 name 排序，保前缀逐字节稳定），`promptFor()` 用全量工具目录 + `buildBase(..., stableTools = true)`；`intentForTool` 保留到 P3。
 - `ManagerPrompt`：构造加 `stableTools`；稳定时 `messages()` 不再追加 `taskModule(intent)`，`buildBase` 在 `MANAGER_ROLE` 后追加一份 `<task:general>` 通用工作流（`UNIFIED_WORKFLOW`：聊天不调工具 / 目标型请求→资源→计划待办 / 计划维护先读后写+`confirmed` / 排版样式先看再改 / 插件只在明确要求时 try→deploy / 写操作纪律 / 先看再动 / 失败先 `get_diagnostics` / 不假成功）。
@@ -315,3 +314,4 @@ Claude Code 的 `allowedTools` / `deniedTools`（精确到工具名和命令模�
 | 2026-10-30 | P1 开关落地：`TRELLIS_MANAGER_STABLE_TOOLS=1`（默认关，旧路径逐字节不变） | Lead | 待跑 A/B + 用户验收 |
 
 > P3 完成后把状态改为「已生效」，并同步修改 `AGENTS.md` §6.1/§6.2 与 `docs/agent-manager.md` §18。
+| 2026-11-07 | P3 生效：删意图分类器（`Intent.kt`）、`TOOL_INTENTS`、`forcedIntent` 与歧义反问；全量工具 + 单一静态前缀；插件收尾核对改为「碰过插件工具且声称做完」；`TRELLIS_MANAGER_STABLE_TOOLS` 开关一并删除 | Lead / 用户指令 m06296 |

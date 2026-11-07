@@ -68,7 +68,7 @@ Set-Location C:\Users\breakM\Desktop\work\Trellis
 | `:plugin-dsl` | `plugin-dsl/src/commonMain/kotlin/dev/trellis/dsl/` | 轨道 A：把目录里的 JSON（`manifest.json` + `main.dsl.json`）变成真插件 | `DslLoader.kt`、`DslSchema.kt`、`PluginFileSystem.kt` |
 | `:plugin-script` | `plugin-script/src/main/kotlin/dev/trellis/script/` | 轨道 B：ES5 脚本插件（Rhino 沙箱），可带状态、按钮、输入框 | `ScriptLoader.kt`、`ScriptPlugin.kt`、`ScriptSandbox.kt`（`trellis.register` API）、`NodeBuilder.kt`（脚本对象 → `UiNode`） |
 | `:ui-kernel` | `ui-kernel/src/commonMain/kotlin/dev/trellis/ui/` | Compose 渲染层：把插件贡献画成卡片/挂载点；**只渲染数据，不执行第三方 Compose** | `SlotArea.kt`（挂载点容器 + 12 栏布局 + 卡片外壳）<br>`DynamicSlotView.kt`（`UiNode` 全词汇渲染，36KB，改渲染先看它）<br>`CardStyle.kt` / `ExtraColors.kt` / `Fonts.kt`（宿主样式注入）<br>`ComposeSlot.kt`（内置插件的 Composable 贡献） |
-| `:ai` | `ai/src/commonMain/kotlin/dev/trellis/ai/` | AI 层：提示词、意图路由、工具循环、会话无关的纯逻辑（**唯一的 AI 入口是对话页的管理员**；不再有一次性生成管线） | `manager/ManagerRouter.kt`（意图单选 + 按意图给工具 + 拼提示词）、`manager/ManagerAgent.kt`、`manager/ManagerPrompt.kt`、`manager/Intent.kt`<br>`PromptBuilder.kt`（创建插件用的系统提示词）<br>`tool/ToolAgent.kt`、`tool/AgentTool.kt`<br>`tool/DeepSeekMarkup.kt`（DSML 方言解析）<br>`PluginInstaller.kt`（安装器接口，`KernelPluginInstaller` 实现）<br>`LlmClient.kt`；JVM 实现 `ai/src/jvmMain/kotlin/dev/trellis/ai/HttpLlmClient.kt` |
+| `:ai` | `ai/src/commonMain/kotlin/dev/trellis/ai/` | AI 层：提示词、工具循环、会话无关的纯逻辑（**唯一的 AI 入口是对话页的管理员**；不再有一次性生成管线；2026-11-07 删掉意图分类器，模型每轮拿全量工具自己决定聊还是干） | `manager/ManagerRouter.kt`（全量工具 + 一份静态前缀）、`manager/ManagerAgent.kt`（先流式聊天，发现工具调用再切工具循环）、`manager/ManagerPrompt.kt`（静态前缀 + `<task:work>` 通用工作流）<br>`PromptBuilder.kt`（创建插件用的系统提示词）<br>`tool/ToolAgent.kt`、`tool/AgentTool.kt`<br>`tool/DeepSeekMarkup.kt`（DSML 方言解析）<br>`PluginInstaller.kt`（安装器接口，`KernelPluginInstaller` 实现）<br>`LlmClient.kt`；JVM 实现 `ai/src/jvmMain/kotlin/dev/trellis/ai/HttpLlmClient.kt` |
 | `:features:learning-process` | `features/learning-process/src/jvmMain/kotlin/dev/trellis/feature/learning/` | **学习计划后端**（事件溯源 + SQLite）：计划版本、承诺、occurrence、结算结转、复盘。契约在 `sdk-domain/.../plan/`，与任务型 `PlanService` 是两套，勿混用 | `SqliteLearningPlanService.kt`（命令外壳/撤销/幂等/事务）<br>`PlanCommands.kt`（21 条命令，含拖拽重排的 `placeUnit`）<br>`PlanQueries.kt`（日/周/地图/复盘/待办视图）<br>`PlanRhythm.kt`（结算 + 复盘 + JSONL 导出）<br>`PlanSchema.kt`（内嵌 DDL）、`PlanDatabase.kt`<br>`LearningPlanStore.kt`（对外唯一入口）<br>测试 `src/jvmTest/.../LearningPlanServiceTest.kt` |
 | `:features:activity` | `features/activity/src/jvmAndAndroidMain/kotlin/dev/trellis/activity/` | 活动采集整理：AW 原始事件（窗口/AFK/浏览器标签页）入库 → 分层分类（大类-小类、颜色、正则优先级、可匹配 URL）→ 日汇总 → 任务归因（时间区间打 occurrence 标签，手动/AI 提议）。桌面端由导航第五项「活动」页承载（`TRELLIS_TAB=activity`） | `ActivityTaxonomy.kt`（分类树/规则/默认分类）、`ActivityAggregator.kt`（片段与汇总）、`ActivitySync.kt`、`ActivityStore.kt`、`ActivityTaxonomyStore.kt`、`ActivityAttribution.kt`（归因模型/优先级/区间运算）；页面 `app/ui/.../ActivityScreen.kt`；说明 `docs/activity.md` |
 | `:features:exams` | `features/exams/src/jvmAndAndroidMain/kotlin/dev/trellis/feature/exams/` | 练习题库（2026-11-07）：数据模型 `Exercise`/`ExerciseBank`、内置种子（`src/jvmMain/resources/exam-seed/exercises.jsonl`，505 题/5 学科）与外部题库文件加载；桌面端**没有常驻练习页**：学完一个单元后菜单由管家在会话里提议一道题，用户接受后才进会话页二级页 | `Exercise.kt`（题目/选项/题型/答案归一化）、`ExerciseBank.kt`（筛选、搜索、随机组卷、统计；`suggestFor` 按计划名/章节/标签匹配学科与课程，`recommendFor` 带作答历史——上次做错优先、没做过次之）、`ExerciseAttempt.kt`（作答记录：`ExerciseAttempt` + `ExerciseAttemptStore` 落 `<home>/exams/attempts.jsonl`；`summarizeMastery`/`masteryOf` 现算学科正确率）、`ExamSeed.kt`（种子加载）、`ExerciseFileStore.kt`（外部 JSONL 合并加载）；二级页 `app/ui/.../PracticeScreen.kt`；抓取/OCR/种子管线见 `tools/exams/README.md` |
@@ -108,7 +108,7 @@ Set-Location C:\Users\breakM\Desktop\work\Trellis
 | 插件资产（图片/图标路径校验） | `app/desktop/.../PluginAssets.kt` + `ui-kernel/.../DynamicSlotView.kt` 的 `LocalPluginImage` |
 | AI 的「人设 + 守则」系统提示词 | `ai/.../manager/ManagerPrompt.kt`（`buildBase` / `stateBlock` / `taskModule`） |
 | 创建插件用的详细提示词（JSON/DSL/脚本格式） | `ai/.../PromptBuilder.kt` |
-| 意图路由（聊天 / 造插件 / 管插件 / 调布局） | `ai/.../manager/Intent.kt`（关键词分类器） |
+| 模型怎么决定这一轮聊还是动手（原关键词意图分类器已删） | `ai/.../manager/ManagerPrompt.kt`（静态前缀里的 `<task:work>` 工作流）、`ai/.../manager/ManagerAgent.kt`（流式优先、按工具调用切循环）；**不要再加关键词分类**，判断权归模型 |
 | 工具循环（多步、重复检测、无步数上限） | `ai/.../tool/ToolAgent.kt` |
 | 给 AI 的工具：装/读/停/删插件 | `app/desktop/.../PluginTools.kt` |
 | 给 AI 的工具：排版/看卡片 | `app/desktop/.../LayoutTools.kt` |
@@ -216,21 +216,17 @@ Set-Location C:\Users\breakM\Desktop\work\Trellis
 
 ```
 ChatScreen ──> AppRuntime.sendChat()
-                 ├─ router = ManagerRouter(catalog, tools, guidance)
-                 ├─ decision = router.decide(request)      ← 意图单选（Ambiguous 就先问，不调模型）
-                 ├─ tools    = router.toolsForIntent(intent)  ← 工具单选：聊天给空集
-                 ├─ prompt   = router.promptFor(intent, state, history)  ← 按意图拼，前缀缓存各一份
-                 └─ ManagerAgent.respond(prompt, decision, request, onDelta, onLog)
-                        ├─ Chat      → llm.stream(...) + 剥 DSML/协议壳 + Markdown
-                        └─ 其它意图  → ToolAgent.run(...)（DSML 方言 + JSON 双解；无步数上限）
-                                  └─ beforeFinishing 仅 CreatePlugin 挂「必须 try_plugin + deploy」
+                 ├─ router    = ManagerRouter(catalog, allTools, guidance)  ← 全量工具 + 一份静态前缀
+                 ├─ prompt    = router.prompt.messages(state, request, history)
+                 └─ ManagerAgent.respond(prompt, request, onDelta, onLog)
+                        ├─ 先 llm.stream(...) 聊天（剥 DSML/协议壳 + Markdown）
+                        └─ 流里出现工具调用 → ToolAgent.run(...)（DSML 方言 + JSON 双解；无步数上限）
+                                  └─ beforeFinishing：本轮碰过插件工具、又声称「装好了/改好了」才核对
 ```
 
-固定流程（用户定的，别乱改顺序）：**意图（单选）→ 工具（单选）→ 提示词 → 歧义先问 → 模型 → 工具/流程**。
-分层提示词顺序：静态 system → 动态 `<current_state>` → 历史（最近 20 条）→ 按意图的 `<task:...>` → 用户这句话。
-
-> 2026-10-30 已确认改这条流程：方案见 `docs/agent-harness.md`（撤销意图门控 → 稳定工具集 + 权限分级 + 删关键词分类器）。
-> **P1/P3 代码落地前，上面仍是现行规则**；动手前先看方案的决策记录与迁移阶段。
+**2026-11-07 起（用户定的）**：**没有意图分类器**——每轮拿全量工具，模型自己决定聊天 / 动手 / 先问一句；不再有「按意图裁工具、按意图拼提示词、判错就干不了活」。
+分层提示词顺序：静态 system（规则 + 工具守则 + 全量工具目录 + 管理员守则 + `<task:work>` 通用工作流）→ 动态 `<current_state>` → 历史（最近 20 条）→ 用户这句话。
+> 设计背景、A/B 与迁移记录见 `docs/agent-harness.md`；`Intent.kt` / `TOOL_INTENTS` / 关键词分类器的删除记录也在那里。
 
 ### 6.2 工具清单（改工具就改这几个文件）
 

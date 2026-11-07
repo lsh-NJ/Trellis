@@ -155,7 +155,7 @@ index 越界 ──► 「清单里没有第 N 步」，不抛异常
 
 ## 10. 后续可以长出来的东西
 
-- **若改成强制**（本次决定先不做）：把 `set_plan` 放宽到 1–6 步，然后在工具执行前加闸——`deploy / try_plugin / arrange_cards / set_ui / set_plugin_card / set_theme / disable_plugin / remove_plugin` 在没有活动清单时返回「先 set_plan」；读类工具与 `AgentIntent.Chat` 不设闸；配四个测试（无清单调 deploy 被拒 / 有清单通过 / Chat 不受影响 / 单步清单通过）。
+- **若改成强制**（本次决定先不做）：把 `set_plan` 放宽到 1–6 步，然后在工具执行前加闸——`deploy / try_plugin / arrange_cards / set_ui / set_plugin_card / set_theme / disable_plugin / remove_plugin` 在没有活动清单时返回「先 set_plan」；读类工具与纯聊天轮次不设闸；配四个测试（无清单调 deploy 被拒 / 有清单通过 / Chat 不受影响 / 单步清单通过）。
 - **可恢复暂停**：暂停时冻结在同一状态、保留已完成步骤；
 - **断点续做**：把未完成清单带进下一轮 context；
 - **每步单独撤销**：`PlanStep` 记 undo 句柄；

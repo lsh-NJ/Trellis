@@ -83,8 +83,8 @@
 ## 6. 与普通会话的接线
 
 - `sendChat`：`currentChatId` 的 kind 是 Steward 时，用
-  `ManagerPrompt(base = StewardPrompt.systemPrompt() + 工具目录 + guidance, stableTools = true)` +
-  `ManagerRouter(..., stableTools = true)`；普通会话保持原来的意图路由。
+  `ManagerPrompt(base = StewardPrompt.systemPrompt() + 工具目录 + guidance)` +
+  `ManagerRouter(prompt, allTools)`；普通会话走同一套（2026-11-07 起没有意图路由/稳定工具集开关）。
 - 工具集与普通会话**完全一致**（全量工具，含计划写工具）；写操作仍受 `confirmed`/审批约束。
   后台节奏推进仍只由 `advanceRhythm` 做，管家不自动改计划。
 - 用户在管家会话里说的话，原样记一条 `UserReply` 记忆（`rememberUserReply`）。
