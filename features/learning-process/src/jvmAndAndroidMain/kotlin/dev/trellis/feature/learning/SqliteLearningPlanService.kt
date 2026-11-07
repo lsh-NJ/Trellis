@@ -451,6 +451,11 @@ internal class SqliteLearningPlanService(
     override fun acceptDraft(env: CommandEnvelope, versionId: String, firstWeek: String) =
         cmdAcceptDraft(env, versionId, firstWeek)
 
+    // suspend 只为对齐 AI 工具的调用形态（AgentTool.call 是 suspend）；实现本身不挂起。
+    override suspend fun appendUnits(
+        env: CommandEnvelope, planId: String, drafts: List<dev.trellis.domain.plan.UnitDraft>,
+    ) = cmdAppendUnits(env, planId, drafts)
+
     override fun changeCommitment(
         env: CommandEnvelope, versionId: String, week: String, unitIds: List<String>,
         reason: String, diff: dev.trellis.domain.plan.PlanDiff?,

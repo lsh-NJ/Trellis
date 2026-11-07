@@ -37,6 +37,7 @@ kotlin {
             api(project(":features:plan-core"))
             api(project(":features:learning-process"))
             api(project(":features:activity"))
+            api(project(":features:exams"))
             // B 站工具与活动采集要发 GET；java.net.http 只有桌面有，所以走平台出口。
             implementation(project(":net"))
             api(project(":ai"))

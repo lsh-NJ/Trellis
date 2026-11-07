@@ -179,7 +179,7 @@ private fun navContentColor(runtime: AppRuntime): Color = when (runtime.uiPrefs.
 }
 
 /** 导航里的六页，顺序就是标签栏/左栏的顺序。 */
-private val NAV_TABS = listOf(TAB_TASKS, TAB_PLAN, TAB_KNOWLEDGE, TAB_CHAT, TAB_ACTIVITY, TAB_SETTINGS)
+private val NAV_TABS = listOf(TAB_TASKS, TAB_PLAN, TAB_KNOWLEDGE, TAB_EXAMS, TAB_CHAT, TAB_ACTIVITY, TAB_SETTINGS)
 
 /**
  * 当前该点亮第几个导航项。
@@ -214,6 +214,11 @@ private fun TabBar(runtime: AppRuntime) {
             selected = runtime.currentTab == TAB_KNOWLEDGE,
             onClick = { runtime.currentTab = TAB_KNOWLEDGE },
             text = { Text("知识库") },
+        )
+        Tab(
+            selected = runtime.currentTab == TAB_EXAMS,
+            onClick = { runtime.currentTab = TAB_EXAMS },
+            text = { Text("练习") },
         )
         Tab(
             selected = runtime.currentTab == TAB_CHAT,
@@ -278,6 +283,7 @@ private fun NavRail(runtime: AppRuntime) {
         NavRailItem(runtime, ChromeIcon.Plan, "计划", TAB_PLAN, foreground)
         NavRailItem(runtime, ChromeIcon.Knowledge, "知识库", TAB_KNOWLEDGE, foreground)
         NavRailItem(runtime, ChromeIcon.Chat, if (runtime.chatBusy) "对话 ···" else "对话", TAB_CHAT, foreground)
+        NavRailItem(runtime, ChromeIcon.Check, "练习", TAB_EXAMS, foreground)
         NavRailItem(runtime, ChromeIcon.Activity, "活动", TAB_ACTIVITY, foreground)
         NavRailItem(runtime, ChromeIcon.Settings, "设置", TAB_SETTINGS, foreground)
     }
@@ -330,6 +336,7 @@ private fun TabContent(runtime: AppRuntime, modifier: Modifier) {
         TAB_TASKS -> TasksTab(runtime, modifier)
         TAB_PLAN -> PlanScreen(runtime, modifier)
         TAB_KNOWLEDGE -> KnowledgeScreen(runtime, modifier)
+        TAB_EXAMS -> ExamsScreen(runtime, modifier)
         TAB_CHAT -> ChatScreen(runtime, modifier)
         TAB_ACTIVITY -> ActivityScreen(runtime, modifier)
         TAB_PLUGINS -> PluginsScreen(runtime, modifier)

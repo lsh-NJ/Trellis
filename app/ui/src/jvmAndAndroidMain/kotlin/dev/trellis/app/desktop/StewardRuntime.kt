@@ -280,4 +280,6 @@ private fun stewardKindLabel(kind: StewardMemoryKind): String = when (kind) {
     StewardMemoryKind.Adopted -> "采纳"
     StewardMemoryKind.Rejected -> "没采纳"
     StewardMemoryKind.Note -> "记"
+    StewardMemoryKind.Goal -> "目标"
+    StewardMemoryKind.Preference -> "偏好"
 }

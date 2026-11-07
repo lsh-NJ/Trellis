@@ -39,8 +39,14 @@ import dev.trellis.domain.plan.LearningPlanInfo
 import dev.trellis.domain.plan.OverdueView
 import dev.trellis.domain.plan.PoolUnit
 import dev.trellis.domain.plan.RhythmResult
+import dev.trellis.domain.plan.UnitDraft
 import dev.trellis.domain.plan.WeekDay
 import dev.trellis.feature.learning.LearningPlanStore
+import dev.trellis.feature.learning.PlanDocStore
+import dev.trellis.feature.exams.ExamSeed
+import dev.trellis.feature.exams.Exercise
+import dev.trellis.feature.exams.ExerciseBank
+import dev.trellis.feature.exams.ExerciseFileStore
 import dev.trellis.activity.ActivityAggregator
 import dev.trellis.activity.ActivityClassifier
 import dev.trellis.activity.ActivitySettings
@@ -159,6 +165,13 @@ internal const val TAB_ACTIVITY = 6
  * 序号同样往后放而不是插进中间，理由见 [TAB_ACTIVITY]。
  */
 internal const val TAB_KNOWLEDGE = 7
+
+/**
+ * 练习页：从 :features:exams 的题库里抽题做，知识点卡当复习卡。
+ *
+ * 序号同样往后放而不是插进中间，理由见 [TAB_ACTIVITY]。
+ */
+internal const val TAB_EXAMS = 8
 
 internal val RENDERED_MOUNT_POINTS: Set<ExtensionPointId> = setOf(
     Slots.HomeHeader.id,
@@ -693,6 +706,110 @@ class AppRuntime private constructor() {
         val start = note?.body?.indexOf(entry.evidence)?.takeIf { it >= 0 } ?: -1
         val end = if (start >= 0) start + entry.evidence.length else -1
         openKnowledgeReveal(entry.noteId, start, end)
+    }
+
+    // ---- 练习页（:features:exams 题库） ----
+
+    /** 题库：打包的种子 JSONL + `<home>/exams/` 目录里的用户题库，按 id 去重合并。 */
+    internal var examBank: ExerciseBank = ExerciseBank(emptyList())
+        private set
+
+    /** 题库加载时的问题（种子缺失 / 坏行），练习页用一行小字提示，不阻断做其他事。 */
+    internal var examLoadNotes: List<String> = emptyList()
+        private set
+
+    var examSubject by mutableStateOf<String?>(null)
+        private set
+
+    var examQuery by mutableStateOf("")
+        private set
+
+    /** 当前这一轮的题（按当前筛选随机抽的队列）。 */
+    internal var examQueue: List<Exercise> = emptyList()
+        private set
+
+    internal var examIndex by mutableStateOf(0)
+        private set
+
+    /** 已勾选的选项标签（判断题也是 A/B）。 */
+    internal var examSelected by mutableStateOf<Set<String>>(emptySet())
+        private set
+
+    internal var examAnswerVisible by mutableStateOf(false)
+        private set
+
+    internal val examCurrent: Exercise?
+        get() = examQueue.getOrNull(examIndex)
+
+    internal fun setExamQuery(text: String) {
+        examQuery = text
+        restartExamPractice()
+    }
+
+    internal fun selectExamSubject(subject: String?) {
+        examSubject = subject
+        restartExamPractice()
+    }
+
+    /** 按当前「科目 + 关键字」重排一轮；筛选后没题时队列为空，界面显示空态。 */
+    internal fun restartExamPractice() {
+        val pool = examBank.filter(
+            subject = examSubject,
+            keyword = examQuery.ifBlank { null },
+        )
+        examQueue = pool.shuffled()
+        examIndex = 0
+        examSelected = emptySet()
+        examAnswerVisible = false
+    }
+
+    internal fun toggleExamOption(label: String) {
+        if (examAnswerVisible) return
+        examSelected = if (label in examSelected) examSelected - label else examSelected + label
+    }
+
+    internal fun revealExamAnswer() {
+        examAnswerVisible = true
+    }
+
+    internal fun nextExam() {
+        if (examIndex >= examQueue.size - 1) return
+        examIndex += 1
+        examSelected = emptySet()
+        examAnswerVisible = false
+    }
+
+    internal fun prevExam() {
+        if (examIndex <= 0) return
+        examIndex -= 1
+        examSelected = emptySet()
+        examAnswerVisible = false
+    }
+
+    /**
+     * 重新加载题库：种子资源 + `<home>/exams/` 下的 `.jsonl`。
+     *
+     * 种子资源只在桌面打包里（jvmMain resources），安卓上读不到就记一条问题、退化成空题库；
+     * 用户自己放的题库走 [ExerciseFileStore]，坏行逐条记下来、不阻断其它文件。
+     */
+    internal fun reloadExamBank() {
+        val notes = mutableListOf<String>()
+        val banks = mutableListOf<ExerciseBank>()
+        runCatching { ExamSeed.load() }
+            .onSuccess { banks += it }
+            .onFailure { notes += "种子题库没加载：" + (it.message ?: it.javaClass.simpleName) }
+        runCatching { ExerciseFileStore.loadDirectory(File(home, "exams").toPath()) }
+            .onSuccess { result ->
+                banks += result.bank
+                result.issues.take(5).forEach { notes += it.describe() }
+                if (result.issues.size > 5) notes += "还有 " + (result.issues.size - 5) + " 条导入问题没列出"
+            }
+            .onFailure { notes += "用户题库没加载：" + (it.message ?: it.javaClass.simpleName) }
+        val merged = LinkedHashMap<String, Exercise>()
+        banks.forEach { bank -> bank.exercises.forEach { merged.putIfAbsent(it.id, it) } }
+        examBank = ExerciseBank(merged.values.toList())
+        examLoadNotes = notes
+        restartExamPractice()
     }
 
     private var nextChatLineId = 1L
@@ -1681,6 +1798,7 @@ class AppRuntime private constructor() {
         TAB_CHAT -> "对话"
         TAB_ACTIVITY -> "活动"
         TAB_KNOWLEDGE -> "知识库"
+        TAB_EXAMS -> "练习"
         TAB_PLUGINS -> "插件"
         TAB_SETTINGS -> "设置"
         else -> "诊断"
@@ -1699,10 +1817,11 @@ class AppRuntime private constructor() {
             "对话", "chat" -> TAB_CHAT
             "活动", "activity", "activities" -> TAB_ACTIVITY
             "知识库", "知识", "knowledge", "kb" -> TAB_KNOWLEDGE
+            "练习", "题库", "exams", "exam", "practice" -> TAB_EXAMS
             "插件", "plugins", "plugin" -> TAB_PLUGINS
             "诊断", "diag", "diagnostics" -> TAB_DIAG
             "设置", "settings", "setting" -> TAB_SETTINGS
-            else -> return "没有这一页：" + tab + "。只有 任务 / 计划 / 对话 / 活动 / 知识库 / 插件 / 诊断 / 设置。"
+            else -> return "没有这一页：" + tab + "。只有 任务 / 计划 / 对话 / 活动 / 知识库 / 练习 / 插件 / 诊断 / 设置。"
         }
         currentTab = target
         return "切到了「" + tabName(target) + "」页。"
@@ -1747,6 +1866,23 @@ class AppRuntime private constructor() {
 
     /** 往当前焦点里打一段字（桌面走剪贴板 + Ctrl+V，手机不支持）。 */
     fun typeText(text: String): String = HostPlatform.typeText(text)
+
+    /**
+     * 跨会话记忆块：每次对话开始前拼进 guidance 的尾巴，普通会话和管家会话共用。
+     *
+     * 内容来自 [stewardStore] 的 append-only 记忆日志：用户说过的长期目标 / 长期偏好 /
+     * 近期决定。目标这类东西最需要跨会话记住 —— 用户上周说「想考软考」，这周开新会话时
+     * 模型不该再问一遍「你想学什么」。
+     *
+     * 没有任何可注入的记忆时返回空串（调用方不要追加空块）；顺序固定
+     * goal → preference → recent（见 [renderCrossSessionMemory]）。这段是提示词里
+     * **唯一**会随记忆变化的部分，所以放在整段 guidance 的最后：前面的静态守则
+     * 逐字节稳定，模型前缀缓存只从这一块开始失效。
+     */
+    internal fun memoryBlock(maxChars: Int = 600): String {
+        if (!::stewardStore.isInitialized || !::clock.isInitialized) return ""
+        return renderCrossSessionMemory(stewardStore, clock.today().toString(), maxChars)
+    }
 
     /**
      * 和管理员说一句话。
@@ -1823,7 +1959,16 @@ class AppRuntime private constructor() {
             )
             // 眼睛之外再给一只「看内部状态」的手：工具报错时自己查日志/模块/库状态，
             // 而不是让用户去看一眼错误提示（用户修不好 java/sql/DriverManager 这种问题）。
+            val planDocTools = PlanDocTools(
+                service = { runCatching { learningPlan() }.getOrNull() },
+                docStore = { if (::planDocStore.isInitialized) planDocStore else null },
+                clock = clock,
+                onChanged = { refreshPlan() },
+            )
             val diagnosticsTools = DiagnosticsTools { diagnosticsReport() }
+            // 跨会话记忆也是手：用户说出长期目标/偏好时写进管家日志，要回忆过去时再检索。
+            // 和管家仪式共用同一份 append-only 记忆 —— 目标不该只有晨/夜仪式才有机会落盘。
+            val memoryTools = MemoryTools(stewardStore, clock)
             // 手机上「看」可以，「动手」不行：截屏/点击/按键/打字在安卓沙箱里没有对应能力，
             // 四条工具留在清单里只会让模型挑一个注定失败的动作，然后空跑一轮。
             // 所以按平台裁剪工具清单与说明 —— 不是改文案，是不给它做不到的选项。
@@ -1841,12 +1986,17 @@ class AppRuntime private constructor() {
             }
             val allTools = tools.all + screenToolList + layoutTools.all + styleTools.all +
                 workflowTools.all + bilibiliTools.all + taskTools.all + planTools.all +
-                planAdminTools.all + diagnosticsTools.all
+                planAdminTools.all + planDocTools.all + diagnosticsTools.all + memoryTools.all
             val guidance = tools.guidance + "\n\n" + screenGuidance +
                 "\n\n" + layoutTools.guidance + "\n\n" + styleTools.guidance +
                 "\n\n" + workflowTools.guidance + "\n\n" + bilibiliTools.guidance +
                 "\n\n" + taskTools.guidance + "\n\n" + planTools.guidance +
-                "\n\n" + planAdminTools.guidance + "\n\n" + diagnosticsTools.guidance
+                "\n\n" + planAdminTools.guidance + "\n\n" + planDocTools.guidance + "\n\n" + diagnosticsTools.guidance +
+                "\n\n" + memoryTools.guidance
+            // 跨会话记忆块只随记忆内容变化，接在 guidance 最末尾：两条路径（普通 / 管家）
+            // 都用同一份 promptGuidance，静态前缀逐字节稳定，前缀缓存只从记忆块开始失效。
+            val memorySection = memoryBlock()
+            val promptGuidance = if (memorySection.isBlank()) guidance else guidance + "\n\n" + memorySection
 
             // 意图 → 工具 → 提示词，一次定完：每条工具的目录只出现在它该出现的那一版
             // 提示词里。以前是把整套工具和整段前缀一股脑塞进去，模型总会挑一个
@@ -1866,9 +2016,9 @@ class AppRuntime private constructor() {
                     append(StewardPrompt.systemPrompt())
                     append("\n\n")
                     append(ToolAgent.catalogueOf(allTools))
-                    if (guidance.isNotBlank()) {
+                    if (promptGuidance.isNotBlank()) {
                         append("\n\n")
-                        append(guidance)
+                        append(promptGuidance)
                     }
                 }
                 ManagerRouter(
@@ -1877,7 +2027,7 @@ class AppRuntime private constructor() {
                     stableTools = true,
                 )
             } else {
-                ManagerRouter(catalog, allTools, guidance)
+                ManagerRouter(catalog, allTools, promptGuidance)
             }
             val agent = ManagerAgent(
                 llm = llm,
@@ -2406,6 +2556,28 @@ class AppRuntime private constructor() {
     var planMessage by mutableStateOf<String?>(null)
         private set
 
+    // ---------------------------------------------------------------- 计划文档
+    // 「想法」层：先在文档里写目标、按周条目、待安排，再确认落进计划库。
+    // 文档在 <home>/plans/docs/<planId>.md；计划库仍是执行真相，两边不实时双向同步。
+
+    internal lateinit var planDocStore: PlanDocStore
+
+    var planDocOpen by mutableStateOf(false)
+        private set
+
+    var planDocDraft by mutableStateOf("")
+        private set
+
+    /** 保存/同步后的一句话，显示在文档对话框底部。 */
+    var planDocNote by mutableStateOf<String?>(null)
+        private set
+
+    private var planDocPlanId: String? = null
+
+    /** 文档对话框标题用的计划名。 */
+    internal val planDocPlanTitle: String?
+        get() = planDocPlanId?.let { id -> runCatching { learningPlan()?.planState(id)?.title }.getOrNull() }
+
     /**
      * 计划库打不开的**具体原因**（比 [planMessage] 短、给工具/诊断用）。
      *
@@ -2807,6 +2979,83 @@ class AppRuntime private constructor() {
         planSettingsOpen = false
         planMessage = "每天投入已改成 " + planDailyDraft + " 分钟。"
         refreshPlan()
+    }
+
+    // ---------------------------------------------------------------- 计划文档
+
+    internal fun openPlanDoc() {
+        val service = learningPlan()
+        val planId = planFocusId ?: service?.activePlanId()
+        if (service == null || planId == null) {
+            planMessage = "先在「计划」页建一份计划，计划文档会跟着计划走。"
+            return
+        }
+        planDocPlanId = planId
+        planDocDraft = planDocStore.read(planId) ?: PlanDocTools.PLAN_DOC_TEMPLATE
+        planDocNote = null
+        planDocOpen = true
+    }
+
+    internal fun closePlanDoc() {
+        planDocOpen = false
+        planDocNote = null
+    }
+
+    internal fun updatePlanDocDraft(text: String) {
+        planDocDraft = text
+    }
+
+    /** 保存当前草稿；保存失败把原因留在对话框底部。 */
+    internal fun savePlanDocDraft(): Boolean {
+        val planId = planDocPlanId ?: return false
+        val result = runCatching { planDocStore.save(planId, planDocDraft) }
+        result.onFailure { planDocNote = "没存上：" + (it.message ?: "未知原因") }
+        result.onSuccess {
+            planDocNote = "已保存（" + planDocDraft.length + " 字）。"
+            planMessage = "计划文档已保存。"
+        }
+        return result.isSuccess
+    }
+
+    /** 把文档里本周的条目确认落进计划：追加到待安排池，不自动铺天（不可撤销，所以是显式按钮）。 */
+    internal fun syncPlanDocWeek() {
+        val service = learningPlan() ?: return
+        val planId = planDocPlanId ?: return
+        savePlanDocDraft()
+        val week = isoWeekOf(clock.today())
+        val doc = runCatching { planDocStore.load(planId) }.getOrNull()
+        val items = doc?.weeks?.entries
+            ?.firstOrNull { it.key.replace(" ", "").equals(week, ignoreCase = true) }
+            ?.value
+            .orEmpty()
+        if (items.isEmpty()) {
+            planDocNote = "文档里还没有 " + week + " 这一周；先加一行「## " + week + "」。"
+            return
+        }
+        val drafts = items.map { item ->
+            UnitDraft(
+                chapter = "计划文档",
+                title = item.text,
+                estimateMinutes = (item.minutesHint ?: 25).coerceIn(10, 45),
+            )
+        }
+        planDocNote = "正在把 " + week + " 的 " + drafts.size + " 条追加进计划…"
+        chatScope.launch {
+            val result = runCatching {
+                service.appendUnits(planAdjustCommand(planId), planId, drafts)
+            }.getOrNull()
+            planDocNote = when {
+                result == null -> "同步失败：计划库没响应。"
+                !result.ok -> "同步失败：" + (result.error?.message ?: "未知原因")
+                else -> "已把 " + week + " 的 " + (result.value?.size ?: 0) +
+                    " 条追加进计划（待安排池）；去计划页拖到某天就会排进那一天。" +
+                    " 注意：如果下一周还没有承诺，节奏引擎会先从池里补下一周。"
+            }
+            if (result?.ok == true) {
+                refreshPlan()
+                tick++
+            }
+        }
     }
 
     fun selectPlanDay(day: String) {
@@ -4255,6 +4504,7 @@ class AppRuntime private constructor() {
             }
             runtime.pluginStyleStore = PluginStyleStore(home)
             runtime.pluginCardStyles = runtime.pluginStyleStore.load()
+            runtime.planDocStore = PlanDocStore(home)
             runtime.chatStore = ChatStore(home)
             runtime.knowledgeStore = KnowledgeStore(home, runtime.clock)
             runtime.stewardStore = StewardStore(home)
@@ -4277,6 +4527,7 @@ class AppRuntime private constructor() {
                 ?.let { runtime.openChat(it.id) }
             runtime.onWindowFocused()
             runtime.startStewardTicker()
+            runtime.reloadExamBank()
             runtime.wireApprovalDialog()
 
             if (plan.plans().isEmpty()) plan.createPlan("我的第一个计划")
@@ -4308,6 +4559,7 @@ private fun initialTab(): Int = when (System.getenv("TRELLIS_TAB")?.trim()?.lowe
     "chat" -> TAB_CHAT
     "activity" -> TAB_ACTIVITY
     "knowledge", "kb" -> TAB_KNOWLEDGE
+    "exams", "exam", "practice" -> TAB_EXAMS
     "plugins" -> TAB_PLUGINS
     "diag" -> TAB_DIAG
     "settings" -> TAB_SETTINGS

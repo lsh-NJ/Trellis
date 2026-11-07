@@ -36,6 +36,8 @@ include(":sdk-domain")
 include(":features:plan-core")
 include(":features:learning-process")
 include(":features:activity")
+// 题库：练习卡数据模型 + JSONL 种子（由 tools/exams/ 的抓取/解析管线生成）。
+include(":features:exams")
 // 最小的 HTTP 出口：Java 11 的 java.net.http 安卓没有，必须按平台分叉。
 include(":net")
 include(":ui-kernel")

@@ -84,6 +84,33 @@ interface LearningPlanService {
 
     fun endPlan(env: CommandEnvelope, planId: String, reason: String): CommandResult<Unit>
 
+    // ---------------- 计划文档同步 ----------------
+
+    /**
+     * 给当前生效版本**追加**一批单元（计划文档同步 / 项目拆解用）。
+     *
+     * 用途：计划文档（Markdown）里新冒出来的条目 —— 「计算机网络 3 节」「物理 2 节」这种 ——
+     * 变成计划里能排期、能勾的 [UnitDraft]，落进「待安排池」，由用户/AI 之后决定铺到哪天。
+     * 追加的单元**不自动进任何承诺**，所以不会凭空出现在日历上；要排期请走 [placeUnit] /
+     * [changeCommitment]。
+     *
+     * 为什么不新开一个版本：单元身份按版本隔离，新开一版会换掉 unit id，已经铺过天的
+     * occurrence 还挂在旧 id 上，会把「已完成」对丢。这里是纯 INSERT，不动任何旧行。
+     *
+     * **不可撤销**：非草稿版本的 `plan_unit` 由触发器禁止 UPDATE/DELETE（只允许 INSERT），
+     * 追加进去的单元既删不掉也改不了，所以调用方写入前必须让用户确认。
+     * 同理也没有 undo token 可退回。
+     *
+     * 约束：
+     * - 计划必须存在、未 `ended`，且已有生效版本（没有就先 [saveDraft] + [acceptDraft]）；
+     * - [drafts] 非空、最多 50 条；每条 title 非空；
+     * - 估算时长按 `plan_unit` 的列约束夹到 10..45 分钟，minVersionMinutes 夹到 5..15；
+     * - 章节为空时记成「未分类」；`sort_order` 接当前版本最大值往后排。
+     *
+     * @return 新单元的 id，顺序与 [drafts] 一致；`dryRun` 时只校验不落库。
+     */
+    suspend fun appendUnits(env: CommandEnvelope, planId: String, drafts: List<UnitDraft>): CommandResult<List<String>>
+
     // ---------------- 日层命令（只减/移/缩，不加） ----------------
 
     fun scheduleUnit(env: CommandEnvelope, commitmentId: String, unitId: String, day: String): CommandResult<OccurrenceRef>

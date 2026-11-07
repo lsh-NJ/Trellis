@@ -1419,3 +1419,86 @@ internal fun SqliteLearningPlanService.unitSortOrder(unitId: String): Int =
         ps.setString(1, unitId)
         ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
     }
+
+// ---------------------------------------------------------------------------
+// 计划文档同步：给当前生效版本追加单元（INSERT-only，不可撤销）
+// ---------------------------------------------------------------------------
+
+/** 一次最多追加多少个单元。AI 工具一次塞太多，用户没法逐条确认。 */
+private const val MAX_APPEND_UNITS = 50
+
+/**
+ * 给当前生效版本追加 plan_unit：计划文档里的新条目 → 待安排池里的新单元。
+ *
+ * 为什么不新开版本：单元身份按版本隔离，新开一版会换掉 unit id，已经铺过天的 occurrence
+ * 还挂在旧 id 上（occurrence 的 unit_id 不可 UPDATE），计划页「已完成」会对不上。
+ * 追加是纯 INSERT，不动任何旧行。
+ *
+ * 不可撤销：非草稿版本的 plan_unit 有 no_rewrite / no_delete 触发器（见 PlanSchema），
+ * 只允许 INSERT —— 追加进去的单元删不掉、改不了，所以调用方写入前必须让用户确认。
+ *
+ * 返回新 unit id，顺序与 [drafts] 一致。
+ */
+internal fun SqliteLearningPlanService.cmdAppendUnits(
+    env: CommandEnvelope,
+    planId: String,
+    drafts: List<UnitDraft>,
+): CommandResult<List<String>> {
+    if (drafts.isEmpty()) return fail(ErrorCode.E_INVALID, "没有要追加的条目。")
+    if (drafts.size > MAX_APPEND_UNITS) {
+        return fail(ErrorCode.E_INVALID, "一次最多追加 $MAX_APPEND_UNITS 个单元，多了分几次。")
+    }
+    drafts.forEach { draft ->
+        if (draft.title.isBlank()) return fail(ErrorCode.E_INVALID, "要追加的条目得有标题。")
+    }
+    return write(env) {
+        if (planStatus(planId) == null) return@write fail(ErrorCode.E_NOT_FOUND, "找不到这个计划。")
+        if (planStatus(planId) == "ended") return@write fail(ErrorCode.E_STATE, "这个计划已经结束了，不能再加单元。")
+        val version = currentVersion(planId)
+            ?: return@write fail(ErrorCode.E_STATE, "这个计划还没有生效的版本；先把草稿接受。")
+        // 接当前版本 sort_order 最大值往后排；该版本还没有单元时从 0 开始。
+        val firstOrder = connection.prepareStatement(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM plan_unit WHERE plan_version_id = ?",
+        ).use { ps ->
+            ps.setString(1, version)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        }
+        val createdAt = nowIso()
+        val unitIds = mutableListOf<String>()
+        drafts.forEachIndexed { index, draft ->
+            val id = Ids.next("pu_")
+            unitIds += id
+            connection.prepareStatement(
+                "INSERT INTO plan_unit(id,plan_version_id,chapter,title,sort_order,estimate_minutes," +
+                    "min_version_minutes,material_segment_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            ).use { ps ->
+                ps.setString(1, id)
+                ps.setString(2, version)
+                ps.setString(3, draft.chapter.trim().ifBlank { "未分类" })
+                ps.setString(4, draft.title.trim())
+                ps.setInt(5, firstOrder + index)
+                // 列的 CHECK 是 10..45 / 5..15（见 PlanSchema）：文档里写「约 90 分钟」也要夹进来，
+                // 否则命令会栽在约束上（E_STORE），调用方拿不到能指导修改的提示。
+                ps.setInt(6, draft.estimateMinutes.coerceIn(10, 45))
+                ps.setInt(7, draft.minVersionMinutes.coerceIn(5, 15))
+                ps.setString(8, draft.materialSegmentId)
+                ps.setString(9, createdAt)
+                ps.executeUpdate()
+            }
+        }
+        appendEvent(
+            type = "plan.units_appended",
+            entity = "plan",
+            entityId = planId,
+            planId = planId,
+            payload = eventJson(
+                "count" to JsonPrimitive(unitIds.size),
+                "unitIds" to JsonPrimitive(unitIds.joinToString(",")),
+                "reason" to JsonPrimitive(env.origin),
+            ),
+            actor = env.actor,
+            commandId = env.commandId,
+        )
+        ok(unitIds, warnings = if (env.dryRun) listOf("dry-run：没有落库。") else emptyList())
+    }
+}

@@ -1,0 +1,200 @@
+package dev.trellis.feature.learning
+
+import java.io.File
+import java.io.IOException
+import java.nio.file.Files
+import kotlin.test.AfterTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+/** 计划文档存储：`<home>/plans/docs/<planId>.md` 的读写与容错解析。 */
+class PlanDocStoreTest {
+
+    private val home: File = Files.createTempDirectory("trellis-plan-doc").toFile()
+    private val store = PlanDocStore(home)
+
+    @AfterTest
+    fun tearDown() {
+        home.deleteRecursively()
+    }
+
+    private val sample = """
+        # 目标与验收
+        - 目标A：把 TypeScript 学扎实
+        - 验收：能独立写一个类型安全的模块
+
+        ## 2026-W45
+        - 计算机网络 3 节（约 90 分钟）
+        - 物理 2 节
+
+        ## 2026-W46
+        - 数学（约 120 分钟）
+        - 英语阅读 约90分钟
+
+        ## 待安排
+        - 数据结构实验
+        - 编译原理课程设计（约 180 分钟）
+    """.trimIndent()
+
+    @Test
+    fun saveThenReadRoundTripsTheMarkdown() {
+        val markdown = "# 目标与验收\n- 目标A：学完\n"
+        val file = store.save("pln_test1", markdown)
+
+        assertEquals(File(File(File(home, "plans"), "docs"), "pln_test1.md"), file)
+        assertTrue(file.isFile)
+        assertEquals(markdown, store.read("pln_test1"))
+        assertNotNull(store.load("pln_test1"))
+    }
+
+    @Test
+    fun aDocumentPathIsGuardedAgainstDirectoryTraversal() {
+        assertEquals(
+            File(File(File(home, "plans"), "docs"), "pln_abc.md"),
+            store.fileFor("pln_abc"),
+        )
+        assertFailsWith<IllegalArgumentException> { store.fileFor("../evil") }
+        assertFailsWith<IllegalArgumentException> { store.fileFor("a/b") }
+        assertNull(store.read("../evil"))
+        assertNull(store.load("../evil"))
+    }
+
+    @Test
+    fun aMissingDocumentReadsAsNull() {
+        assertNull(store.read("pln_nothing"))
+        assertNull(store.load("pln_nothing"))
+        assertFalse(File(File(home, "plans"), "docs").exists())
+    }
+
+    @Test
+    fun saveCreatesTheDocsDirectoryAndReplacesTheOldDocument() {
+        store.save("pln_test1", "第一版")
+        assertEquals("第一版", store.read("pln_test1"))
+
+        store.save("pln_test1", "第二版")
+        assertEquals("第二版", store.read("pln_test1"))
+        assertEquals(listOf("pln_test1.md"), File(File(home, "plans"), "docs").list()!!.toList())
+    }
+
+    @Test
+    fun parseReadsTargetsWeeksAndUnscheduledInDocumentOrder() {
+        val doc = store.parse(sample)
+
+        assertEquals(
+            listOf("目标A：把 TypeScript 学扎实", "验收：能独立写一个类型安全的模块"),
+            doc.targets,
+        )
+        assertEquals(listOf("2026-W45", "2026-W46"), doc.weeks.keys.toList())
+        assertEquals(
+            listOf(
+                PlanDocItem("计算机网络 3 节", 90),
+                PlanDocItem("物理 2 节", null),
+            ),
+            doc.weeks["2026-W45"],
+        )
+        assertEquals(
+            listOf(
+                PlanDocItem("数学", 120),
+                PlanDocItem("英语阅读", 90),
+            ),
+            doc.weeks["2026-W46"],
+        )
+        assertEquals(
+            listOf(
+                PlanDocItem("数据结构实验", null),
+                PlanDocItem("编译原理课程设计", 180),
+            ),
+            doc.unscheduled,
+        )
+    }
+
+    @Test
+    fun parseUnderstandsSeveralMinutesHintSpellings() {
+        val doc = store.parse(
+            """
+            ## 待安排
+            - 甲（约 90 分钟）
+            - 乙(90分钟)
+            - 丙 约90分钟
+            - 丁（90 分钟）
+            - 戊 90 分钟
+            - 己（约 0 分钟）
+            - 庚：复习第一章，约30分钟
+            """.trimIndent(),
+        )
+
+        assertEquals(
+            listOf(
+                PlanDocItem("甲", 90),
+                PlanDocItem("乙", 90),
+                PlanDocItem("丙", 90),
+                PlanDocItem("丁", 90),
+                PlanDocItem("戊 90 分钟", null),
+                PlanDocItem("己（约 0 分钟）", null),
+                PlanDocItem("庚：复习第一章", 30),
+            ),
+            doc.unscheduled,
+        )
+    }
+
+    @Test
+    fun parseToleratesJunkLinesAndUnknownSections() {
+        val doc = store.parse(
+            """
+            一份随手写的笔记
+            - 这个开头没有小节，忽略
+            # 目标与验收
+            这不是 bullet，忽略
+            - 目标A
+            ## 2026-W45
+            - 条目一
+            ### 子标题下面不认
+            - 子条目忽略
+            ## 不认识的节
+            - 也不认
+            ## 待安排
+            * 星号条目
+            1. 编号条目
+            """.trimIndent(),
+        )
+
+        assertEquals(listOf("目标A"), doc.targets)
+        assertEquals(mapOf("2026-W45" to listOf(PlanDocItem("条目一", null))), doc.weeks)
+        assertEquals(listOf(PlanDocItem("星号条目", null), PlanDocItem("编号条目", null)), doc.unscheduled)
+    }
+
+    @Test
+    fun anEmptyOrMissingSectionsDocumentParsesToAnEmptyStructure() {
+        assertEquals(PlanDoc(), store.parse(""))
+        assertEquals(PlanDoc(), store.parse("# 目标与验收\n"))
+        assertEquals(PlanDoc(), store.parse("## 2026-W45\n"))
+        // 空小节不产生空的 week 条目。
+        val doc = store.parse("## 2026-W45\n\n## 2026-W46\n- 条目")
+        assertEquals(listOf("2026-W46"), doc.weeks.keys.toList())
+    }
+
+    @Test
+    fun aCorruptFileReadsAsNullInsteadOfThrowing() {
+        val file = store.fileFor("pln_broken")
+        file.parentFile.mkdirs()
+        // 非法 UTF-8 字节：0xC3 后面必须是续字节，0x28 不是。
+        file.writeBytes(byteArrayOf(0x23, 0x20, 0xC3.toByte(), 0x28, 0x0A))
+
+        assertNull(store.read("pln_broken"))
+        assertNull(store.load("pln_broken"))
+    }
+
+    @Test
+    fun saveFailsWithAPlainMessageWhenTheDirectoryCannotBeCreated() {
+        val blocked = File(home, "blocked")
+        blocked.writeText("这里是个文件，不是目录")
+        val failing = PlanDocStore(blocked)
+
+        assertFailsWith<IOException> { failing.save("pln_test1", "内容") }
+    }
+}
