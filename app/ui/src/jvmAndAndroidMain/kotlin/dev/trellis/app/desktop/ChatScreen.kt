@@ -327,11 +327,7 @@ private fun SessionRow(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                if (session.kind == SessionKind.Steward) {
-                    "每天早晚问候" + if (rounds > 0) " · $rounds 轮" else ""
-                } else {
-                    chatTimeLabel(session.updatedAt) + " · " + rounds + " 轮"
-                },
+                chatTimeLabel(session.updatedAt) + " · " + rounds + " 轮",
                 style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
             )
