@@ -50,9 +50,45 @@ class ResearchToolsTest {
     }
 
     private class FakeLlm(private val reply: String, private val delayMs: Long = 0) : LlmClient {
+        val seen = mutableListOf<List<LlmMessage>>()
+
         override suspend fun complete(messages: List<LlmMessage>): String {
+            seen += messages
             if (delayMs > 0) delay(delayMs)
             return reply
+        }
+    }
+
+    private class FakeResearch : ResearchGateway {
+        var goalRequested: String? = null
+
+        override suspend fun gather(goal: String): ResearchSources {
+            goalRequested = goal
+            return ResearchSources(
+                hits = listOf(
+                    ResearchHit(
+                        title = "AI 应用工程师 学习路线",
+                        url = "https://example.com/roadmap",
+                        siteName = "example.com",
+                        summary = "先打基础：Python、Linux、HTTP；再做 RAG 项目，最后准备面试。",
+                        authority = 3,
+                    ),
+                    ResearchHit(
+                        title = "招聘要求：AI 应用工程师",
+                        url = "https://example.com/jobs",
+                        siteName = "example.com",
+                        summary = "要求熟悉 LangChain、向量库与检索增强生成。",
+                        authority = 2,
+                    ),
+                ),
+                pages = listOf(
+                    ResearchPage(
+                        url = "https://example.com/roadmap",
+                        title = "AI 应用工程师 学习路线",
+                        markdown = "# 学习路线\n1. 基础：Python / Linux\n2. 项目：RAG\n3. 面试",
+                    ),
+                ),
+            )
         }
     }
 
@@ -62,9 +98,14 @@ class ResearchToolsTest {
         val service: LearningPlanService,
         val docStore: PlanDocStore,
         val tools: ResearchTools,
+        val llm: FakeLlm,
     )
 
-    private fun harness(llmReply: String, delayMs: Long = 0): Harness {
+    private fun harness(
+        llmReply: String,
+        delayMs: Long = 0,
+        research: ResearchGateway? = null,
+    ): Harness {
         val home = Files.createTempDirectory("research-tools").toFile()
         val clock = FixedClock(wednesday, zone)
         val service = LearningPlanStore.open(
@@ -73,15 +114,17 @@ class ResearchToolsTest {
             zone,
         )
         val docStore = PlanDocStore(home)
+        val llm = FakeLlm(llmReply, delayMs)
         val tools = ResearchTools(
             service = { service },
             planDocStore = { docStore },
             planDbError = { null },
             weeklyCapacity = { 60 * 7 },
             clock = clock,
-            llm = FakeLlm(llmReply, delayMs),
+            llm = llm,
+            research = research,
         )
-        return Harness(home, clock, service, docStore, tools)
+        return Harness(home, clock, service, docStore, tools, llm)
     }
 
     /** 3 个阶段、共 5 周；带 dailyMinutes 建议。 */
@@ -133,6 +176,22 @@ class ResearchToolsTest {
         assertNotNull(goal, "要顺手建一个目标")
         assertEquals(3, goal.milestones.size)
         assertTrue(goal.plans.any { it.id == planId })
+    }
+
+    @Test
+    fun webSearchSourcesAreFedIntoThePlanningPrompt() = runTest {
+        val research = FakeResearch()
+        val harness = harness(shellJson(), research = research)
+        val result = call(harness)
+        assertFalse(result.isError, result.content)
+        assertEquals("我想当 AI 应用工程师", research.goalRequested)
+
+        val prompt = harness.llm.seen.last().joinToString("\n") { it.content }
+        assertTrue(prompt.contains("<research_sources>"), "资料要进提示词：$prompt")
+        assertTrue(prompt.contains("AI 应用工程师 学习路线"), prompt)
+        assertTrue(prompt.contains("RAG"), prompt)
+
+        assertTrue(result.content.contains("参考了网上搜到的"), result.content)
     }
 
     @Test
