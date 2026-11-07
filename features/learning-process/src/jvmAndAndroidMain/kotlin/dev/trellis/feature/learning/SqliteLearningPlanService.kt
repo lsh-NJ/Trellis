@@ -14,6 +14,9 @@ import dev.trellis.domain.plan.LearningPlanInfo
 import dev.trellis.domain.plan.OpenNode
 import dev.trellis.domain.plan.OverdueView
 import dev.trellis.domain.plan.PoolUnit
+import dev.trellis.domain.plan.ResourceDraft
+import dev.trellis.domain.plan.StageDraft
+import dev.trellis.domain.plan.StageView
 import dev.trellis.domain.plan.UndoInfo
 import dev.trellis.domain.plan.UndoView
 import dev.trellis.domain.plan.ok
@@ -381,7 +384,9 @@ internal class SqliteLearningPlanService(
     override fun activePlanId(): String? = effectivePlanForToday(null)
 
     override fun plans(): List<LearningPlanInfo> = connection.prepareStatement(
-        "SELECT p.id, pr.title, p.status FROM plan p JOIN process pr ON pr.id = p.process_id ORDER BY p.created_at",
+        // 放弃过的计划状态字段仍是 ended（避免改 CHECK 约束），读的时候按 abandoned_at 映射成 abandoned。
+        "SELECT p.id, pr.title, CASE WHEN pr.abandoned_at IS NOT NULL THEN 'abandoned' ELSE p.status END " +
+            "FROM plan p JOIN process pr ON pr.id = p.process_id ORDER BY p.created_at",
     ).use { ps ->
         ps.executeQuery().use { rs ->
             buildList {
@@ -389,6 +394,8 @@ internal class SqliteLearningPlanService(
             }
         }
     }
+
+    override fun stages(planId: String): List<StageView> = buildStages(planId)
 
     override fun goals(includeArchived: Boolean): List<GoalView> = buildGoals(includeArchived)
 
@@ -489,6 +496,10 @@ internal class SqliteLearningPlanService(
         env: CommandEnvelope, planId: String, drafts: List<dev.trellis.domain.plan.UnitDraft>,
     ) = cmdAppendUnits(env, planId, drafts)
 
+    override fun setUnitResources(
+        env: CommandEnvelope, planId: String, unitId: String, resources: List<ResourceDraft>,
+    ) = cmdSetUnitResources(env, planId, unitId, resources)
+
     override fun changeCommitment(
         env: CommandEnvelope, versionId: String, week: String, unitIds: List<String>,
         reason: String, diff: dev.trellis.domain.plan.PlanDiff?,
@@ -502,6 +513,12 @@ internal class SqliteLearningPlanService(
     override fun resumePlan(env: CommandEnvelope, planId: String) = cmdResumePlan(env, planId)
 
     override fun endPlan(env: CommandEnvelope, planId: String, reason: String) = cmdEndPlan(env, planId, reason)
+
+    override fun abandonPlan(env: CommandEnvelope, planId: String, reason: String) =
+        cmdAbandonPlan(env, planId, reason)
+
+    override fun setStages(env: CommandEnvelope, planId: String, stages: List<StageDraft>) =
+        cmdSetStages(env, planId, stages)
 
     override fun scheduleUnit(env: CommandEnvelope, commitmentId: String, unitId: String, day: String) =
         cmdScheduleUnit(env, commitmentId, unitId, day)

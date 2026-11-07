@@ -256,3 +256,28 @@
 - 知识库里新增只读「计划文档」区（`PlanDocPage.kt`）：左栏 计划 → 总览 / 各周，右栏 `MarkdownText` 预览；
   不可编辑，要改跟 AGENT 说。计划文档放在 `<home>/plans/docs/`，**不参与**笔记抽取、概念索引、知识网络与自动完成。
 - 每周文档 `<planId>/<week>.md` 由 `plan_week` 写入（本周重点 + 每天条目 + 类型/分钟）。
+
+## 14 2026-11-08：计划页重做（阶段条 / 周刻度 / 日折叠像素 / 资源展开 / 放弃 / 周日总结）
+
+- **阶段**成为页面主结构：`plan_stage`（后端 `stages()`/`setStages()`）按周区间给名字和重点；
+  页面头部一行「阶段 …」+ 一排阶段 chip（`PlanStageStrip`，名字 + 等宽 `done/total`），点击跳到该阶段第一周。
+- **周**压成刻度条（`PlanWeekTicker`）：一条横轴 + 一个「本周」刻度，拖/点切换周；不再一天一个大卡片。
+- **每天折叠**（`PlanDayAccordion`）：每天一行（日期、完成进度、件数），今天默认展开；
+  完成进度是**像素方块**（`PlanPixelProgress`，每件一个 11dp 方块，超过 14 件显示 `+N`）；
+  节点行保留方形圆角勾选框，点标题展开该节点的**学习资源**（`PlanResourceList`，`unit_resource` 表：
+  `bilibili`/`web`/`doc`/`other` + 标题 + 可选定位串，点击用 `LocalUriHandler` 打开 URL）。
+- **右侧阶段进度栏**（`PlanStageRail`）：按阶段显示「阶段 M/N + 名字 + 细条」，点击跳该阶段第一周；
+  只在窗口宽度 ≥ `TrellisBreakpoints.medium`（1100dp）且有阶段时显示。
+  ⚠️ 判据必须用**窗口宽度**（`LocalWindowInfo.current.containerSize.width`），不能用页面 `BoxWithConstraints.maxWidth`——
+  计划页被外壳包在 `widthIn(max = 1120.dp)` + 左右 20dp 里，页面 maxWidth 在 1440pt 窗口下也只有 1080dp，
+  永远小于 1100，右栏会恒不显示（2026-11-08 修掉，`PlanPageParts.shouldShowStageRail` 注释里记了这坑）。
+- **周总结**：周日当天（`PlanStateView.reviewableWeek == 当前周`）页面底部出现「本周总结」+「生成本周总结」；
+  生成后显示 `narrative` 与统计（完成单元 X/Y、投入时间）。周六及之前不出现；生成过的不再出现。
+- **放弃计划**：计划设置弹窗底部「放弃这个计划」→ 二次确认；`abandonPlan` 把计划与 process 标 `ended`、
+  写 `process.abandoned_at`、发 `plan.abandoned` 事件；已排节点保留、不再排期、不再自动排周；
+  左栏行变灰「已放弃」、页头副标题「· 已放弃」，回看只读。
+- **B 站目录清洗**（`PlanTools.cleanPartTitle`）：去掉「第N集 / P1 / 【】 / ()」等噪声，过滤片尾/预告/花絮/彩蛋/广告/关注/合集/简介，
+  少于 3 个有效分集时退回原始目录并记警告；单元标题统一「第N章 · 清洗后名字」，
+  同时把「第 N 集（mm:ss）」写成 `bilibili` 资源，不再把分集名直接当学习点。
+- **首周安排**：`research_plan` 出完阶段大纲（+目标/里程碑/大纲文档）后，同回合 `planOneWeek` 先把第一周排出来，
+  而不是等用户再催；`plan_week` 改成**先写周文档再排天**：周文档写失败就不排，`appendUnits` 失败则保留文档并报错。

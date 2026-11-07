@@ -176,6 +176,7 @@
 > 排本周并铺到天、写本周文档）；知识库新增只读「计划文档」区（计划页只做跳转）。
 > 2026-11-08 补：计划↔会话映射 `plans/sessions.json` 与「每周自动排周计划」已落地（`PlanSessionStore.kt`、`WeeklyPlan.kt`、`AppRuntime.maybeRunWeeklyPlanWeek`；周日 18:00 后 / 周一，优先进计划自己的会话，没绑定就管家代跑）。
 > 2026-11-08 补：`research_plan` 已接 DeepSeek 官方 Search/Fetch（`WebResearch.kt`，搜 3 组 query + 读 2 篇正文；失败降级）。
+> 2026-11-08 补：**计划页重做已落地**（`docs/plan-page-redesign.md` 实施完成）——阶段 `plan_stage`（`stages`/`setStages`，阶段条 `PlanStageStrip` 与右侧 `PlanStageRail`）、周刻度条 `PlanWeekTicker`、每日折叠 + 像素进度 `PlanDayAccordion`/`PlanPixelProgress`、节点资源 `unit_resource`（`setUnitResources`，`PlanResourceList` 用系统浏览器打开）、`abandonPlan`（放弃计划，左栏灰色「已放弃」、保留节点、不再排期）、`reviewableWeek`（周日可看/可点生成周总结）；B 站分集清洗（`cleanPartTitle` 去集数/片尾/预告/广告，单元标题「第N章 · 清洗后名字」+ 资源落库）；`research_plan` 大纲后同回合排第一周，`plan_week` 先写周文档再排天。见 `docs/plan-page.md` §14。
 
 > 用法：`- [ ]` 勾掉即完成；编号供后续沟通引用。每条写清现状 / 影响 / 涉及文件 / 大致工作量 / 验证方式。
 > P0–P3 是建议顺序，不是承诺。**已明确暂缓的见 §3.7，别再当缺口重复排。**

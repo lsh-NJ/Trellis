@@ -7,6 +7,7 @@ import dev.trellis.domain.plan.CommandEnvelope
 import java.time.LocalDate
 import dev.trellis.domain.plan.CommitmentDraft
 import dev.trellis.domain.plan.LearningPlanService
+import dev.trellis.domain.plan.ResourceDraft
 import dev.trellis.domain.plan.UnitDraft
 import java.util.UUID
 import kotlinx.serialization.json.JsonArray
@@ -45,20 +46,128 @@ private fun chapterOf(title: String): String {
     return "未分章"
 }
 
+/** B 站的一个分集（目录里的一集）。任务说明里也叫它 BilibiliPart。 */
+internal typealias BilibiliPart = BilibiliClient.Part
+
 /**
- * 分集 → 确定性单元：标题取分集名（空就用 P{page}），长分集拆「上/下」，
- * 章节从标题里找。整门课全量导入，不靠模型逐条转录。
+ * 分集标题里出现这些词，就不是课程内容：片尾、预告、花絮、彩蛋、广告、联系方式…
+ *
+ * B 站目录里混着这些「非正片」条目是常态。不过滤的话，用户会在每周的待办里
+ * 看到「片尾」「下集预告」这种节点，还得自己去删。
  */
-private fun unitsFromParts(parts: List<BilibiliClient.Part>): List<UnitDraft> = buildList {
+private val JUNK_PART_WORDS_CN = listOf(
+    "片尾", "片头", "预告", "花絮", "彩蛋", "广告", "联系方式", "关注", "下一集", "合集",
+    "简介", "开箱", "福利", "抽奖", "直播回放", "宣传片", "三连", "点赞", "投币", "打卡",
+)
+
+/**
+ * 英文黑名单按**词边界**匹配（大小写不敏感）。
+ *
+ * 不用裸 "ad" / "intro" 这类短词：电子课里的「AD 转换」、编程课里的「Introduction」
+ * 都是正片内容，误杀比漏杀更糟。
+ */
+private val JUNK_PART_WORDS_EN = listOf(
+    "trailer", "preview", "blooper", "bloopers", "outtake", "outtakes",
+    "behind the scenes", "sponsor", "sponsored", "advertisement", "contact us",
+    "follow me", "subscribe", "next episode", "playlist", "outro", "ending",
+)
+
+private fun isJunkPartTitle(raw: String): Boolean {
+    val lower = raw.lowercase()
+    if (JUNK_PART_WORDS_CN.any { lower.contains(it) }) return true
+    return JUNK_PART_WORDS_EN.any { word ->
+        Regex("(?<![a-z])" + Regex.escape(word) + "(?![a-z])").containsMatchIn(lower)
+    }
+}
+
+/** 「第 3 集」「第2话」「第4讲」这类分集序号标签（「第X章」不在此列，章节要保留）。 */
+private val PART_NUMBER_LABEL = Regex("""第\s*[0-9一二三四五六七八九十百零〇两]+\s*[集话期讲回]""")
+
+/** 「P12」「EP03」「E03」这类集号标签；前后不能粘字母数字，避免误伤内容词。 */
+private val PART_EPISODE_LABEL = Regex(
+    """(?<![A-Za-z0-9])(?:p|ep|e)\s?\d{1,4}(?![A-Za-z0-9])""",
+    RegexOption.IGNORE_CASE,
+)
+
+/** 【…】/[…]/(…)/（…）这类补充标签，整段去掉。 */
+private val PART_BRACKET_LABEL = Regex("""【[^】]*】|\[[^\]]*\]|（[^）]*）|\([^)]*\)""")
+
+private val PART_WHITESPACE = Regex("""\s+""")
+
+/** 清洗后留在两端的常见分隔符。 */
+private val PART_EDGE_SEPARATORS = charArrayOf(
+    '·', '-', '—', '–', ':', '：', '、', '|', '/', ',', '，', '.', '．',
+)
+
+/**
+ * 清洗一条分集标题，返回能当节点名字的那部分；返回 null = 这一条该被过滤掉。
+ *
+ * 依次做：黑名单整条拦截 → 去「第 N 集 / P12 / EP03」标签 → 去括号补充 →
+ * 折叠空白、去掉两端分隔符。清洗后什么都不剩（比如标题只有「第 1 集」）也算过滤。
+ */
+internal fun cleanPartTitle(raw: String): String? {
+    val text = raw.trim()
+    if (text.isEmpty()) return null
+    if (isJunkPartTitle(text)) return null
+    val cleaned = text
+        .replace(PART_NUMBER_LABEL, " ")
+        .replace(PART_EPISODE_LABEL, " ")
+        .replace(PART_BRACKET_LABEL, " ")
+        .replace(PART_WHITESPACE, " ")
+        .trim()
+        .trim(*PART_EDGE_SEPARATORS)
+        .trim()
+        .replace(PART_WHITESPACE, " ")
+    return cleaned.ifEmpty { null }
+}
+
+/**
+ * 目录清洗：过滤掉片尾/预告/花絮这类非课程分集，返回（留下的分集, 被过滤的条数）。
+ *
+ * 过滤后不足 3 集就**退回原始分集**（只有一两集的短视频课程不能被清洗清空），
+ * 但被过滤条数照样带回去当警告。调用方判断是否退回：`filtered > 0 && 返回条数 == 原始条数`。
+ */
+internal fun pickCourseParts(parts: List<BilibiliPart>): Pair<List<BilibiliPart>, Int> {
+    // 空标题的分集保留：它不是「片尾」这类垃圾，只是标题没填，单元里会用 P{page} 兜底。
+    val kept = parts.filter { part -> part.title.isBlank() || cleanPartTitle(part.title) != null }
+    val filtered = parts.size - kept.size
+    return if (kept.size >= 3) kept to filtered else parts to filtered
+}
+
+/**
+ * 单元标题不再逐字复制分集标题：
+ * - 有章节（「第2章」/「3.1」→「第3章」）就拼成「第N章 · 这一讲的名字」；
+ * - 没有章节就用清洗后的名字（「P2 第2集 进程管理」→「进程管理」）；
+ * - 连名字都没有就用 P{page}。
+ */
+private fun unitTitleOf(chapter: String, cleaned: String): String {
+    if (chapter == "未分章") return cleaned
+    val rest = CHAPTER_IN_TITLE.replace(cleaned, " ")
+        .replace(PART_WHITESPACE, " ")
+        .trim()
+        .trim(*PART_EDGE_SEPARATORS)
+        .trim()
+    return if (rest.isEmpty()) chapter else "$chapter · $rest"
+}
+
+/** 一个确定性单元 + 它是从哪个原始分集来的（资源落库要用原始标题与页码）。 */
+internal data class CourseUnit(val draft: UnitDraft, val part: BilibiliPart)
+
+/**
+ * 分集 → 确定性单元：章节/标题/分钟都由宿主算，长分集拆「上/下」。
+ * 整门课全量导入，不靠模型逐条转录。
+ */
+internal fun courseUnitsFromParts(parts: List<BilibiliPart>): List<CourseUnit> = buildList {
     parts.forEach { part ->
-        val title = part.title.trim().ifEmpty { "P" + part.page }
-        val chapter = chapterOf(title)
+        val chapter = chapterOf(part.title)
+        val cleaned = cleanPartTitle(part.title) ?: ("P" + part.page)
+        val title = unitTitleOf(chapter, cleaned)
         val minutes = unitMinutesOf(part.durationMinutes)
         if (minutes.size == 1) {
-            add(UnitDraft(chapter = chapter, title = title, estimateMinutes = minutes[0]))
+            add(CourseUnit(UnitDraft(chapter = chapter, title = title, estimateMinutes = minutes[0]), part))
         } else {
-            add(UnitDraft(chapter = chapter, title = title + "（上）", estimateMinutes = minutes[0]))
-            add(UnitDraft(chapter = chapter, title = title + "（下）", estimateMinutes = minutes[1]))
+            add(CourseUnit(UnitDraft(chapter = chapter, title = title + "（上）", estimateMinutes = minutes[0]), part))
+            add(CourseUnit(UnitDraft(chapter = chapter, title = title + "（下）", estimateMinutes = minutes[1]), part))
         }
     }
 }
@@ -327,7 +436,8 @@ class PlanTools(
                 }
             }
 
-            writePlan(plan, title, dailyMinutes, units, commitments, arguments.textArg("goalId"))?.let { return it }
+            val written = writePlan(plan, title, dailyMinutes, units, commitments, arguments.textArg("goalId"))
+            written.error?.let { return it }
 
             val weekLines = commitments.joinToString("；") { draft ->
                 val count = draft.unitIndexes.size
@@ -345,8 +455,9 @@ class PlanTools(
     /**
      * bvid 模式：只选源，不手写内容。
      *
-     * 分集 → 单元是确定性的（标题/时长/章节都由 [unitsFromParts] 算），
-     * 排周也是确定性的（[autoCommitments]：本周 + 下周，其余进池），模型只负责选视频和起止集。
+     * 分集 → 单元是确定性的：目录先过 [pickCourseParts] 洗掉片尾/预告等非正片，
+     * 再由 [courseUnitsFromParts] 算标题/时长/章节；排周也是确定性的（[autoCommitments]：
+     * 全局周表），模型只负责选视频和起止集。
      */
     private suspend fun createFromSource(
         plan: LearningPlanService,
@@ -404,15 +515,28 @@ class PlanTools(
         val deadline = checkDeadline(arguments, clock.today())
         deadline.error?.let { return ToolResult(it, isError = true) }
 
-        val allUnits = unitsFromParts(selected)
-        val truncated = allUnits.size > UNIT_LIMIT
-        val units = allUnits.take(UNIT_LIMIT)
+        // 目录清洗：片尾/预告/花絮这类条目不是课程内容，不能变成用户要勾的节点。
+        // 清洗后不足 3 集就退回原始目录（课程只有一两集时不能清空），但过滤计数留着当警告。
+        val (courseParts, filteredOut) = pickCourseParts(selected)
+        val fellBack = filteredOut > 0 && courseParts.size == selected.size
+
+        val allCourseUnits = courseUnitsFromParts(courseParts)
+        val truncated = allCourseUnits.size > UNIT_LIMIT
+        val courseUnits = allCourseUnits.take(UNIT_LIMIT)
+        val units = courseUnits.map { it.draft }
+        // 单元下标 → 原始分集：资源落库（setUnitResources）按它写原分集标题/页码，见 phase 2。
+        val partByUnit: Map<Int, BilibiliPart> = courseUnits.mapIndexed { index, unit -> index to unit.part }.toMap()
+        val sourcePartCount = partByUnit.values.map { it.page }.distinct().size
+
         val commitments = autoCommitments(units, dailyMinutes, currentIsoWeek(), deadline.lastWeek)
         if (commitments.isEmpty()) {
             return ToolResult("（$bvid）没生成出可排的单元，换一个视频或检查分集时长。", isError = true)
         }
 
-        writePlan(plan, title, dailyMinutes, units, commitments, arguments.textArg("goalId"))?.let { return it }
+        val written = writePlan(plan, title, dailyMinutes, units, commitments, arguments.textArg("goalId")) { planId ->
+            writeBilibiliResources(plan, planId, bvid, courseUnits, commitments.map { it.week })
+        }
+        written.error?.let { return it }
 
         val placed = commitments.sumOf { it.unitIndexes.size }
         val weekLines = commitments.joinToString("；") { draft ->
@@ -420,11 +544,19 @@ class PlanTools(
         }
         return ToolResult(
             buildString {
-                append("计划「$title」建好了：按 B 站 $bvid 的分集全量导入 ${units.size} 个单元")
-                if (truncated) append("（超过 $UNIT_LIMIT 个，已截断：只取前 $UNIT_LIMIT 个）")
-                append("，全局周表共 ${commitments.size} 周（$weekLines）")
+                append("计划「$title」建好了：按 B 站 $bvid 的分集全量导入 ${units.size} 个单元（来自 $sourcePartCount 集）")
+                if (truncated) append("，超过 $UNIT_LIMIT 个已截断：只取前 $UNIT_LIMIT 个")
+                if (filteredOut > 0) {
+                    if (fellBack) {
+                        append("；目录里 $filteredOut 条像片尾/预告的条目没清掉（清洗后不足 3 集，已退回使用原始分集）")
+                    } else {
+                        append("；已按课程大纲清洗 $sourcePartCount 集，过滤 $filteredOut 条（片尾/预告等）")
+                    }
+                }
+                append("。全局周表共 ${commitments.size} 周（$weekLines）")
                 deadline.lastWeek?.let { append("，按截止日 $deadlineText 排到 $it") }
                 if (placed < units.size) append("；按每天 $dailyMinutes 分钟的节奏，截止日前排不下的 ${units.size - placed} 个留在「待安排」池（之后再说）")
+                written.notes.forEach { append("；").append(it) }
                 append("。总路线一次排完，之后每周到点会自动铺到天；每天按 $dailyMinutes 分钟排（只是建议，想改随时说）。")
                 append("去「计划」页能看到全局周卡片和每天安排。")
             },
@@ -432,8 +564,21 @@ class PlanTools(
     }
 
     /**
-     * 三条命令真正落库；失败返回错误 [ToolResult]，成功返回 null（由调用方拼成功文案）。
+     * 一次落库的结果：成功时 [planId] 非空、[notes] 是附加说明（资源是否写好等，不影响计划本身）；
+     * 失败时 [error] 就是要直接回给模型的 [ToolResult]。
+     */
+    private class PlanWriteResult(
+        val planId: String? = null,
+        val error: ToolResult? = null,
+        val notes: List<String> = emptyList(),
+    )
+
+    /**
+     * 三条命令真正落库；失败返回错误 [ToolResult]，成功返回 [PlanWriteResult]（由调用方拼成功文案）。
      * 两条路径（手写 / bvid）共用，避免写库流程各写一遍。
+     *
+     * [afterAccept] 在 acceptDraft 成功、onChanged 之前调用（现在只有 bvid 路径用它写分集资源）；
+     * 它返回的说明行会带进回执，抛异常也不会把「计划已经建好」判失败。
      */
     private suspend fun writePlan(
         plan: LearningPlanService,
@@ -442,7 +587,8 @@ class PlanTools(
         units: List<UnitDraft>,
         commitments: List<CommitmentDraft>,
         goalId: String? = null,
-    ): ToolResult? {
+        afterAccept: (suspend (planId: String) -> List<String>)? = null,
+    ): PlanWriteResult {
         val created = plan.createProcess(
             env(null, "plan.create"),
             title = title,
@@ -451,7 +597,7 @@ class PlanTools(
             weeklyCapacityMinutes = dailyMinutes * 7,
         )
         val createdValue = created.value
-            ?: return ToolResult("建计划失败：" + (created.error?.message ?: "未知原因"), isError = true)
+            ?: return PlanWriteResult(error = ToolResult("建计划失败：" + (created.error?.message ?: "未知原因"), isError = true))
 
         val saved = plan.saveDraft(
             env(createdValue.planId, "plan.save"),
@@ -461,7 +607,7 @@ class PlanTools(
             commitments = commitments,
         )
         val savedValue = saved.value
-            ?: return ToolResult("存草稿失败：" + (saved.error?.message ?: "未知原因"), isError = true)
+            ?: return PlanWriteResult(error = ToolResult("存草稿失败：" + (saved.error?.message ?: "未知原因"), isError = true))
 
         val accepted = plan.acceptDraft(
             env(createdValue.planId, "plan.accept"),
@@ -469,20 +615,89 @@ class PlanTools(
             firstWeek = commitments.first().week,
         )
         if (accepted.value == null) {
-            return ToolResult("生效失败：" + (accepted.error?.message ?: "未知原因"), isError = true)
+            return PlanWriteResult(error = ToolResult("生效失败：" + (accepted.error?.message ?: "未知原因"), isError = true))
         }
         if (goalId != null) {
             val linked = plan.linkPlanToGoal(env(createdValue.planId, "plan.link_goal"), createdValue.planId, goalId)
             if (linked.value == null) {
                 // 计划已经建成了，关联失败不该把整件事判失败；把原因带回去让模型补一次。
-                return ToolResult(
-                    "计划建好了，但挂到目标上没成功：" + (linked.error?.message ?: "未知原因") +
-                        "\n可以用 link_plan_to_goal 补一次。",
+                return PlanWriteResult(
+                    planId = createdValue.planId,
+                    error = ToolResult(
+                        "计划建好了，但挂到目标上没成功：" + (linked.error?.message ?: "未知原因") +
+                            "\n可以用 link_plan_to_goal 补一次。",
+                    ),
                 )
             }
         }
+        val notes = if (afterAccept != null) {
+            runCatching { afterAccept(createdValue.planId) }
+                .getOrElse { listOf("建计划的后续步骤没做完：" + (it.message ?: "未知原因")) }
+        } else {
+            emptyList()
+        }
         onChanged(createdValue.planId)
-        return null
+        return PlanWriteResult(planId = createdValue.planId, notes = notes)
+    }
+
+    /** 落库后按标题找回单元 id（承诺里的单元 + 待安排池），用于挂分集资源。 */
+    private fun unitIdsByTitle(plan: LearningPlanService, planId: String, weeks: List<String>): Map<String, String> {
+        val ids = mutableMapOf<String, String>()
+        weeks.forEach { week ->
+            runCatching { plan.week(planId, week) }.getOrNull()
+                ?.commitment?.units?.forEach { unit -> if (unit.id.isNotBlank()) ids[unit.title] = unit.id }
+        }
+        runCatching { plan.pool(planId) }.getOrNull().orEmpty().forEach { unit -> ids[unit.title] = unit.id }
+        return ids
+    }
+
+    /**
+     * 给 bvid 导入的每个单元挂一条分集资源：kind=bilibili，url 带 `?p=<page>`，locator 写「第 N 集」。
+     *
+     * 资源写失败不影响计划本身（计划已经建成），只把说明带进回执；失败原因聚合一条，避免刷屏。
+     */
+    private suspend fun writeBilibiliResources(
+        plan: LearningPlanService,
+        planId: String,
+        bvid: String,
+        courseUnits: List<CourseUnit>,
+        weeks: List<String>,
+    ): List<String> {
+        if (courseUnits.isEmpty()) return emptyList()
+        val idByTitle = unitIdsByTitle(plan, planId, weeks)
+        var written = 0
+        var missing = 0
+        val failures = mutableListOf<String>()
+        courseUnits.forEach { unit ->
+            val unitId = idByTitle[unit.draft.title]
+            if (unitId == null) {
+                missing++
+                return@forEach
+            }
+            val part = unit.part
+            val resource = ResourceDraft(
+                kind = "bilibili",
+                // 资源标题用原分集标题：单元标题是清洗后的学习点，这里是「这一集叫什么」，两边都要能对上。
+                title = part.title.trim().ifEmpty { "P" + part.page },
+                url = "https://www.bilibili.com/video/$bvid?p=" + part.page,
+                locator = buildString {
+                    append("第 ").append(part.page).append(" 集")
+                    if (part.durationText.isNotBlank()) append("（分集 ").append(part.durationText).append("）")
+                },
+                source = bvid,
+            )
+            val result = runCatching {
+                plan.setUnitResources(env(planId, "plan.resources"), planId, unitId, listOf(resource))
+            }.getOrNull()
+            if (result?.ok == true) written++ else failures += (result?.error?.message ?: "写入异常")
+        }
+        val notes = mutableListOf<String>()
+        if (written > 0) notes += "已给 $written 个单元挂上 B 站分集资源（点开能直接回到对应分集）"
+        if (missing > 0) notes += "$missing 个单元没找到落库后的 id，分集资源没写进去（不影响学习计划）"
+        if (failures.isNotEmpty()) {
+            notes += "${failures.size} 个单元的分集资源没写进去（" + failures.first().take(60) + "），不影响学习计划"
+        }
+        return notes
     }
 
     private fun env(planId: String?, origin: String) = CommandEnvelope(

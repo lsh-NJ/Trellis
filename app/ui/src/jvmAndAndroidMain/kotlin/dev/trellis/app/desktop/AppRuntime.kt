@@ -42,6 +42,7 @@ import dev.trellis.domain.plan.OverdueView
 import dev.trellis.domain.plan.PoolUnit
 import dev.trellis.domain.plan.ReviewView
 import dev.trellis.domain.plan.RhythmResult
+import dev.trellis.domain.plan.StageView
 import dev.trellis.domain.plan.UnitDraft
 import dev.trellis.domain.plan.WeekDay
 import dev.trellis.feature.learning.LearningPlanStore
@@ -3102,6 +3103,25 @@ class AppRuntime private constructor() {
     internal var planPendingReviewWeek by mutableStateOf<String?>(null)
         private set
 
+    /**
+     * 计划阶段（后端 `stages(planId)`）：阶段条与右侧阶段进度栏的数据来源。
+     *
+     * 阶段是「整份计划按大纲切成的几段」，不是周：`weekStart..weekEnd` 是 ISO 周号区间，
+     * 进度 `done/total` 由后端按承诺单元现算。读失败时退化成空表（页面隐藏阶段条），
+     * 不把整页拖进错误态。
+     */
+    internal var planStages by mutableStateOf<List<StageView>>(emptyList())
+        private set
+
+    /**
+     * 「今天可以把这一周总结先做了」的那一周（后端 `planState.reviewableWeek`）。
+     *
+     * 只在今天是本周最后一天、且本周还没复盘时给值；null = 现在不是总结的时机。
+     * 页面据此在周复盘卡里显示「生成本周总结」。
+     */
+    internal var planReviewableWeek by mutableStateOf<String?>(null)
+        private set
+
     private fun learningPlan(): LearningPlanService? {
         learningPlanService?.let { return it }
         val file = File(home, "plans/plan.db")
@@ -3390,8 +3410,11 @@ class AppRuntime private constructor() {
             todayDonePlanNodes = collectTodayDonePlanNodes(service)
             planCategories = planCategoryStore.load()
             val today = clock.today().toString()
+            // 放弃过的计划只保留在左栏里，不再当默认焦点：先落最后一个活跃计划，
+            // 没有活跃计划（全都放弃/结束了）才退回列表第一项。
             val planId = planFocusId?.takeIf { id -> planAll.any { it.id == id } }
                 ?: service.activePlanId()
+                ?: planAll.firstOrNull { it.status != "abandoned" }?.id
                 ?: planAll.firstOrNull()?.id
             planFocusId = planId
             learningPlanId = planId
@@ -3405,13 +3428,18 @@ class AppRuntime private constructor() {
                 planOverdue = null
                 planReview = null
                 planPendingReviewWeek = null
+                planStages = emptyList()
+                planReviewableWeek = null
                 planMessage = null
                 return
             }
             planRhythmReport = rhythmReports[planId]
             val state = service.planState(planId)
             planPendingReviewWeek = state.pendingReviewWeek
+            planReviewableWeek = state.reviewableWeek
             planDailyMinutes = state.dailyMinutes
+            // 阶段是页面上的「计划形状」，读失败只丢阶段条，不把整页拖进错误态。
+            planStages = runCatching { service.stages(planId) }.getOrElse { emptyList() }
             planOverdue = runCatching { service.overdue(planId, today) }.getOrNull()
 
             val map = service.map(planId)
@@ -4091,6 +4119,70 @@ class AppRuntime private constructor() {
         } else {
             planMessage = result?.error?.message ?: "复盘没生成，稍后再试。"
         }
+    }
+
+    /**
+     * 只刷新阶段条（AI 写完大纲/阶段后，计划页想立刻看到新的阶段划分时用）。
+     *
+     * 失败不打断整页：阶段是「计划形状」的附加信息，读不出来就退化成空表、隐藏阶段条。
+     */
+    internal fun refreshPlanStages() {
+        val service = learningPlan() ?: return
+        val planId = planFocusId ?: return
+        planStages = runCatching { service.stages(planId) }.getOrElse { emptyList() }
+    }
+
+    /**
+     * 周日提前生成「本周」总结（计划页「生成本周总结」按钮）。
+     *
+     * 和 [generatePlanReview] 走同一条命令；区别是不要求这一周已经结束——
+     * 后端 `reviewableWeek` 只在「今天是本周最后一天且还没复盘」时给值，
+     * 其余时间点这个按钮后端会拒绝，错误原样显示在页面上。
+     *
+     * 用 `suspend` 是为了和页面里的 `rememberCoroutineScope().launch { ... }` 对齐；
+     * 后端命令本身是同步 SQLite 写入，这里不额外切线程。
+     */
+    suspend fun generateWeekReview(week: String) {
+        val service = learningPlan() ?: return
+        val planId = planFocusId ?: service.activePlanId() ?: return
+        val result = runCatching {
+            service.generateReview(planAdjustCommand(planId), planId, week, clock.today().toString())
+        }.getOrNull()
+        if (result?.ok == true) {
+            refreshPlan()
+            planMessage = "本周总结已生成：$week"
+            tick += 1
+        } else {
+            planMessage = result?.error?.message ?: "总结没生成，稍后再试。"
+        }
+    }
+
+    /**
+     * 放弃计划（计划设置里的危险操作）。
+     *
+     * 后端把计划与 process 都置成 ended，另写 `abandoned_at`（事件 `plan.abandoned`），
+     * 所以左栏还能列出它、但不会再被排期；放弃后把焦点切走，避免停在「已结束」的页面上。
+     * 「放弃」不等于「删除」：历史 occurrence 与复盘都还在。
+     */
+    fun abandonPlan(planId: String) {
+        val service = learningPlan() ?: return
+        val result = runCatching {
+            service.abandonPlan(planAdjustCommand(planId), planId)
+        }.getOrNull()
+        if (result?.ok != true) {
+            planMessage = result?.error?.message ?: "放弃没成功，稍后再试。"
+            return
+        }
+        planSettingsOpen = false
+        if (planFocusId == planId) {
+            planFocusId = null
+            planSelectedWeek = null
+            planSelectedDay = null
+            planPendingSelected = false
+        }
+        refreshPlan()
+        planMessage = "已放弃这个计划；在左栏点它可以回来看，但它不会再排期。"
+        tick += 1
     }
 
     private fun planMoveOccurrence(occurrenceId: String, toDay: String, reason: String): Boolean {

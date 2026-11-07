@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Trellis · 计划页样片「折页周」</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/*
+  设计概念：折页周（Folded Week）
+  - 一周是一本折起来的册子：其余六天收成窄窄的「书脊」，只有选中的那天摊开成一页。
+  - 周 → 日的层级不靠两排卡片，而是靠「展开/折叠」这一个动作表达：周是整条带子，日是带子上被打开的那一折。
+  - 书脊本身也是信息：竖排日名 + 日期 + 一根按分钟量长的墨条 + 完成刻度，扫一眼就知道整周的负荷分布。
+  - 更上一层是「周轨」：整份计划的所有周排成一条细轨，当前周被点亮，阶段名写在轨道上方。
+*/
+:root{
+  --ink:#0d0f0e; --ink-2:#121513; --ink-3:#171b19;
+  --line:#232926; --line-2:#2e3632;
+  --paper:#e9e4d8; --paper-dim:#a8a397; --paper-mute:#6d6a62;
+  --jade:#5fc29a; --jade-dim:#2f6b55; --jade-glow:rgba(95,194,154,.14);
+  --amber:#e0a94f; --amber-dim:rgba(224,169,79,.16);
+  --serif:"Songti SC","Noto Serif SC","Source Han Serif SC","STSong",serif;
+  --sans:-apple-system,"PingFang SC","Noto Sans SC","Microsoft YaHei",sans-serif;
+  --mono:"SF Mono","JetBrains Mono","Menlo",monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--ink); color:var(--paper); font-family:var(--sans);
+  display:grid; grid-template-columns:72px 240px 1fr; overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+/* 细颗粒纸感 */
+body::after{content:"";position:fixed;inset:0;pointer-events:none;opacity:.035;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");}
+
+/* ---------- 导航 ---------- */
+.rail{border-right:1px solid var(--line);display:flex;flex-direction:column;align-items:center;padding:22px 0;gap:6px}
+.logo{width:36px;height:36px;border-radius:9px;background:var(--jade-dim);display:grid;place-items:center;
+  font-family:var(--serif);font-weight:700;font-size:20px;color:var(--paper);margin-bottom:22px}
+.nav{width:52px;padding:9px 0;border-radius:10px;text-align:center;font-size:11px;color:var(--paper-mute);cursor:pointer}
+.nav i{display:block;font-style:normal;font-size:15px;margin-bottom:3px}
+.nav.on{color:var(--paper);background:var(--ink-3)}
+.nav.on i{color:var(--jade)}
+
+/* ---------- 计划列表 ---------- */
+.plans{border-right:1px solid var(--line);padding:30px 14px;background:var(--ink-2)}
+.plans h3{font-size:12px;font-weight:500;color:var(--paper-mute);letter-spacing:.12em;padding:0 10px 14px}
+.plan{padding:11px 10px;border-radius:8px;cursor:pointer;display:grid;grid-template-columns:1fr auto;gap:2px 8px;align-items:center}
+.plan b{font-weight:500;font-size:13.5px;color:var(--paper-dim)}
+.plan small{grid-column:1;font-size:11px;color:var(--paper-mute)}
+.plan .mini{grid-row:1/3;grid-column:2;width:30px;height:3px;background:var(--line-2);border-radius:2px;overflow:hidden}
+.plan .mini span{display:block;height:100%;background:var(--paper-mute)}
+.plan.on{background:var(--ink-3)}
+.plan.on b{color:var(--paper)}
+.plan.on .mini span{background:var(--jade)}
+
+/* ---------- 主区 ---------- */
+main{overflow:auto;padding:40px 56px 48px;display:flex;flex-direction:column;gap:30px;min-width:0}
+.head{display:flex;align-items:flex-end;justify-content:space-between;gap:24px}
+.eyebrow{font-size:11px;letter-spacing:.24em;color:var(--jade);margin-bottom:10px}
+.title{font-family:var(--serif);font-size:38px;font-weight:600;letter-spacing:.02em;line-height:1.1}
+.sub{margin-top:10px;color:var(--paper-mute);font-size:13px}
+.sub em{font-style:normal;color:var(--paper-dim)}
+.actions{display:flex;gap:4px}
+.chip{font-size:12.5px;color:var(--paper-dim);padding:7px 12px;border-radius:999px;cursor:pointer;border:1px solid transparent}
+.chip:hover{border-color:var(--line-2);color:var(--paper)}
+.chip sup{color:var(--jade);font-family:var(--mono);font-size:10px;margin-left:2px}
+
+/* ---------- 周轨：整份计划 ---------- */
+.track{position:relative}
+.phases{display:grid;grid-template-columns:2fr 3fr 2fr 1fr;font-size:11px;color:var(--paper-mute);margin-bottom:8px}
+.phases span{border-left:1px solid var(--line-2);padding-left:8px}
+.phases span.cur{color:var(--paper-dim)}
+.weeks{display:grid;grid-template-columns:repeat(8,1fr);gap:4px}
+.wk{height:30px;border-radius:4px;background:var(--ink-3);position:relative;cursor:pointer;overflow:hidden;
+  display:flex;align-items:center;padding:0 9px;font-family:var(--mono);font-size:10.5px;color:var(--paper-mute)}
+.wk .fill{position:absolute;inset:0 auto 0 0;background:var(--line-2)}
+.wk span{position:relative}
+.wk.cur{background:var(--jade-glow);color:var(--paper);box-shadow:inset 0 0 0 1px var(--jade-dim)}
+.wk.cur .fill{background:var(--jade-dim)}
+.wk.cur::after{content:"";position:absolute;bottom:-9px;left:50%;width:7px;height:7px;background:var(--jade);
+  transform:translateX(-50%) rotate(45deg)}
+
+/* ---------- 折页周 ---------- */
+.folio{display:grid;grid-template-columns:1fr 280px;border:1px solid var(--line);border-radius:16px;background:var(--ink-2);
+  min-height:560px;overflow:hidden}
+.strip{display:flex;min-width:0}
+.day{flex:0 0 74px;border-right:1px solid var(--line);position:relative;cursor:pointer;
+  transition:flex-basis .55s cubic-bezier(.65,0,.2,1),background .3s;overflow:hidden}
+.day:last-child{border-right:none}
+.day:hover:not(.open){background:var(--ink-3)}
+.day.open{flex:1 1 auto;cursor:default;background:var(--ink)}
+
+/* 书脊（折起来的样子） */
+.spine{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;padding:20px 0 18px;
+  transition:opacity .25s}
+.day.open .spine{opacity:0;pointer-events:none}
+.spine .dd{font-family:var(--mono);font-size:20px;color:var(--paper-dim)}
+.spine .wd{writing-mode:vertical-rl;font-family:var(--serif);font-size:15px;letter-spacing:.4em;margin-top:12px;color:var(--paper-mute)}
+.spine .gauge{flex:1;width:4px;margin:18px 0 12px;border-radius:2px;background:var(--line);position:relative;display:flex;flex-direction:column-reverse}
+.spine .gauge i{display:block;width:100%;border-radius:2px;background:var(--paper-mute)}
+.spine .gauge i.done{background:var(--jade)}
+.spine .cnt{font-family:var(--mono);font-size:11px;color:var(--paper-mute)}
+.spine .cnt b{color:var(--jade);font-weight:400}
+.day.empty .spine .dd{color:var(--paper-mute)}
+.day.today .spine .dd{color:var(--amber)}
+.day.today .spine::before{content:"";position:absolute;top:0;left:0;right:0;height:2px;background:var(--amber)}
+
+/* 摊开的那一页 */
+.page{position:absolute;inset:0;padding:30px 36px 26px;display:flex;flex-direction:column;opacity:0;
+  transform:translateX(12px);transition:opacity .35s .2s,transform .45s .15s;pointer-events:none;min-width:520px}
+.day.open .page{opacity:1;transform:none;pointer-events:auto}
+.page-head{display:flex;align-items:baseline;gap:18px}
+.big{font-family:var(--serif);font-size:84px;line-height:.82;font-weight:600;letter-spacing:-.02em}
+.page-head .meta{display:flex;flex-direction:column;gap:6px}
+.page-head .meta b{font-family:var(--serif);font-size:20px;font-weight:500}
+.page-head .meta small{font-size:12px;color:var(--paper-mute);font-family:var(--mono)}
+.badge{font-size:10.5px;letter-spacing:.2em;color:var(--amber);border:1px solid var(--amber-dim);background:var(--amber-dim);
+  padding:2px 8px;border-radius:999px;align-self:flex-start}
+.load{margin-left:auto;text-align:right}
+.load .num{font-family:var(--mono);font-size:26px}
+.load .num small{font-size:12px;color:var(--paper-mute);margin-left:3px}
+.load .bar{width:160px;height:4px;background:var(--line);border-radius:2px;margin-top:8px;position:relative}
+.load .bar i{position:absolute;inset:0 auto 0 0;background:var(--amber);border-radius:2px}
+.load .bar::after{content:"";position:absolute;left:60%;top:-4px;bottom:-4px;width:1px;background:var(--paper-mute)}
+.load .hint{font-size:11px;color:var(--paper-mute);margin-top:6px}
+
+.lede{margin:26px 0 18px;font-family:var(--serif);font-size:16px;color:var(--paper-dim);line-height:1.7;max-width:46em}
+.lede mark{background:none;color:var(--paper);border-bottom:1px solid var(--jade)}
+
+/* 时间线式条目 */
+.items{list-style:none;flex:1;overflow:auto;padding-right:6px;margin-right:-6px;position:relative}
+.items::before{content:"";position:absolute;left:11px;top:8px;bottom:8px;width:1px;background:var(--line-2)}
+.item{display:grid;grid-template-columns:24px 1fr auto;gap:16px;align-items:center;padding:11px 0;position:relative}
+.item + .item{border-top:1px dashed transparent}
+.dot{width:23px;height:23px;border-radius:50%;border:1.5px solid var(--paper-mute);background:var(--ink);
+  position:relative;z-index:1;cursor:pointer;transition:.2s;display:grid;place-items:center}
+.dot:hover{border-color:var(--jade)}
+.item.done .dot{background:var(--jade);border-color:var(--jade)}
+.item.done .dot::after{content:"";width:6px;height:10px;border:solid var(--ink);border-width:0 2px 2px 0;transform:rotate(45deg) translate(-1px,-1px)}
+.item.next .dot{border-color:var(--amber);box-shadow:0 0 0 5px var(--amber-dim)}
+.item .name{font-size:15px;display:flex;align-items:baseline;gap:10px}
+.item .name .no{font-family:var(--mono);font-size:11px;color:var(--paper-mute);width:18px}
+.item.done .name{color:var(--paper-mute);text-decoration:line-through;text-decoration-color:var(--line-2)}
+.item .tag{font-size:10.5px;color:var(--paper-mute);border:1px solid var(--line-2);padding:1px 7px;border-radius:4px}
+.item .tag.practice{color:var(--jade);border-color:var(--jade-dim)}
+.item .tag.review{color:var(--amber);border-color:var(--amber-dim)}
+.item .min{font-family:var(--mono);font-size:12px;color:var(--paper-mute);display:flex;align-items:center;gap:10px}
+.item .min i{display:inline-block;height:3px;border-radius:2px;background:var(--line-2)}
+.item.next .name{color:var(--paper)}
+.item.next .min i{background:var(--amber)}
+
+.empty-page{flex:1;display:grid;place-items:center;text-align:center;color:var(--paper-mute)}
+.empty-page p{font-family:var(--serif);font-size:18px;color:var(--paper-dim);margin-bottom:8px}
+
+/* ---------- 本周边栏 ---------- */
+.aside{border-left:1px solid var(--line);padding:30px 26px;display:flex;flex-direction:column;gap:26px;background:var(--ink-2)}
+.aside h4{font-size:11px;letter-spacing:.22em;color:var(--paper-mute);font-weight:500;margin-bottom:12px}
+.wk-title{font-family:var(--serif);font-size:24px;font-weight:600}
+.wk-range{font-family:var(--mono);font-size:12px;color:var(--paper-mute);margin-top:6px}
+.ring-row{display:flex;align-items:center;gap:16px}
+.ring-row svg{flex:none}
+.ring-row .r-num{font-family:var(--mono);font-size:22px}
+.ring-row .r-cap{font-size:12px;color:var(--paper-mute);margin-top:3px}
+.heat{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}
+.heat div{aspect-ratio:1;border-radius:4px;background:var(--ink-3);position:relative}
+.heat div.l1{background:#1d3329}.heat div.l2{background:#245040}.heat div.l3{background:var(--jade-dim)}
+.heat div.t{box-shadow:inset 0 0 0 1.5px var(--amber)}
+.heat-lbl{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;font-size:10px;color:var(--paper-mute);text-align:center;margin-top:6px}
+.focus li{list-style:none;font-size:13px;color:var(--paper-dim);padding:7px 0;border-bottom:1px solid var(--line);display:flex;gap:10px}
+.focus li::before{content:"—";color:var(--jade-dim)}
+.note{font-family:var(--serif);font-size:13.5px;line-height:1.75;color:var(--paper-dim);border-left:2px solid var(--jade-dim);padding-left:12px}
+.note small{display:block;font-family:var(--sans);font-size:11px;color:var(--paper-mute);margin-top:8px}
+
+.foot{font-size:11.5px;color:var(--paper-mute);display:flex;gap:22px}
+.foot kbd{font-family:var(--mono);font-size:10.5px;border:1px solid var(--line-2);border-radius:4px;padding:1px 5px;margin-right:4px}
+</style>
+</head>
+<body>
+
+<nav class="rail">
+  <div class="logo">T</div>
+  <div class="nav"><i>☰</i>任务</div>
+  <div class="nav on"><i>▦</i>计划</div>
+  <div class="nav"><i>❖</i>知识库</div>
+  <div class="nav"><i>◫</i>对话</div>
+  <div class="nav"><i>▤</i>活动</div>
+  <div class="nav"><i>≡</i>设置</div>
+</nav>
+
+<aside class="plans">
+  <h3>学习计划 · 6</h3>
+  <div class="plan"><b>计算机网络速通</b><small>第 3 / 4 周</small><div class="mini"><span style="width:72%"></span></div></div>
+  <div class="plan"><b>Linux 编程速通</b><small>第 2 / 5 周</small><div class="mini"><span style="width:35%"></span></div></div>
+  <div class="plan"><b>AI 应用工程师面试冲刺</b><small>第 1 / 3 周</small><div class="mini"><span style="width:12%"></span></div></div>
+  <div class="plan"><b>数据结构两周速通</b><small>已完成</small><div class="mini"><span style="width:100%"></span></div></div>
+  <div class="plan on"><b>RAG 项目从零入门</b><small>第 1 / 8 周 · 进行中</small><div class="mini"><span style="width:6%"></span></div></div>
+  <div class="plan"><b>AI 应用工程师成长路线</b><small>阶段 1 / 4</small><div class="mini"><span style="width:20%"></span></div></div>
+</aside>
+
+<main>
+  <header class="head">
+    <div>
+      <div class="eyebrow">LEARNING PLAN · 第一阶段 · 认识 RAG</div>
+      <h1 class="title">RAG 项目从零入门</h1>
+      <p class="sub">挂在目标 <em>「能独立搭一个可评估的 RAG 系统」</em> 下 · 每天约 60 分钟 · 预计 12 月 27 日走完</p>
+    </div>
+    <div class="actions">
+      <span class="chip">目标<sup>1</sup></span>
+      <span class="chip">计划文档</span>
+      <span class="chip">重排<sup>4</sup></span>
+      <span class="chip">设置</span>
+    </div>
+  </header>
+
+  <!-- 周轨：整份计划在一条轨道上 -->
+  <section class="track">
+    <div class="phases">
+      <span class="cur">认识 RAG</span><span>检索与向量</span><span>生成与评估</span><span>项目</span>
+    </div>
+    <div class="weeks">
+      <div class="wk cur"><div class="fill" style="width:6%"></div><span>W1 · 11.02</span></div>
+      <div class="wk"><div class="fill" style="width:0"></div><span>W2</span></div>
+      <div class="wk"><span>W3</span></div>
+      <div class="wk"><span>W4</span></div>
+      <div class="wk"><span>W5</span></div>
+      <div class="wk"><span>W6</span></div>
+      <div class="wk"><span>W7</span></div>
+      <div class="wk"><span>W8</span></div>
+    </div>
+  </section>
+
+  <!-- 折页周 -->
+  <section class="folio">
+    <div class="strip" id="strip"></div>
+
+    <aside class="aside">
+      <div>
+        <h4>本 周</h4>
+        <div class="wk-title">第 1 周 · 第 1 章</div>
+        <div class="wk-range">11.02 — 11.08 · 17 件 · 约 3 小时</div>
+      </div>
+      <div class="ring-row">
+        <svg width="62" height="62" viewBox="0 0 62 62">
+          <circle cx="31" cy="31" r="26" fill="none" stroke="#232926" stroke-width="5"/>
+          <circle cx="31" cy="31" r="26" fill="none" stroke="#5fc29a" stroke-width="5" stroke-linecap="round"
+            stroke-dasharray="163.4" stroke-dashoffset="144" transform="rotate(-90 31 31)"/>
+        </svg>
+        <div><div class="r-num" id="doneNum">2 / 17</div><div class="r-cap">本周已完成 · 前五天空着，周末压了 17 件</div></div>
+      </div>
+      <div>
+        <h4>负 荷</h4>
+        <div class="heat" id="heat"></div>
+        <div class="heat-lbl"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div>
+      </div>
+      <div>
+        <h4>本 周 重 点</h4>
+        <ul class="focus">
+          <li>RAG 的基本链路：切分 → 嵌入 → 检索 → 生成</li>
+          <li>动手跑通一次最小向量检索</li>
+          <li>周日结束前写一页复盘</li>
+        </ul>
+      </div>
+      <div class="note">
+        今天的量是平时的两倍多，建议把 9 之后的几节挪到下周一、二——那两天还空着。
+        <small>— 管家 · 08:30</small>
+      </div>
+    </aside>
+  </section>
+
+  <div class="foot"><span><kbd>←</kbd><kbd>→</kbd>翻天</span><span><kbd>空格</kbd>勾掉下一件</span><span>点任一书脊即可展开那天</span></div>
+</main>
+
+<script>
+const days = [
+  {wd:"周一", d:"02", items:[]},
+  {wd:"周二", d:"03", items:[]},
+  {wd:"周三", d:"04", items:[]},
+  {wd:"周四", d:"05", items:[]},
+  {wd:"周五", d:"06", items:[]},
+  {wd:"周六", d:"07", items:[
+    ["1","RAG 介绍",12,"学习",1],["2","RAG 工作流程介绍",14,"学习",1],
+    ["3","RAG 系统搭建流程（上）",16,"学习",0],["4","RAG 系统搭建流程（下）",15,"学习",0]]},
+  {wd:"周日", d:"08", today:true, items:[
+    ["5","Embeddings 处理",11,"学习"],["6","向量间相似度计算",11,"学习"],
+    ["7","文档的加载和分割",11,"学习"],["8","关键字搜索",15,"学习"],
+    ["8·练","用 BM25 搜一遍自己的笔记",20,"练习"],["9","混合检索",13,"学习"],
+    ["10","重排序 Rerank",12,"学习"],["11","查询改写",10,"学习"],
+    ["12","上下文压缩",9,"学习"],["13","引用与溯源",10,"学习"],
+    ["14","RAG 评估指标",14,"学习"],["15","常见失败模式",8,"学习"],
+    ["回顾","本周复盘：画出一条完整链路",15,"复习"]]},
+];
+const BUDGET = 60, MAXMIN = 180;
+const kindCls = {"学习":"","练习":"practice","复习":"review"};
+let open = 6;
+
+function mins(it){return it.reduce((s,x)=>s+x[2],0)}
+function render(){
+  const strip = document.getElementById("strip");
+  strip.innerHTML = "";
+  days.forEach((d,i)=>{
+    const total = mins(d.items), done = d.items.filter(x=>x[4]).length;
+    const el = document.createElement("div");
+    el.className = "day" + (i===open?" open":"") + (d.today?" today":"") + (d.items.length?"":" empty");
+    // 书脊：墨条按分钟画，已完成的段染绿
+    const segs = d.items.map(x=>`<i class="${x[4]?"done":""}" style="height:${x[2]/MAXMIN*100}%;margin-top:2px"></i>`).join("");
+    const firstTodo = d.items.findIndex(x=>!x[4]);
+    el.innerHTML = `
+      <div class="spine">
+        <div class="dd">${d.d}</div><div class="wd">${d.wd}</div>
+        <div class="gauge">${segs}</div>
+        <div class="cnt">${d.items.length?`<b>${done}</b>/${d.items.length}`:"·"}</div>
+      </div>
+      <div class="page">
+        <div class="page-head">
+          <div class="big">${d.d}</div>
+          <div class="meta">
+            ${d.today?'<span class="badge">今 天</span>':''}
+            <b>${d.wd}</b><small>2026 · 11 · ${d.d}</small>
+          </div>
+          ${d.items.length?`<div class="load">
+            <div class="num">${total}<small>/ ${BUDGET} 分钟</small></div>
+            <div class="bar"><i style="width:${Math.min(total/(BUDGET/0.6),1)*100}%"></i></div>
+            <div class="hint">${total>BUDGET?`超出每日预算 ${total-BUDGET} 分钟`:"在预算之内"}</div>
+          </div>`:""}
+        </div>
+        ${d.items.length?`
+          <p class="lede">今天 ${d.items.length} 件，约 ${Math.round(total/6)/10} 小时。先做 <mark>${d.items[firstTodo]?.[1]??"—"}</mark>，${d.today?"练习放在第 8 节之后趁热做。":"剩下的顺着往下走。"}</p>
+          <ol class="items">${d.items.map((x,j)=>`
+            <li class="item ${x[4]?"done":""} ${j===firstTodo?"next":""}" data-j="${j}">
+              <span class="dot"></span>
+              <span class="name"><span class="no">${x[0]}</span>${x[1]} ${x[3]!=="学习"?`<span class="tag ${kindCls[x[3]]}">${x[3]}</span>`:""}</span>
+              <span class="min"><i style="width:${x[2]*2.4}px"></i>${x[2]}′</span>
+            </li>`).join("")}</ol>`
+        :`<div class="empty-page"><div><p>这一天还空着</p>把右侧「重排」里的条目拖到这里，或让管家帮你摊匀。</div></div>`}
+      </div>`;
+    el.addEventListener("click", e=>{
+      const dot = e.target.closest(".dot");
+      if(dot && i===open){ const j=+dot.parentElement.dataset.j; d.items[j][4]=!d.items[j][4]; render(); return; }
+      if(i!==open){ open=i; render(); }
+    });
+    strip.appendChild(el);
+  });
+  // 侧栏
+  const all = days.flatMap(d=>d.items), dn = all.filter(x=>x[4]).length;
+  document.getElementById("doneNum").textContent = `${dn} / ${all.length}`;
+  document.querySelector(".ring-row circle:last-child").setAttribute("stroke-dashoffset", 163.4*(1-dn/all.length));
+  document.getElementById("heat").innerHTML = days.map((d,i)=>{
+    const m = mins(d.items), l = m===0?"":m<40?"l1":m<90?"l2":"l3";
+    return `<div class="${l} ${d.today?"t":""}" title="${d.wd} ${m} 分钟"></div>`}).join("");
+}
+document.addEventListener("keydown", e=>{
+  if(e.key==="ArrowLeft"&&open>0){open--;render()}
+  if(e.key==="ArrowRight"&&open<6){open++;render()}
+  if(e.key===" "){e.preventDefault();const it=days[open].items.find(x=>!x[4]);if(it){it[4]=1;render()}}
+});
+render();
+</script>
+</body>
+</html>

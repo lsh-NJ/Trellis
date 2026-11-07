@@ -39,6 +39,11 @@ data class DayOccurrence(
     val unitId: String? = null,
     /** 单元类型：study 学习 / practice 实践 / review 复习；待办型 occurrence 按 learn 算。 */
     val kind: String = "study",
+    /**
+     * 这个单元的资料（B 站分集 / 网页 / 文档…），按单元批量取好，按写入顺序排列。
+     * 天条卡片上可以直接点开；待办型 occurrence 没有单元，是空列表。
+     */
+    val resources: List<UnitResourceView> = emptyList(),
 )
 
 @Serializable
@@ -78,6 +83,8 @@ data class CommitmentUnitView(
     val state: String,
     val stateLabel: String,
     val kind: String = "study",
+    /** 单元资料（B 站分集 / 网页 / 文档…），周承诺卡片上不用再逐条查。 */
+    val resources: List<UnitResourceView> = emptyList(),
 )
 
 @Serializable
@@ -95,6 +102,8 @@ data class WeekDayItem(
     val minutes: Int,
     val carried: Boolean = false,
     val kind: String = "study",
+    /** 单元资料；周视图的天条里也能直接点开。 */
+    val resources: List<UnitResourceView> = emptyList(),
 )
 
 @Serializable
@@ -128,6 +137,39 @@ data class LearningPlanInfo(
     val id: String,
     val title: String,
     val status: String,
+)
+
+/**
+ * 单元的一条资料（`unit_resource` 表）：B 站分集、网页、文档或其它。
+ *
+ * 一个单元可以有多条：比如「看视频 + 配套讲义 + 课后题」。后端按单元批量取，
+ * 视图里直接带着走，UI 不用逐条再查。
+ */
+@Serializable
+data class UnitResourceView(
+    /** bilibili | web | doc | other */
+    val kind: String,
+    val title: String,
+    val url: String = "",
+    /** 站内定位：B 站分集号 / 文档页码 / 锚点；没有就空串。 */
+    val locator: String = "",
+)
+
+/**
+ * 学习阶段（`plan_stage` 表）：把计划按 ISO 周区间切成「第 1 阶段 / 第 2 阶段」。
+ *
+ * 阶段是「由面到点」中间那层：目标 > 阶段（周区间 + 重点）> 每周单元。
+ * [done] / [total] 是这个周区间内承诺单元的完成数 / 总数，由 occurrence 状态现算。
+ */
+@Serializable
+data class StageView(
+    val id: String,
+    val name: String,
+    val weekStart: String,
+    val weekEnd: String,
+    val focus: String = "",
+    val done: Int = 0,
+    val total: Int = 0,
 )
 
 /**
@@ -248,6 +290,14 @@ data class PlanStateView(
      * 前端只能猜「上一周」，而「上一周」在跨周/补周之后不一定对得上。
      */
     val pendingReviewWeek: String? = null,
+    /**
+     * 周日当天可以把「这一周」的总结先做了：今天是本周最后一天、且本周还没生成复盘时，
+     * 给出本周的周号（否则 null）。
+     *
+     * 和 [pendingReviewWeek] 是两件事：后者是「过去某周欠着复盘」，跨周之后才出现；
+     * 前者是「现在就到期了」，让计划页在周日当天显示「生成本周总结」。
+     */
+    val reviewableWeek: String? = null,
     val carryPending: Int,
     val title: String = "",
     /** 计划里「每天投入多少分钟」：由 `process.weekly_capacity_minutes / 7` 反推；没设就是 null。 */

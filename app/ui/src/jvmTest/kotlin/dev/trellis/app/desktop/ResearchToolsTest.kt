@@ -23,10 +23,10 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * `research_plan` 的回归测试：只有一句目标时，要落成「空壳计划 + 大纲文档 + 目标/里程碑 + 时长建议」。
+ * `research_plan` 的回归测试：只有一句目标时，要落成「空壳计划 + 阶段表 + 大纲文档 + 目标/里程碑 + 排好的第一周」。
  *
- * 单元不在这一步排（拆阶段、建空壳是这一步的全部职责）；具体单元留给 plan_week。
- * 失败路径必须明确报错且不留半成品计划。
+ * 建完计划不能留一个空周：同一回合要复用 plan_week 的共享逻辑把第一周排出来（先写周文档、再铺到天）；
+ * 后续周才留给 plan_week。失败路径必须明确报错且不留半成品计划。
  */
 class ResearchToolsTest {
 
@@ -49,11 +49,15 @@ class ResearchToolsTest {
         override fun simulatedDate(): LocalDate? = null
     }
 
-    private class FakeLlm(private val reply: String, private val delayMs: Long = 0) : LlmClient {
+    /** 按调用次序回话：第 1 次是阶段表，第 2 次是第一周的条目。 */
+    private class FakeLlm(private val replies: List<String>, private val delayMs: Long = 0) : LlmClient {
         val seen = mutableListOf<List<LlmMessage>>()
+        private var calls = 0
 
         override suspend fun complete(messages: List<LlmMessage>): String {
             seen += messages
+            val reply = replies.getOrElse(calls) { replies.last() }
+            calls++
             if (delayMs > 0) delay(delayMs)
             return reply
         }
@@ -105,6 +109,7 @@ class ResearchToolsTest {
         llmReply: String,
         delayMs: Long = 0,
         research: ResearchGateway? = null,
+        weekReply: String = weekItemsJson(),
     ): Harness {
         val home = Files.createTempDirectory("research-tools").toFile()
         val clock = FixedClock(wednesday, zone)
@@ -114,7 +119,7 @@ class ResearchToolsTest {
             zone,
         )
         val docStore = PlanDocStore(home)
-        val llm = FakeLlm(llmReply, delayMs)
+        val llm = FakeLlm(listOf(llmReply, weekReply), delayMs)
         val tools = ResearchTools(
             service = { service },
             planDocStore = { docStore },
@@ -137,6 +142,14 @@ class ResearchToolsTest {
             """{"name":"做一个可运行的小项目","weeks":2,"focus":"用真实数据做一个能跑的服务"}, """ +
             """{"name":"收尾与复盘","weeks":1,"focus":"补弱项、重做错题"}""" +
             """]"""
+
+    /** research_plan 排第一周时模型给的内容（同一次调用里的第二次 LLM）。 */
+    private fun weekItemsJson(): String =
+        """{"focus":"命令行与 Python 起步","items":[""" +
+            """{"title":"命令行 30 讲","chapter":"基础","kind":"study","minutes":30}, """ +
+            """{"title":"写一个最小 RAG","chapter":"实践","kind":"practice","minutes":45}, """ +
+            """{"title":"本周复盘","chapter":"复盘","kind":"review","minutes":15}""" +
+            """]}"""
 
     private suspend fun call(harness: Harness, deadline: String? = null) = harness.tools.all
         .single { it.name == "research_plan" }
@@ -163,14 +176,37 @@ class ResearchToolsTest {
         val planId = harness.service.activePlanId()
         assertNotNull(planId, "空壳计划要成为进行中的计划")
         assertEquals(1, harness.service.plans().size)
-        assertTrue(harness.service.pool(planId).isEmpty(), "空壳计划还没有单元")
-        assertTrue(harness.service.map(planId).weeks.isEmpty(), "空壳计划还没有承诺")
         assertTrue(result.content.contains("空壳") && result.content.contains("每天"), result.content)
 
+        // 阶段区间落库：从本周起按各阶段周数依次铺（2+2+1 周）。
+        val stages = harness.service.stages(planId)
+        assertEquals(3, stages.size, stages.toString())
+        assertEquals(listOf("基础与工具", "做一个可运行的小项目", "收尾与复盘"), stages.map { it.name })
+        assertEquals(thisWeek, stages.first().weekStart)
+        assertEquals("2026-W46", stages[0].weekEnd)
+        assertEquals("2026-W47", stages[1].weekStart)
+        assertEquals("2026-W49", stages[2].weekEnd)
+        assertTrue(stages.all { it.weekStart <= it.weekEnd })
+
+        // 大纲文档照旧。
         val doc = harness.docStore.read(planId)
         assertNotNull(doc, "大纲文档要写出来")
         assertTrue(doc.contains("# 目标与验收"), doc)
         assertTrue(doc.contains("基础与工具"), doc)
+
+        // 第一周必须已经排好：有单元、有 occurrence、有周文档，回执要说清。
+        val week = harness.service.week(planId, thisWeek)
+        assertTrue(week.commitment.units.isNotEmpty(), "第一周要有单元：" + week.commitment.summary)
+        assertEquals(
+            setOf("命令行 30 讲", "写一个最小 RAG", "本周复盘"),
+            week.commitment.units.map { it.title }.toSet(),
+        )
+        assertTrue(week.days.any { it.items.isNotEmpty() }, "第一周要铺到天")
+        val weekDoc = harness.docStore.readWeek(planId, thisWeek)
+        assertNotNull(weekDoc, "第一周的周文档要写出来")
+        assertTrue(weekDoc.contains("命令行 30 讲"), weekDoc)
+        assertTrue(weekDoc.contains("本周重点"), weekDoc)
+        assertTrue(result.content.contains("第一周") && result.content.contains("已经排好"), result.content)
 
         val goal = harness.service.goals().singleOrNull()
         assertNotNull(goal, "要顺手建一个目标")
@@ -186,7 +222,7 @@ class ResearchToolsTest {
         assertFalse(result.isError, result.content)
         assertEquals("我想当 AI 应用工程师", research.goalRequested)
 
-        val prompt = harness.llm.seen.last().joinToString("\n") { it.content }
+        val prompt = harness.llm.seen.first().joinToString("\n") { it.content }
         assertTrue(prompt.contains("<research_sources>"), "资料要进提示词：$prompt")
         assertTrue(prompt.contains("AI 应用工程师 学习路线"), prompt)
         assertTrue(prompt.contains("RAG"), prompt)
