@@ -45,6 +45,20 @@ internal class PlanDatabase private constructor(val connection: Connection) : Au
             }
         }
         ensureColumn("process", "goal_id", "ALTER TABLE process ADD COLUMN goal_id TEXT NULL")
+        val addedUnitKind = ensureColumn(
+            "plan_unit",
+            "kind",
+            "ALTER TABLE plan_unit ADD COLUMN kind TEXT NOT NULL DEFAULT 'study'",
+        )
+        if (addedUnitKind) {
+            // 视图是在建库时按当时的表结构生成的：旧库补了列之后必须重建视图，
+            // 否则 v_occurrence_detail / v_week_commitment 里会少一列，查询直接报错。
+            connection.createStatement().use { st ->
+                st.execute("DROP VIEW IF EXISTS v_occurrence_detail")
+                st.execute("DROP VIEW IF EXISTS v_week_commitment")
+                PLAN_SCHEMA_V1.filter { it.contains("CREATE VIEW IF NOT EXISTS v_") }.forEach { st.execute(it) }
+            }
+        }
 
         if (applied == 0) {
             // `INSERT OR IGNORE` 而不是先查再插：手机上启动时计划库会被开两次
@@ -62,14 +76,16 @@ internal class PlanDatabase private constructor(val connection: Connection) : Au
 
 
     /** 旧库缺列时补上；新库在建表时就带了，这里查一下再决定。 */
-    private fun ensureColumn(table: String, column: String, ddl: String) {
+    private fun ensureColumn(table: String, column: String, ddl: String): Boolean {
         val existing = mutableSetOf<String>()
         connection.createStatement().use { st ->
             st.executeQuery("PRAGMA table_info($table)").use { rs ->
                 while (rs.next()) existing += rs.getString("name").lowercase()
             }
         }
-        if (column.lowercase() !in existing) connection.createStatement().use { st -> st.execute(ddl) }
+        if (column.lowercase() in existing) return false
+        connection.createStatement().use { st -> st.execute(ddl) }
+        return true
     }
 
     override fun close() = connection.close()

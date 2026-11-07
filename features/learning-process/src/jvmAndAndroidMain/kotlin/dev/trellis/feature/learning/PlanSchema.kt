@@ -69,6 +69,7 @@ internal val PLAN_SCHEMA_V1: List<String> = listOf(
         "chapter TEXT NOT NULL, title TEXT NOT NULL, sort_order INTEGER NOT NULL, " +
         "estimate_minutes INTEGER NOT NULL DEFAULT 25 CHECK (estimate_minutes BETWEEN 10 AND 45), " +
         "min_version_minutes INTEGER NOT NULL DEFAULT 10 CHECK (min_version_minutes BETWEEN 5 AND 15), " +
+        "kind TEXT NOT NULL DEFAULT 'study' CHECK (kind IN ('study','practice','review')), " +
         "material_segment_id TEXT NULL REFERENCES segment(id), created_at TEXT NOT NULL, " +
         "UNIQUE (plan_version_id, sort_order))",
     "CREATE TABLE IF NOT EXISTS commitment (" +
@@ -181,7 +182,7 @@ internal val PLAN_SCHEMA_V1: List<String> = listOf(
     "CREATE VIEW IF NOT EXISTS v_occurrence_detail AS SELECT " +
         "o.id, o.day, o.status, o.mode, o.estimate_minutes, o.note, o.moved_from, o.carried_from, " +
         "o.superseded_by, o.todo_id, o.unit_id, o.commitment_id, o.created_at, " +
-        "u.title AS unit_title, u.chapter, u.min_version_minutes, " +
+        "u.title AS unit_title, u.chapter, u.min_version_minutes, u.kind AS unit_kind, " +
         "c.week, pv.plan_id, pv.id AS plan_version_id, t.title AS todo_title " +
         "FROM occurrence o " +
         "LEFT JOIN plan_unit u ON u.id = o.unit_id " +
@@ -190,7 +191,7 @@ internal val PLAN_SCHEMA_V1: List<String> = listOf(
         "LEFT JOIN todo t ON t.id = o.todo_id",
     "CREATE VIEW IF NOT EXISTS v_week_commitment AS SELECT " +
         "c.id AS commitment_id, c.week, pv.plan_id, pv.id AS plan_version_id, " +
-        "cu.unit_id, cu.sort_order, u.chapter, u.title, u.estimate_minutes " +
+        "cu.unit_id, cu.sort_order, u.chapter, u.title, u.estimate_minutes, u.kind " +
         "FROM commitment c JOIN commitment_unit cu ON cu.commitment_id = c.id " +
         "JOIN plan_unit u ON u.id = cu.unit_id JOIN plan_version pv ON pv.id = c.plan_version_id",
     "PRAGMA user_version = 1",

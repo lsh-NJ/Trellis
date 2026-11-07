@@ -301,13 +301,13 @@ internal class SqliteLearningPlanService(
     internal fun unitRow(unitId: String): UnitRow? =
         connection.prepareStatement(
             "SELECT u.id, u.plan_version_id, u.chapter, u.title, u.estimate_minutes, u.min_version_minutes, " +
-                "u.material_segment_id FROM plan_unit u WHERE u.id = ?",
+                "u.material_segment_id, u.kind FROM plan_unit u WHERE u.id = ?",
         ).use { ps ->
             ps.setString(1, unitId)
             ps.executeQuery().use { rs ->
                 if (rs.next()) UnitRow(
                     rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
-                    rs.getInt(5), rs.getInt(6), rs.getString(7),
+                    rs.getInt(5), rs.getInt(6), rs.getString(7), rs.getString(8) ?: "study",
                 ) else null
             }
         }
@@ -430,7 +430,7 @@ internal class SqliteLearningPlanService(
     override fun pool(planId: String): List<PoolUnit> {
         val versionId = currentVersion(planId) ?: return emptyList()
         return connection.prepareStatement(
-            "SELECT u.id, u.title, u.chapter, u.estimate_minutes FROM plan_unit u " +
+            "SELECT u.id, u.title, u.chapter, u.estimate_minutes, u.kind FROM plan_unit u " +
                 "WHERE u.plan_version_id = ? " +
                 "AND u.id NOT IN (" +
                 "SELECT cu.unit_id FROM commitment_unit cu JOIN commitment c ON c.id = cu.commitment_id " +
@@ -452,7 +452,7 @@ internal class SqliteLearningPlanService(
             ps.setString(6, currentWeek())
             ps.executeQuery().use { rs ->
                 buildList {
-                    while (rs.next()) add(PoolUnit(rs.getString(1), rs.getString(2), rs.getString(3), rs.getInt(4)))
+                    while (rs.next()) add(PoolUnit(rs.getString(1), rs.getString(2), rs.getString(3), rs.getInt(4), rs.getString(5) ?: "study"))
                 }
             }
         }
@@ -482,6 +482,9 @@ internal class SqliteLearningPlanService(
         cmdAcceptDraft(env, versionId, firstWeek)
 
     // suspend 只为对齐 AI 工具的调用形态（AgentTool.call 是 suspend）；实现本身不挂起。
+    override fun createShell(env: CommandEnvelope, title: String, goal: String, deadline: String?) =
+        cmdCreateShell(env, title, goal, deadline)
+
     override suspend fun appendUnits(
         env: CommandEnvelope, planId: String, drafts: List<dev.trellis.domain.plan.UnitDraft>,
     ) = cmdAppendUnits(env, planId, drafts)
@@ -666,6 +669,7 @@ internal data class UnitRow(
     val estimateMinutes: Int,
     val minVersionMinutes: Int,
     val materialSegmentId: String?,
+    val kind: String = "study",
 )
 
 internal fun ResultSet.toOccurrence(): OccurrenceRow = OccurrenceRow(

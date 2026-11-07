@@ -249,3 +249,10 @@
 - **保留**：`PlanTools.create_learning_plan` 的创建时校验——第一周必须等于本周、拒绝早于本周的 ISO 周；
   agent 新建计划排错周次时仍会直接报错（`PlanToolsTest.aPlanThatStartsNextWeekIsRejected`）。
 - 验证：删后 `:app:desktop:test` 与全仓 `check` 全绿；grep 无 `planStartsInPast` / `repairPastPlan` / `PlanStaleBanner` 残留。
+
+## 13 2026-11-08：计划文档只读、计划页只跳转
+
+- 计划页右上「计划文档」不再弹编辑框：点击 = 跳到知识库并打开这份计划的文档（`AppRuntime.openPlanDocs`）。
+- 知识库里新增只读「计划文档」区（`PlanDocPage.kt`）：左栏 计划 → 总览 / 各周，右栏 `MarkdownText` 预览；
+  不可编辑，要改跟 AGENT 说。计划文档放在 `<home>/plans/docs/`，**不参与**笔记抽取、概念索引、知识网络与自动完成。
+- 每周文档 `<planId>/<week>.md` 由 `plan_week` 写入（本周重点 + 每天条目 + 类型/分钟）。

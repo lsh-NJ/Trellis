@@ -2215,6 +2215,15 @@ class AppRuntime private constructor() {
                 llm = llm,
                 onChanged = { created -> refreshPlan(focus = created) },
             )
+            // 每周的局部计划：读大纲与上周完成，排这一周的具体条目并铺到天。
+            val planWeekTools = PlanWeekTools(
+                service = { runCatching { learningPlan() }.getOrNull() },
+                planDocStore = { if (::planDocStore.isInitialized) planDocStore else null },
+                weeklyCapacity = { studyPrefs.weeklyMinutes },
+                clock = clock,
+                llm = llm,
+                onChanged = { refreshPlan() },
+            )
             val diagnosticsTools = DiagnosticsTools { diagnosticsReport() }
             // 跨会话记忆也是手：用户说出长期目标/偏好时写进管家日志，要回忆过去时再检索。
             // 和管家仪式共用同一份 append-only 记忆 —— 目标不该只有晨/夜仪式才有机会落盘。
@@ -2237,12 +2246,14 @@ class AppRuntime private constructor() {
             }
             val allTools = tools.all + screenToolList + layoutTools.all + styleTools.all +
                 workflowTools.all + bilibiliTools.all + taskTools.all + planTools.all +
-                planAdminTools.all + planDocTools.all + researchTools.all + diagnosticsTools.all + memoryTools.all +
+                planAdminTools.all + planDocTools.all + researchTools.all + planWeekTools.all +
+                diagnosticsTools.all + memoryTools.all +
                 goalTools.all
             val guidance = tools.guidance + "\n\n" + screenGuidance +
                 "\n\n" + layoutTools.guidance + "\n\n" + styleTools.guidance +
                 "\n\n" + workflowTools.guidance + "\n\n" + bilibiliTools.guidance +
-                "\n\n" + taskTools.guidance + "\n\n" + researchTools.guidance + "\n\n" + planTools.guidance +
+                "\n\n" + taskTools.guidance + "\n\n" + researchTools.guidance + "\n\n" + planWeekTools.guidance +
+                "\n\n" + planTools.guidance +
                 "\n\n" + planAdminTools.guidance + "\n\n" + planDocTools.guidance +
                 "\n\n" + diagnosticsTools.guidance + "\n\n" + memoryTools.guidance + "\n\n" + goalTools.guidance
             // 跨会话记忆块只随记忆内容变化，接在 guidance 最末尾：两条路径（普通 / 管家）
@@ -2797,21 +2808,9 @@ class AppRuntime private constructor() {
 
     internal lateinit var planDocStore: PlanDocStore
 
-    var planDocOpen by mutableStateOf(false)
+    /** 知识库里「计划文档」二级页当前打开的计划；非空时知识库页整页显示它。 */
+    var planDocBrowseId by mutableStateOf<String?>(null)
         private set
-
-    var planDocDraft by mutableStateOf("")
-        private set
-
-    /** 保存/同步后的一句话，显示在文档对话框底部。 */
-    var planDocNote by mutableStateOf<String?>(null)
-        private set
-
-    private var planDocPlanId: String? = null
-
-    /** 文档对话框标题用的计划名。 */
-    internal val planDocPlanTitle: String?
-        get() = planDocPlanId?.let { id -> runCatching { learningPlan()?.planState(id)?.title }.getOrNull() }
 
     /**
      * 计划库打不开的**具体原因**（比 [planMessage] 短、给工具/诊断用）。
@@ -3362,22 +3361,20 @@ class AppRuntime private constructor() {
 
     // ---------------------------------------------------------------- 计划文档
 
-    internal fun openPlanDoc() {
+    /** 计划页只做跳转：打开知识库并定位到这份计划的文档。 */
+    internal fun openPlanDocs(planId: String? = null) {
         val service = learningPlan()
-        val planId = planFocusId ?: service?.activePlanId()
-        if (service == null || planId == null) {
+        val target = planId ?: planFocusId ?: service?.activePlanId()
+        if (service == null || target == null) {
             planMessage = "先在「计划」页建一份计划，计划文档会跟着计划走。"
             return
         }
-        planDocPlanId = planId
-        planDocDraft = planDocStore.read(planId) ?: PlanDocTools.PLAN_DOC_TEMPLATE
-        planDocNote = null
-        planDocOpen = true
+        planDocBrowseId = target
+        currentTab = TAB_KNOWLEDGE
     }
 
-    internal fun closePlanDoc() {
-        planDocOpen = false
-        planDocNote = null
+    internal fun closePlanDocs() {
+        planDocBrowseId = null
     }
 
     /**
@@ -3417,63 +3414,6 @@ class AppRuntime private constructor() {
         }
         runCatching { store.save(planId, markdown) }
             .onFailure { appendAppLog("计划文档自动生成失败：" + it.message) }
-    }
-
-    internal fun updatePlanDocDraft(text: String) {
-        planDocDraft = text
-    }
-
-    /** 保存当前草稿；保存失败把原因留在对话框底部。 */
-    internal fun savePlanDocDraft(): Boolean {
-        val planId = planDocPlanId ?: return false
-        val result = runCatching { planDocStore.save(planId, planDocDraft) }
-        result.onFailure { planDocNote = "没存上：" + (it.message ?: "未知原因") }
-        result.onSuccess {
-            planDocNote = "已保存（" + planDocDraft.length + " 字）。"
-            planMessage = "计划文档已保存。"
-        }
-        return result.isSuccess
-    }
-
-    /** 把文档里本周的条目确认落进计划：追加到待安排池，不自动铺天（不可撤销，所以是显式按钮）。 */
-    internal fun syncPlanDocWeek() {
-        val service = learningPlan() ?: return
-        val planId = planDocPlanId ?: return
-        savePlanDocDraft()
-        val week = isoWeekOf(clock.today())
-        val doc = runCatching { planDocStore.load(planId) }.getOrNull()
-        val items = doc?.weeks?.entries
-            ?.firstOrNull { it.key.replace(" ", "").equals(week, ignoreCase = true) }
-            ?.value
-            .orEmpty()
-        if (items.isEmpty()) {
-            planDocNote = "文档里还没有 " + week + " 这一周；先加一行「## " + week + "」。"
-            return
-        }
-        val drafts = items.map { item ->
-            UnitDraft(
-                chapter = "计划文档",
-                title = item.text,
-                estimateMinutes = (item.minutesHint ?: 25).coerceIn(10, 45),
-            )
-        }
-        planDocNote = "正在把 " + week + " 的 " + drafts.size + " 条追加进计划…"
-        chatScope.launch {
-            val result = runCatching {
-                service.appendUnits(planAdjustCommand(planId), planId, drafts)
-            }.getOrNull()
-            planDocNote = when {
-                result == null -> "同步失败：计划库没响应。"
-                !result.ok -> "同步失败：" + (result.error?.message ?: "未知原因")
-                else -> "已把 " + week + " 的 " + (result.value?.size ?: 0) +
-                    " 条追加进计划（待安排池）；去计划页拖到某天就会排进那一天。" +
-                    " 注意：如果下一周还没有承诺，节奏引擎会先从池里补下一周。"
-            }
-            if (result?.ok == true) {
-                refreshPlan()
-                tick++
-            }
-        }
     }
 
     fun selectPlanDay(day: String) {

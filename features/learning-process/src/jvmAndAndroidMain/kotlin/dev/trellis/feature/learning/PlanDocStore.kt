@@ -61,6 +61,41 @@ class PlanDocStore(private val home: File) {
         return File(directory, "$planId.md")
     }
 
+    /** 某个计划的周文档文件：`<home>/plans/docs/<planId>/<week>.md`。 */
+    fun weekFile(planId: String, week: String): File {
+        require(PLAN_ID_PATTERN.matches(planId)) { "计划 id 不合法：$planId" }
+        require(WEEK_PATTERN.matches(week)) { "周格式不合法：$week" }
+        return File(weekDirectory(planId), "$week.md")
+    }
+
+    private fun weekDirectory(planId: String): File {
+        require(PLAN_ID_PATTERN.matches(planId)) { "计划 id 不合法：$planId" }
+        return File(directory, planId)
+    }
+
+    /** 已经有总文档的计划 id（按 id 排序）。 */
+    fun planIds(): List<String> = try {
+        directory.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".md") }
+            ?.map { it.name.removeSuffix(".md") }
+            ?.filter { PLAN_ID_PATTERN.matches(it) }
+            ?.sorted()
+            .orEmpty()
+    } catch (_: RuntimeException) {
+        emptyList()
+    }
+
+    /** 某个计划已经写过的周文档（新的在前）。 */
+    fun weeks(planId: String): List<String> = try {
+        weekDirectory(planId).listFiles()
+            ?.filter { it.isFile && WEEK_PATTERN.matches(it.name.removeSuffix(".md")) }
+            ?.map { it.name.removeSuffix(".md") }
+            ?.sortedDescending()
+            .orEmpty()
+    } catch (_: RuntimeException) {
+        emptyList()
+    }
+
     /** 读 Markdown；文件不存在、id 不合法、读坏（非 UTF-8 等）都返回 null，不抛。 */
     fun read(planId: String): String? {
         val file = try {
@@ -68,6 +103,20 @@ class PlanDocStore(private val home: File) {
         } catch (_: IllegalArgumentException) {
             return null
         }
+        return readFile(file)
+    }
+
+    /** 读某一周的计划文档；没有就返回 null。 */
+    fun readWeek(planId: String, week: String): String? {
+        val file = try {
+            weekFile(planId, week)
+        } catch (_: IllegalArgumentException) {
+            return null
+        }
+        return readFile(file)
+    }
+
+    private fun readFile(file: File): String? {
         if (!file.isFile) return null
         return try {
             decodeUtf8(file.readBytes())
@@ -78,9 +127,13 @@ class PlanDocStore(private val home: File) {
         }
     }
 
+    /** 写某一周的计划文档（每周排计划时写），返回落盘的文件。 */
+    fun saveWeek(planId: String, week: String, markdown: String): File = writeFile(weekFile(planId, week), markdown)
+
     /** 写 Markdown（UTF-8，目录不存在就建），返回落盘的文件。 */
-    fun save(planId: String, markdown: String): File {
-        val file = fileFor(planId)
+    fun save(planId: String, markdown: String): File = writeFile(fileFor(planId), markdown)
+
+    private fun writeFile(file: File, markdown: String): File {
         val parent = file.parentFile
         if (!parent.isDirectory && !parent.mkdirs() && !parent.isDirectory) {
             throw IOException("建不了计划文档目录：$parent")
@@ -175,6 +228,7 @@ class PlanDocStore(private val home: File) {
 
     private companion object {
         val PLAN_ID_PATTERN = Regex("^[A-Za-z0-9_-]{1,64}$")
+        val WEEK_PATTERN = Regex("^\\d{4}-W\\d{2}$")
         val TARGETS_HEADING = Regex("^#\\s*目标与验收\\s*$")
         val WEEK_HEADING = Regex("^##\\s*(\\d{4}-W\\d{2})\\s*$")
         val UNSCHEDULED_HEADING = Regex("^##\\s*待安排\\s*$")

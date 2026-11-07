@@ -268,7 +268,7 @@ internal fun PlanRearrangeDrawer(
                     DraggablePlanRow(
                         payload = PlanDragPayload.PendingUnit(item.id, item.title, item.estimateMinutes),
                         controller = controller,
-                        hint = item.chapter.ifBlank { "待安排" } + " · " + item.estimateMinutes + " 分钟",
+                        hint = item.chapter.ifBlank { "待安排" } + " · " + item.estimateMinutes + " 分钟 · " + unitKindLabel(item.kind),
                         onDrop = { payload, day ->
                             if (payload is PlanDragPayload.PendingUnit) {
                                 runtime.planPlaceUnitToDay(payload.unitId, day)
