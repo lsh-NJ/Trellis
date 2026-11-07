@@ -220,11 +220,11 @@
 
 ### 3.3 维护成本最低（自治 Agent）
 
-- [ ] **G-C1 建议仍需一键采纳（P0，1–2 天）**
-  - 管家提案（挪动/补排）要用户点 `adoptStewardProposal`；没有「自动采纳治理」（开关/白名单/每日上限/仅离开时执行）。
-  - 影响：「全自动」卖点最后一步；误操作兜底已有撤销（5 秒）与建议卡。
-  - 涉及：`StewardRuntime`/`StewardProposal`/`AppRuntime`/`SettingsScreen`/`docs/steward.md`。
-  - 验证：开启「自动采纳」后，仅白名单类建议、每日 ≤N 条、应用失焦时执行；日志可查、可撤销；关闭则恢复现状。
+- [x] **G-C1 建议仍需一键采纳（P0，1–2 天）— 2026-11-07 已接最小版**
+  - 设置页「管家 → 自动采纳」开关（`StewardSettings.autoAdopt`，默认关）；开启后只在**应用不在前台**时执行，且只自动采纳 **纯挪动类**建议（`StewardProposal.isAutoAdoptable()`：整条建议的 changes 全是 `Move`；补排欠账 `Place` 仍留给人点）。
+  - 每日上限 `autoAdoptDailyLimit`（默认 3，可在设置文件改 1–10）；计数落在 `steward/checkpoints.json`（`autoAdoptDay`/`autoAdoptCount`，换天归零）；`AppRuntime.autoAdoptStewardProposalIfAllowed()` 在晨/晚仪式成功（`runStewardCheck` 非 Busy）与窗口失焦时触发。
+  - 执行完写入管家会话（建议行标 Adopted + 一条状态行「自动采纳管家建议：挪 N 件（应用不在前台，只动了「挪动逾期」这一类）」）、记忆一条 Adopted、刷新计划页、app.log 一行；用户回来能翻到、计划页改动可撤销（拖拽/移动仍走 `moveOccurrence` 的撤销 5 秒）。
+  - 仍未做：白名单按「计划/星期几/单条改动」细化；自动补排（Place）；自动采纳后给通知。
 - [ ] **G-C2 没有后台无人值守（P1）**
   - 无独立定时器/托盘/开机自启；ticker 只在应用开着时每 60s 跑一次（`startStewardTicker`）。
 - [ ] **G-C3 通知没有闭环（P1，1 天）**

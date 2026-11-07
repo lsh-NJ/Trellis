@@ -526,6 +526,34 @@ private fun StewardSection(runtime: AppRuntime) {
         SettingsStatusLine("应用在后台时才弹系统通知；前台只留会话里的未读红点。")
 
         Spacer(Modifier.height(6.dp))
+        SettingsSubLabel("自动采纳")
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            EditorChip(
+                label = "开",
+                active = settings.autoAdopt,
+                onClick = { runtime.updateStewardSettings(settings.copy(autoAdopt = true)) },
+            )
+            EditorChip(
+                label = "关",
+                active = !settings.autoAdopt,
+                onClick = { runtime.updateStewardSettings(settings.copy(autoAdopt = false)) },
+            )
+        }
+        SettingsStatusLine(
+            if (!settings.autoAdopt) {
+                "关闭：所有建议都要你点「一键采纳」。"
+            } else {
+                "只在应用不在前台时执行，只自动采纳「挪动逾期」这一类（补排欠账仍留给你点）；" +
+                    "每天最多 " + settings.autoAdoptDailyLimit + " 条，今天已自动采纳 " +
+                    runtime.stewardAutoAdoptedToday + " 条。"
+            },
+        )
+
+        Spacer(Modifier.height(6.dp))
         SettingsLinkRow(label = "打开管家会话", status = "每天早晚问候") {
             runtime.ensureStewardSession()
             runtime.openChat(StewardRuntime.STEWARD_SESSION_ID)

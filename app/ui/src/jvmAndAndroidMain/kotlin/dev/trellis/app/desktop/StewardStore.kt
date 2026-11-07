@@ -25,10 +25,19 @@ internal data class StewardSettings(
     val eveningEnabled: Boolean = true,
     /** 要不要弹系统通知。应用在前台时只用未读红点，不打扰。 */
     val notifyDesktop: Boolean = true,
+    /**
+     * 自动采纳（G-C1 最小版）：应用不在前台时，自动采纳「只挪动逾期」一类建议。
+     *
+     * 默认关：自动改用户计划是重手，得由用户自己打开。补排欠账（Place）永远不自动做。
+     */
+    val autoAdopt: Boolean = false,
+    /** 每天最多自动采纳几条；1–10，默认 3。 */
+    val autoAdoptDailyLimit: Int = 3,
 ) {
     fun normalized(): StewardSettings = copy(
         morningTime = normalizeStewardTime(morningTime, DEFAULT_MORNING_TIME),
         eveningTime = normalizeStewardTime(eveningTime, DEFAULT_EVENING_TIME),
+        autoAdoptDailyLimit = autoAdoptDailyLimit.coerceIn(1, 10),
     )
 
     companion object {
@@ -55,6 +64,9 @@ internal fun normalizeStewardTime(raw: String, fallback: String): String {
 internal data class StewardCheckpoints(
     val lastMorningDay: String? = null,
     val lastEveningDay: String? = null,
+    /** 自动采纳的日内计数：`autoAdoptDay` 这天已经自动采纳了几条（换天归零）。 */
+    val autoAdoptDay: String? = null,
+    val autoAdoptCount: Int = 0,
 )
 
 /**
@@ -130,6 +142,10 @@ internal class StewardStore(private val home: File) {
                 ?: true,
             notifyDesktop = root["notifyDesktop"]?.jsonPrimitive?.content?.toBooleanStrictOrNull()
                 ?: true,
+            autoAdopt = root["autoAdopt"]?.jsonPrimitive?.content?.toBooleanStrictOrNull()
+                ?: false,
+            autoAdoptDailyLimit = root["autoAdoptDailyLimit"]?.jsonPrimitive?.content?.toIntOrNull()
+                ?: 3,
         ).normalized()
     }.getOrElse { StewardSettings() }
 
@@ -143,6 +159,8 @@ internal class StewardStore(private val home: File) {
                 put("morningEnabled", normalized.morningEnabled)
                 put("eveningEnabled", normalized.eveningEnabled)
                 put("notifyDesktop", normalized.notifyDesktop)
+                put("autoAdopt", normalized.autoAdopt)
+                put("autoAdoptDailyLimit", normalized.autoAdoptDailyLimit)
             },
         )
     }
@@ -154,6 +172,8 @@ internal class StewardStore(private val home: File) {
         StewardCheckpoints(
             lastMorningDay = root["lastMorningDay"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() },
             lastEveningDay = root["lastEveningDay"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() },
+            autoAdoptDay = root["autoAdoptDay"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() },
+            autoAdoptCount = root["autoAdoptCount"]?.jsonPrimitive?.content?.toIntOrNull()?.coerceAtLeast(0) ?: 0,
         )
     }.getOrElse { StewardCheckpoints() }
 
@@ -163,6 +183,8 @@ internal class StewardStore(private val home: File) {
             buildJsonObject {
                 checkpoints.lastMorningDay?.let { put("lastMorningDay", it) }
                 checkpoints.lastEveningDay?.let { put("lastEveningDay", it) }
+                checkpoints.autoAdoptDay?.let { put("autoAdoptDay", it) }
+                if (checkpoints.autoAdoptCount > 0) put("autoAdoptCount", checkpoints.autoAdoptCount)
             },
         )
     }
