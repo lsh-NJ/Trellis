@@ -97,14 +97,36 @@ class ResearchToolsTest {
         append("}")
     }
 
-    private suspend fun call(harness: Harness) = harness.tools.all
+    private suspend fun call(harness: Harness, deadline: String? = null) = harness.tools.all
         .single { it.name == "research_plan" }
         .call(
             buildJsonObject {
                 put("goal", "两周内复习完数据结构")
                 put("dailyMinutes", 60)
+                if (deadline != null) put("deadline", deadline)
             },
         )
+
+    /** 6 个单元排成三周（W45/W46/W47），每个单元只出现一次。 */
+    private fun draftJsonThreeWeeks(): String = buildString {
+        append("""{"title":"数据结构四周速通","units":[""")
+        append("""{"title":"线性表基础","minutes":25,"chapter":"第1章"},""")
+        append("""{"title":"栈与队列","minutes":25,"chapter":"第2章"},""")
+        append("""{"title":"二叉树","minutes":30,"chapter":"第3章"},""")
+        append("""{"title":"图","minutes":30,"chapter":"第4章"},""")
+        append("""{"title":"排序","minutes":30,"chapter":"第5章"},""")
+        append("""{"title":"查找","minutes":25,"chapter":"第6章"}]""")
+        append(""","weeks":{"2026-W45":["线性表基础","栈与队列"],"2026-W46":["二叉树","图"],"2026-W47":["排序","查找"]}}""")
+    }
+
+    /** 周表跳周：W45 之后直接 W47。 */
+    private fun draftJsonWithGap(): String = buildString {
+        append("""{"title":"跳周的计划","units":[""")
+        append("""{"title":"线性表基础","minutes":25},""")
+        append("""{"title":"二叉树","minutes":30},""")
+        append("""{"title":"排序","minutes":30}]""")
+        append(""","weeks":{"2026-W45":["线性表基础"],"2026-W47":["二叉树","排序"]}}""")
+    }
 
     @Test
     fun validDraftCreatesPlanAndDoc() = runTest {
@@ -154,6 +176,63 @@ class ResearchToolsTest {
         // 预算 60×7×0.8 = 336 分钟，6 个单元共 165 分钟 → 全排本周，下周空。
         assertEquals(6, harness.service.week(planId, thisWeek).commitment.units.size)
         assertEquals(0, harness.service.week(planId, nextWeek).commitment.units.size)
+    }
+
+    /** 用户给了截止日期：周表可以超过两周，一直排到截止周，并在回复里说明覆盖到哪天。 */
+    @Test
+    fun deadlineAllowsALongerWeekTable() = runTest {
+        // 2026-11-20 是周五，属于 2026-W47。
+        val harness = harness(draftJsonThreeWeeks())
+
+        val result = call(harness, deadline = "2026-11-20")
+        assertFalse(result.isError, result.content)
+
+        val planId = harness.service.activePlanId()
+        assertNotNull(planId)
+        assertEquals(
+            listOf("2026-W45", "2026-W46", "2026-W47"),
+            harness.service.map(planId).weeks.map { it.week },
+            "有截止日期时周表要排到截止周，而不是只排前两周",
+        )
+        assertTrue(result.content.contains("全局周表 3 周"), result.content)
+        assertTrue(result.content.contains("2026-11-20"), result.content)
+    }
+
+    /** 周表必须一周接一周：模型跳周时拒绝，并退回手写路径。 */
+    @Test
+    fun aWeekTableWithAGapIsRejected() = runTest {
+        val harness = harness(draftJsonWithGap())
+
+        val result = call(harness)
+        assertTrue(result.isError, result.content)
+        assertTrue(result.content.contains("没解析成合法计划"), result.content)
+        assertTrue(harness.service.plans().isEmpty(), "失败时不能留下半成品计划")
+    }
+
+    /** 全局周表要覆盖所有单元：漏掉一个单元也是不可接受的半全局计划。 */
+    @Test
+    fun aWeekTableThatMissesAUnitIsRejected() = runTest {
+        val missing = draftJson().replace(
+            """"2026-W46":["图","排序","查找"]""",
+            """"2026-W46":["图","排序"]""",
+        )
+        assertFalse(missing == draftJson(), "测试构造失败：没换掉周表里的单元")
+        val harness = harness(missing)
+
+        val result = call(harness)
+        assertTrue(result.isError, "周表漏单元要拒绝：" + result.content)
+        assertTrue(harness.service.plans().isEmpty(), "失败时不能留下半成品计划")
+    }
+
+    /** deadline 已经过去：不能倒排到过去，直接报错。 */
+    @Test
+    fun aPastDeadlineIsRejected() = runTest {
+        val harness = harness(draftJson())
+
+        val result = call(harness, deadline = "2026-10-01")
+        assertTrue(result.isError, result.content)
+        assertTrue(result.content.contains("已经过去了"), result.content)
+        assertTrue(harness.service.plans().isEmpty())
     }
 
     @Test

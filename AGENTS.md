@@ -2,7 +2,7 @@
 
 > 这份文件只做一件事：**让你在 10 分钟内知道这个项目是什么、代码在哪、改一件事该动哪个文件。**
 > 细节不在这一份里——每个主题都有对应文档，见文末索引。
-> 最后更新：2026-11-03。若与代码冲突，以代码为准，并顺手把这份文件改对。
+> 最后更新：2026-11-07。若与代码冲突，以代码为准，并顺手把这份文件改对。
 
 ---
 
@@ -181,6 +181,7 @@ Set-Location C:\Users\breakM\Desktop\work\Trellis
 | `plans/categories.json` | 计划分类（左侧列表分组） |
 | `activity/activity.db` | 活动原始事件 + 任务归因（SQLite；AW 的窗口/AFK/浏览器标签页事件，schema v2 带 url，v3 带 `activity_attribution`） |
 | `exams/*.jsonl` | 外部题库文件（每行一个 `Exercise` JSON）：启动时与内置种子合并（同 id 只留首条），来源见 `tools/exams/README.md` |
+| `exams/attempts.jsonl` | 练习作答记录（append-only）：`at`/`exerciseId`/`subject`/`course`/`kind`/`correct`/`selfReported`；客观题揭示答案自动判分、知识点题自评；掌握度与推荐都从它现算 |
 | `activity/taxonomy.json` | 活动分类树（大类/小类/颜色/正则规则/优先级；读坏会改名成 `.bad-*` 留档） |
 | `audit.log` | 生命周期审计（JSONL，装/启用/停用/删/彻底删，保留 500 条；诊断页「最近操作」读它） |
 | `plugin-usage.json` | 插件页「上次用 N 分钟前」的依据 |
@@ -238,7 +239,10 @@ ChatScreen ──> AppRuntime.sendChat()
 - `UiStyleTools`：`list_ui_options`、`set_ui`、`set_plugin_card`、`list_themes`、`set_theme`
 - `ScreenTools`：`describe_screen`、`take_screenshot`、`open_tab`、`click`、`type_text`、`press_key`
 - `WorkflowTools`：`set_plan`（2–12 步）、`step_done`、`ask_choices`（2–5 个竖向选项，调完即停）
-- `PlanTools`：`create_learning_plan`（B 站课程优先 `bvid` 全量导入；手写路径只建本周+下周，其余进待安排池）
+- `PlanTools`：`create_learning_plan`（B 站课程优先 `bvid` 全量导入；**全局周表**从本周起按每天分钟预算一直排到单元用完，不设周数上限；`deadline` 可选，按截止周倒排、排不下留待安排池；手写 `units + weeks` 同样支持多周。dailyMinutes 只是建议，**不要为它单独问用户/弹选项**）
+- `ResearchTools`：`research_plan`（目标式说法 → 先出**全局**周表：拆阶段/单元 + 从本周起的完整周表 → 校验 → 建计划 + 写计划文档；`deadline` 可选、`dailyMinutes` 建议值。与 `create_learning_plan` 的分工：只有目标走 research_plan，明确材料才走 bvid/手写）
+- `PlanDocTools`：`read_plan_doc`、`write_plan_doc`（`confirmed` 才覆盖）、`sync_plan_week`（把文档里该周条目追加进待安排池，确认式）
+- `MemoryTools`：`remember_memory`、`recall_memory`（跨会话目标/偏好/事件；`<how_to_remember>` 提示词块）
 - `PlanAdminTools`：`get_learning_plan`、`plan_next_week`、`complete_plan_node`、`move_plan_node`、`review_last_week`、`set_plan_pace`（写操作要 `confirmed=true`；系统节奏 `advanceRhythm` 不经过模型）
 - `BilibiliTools`：`search_bilibili`、`list_bilibili_parts`（WBI 签名在 `BilibiliClient.kt`，只读元数据；时长 `约 N 分钟` 直接当节点预估）
 - `TaskTools`：`add_tasks`（2–12 条，把分集/章节变成用户能勾的待办）

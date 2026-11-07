@@ -94,6 +94,23 @@ internal fun isoWeekOf(date: LocalDate): String = "%04d-W%02d".format(
     date.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR),
 )
 
+/**
+ * ISO 周字符串（"2026-W45"）→ 那一周的周一；格式不对返回 null。
+ *
+ * 只用在「全局周表」上：排计划时判断周与周是不是连着、按周往后推。
+ * 和 [isoWeekOf] 互为逆运算（同 ISO-8601、周一起）。
+ */
+internal fun isoWeekStart(isoWeek: String): java.time.LocalDate? {
+    val match = Regex("""^(\d{4})-W(\d{2})$""").find(isoWeek.trim()) ?: return null
+    val year = match.groupValues[1].toInt()
+    val week = match.groupValues[2].toInt()
+    if (week !in 1..53) return null
+    return LocalDate.of(year, 1, 4)
+        .with(IsoFields.WEEK_BASED_YEAR, year.toLong())
+        .with(IsoFields.WEEK_OF_WEEK_BASED_YEAR, week.toLong())
+        .with(java.time.temporal.TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY))
+}
+
 /** 解析 `TRELLIS_TODAY` / `dev-clock.json` 里的日期；不合法返回 null（调用方负责报原因）。 */
 internal fun parseSimulatedDate(raw: String?): LocalDate? {
     val text = raw?.trim().orEmpty()

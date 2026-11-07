@@ -52,6 +52,11 @@
 - **结转**：`settleWeek` 幂等（重复调用返回历史数字）；错过标 `missed`，最多结转 2 个到下周，剩下记 `carry.pending`。
 - **复盘**：`generateReview` 只读事件、写一条 `review.generated` 快照；之后数字不再变（幂等，二次调用返回原 `reviewId`）。
 - **as-of**：`asOfCompletedCount(planId, week, maxSeq)` 只看 `seq <= maxSeq` 的事件，给「回放/时间线」用。
+- **全局周表（2026-11-07）**：`create_learning_plan` / `research_plan` 一次提交**从本周起的完整周表**（周数不设上限），
+  未来周只是「已承诺、还没铺天」——`cmdAcceptDraft` 只对 firstWeek 调 `materializeWeek`，
+  之后每周由 `advanceRhythm` 铺该周（单元级判重）。用户给考试/截止日期时只影响**排到哪一周**：
+  `deadline` 会截断周表，排不下的单元留在待安排池；宿主不会为此偷偷抬高每天投入。
+  `dailyMinutes` 只是建议值（设置页「每天预计投入」兜底 60），不再逼用户先选时长。
 - **日层加量只有一个口子：`placeUnit`（2026-10-31）**：把「没排进本周及以后承诺」的单元直接排到某天——
   校验 day 属于 week、week ≥ 本周、unit 属当前版本、不在本周及以后承诺、没有 planned occurrence；
   目标周已有承诺就追加 `commitment_unit`（`sort_order = MAX+1`），没有就建承诺，然后 `insertOccurrence`。

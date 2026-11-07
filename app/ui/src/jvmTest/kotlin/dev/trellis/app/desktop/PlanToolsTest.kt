@@ -174,7 +174,7 @@ class PlanToolsTest {
     // bvid 全量导入：模型只选源，单元和排周都是确定性的
     // ------------------------------------------------------------------
 
-    /** 整门课全量导入：40 集一个都不能少，本周+下周有承诺，剩下的在待安排池。 */
+    /** 整门课全量导入：40 集一个都不能少，而且要一次排成**全局周表**（不再只排前两周）。 */
     @Test
     fun aWholeBilibiliCourseIsImportedInFull() = runTest {
         val service = LearningPlanStore.inMemory()
@@ -194,15 +194,16 @@ class PlanToolsTest {
         val planId = service.activePlanId()
         assertTrue(planId != null, "计划库里应该有一个活跃计划")
         val map = service.map(planId!!)
-        assertEquals(listOf(weekOffset(), weekOffset(1)), map.weeks.map { it.week }, "只排本周和下一周")
+        // 40 个 20 分钟单元、每天 60 分钟（周预算约 336 分钟）→ 每周 16 个：16+16+8，共 3 周。
+        assertEquals((0L..2L).map { weekOffset(it) }, map.weeks.map { it.week }, "全局周表要从本周起排满")
 
         val committed = map.weeks.flatMap { week -> week.units.map { it.title } }
         val pool = service.pool(planId).map { it.title }
-        assertEquals(14, committed.size, "本周+下周各 7 个单元")
-        assertEquals(26, pool.size, "其余 26 个留在「待安排」池")
+        assertEquals(40, committed.size, "整门课都要排进全局周表")
+        assertTrue(pool.isEmpty(), "全局排完就不该再有待安排：" + pool)
         assertEquals(
             (1..40).map { "第${it}章 主题 $it" }.toSet(),
-            (committed + pool).toSet(),
+            committed.toSet(),
             "整门课 40 集一个都不能少",
         )
         assertEquals(60, service.planState(planId).dailyMinutes, "每天投入要记进计划")
@@ -376,6 +377,66 @@ class PlanToolsTest {
     }
 
     /**
+     * 手写周表不设周数上限（用户口径：先整体、再每周局部，不能只排前两周）：
+     * 3 周的计划要能一次写进去，周与周连续。
+     */
+    @Test
+    fun aHandWrittenPlanCanCoverMoreThanTwoWeeks() = runTest {
+        val service = LearningPlanStore.inMemory()
+        val tool = PlanTools({ service }, {}).all.single { it.name == "create_learning_plan" }
+
+        val result = tool.call(
+            buildJsonObject {
+                put("title", "四周速通")
+                putJsonArray("units") {
+                    add("第 1 单元")
+                    add("第 2 单元")
+                    add("第 3 单元")
+                    add("第 4 单元")
+                    add("第 5 单元")
+                    add("第 6 单元")
+                }
+                putJsonArray("weeks") {
+                    add(buildJsonObject { put("week", weekOffset(0)); putJsonArray("units") { add("第 1 单元"); add("第 2 单元") } })
+                    add(buildJsonObject { put("week", weekOffset(1)); putJsonArray("units") { add("第 3 单元"); add("第 4 单元") } })
+                    add(buildJsonObject { put("week", weekOffset(2)); putJsonArray("units") { add("第 5 单元"); add("第 6 单元") } })
+                }
+            },
+        )
+
+        assertTrue(!result.isError, result.content)
+        val planId = service.activePlanId()!!
+        assertEquals(
+            (0L..2L).map { weekOffset(it) },
+            service.map(planId).weeks.map { it.week },
+            "三周（或更多）都要能一次排进全局周表",
+        )
+        assertEquals(2, service.week(planId, weekOffset(2)).commitment.units.size)
+    }
+
+    /** 全局周表必须一周接一周：跳周（或从下周起）时要说清应该怎么改。 */
+    @Test
+    fun aWeekTableWithAGapIsRejected() = runTest {
+        val service = LearningPlanStore.inMemory()
+        val tool = PlanTools({ service }, {}).all.single { it.name == "create_learning_plan" }
+
+        val result = tool.call(
+            buildJsonObject {
+                put("title", "跳周的计划")
+                putJsonArray("units") { add("U1"); add("U2") }
+                putJsonArray("weeks") {
+                    add(buildJsonObject { put("week", weekOffset()); putJsonArray("units") { add("U1") } })
+                    add(buildJsonObject { put("week", weekOffset(2)); putJsonArray("units") { add("U2") } })
+                }
+            },
+        )
+
+        assertTrue(result.isError, "跳周要拒绝：" + result.content)
+        assertTrue(result.content.contains("一周接一周"), result.content)
+        assertEquals(null, service.activePlanId(), "报错时不能留下半个计划")
+    }
+
+    /**
      * 排周必须走注入时钟：开发者模式把「今天」拨到某天后，AI 建的计划要按那天算周号，
      * 否则跨周调试时计划会排到真实时间的周里。
      */
@@ -383,7 +444,7 @@ class PlanToolsTest {
     fun theWeekTheModelPlansIntoComesFromTheInjectedClock() = runTest {
         val service = LearningPlanStore.inMemory()
         val clock = DebugTrellisClock().also { it.setSimulatedDate(LocalDate.parse("2026-11-02")) }
-        // 8 个 20 分钟的单元：本周按周预算 + 每周 7 个上限先取 7 个，下一个进下一周。
+        // 8 个 20 分钟的单元：周预算约 336 分钟，一个周就装得下。
         val parts = (1..8).map { i -> Triple(i, "课时$i", 20 * 60) }
         val tool = PlanTools(
             service = { service },
@@ -401,9 +462,37 @@ class PlanToolsTest {
 
         assertTrue(!result.isError, result.content)
         val planId = service.activePlanId()!!
-        // 2026-11-02 是周一，属于 W45；下一批应该排进 W46。
-        assertEquals(listOf("2026-W45", "2026-W46"), service.map(planId).weeks.map { it.week })
-        assertEquals(7, service.week(planId, "2026-W45").commitment.units.size)
-        assertEquals(1, service.week(planId, "2026-W46").commitment.units.size)
+        // 2026-11-02 是周一，属于 W45；8 个单元按分钟预算都排得进这一周。
+        assertEquals(listOf("2026-W45"), service.map(planId).weeks.map { it.week })
+        assertEquals(8, service.week(planId, "2026-W45").commitment.units.size)
+    }
+
+    /** 有截止日期：只排到那一周，排不下的留在待安排，不擅自抬高每天投入。 */
+    @Test
+    fun aDeadlineStopsTheGlobalWeekTableAndLeavesTheRestInThePool() = runTest {
+        val service = LearningPlanStore.inMemory()
+        val parts = (1..40).map { i -> Triple(i, "课时$i", 20 * 60) }
+        val tool = PlanTools({ service }, {}, bilibili = fakeBilibili(pageList(parts)))
+            .all.single { it.name == "create_learning_plan" }
+        val deadline = java.time.LocalDate.now().plusWeeks(1).toString()
+
+        val result = tool.call(
+            buildJsonObject {
+                put("title", "两周冲刺")
+                put("bvid", "BV1YE411D7nH")
+                put("dailyMinutes", 30)
+                put("deadline", deadline)
+            },
+        )
+
+        assertTrue(!result.isError, result.content)
+        val planId = service.activePlanId()!!
+        val map = service.map(planId)
+        assertEquals((0L..1L).map { weekOffset(it) }, map.weeks.map { it.week }, "有截止日期就只排到那一周")
+        val committed = map.weeks.sumOf { it.units.size }
+        assertEquals(16, committed, "每天 30 分钟、两周最多排 16 个（每周 8 个）")
+        assertEquals(24, service.pool(planId).size, "排不下的要留在待安排池")
+        assertTrue(result.content.contains("待安排"), "回复要说明剩下的去哪了：" + result.content)
+        assertTrue(result.content.contains(deadline), "回复要提到截止日：" + result.content)
     }
 }
