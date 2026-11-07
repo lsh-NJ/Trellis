@@ -2143,6 +2143,14 @@ class AppRuntime private constructor() {
         }
 
         val llm = llmOverride ?: HttpLlmClient(config)
+        // 网络调研只在真跑模型时接（测试通过 llmOverride 注入假模型，不能顺手联网）。
+        val researchGateway: ResearchGateway? =
+            if (llmOverride == null && config.apiKey.isNotBlank()) {
+                webResearchLog = { message -> appendAppLog(message) }
+                createWebResearch(config)
+            } else {
+                null
+            }
         chatBusy = true
         activePlanId = null
         chatChoices = emptyList()
@@ -2213,6 +2221,7 @@ class AppRuntime private constructor() {
                 weeklyCapacity = { studyPrefs.weeklyMinutes },
                 clock = clock,
                 llm = llm,
+                research = researchGateway,
                 onChanged = { created -> refreshPlan(focus = created) },
             )
             // 每周的局部计划：读大纲与上周完成，排这一周的具体条目并铺到天。

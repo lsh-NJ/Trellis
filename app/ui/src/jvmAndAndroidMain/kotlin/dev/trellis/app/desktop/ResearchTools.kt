@@ -38,6 +38,8 @@ class ResearchTools(
     private val weeklyCapacity: () -> Int? = { null },
     private val clock: TrellisClock = SystemTrellisClock(),
     private val llm: LlmClient,
+    /** 网络调研网关；null 时按「没有网络」走（测试/未配置 key）。 */
+    private val research: ResearchGateway? = null,
     /** 计划落库后回调新建的 planId：调用方拿它把计划页切到新计划。 */
     private val onChanged: (String) -> Unit = {},
 ) {
@@ -45,7 +47,8 @@ class ResearchTools(
     val guidance: String = listOf(
         "<how_to_research_plan>",
         "1. 用户只有一句目标、没指定材料时（「我想当 AI 应用工程师」「两周复习完数据结构」），**先调 `research_plan(goal=...)`**：",
-        "   宿主做全局规划——拆阶段，建**空壳计划**（还没有单元），写大纲文档，每个阶段一条里程碑，并给出每天投入建议。",
+        "   宿主会先用 DeepSeek 官方搜索 + 网页抓取查资料，再做全局规划——拆阶段，建**空壳计划**（还没有单元），",
+        "   写大纲文档，每个阶段一条里程碑，并给出每天投入建议（这些资料只用于规划，不改用户笔记）。",
         "   有考试/截止日期就先按今天换算成 YYYY-MM-DD 传给 deadline；不要换算成「先排两周」。",
         "2. research_plan 之后**用 ask_choices 让用户拍板每天投入**（如「先按每天 90 分钟排？」60/90/120/自定义），",
         "   用户选了就调 `set_plan_pace` 写进去；不要替用户定死，也不要一次问超过一个问题。",
@@ -93,11 +96,16 @@ class ResearchTools(
             val thisWeek = isoWeekOf(today)
             val dailySuggestion = (arguments["dailyMinutes"]?.jsonPrimitive?.intOrNull ?: weeklyCapacity()?.div(7) ?: 60)
                 .coerceIn(30, 240)
+            val sources = research?.let { gateway ->
+                withTimeoutOrNull(RESEARCH_TIMEOUT_MS) {
+                    runCatching { gateway.gather(goal) }.getOrNull()
+                }
+            }
             val raw = withTimeoutOrNull(PLAN_TIMEOUT_MS) {
                 llm.complete(
                     listOf(
-                        LlmMessage(LlmRole.System, shellSystemPrompt(thisWeek, deadline, dailySuggestion)),
-                        LlmMessage(LlmRole.User, shellUserPrompt(goal, today.toString(), thisWeek, deadline)),
+                        LlmMessage(LlmRole.System, shellSystemPrompt(thisWeek, deadline, dailySuggestion, sources != null)),
+                        LlmMessage(LlmRole.User, shellUserPrompt(goal, today.toString(), thisWeek, deadline, sources?.render())),
                     ),
                 )
             } ?: return ToolResult(
@@ -152,6 +160,12 @@ class ResearchTools(
                     deadline?.let { append("，覆盖到 ").append(it).append(" 的截止日") }
                     append("。")
                     append("计划文档和每个阶段的里程碑都写好了；先按每天 ").append(draft.dailyMinutes).append(" 分钟估的（只是建议）。")
+                    if (sources != null) {
+                        append("这次参考了网上搜到的 ").append(sources.hits.size).append(" 条资料（其中 ")
+                            .append(sources.pages.size).append(" 篇读了正文），比如「")
+                            .append(sources.hits.take(2).joinToString("」「") { it.title.take(24) })
+                            .append("」。")
+                    }
                     append("下一步：用 ask_choices 让用户拍板每天投入（如 60 / 90 / 120 分钟），选了就 set_plan_pace；")
                     append("之后每周开始时用 plan_week 排这一周的具体内容。")
                 },
@@ -213,7 +227,7 @@ class ResearchTools(
         }
     }
 
-    private fun shellSystemPrompt(thisWeek: String, deadline: String?, dailyMinutes: Int): String =
+    private fun shellSystemPrompt(thisWeek: String, deadline: String?, dailyMinutes: Int, hasSources: Boolean): String =
         buildString {
             appendLine("你是学习规划师。用户只有一句目标，你要先做**全局规划**（不是排具体单元）：把目标拆成阶段，估算每个阶段的周数。")
             appendLine("只输出一个 JSON 对象，不要 markdown、不要解释：")
@@ -221,15 +235,26 @@ class ResearchTools(
             appendLine("约束：阶段 1–8 个，每个阶段 1–12 周，总周数 ≤ 40；这个计划从 " + thisWeek + " 这一周开始。")
             if (deadline != null) appendLine("用户给了截止日期 " + deadline + "，总周数要能覆盖到那个日期之前。")
             appendLine("阶段要覆盖从入门到能做出东西的完整路线：通识/理论学习在前，动手实践（写代码、做项目）后置。")
+            if (hasSources) {
+                appendLine("用户消息里会附一段 <research_sources>（宿主从网上搜到的资料）。")
+                appendLine("优先用它里面的事实与结构（比如岗位要求、常见学习顺序、真实项目），引用时写出站点名；")
+                appendLine("资料与目标无关就忽略；不要编造链接或资料里没有的课程。")
+            }
         }
 
-    private fun shellUserPrompt(goal: String, today: String, thisWeek: String, deadline: String?): String =
-        buildString {
-            appendLine("目标：" + goal)
-            appendLine("今天：" + today + "，本周：" + thisWeek)
-            deadline?.let { appendLine("截止日期：" + it) }
-            appendLine("请按上述 JSON 格式输出阶段表。")
-        }
+    private fun shellUserPrompt(
+        goal: String,
+        today: String,
+        thisWeek: String,
+        deadline: String?,
+        sources: String?,
+    ): String = buildString {
+        appendLine("目标：" + goal)
+        appendLine("今天：" + today + "，本周：" + thisWeek)
+        deadline?.let { appendLine("截止日期：" + it) }
+        if (!sources.isNullOrBlank()) appendLine(sources)
+        appendLine("请按上述 JSON 格式输出阶段表。")
+    }
 
     private data class ShellStage(val name: String, val weeks: Int, val focus: String)
 
@@ -241,5 +266,6 @@ class ResearchTools(
         const val MAX_STAGES = 8
         const val MAX_STAGE_WEEKS = 12
         const val MAX_TOTAL_WEEKS = 40
+        const val RESEARCH_TIMEOUT_MS = 45_000L
     }
 }
