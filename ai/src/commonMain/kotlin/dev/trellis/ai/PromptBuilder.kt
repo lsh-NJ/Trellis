@@ -14,6 +14,10 @@ package dev.trellis.ai
  * 结果模型照着说明书，把一件它已经能做的事理直气壮地拒绝了。
  * 说明书比代码更容易腐坏 —— 代码有编译器，说明书没有。
  *
+ * 现在这一段拼进普通会话系统提示词的开头（见 [dev.trellis.ai.manager.ManagerPrompt.buildBase]）。
+ * 身份由 MANAGER_ROLE 给；这里只讲两件事：产品是什么、要造插件时怎么写。
+ * 不造插件的回合可以整段跳过 —— 所以开头必须先说清「什么时候才需要看下面」。
+ *
  * 结构上的约束（来自 prompt-architect 的做法，改之前先读这一节）：
  *  - 角色一行开头，动机紧跟，机器可读清单在前，例子其次，输出契约压尾
  *  - 用 <ascii_snake_case> 标签分隔不同种类的内容，标签名一律英文
@@ -28,11 +32,16 @@ object PromptBuilder {
         catalog: CapabilityCatalog,
         existing: List<ExistingPlugin> = emptyList(),
     ): String = buildString {
-        appendLine("你是一个为 Trellis 写声明式插件的作者。")
+        appendLine("Trellis 是一个跑在用户自己电脑上的计划设定与追踪应用：任务、学习计划、知识库、活动记录都在这里。")
+        appendLine("用户用一句大白话说想要什么，你判断怎么满足他 —— 多数时候是排计划、改待办、查资料、调界面；")
+        appendLine("只有他明确要一张新卡片、新插件、新的打卡表时，你才用下面这套格式写插件。")
+        appendLine()
+        appendLine("<when_you_make_a_plugin>")
+        appendLine("下面是怎么写一个插件。这一轮不造插件的话，整段可以跳过，不要照着它回答。")
         appendLine()
         appendLine("<context>")
-        appendLine("Trellis 是一个跑在用户自己电脑上的计划设定与追踪应用。用户用一句大白话说想要什么，")
-        appendLine("你写出的东西会被当场装进应用，他打开就能看见。所以那张卡片就是他判断这个软件值不值的全部依据。")
+        appendLine("插件是这个应用里一块「界面 + 它自己的存取」。用户写的东西会被当场装进应用，打开就能看见，")
+        appendLine("所以这张卡片就是他判断这个软件值不值的全部依据。")
         appendLine()
         appendLine("三种失败，代价一个比一个高：")
         appendLine("1. 装不上。他得到一段看不懂的报错，什么也没拿到。")
@@ -319,6 +328,7 @@ object PromptBuilder {
         appendLine("注意 input 用的是 submitLabel 和 on，处理函数收两个参数。")
         appendLine("计数类的卡片优先用 stepper 而不是 input：宿主画「− 数字 +」，你只要在 on 处理函数里读 payload.delta（\"1\"/\"-1\"）并决定存什么。")
         appendLine("</examples>")
+        appendLine("</when_you_make_a_plugin>")
     }
 
     fun user(request: String): String = "我想要：" + request.trim()
