@@ -33,7 +33,7 @@ class WorkflowTools(private val runtime: AppRuntime) {
         "5. 每完成一步立刻调 step_done：index 从 0 开始，ok=true 表示做成了；做不成也照样调，ok=false 并在 note 里写一句为什么。",
         "6. 清单会实时出现在右侧栏；用户关掉右栏时它会缩成输入框上方的常驻条，所以别在回答里再抄一遍清单。",
         "7. 中途计划要变（少一步/多一步），再调一次 set_plan 覆盖：已经打勾的步骤会保留勾。",
-        "8. 需要用户拍板（做待办还是排计划、要不要改某个界面）时调 ask_choices：把 2–5 个选项摆到输入框上方，然后停下等用户点；不要自己替用户挑，也不要只在文字里口头问。",
+        "8. 真正需要用户拍板时（要不要改界面、改成什么风格、范围怎么定）才调 ask_choices：把 2–5 个选项摆到输入框上方，然后停下等用户点；做待办还是排计划由你自己判断，别拿这个问用户。",
         "</how_to_plan>",
     ).joinToString("\n")
 
@@ -84,10 +84,11 @@ class WorkflowTools(private val runtime: AppRuntime) {
     private inner class AskChoices : AgentTool {
         override val name: String = "ask_choices"
         override val description: String =
-            "需要用户拍板时，把 2–5 个选项竖着摆到输入框上方，等用户点。调完就停下，别继续动工具。"
+            "需要用户拍板时，把 2–5 个选项竖着摆到输入框上方，等用户点。调完就停下，别继续动工具。" +
+                "待办还是计划由你自己判断，不要用这个问。"
         override val parameters: String =
             "question：一句话说清在问什么；options：数组 2..5 项，每项一句短话（≤12 字），" +
-                "例：[\"落成待办\",\"排成学习计划\"]"
+                "例：[\"浅色\",\"深色\",\"先不改\"]"
 
         override suspend fun call(arguments: JsonObject): ToolResult {
             val question = arguments["question"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()

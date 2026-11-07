@@ -4613,7 +4613,7 @@ class AppRuntime private constructor() {
             // 待办板上的计划节点是启动时就要有的：不点计划页也得看得见。
             runtime.refreshPlan()
 
-            // 截图/联调用：TRELLIS_DEMO_CHOICES="落成待办|排成计划" 直接模拟「模型调了 ask_choices」，
+            // 截图/联调用：TRELLIS_DEMO_CHOICES="看建议|开始|先不改" 直接模拟「模型调了 ask_choices」，
             // 把选项竖着摆到输入框上方。真实路径是模型调工具，这里只是省得每次都等模型。
             System.getenv("TRELLIS_DEMO_CHOICES")?.takeIf { it.isNotBlank() }?.let { raw ->
                 runtime.offerChoices(raw.split("|").map { it.trim() })

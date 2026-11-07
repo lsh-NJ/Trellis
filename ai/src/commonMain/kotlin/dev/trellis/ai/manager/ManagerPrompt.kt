@@ -146,17 +146,17 @@ class ManagerPrompt(
                    每集都带时长（分钟）：**做计划节点时就用这个时长当预估时间**，不要凭感觉写 25；
                    超过 45 分钟的拆成两个单元，或按 45 记（后端只收 10–45 分钟）；
                 3. 分集名就是天然大纲，但**先别动用户的数据**：只搜、只挑、只说明；
-                   需要用户决定下一步时，调 ask_choices（question 一句话，options 2–5 个短语），
-                   界面上会把选项竖着摆到输入框上方；调完就停下等用户点，别自己替用户挑：
-                   只看建议 ｜ 落成待办 ｜ 排成学习计划；
-                   用户没选之前不要 add_tasks、不要建计划，也不要把「已经加好了」说得像做过了；
-                4. 用户选了之后：
-                   - 落成待办 → add_tasks(confirmed=true)；
-                   - **排成学习计划 → create_learning_plan(title, bvid, fromPart?, toPart?)**：B 站课程一律用
+                   不用问用户「要待办还是计划」——自己判断：一次性、几条能勾完的 → 待办；
+                   长期、要按周推进的 → 学习计划；只有范围不清（几周做完、每天几分钟）
+                   才用 ask_choices 把范围摆成选项问；还没动手之前不要把「已经加好了」说得像做过了；
+                4. 判断之后直接走对应的路：
+                   - 一次性任务 → add_tasks(confirmed=true)；
+                   - **长期学习计划 → create_learning_plan(title, bvid, fromPart?, toPart?)**：B 站课程一律用
                      bvid 让宿主**全量导入**（总路线要全，分集目录里的每一集都成为单元），不要自己逐条抄分集标题，
                      也不要手写 units/weeks —— 用了 bvid 还传 units/weeks 会被直接拒绝并提示；
                      fromPart/toPart 只在用户明确要「只要第 3–12 集」时才传，其余时候省略 = 全部；
-                     时长和章节宿主会按分集信息自己算。非 B 站资源（用户给了大纲/书单）才走手工 units/weeks；
+                     时长和章节宿主会按分集信息自己算。非 B 站资源（用户给了大纲/书单/其它资料）才走手工 units/weeks；
+                     也可以先用 write_plan_doc 写计划文档（目标 + 每周条目），再用 sync_plan_week 把某一周排进计划；
                    - 这是唯一能把东西写进「计划」页的工具。`set_plan` 只是这一轮的动作清单，只调它的话
                      计划页还是空的，用户会以为你在骗他；
                    - 两种活都可以用 2–4 步的 set_plan 把动作标出来，做完一步 step_done 一步；
@@ -207,11 +207,13 @@ class ManagerPrompt(
             2. 目标型请求（「我想 / 我要 / 帮我 / 学会 / 速通 / 考过 / 背完」）：
                必须变成能执行的东西（学习计划或待办），不要只回一段解释，也不要先说「做不到」。
                - 有 B 站资源就先 search_bilibili，挑可信的再 list_bilibili_parts 拿分集与时长；
-               - 需要用户定范围 / 拍板时用 ask_choices 把选项竖着摆出来，问完停下等点；
-               - 落成待办 → add_tasks(confirmed=true)；
-               - 排成学习计划 → create_learning_plan(title, bvid=…)：B 站课程一律用 bvid 全量导入，
+               - 不用问「待办还是计划」：一次性、几条能勾完的 → add_tasks(confirmed=true)；
+                 长期、按周推进的 → create_learning_plan；
+               - 只有范围不清（几周、每天几分钟）才用 ask_choices 把范围摆成选项问，问完停下等点；
+               - **长期学习计划 → create_learning_plan(title, bvid=…)**：B 站课程一律用 bvid 全量导入，
                  不要自己逐条抄分集标题；fromPart/toPart 只在用户明确说「只要第 a–b 集」时传；
-                 非 B 站资源（用户给了大纲 / 书单）才走手工 units/weeks；
+                 非 B 站资源（用户给了大纲 / 书单 / 其它资料）才走手工 units/weeks；
+                 也可以先用 write_plan_doc 写计划文档，再用 sync_plan_week 按周排进计划；
                - 每一集成为一个单元，单集超过 45 分钟就拆两个（后端只收 10–45 分钟），其余进待安排池；
                - create_learning_plan 是唯一能把东西写进「计划」页的工具；set_plan 只是这一轮的动作清单，
                  只调 set_plan 却回「排好了」，用户到计划页会发现是空的。
@@ -267,8 +269,11 @@ class ManagerPrompt(
             那等于什么都没给。正确的第一步是：
             1. 要问范围（要多久做完、每天大概能花多久）就用 `ask_choices` 把范围摆成选项问，
                不要只在文字里问一句然后停下 —— 那样界面上下一步还是空的；
-            2. 能自己定就用默认拆法直接动手：先查资源（search_bilibili），再 add_tasks 或 set_plan；
-            3. 要用户拍板就用 `ask_choices`（例如：落成待办 / 排成计划 / 只看建议），然后停下等点；
+            2. 能自己定就用默认拆法直接动手：先查资源（search_bilibili），再按下面的判断走；
+               不用问「待办还是计划」——一次性、几条能勾完的 → add_tasks(confirmed=true)；
+               长期、按周推进的 → create_learning_plan（来源可以是 B 站，也可以是其它资源、用户大纲，
+               或者先用 write_plan_doc 写计划文档，再用 sync_plan_week 按周排进计划）；
+            3. 只有范围完全定不了（几周做完、每天几分钟）才用 `ask_choices` 问范围，问完停下等点；
             4. 只有用户明确说「先别建」，才停在建议上。
             `cannotDo` 只用于**真的做不到**的事（比如要解锁手机、要读别的应用的数据）；
             「我还需要用户给一个范围」不是做不到，是 `ask_choices`。
