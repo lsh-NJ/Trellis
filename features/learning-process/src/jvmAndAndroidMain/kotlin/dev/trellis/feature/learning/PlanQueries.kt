@@ -21,9 +21,11 @@ import dev.trellis.domain.plan.OriginLabel
 import dev.trellis.domain.plan.PlanDiff
 import dev.trellis.domain.plan.PlanStateView
 import dev.trellis.domain.plan.ReviewView
+import dev.trellis.domain.plan.StageView
 import dev.trellis.domain.plan.SuggestionView
 import dev.trellis.domain.plan.TodoItem
 import dev.trellis.domain.plan.TodoView
+import dev.trellis.domain.plan.UnitResourceView
 import dev.trellis.domain.plan.WeekDay
 import dev.trellis.domain.plan.WeekDayItem
 import dev.trellis.domain.plan.WeekView
@@ -69,8 +71,8 @@ internal fun SqliteLearningPlanService.buildDayView(planId: String?, day: String
     )
 }
 
-private fun SqliteLearningPlanService.plannedOccurrences(planId: String, day: String): List<DayOccurrence> =
-    connection.prepareStatement(
+private fun SqliteLearningPlanService.plannedOccurrences(planId: String, day: String): List<DayOccurrence> {
+    val raw = connection.prepareStatement(
         "SELECT d.id, d.unit_title, d.chapter, d.estimate_minutes, d.mode, d.status, d.min_version_minutes, " +
             "d.moved_from, d.carried_from, d.todo_title, d.unit_id, d.unit_kind FROM v_occurrence_detail d " +
             "LEFT JOIN plan_unit pu ON pu.id = d.unit_id " +
@@ -111,6 +113,42 @@ private fun SqliteLearningPlanService.plannedOccurrences(planId: String, day: St
             }
         }
     }
+    // 资料按单元一次批量取（IN 查询），不在这里逐条查库。
+    val resources = resourcesOf(raw.mapNotNull { it.unitId }.distinct())
+    return raw.map { it.copy(resources = resources[it.unitId].orEmpty()) }
+}
+
+/**
+ * 一次批量取一批单元的资料，按 unit_id 分组。
+ *
+ * 列表视图（当天 / 天条 / 本周承诺）都可能带资料，逐条 occurrence 里查会把 N+1 打满，
+ * 所以统一走这条 IN 查询；调用方自己 distinct 后传进来。
+ */
+internal fun SqliteLearningPlanService.resourcesOf(unitIds: List<String>): Map<String, List<UnitResourceView>> {
+    if (unitIds.isEmpty()) return emptyMap()
+    val placeholders = unitIds.joinToString(",") { "?" }
+    return connection.prepareStatement(
+        "SELECT unit_id, kind, title, url, locator FROM unit_resource " +
+            // rowid 是插入顺序：同一秒里写入的多条资料（第 1 集、第 2 集…）也保持调用方给的顺序。
+            "WHERE unit_id IN ($placeholders) ORDER BY rowid",
+    ).use { ps ->
+        unitIds.forEachIndexed { index, id -> ps.setString(index + 1, id) }
+        ps.executeQuery().use { rs ->
+            val result = mutableMapOf<String, MutableList<UnitResourceView>>()
+            while (rs.next()) {
+                result.getOrPut(rs.getString(1)) { mutableListOf() }.add(
+                    UnitResourceView(
+                        kind = rs.getString(2),
+                        title = rs.getString(3),
+                        url = rs.getString(4) ?: "",
+                        locator = rs.getString(5) ?: "",
+                    ),
+                )
+            }
+            result.mapValues { it.value.toList() }
+        }
+    }
+}
 
 private fun SqliteLearningPlanService.completedOccurrences(planId: String, day: String): List<CompletedOccurrence> =
     connection.prepareStatement(
@@ -155,26 +193,11 @@ internal fun SqliteLearningPlanService.buildWeekView(planId: String, week: Strin
     val commitmentUnits = commitmentUnitsOf(planId, week)
     val commitment = CommitmentView(
         label = "${week} · ${PlanTime.weekLabel(week)}",
-        units = commitmentUnits.map { unit ->
-            val state = unitStateIn(planId, week, unit.first)
-            CommitmentUnitView(
-                id = unit.first,
-                title = unit.second,
-                chapter = unit.third,
-                estimateMinutes = unit.fourth,
-                kind = unit.fifth,
-                state = state,
-                stateLabel = when (state) {
-                    "done" -> "已完成"
-                    "this_week" -> "本周内"
-                    else -> "之后"
-                },
-            )
-        },
+        units = commitmentUnits,
         summary = if (commitmentUnits.isEmpty()) {
             "这周还没有承诺。"
         } else {
-            "这周 ${commitmentUnits.size} 个单元，约 ${commitmentUnits.sumOf { it.fourth }} 分钟。"
+            "这周 ${commitmentUnits.size} 个单元，约 ${commitmentUnits.sumOf { it.estimateMinutes }} 分钟。"
         },
     )
     val days = (0..6).map { offset ->
@@ -189,6 +212,8 @@ internal fun SqliteLearningPlanService.buildWeekView(planId: String, week: Strin
     }
     val weekEnded = start.plusDays(6).isBefore(today)
     val reviewed = reviewExists(planId, week)
+    // 周日当天本周也算「到期」：这一天就给生成入口，不用等到下周一。
+    val reviewOpen = weekEnded || (week == currentWeek() && PlanTime.isWeekEnd(today))
     val scheduled = days.any { it.items.isNotEmpty() } ||
         connection.prepareStatement(
             "SELECT 1 FROM occurrence o JOIN commitment c ON c.id = o.commitment_id " +
@@ -206,14 +231,15 @@ internal fun SqliteLearningPlanService.buildWeekView(planId: String, week: Strin
         days = days,
         scheduled = scheduled,
         reviewEntry = EntryView(
-            available = weekEnded,
+            available = reviewOpen,
             label = when {
                 reviewed -> "查看周复盘"
                 weekEnded -> "生成周复盘"
+                reviewOpen -> "生成本周复盘"
                 else -> "周复盘在周日开放"
             },
             at = null,
-            enabled = weekEnded,
+            enabled = reviewOpen,
         ),
         changeCommitmentEntry = EntryView(
             available = week >= currentWeek(),
@@ -223,9 +249,10 @@ internal fun SqliteLearningPlanService.buildWeekView(planId: String, week: Strin
     )
 }
 
-private fun SqliteLearningPlanService.commitmentUnitsOf(planId: String, week: String): List<Quad> {
+private fun SqliteLearningPlanService.commitmentUnitsOf(planId: String, week: String): List<CommitmentUnitView> {
     val version = currentVersion(planId) ?: return emptyList()
-    return connection.prepareStatement(
+    data class Row(val id: String, val title: String, val chapter: String, val minutes: Int, val kind: String)
+    val rows = connection.prepareStatement(
         "SELECT u.id, u.title, u.chapter, u.estimate_minutes, u.kind FROM commitment c " +
             "JOIN commitment_unit cu ON cu.commitment_id = c.id " +
             "JOIN plan_unit u ON u.id = cu.unit_id " +
@@ -235,9 +262,29 @@ private fun SqliteLearningPlanService.commitmentUnitsOf(planId: String, week: St
         ps.setString(2, week)
         ps.executeQuery().use { rs ->
             buildList {
-                while (rs.next()) add(Quad(rs.getString(1), rs.getString(2), rs.getString(3), rs.getInt(4), rs.getString(5) ?: "study"))
+                while (rs.next()) {
+                    add(Row(rs.getString(1), rs.getString(2), rs.getString(3), rs.getInt(4), rs.getString(5) ?: "study"))
+                }
             }
         }
+    }
+    val resources = resourcesOf(rows.map { it.id })
+    return rows.map { row ->
+        val state = unitStateIn(planId, week, row.id)
+        CommitmentUnitView(
+            id = row.id,
+            title = row.title,
+            chapter = row.chapter,
+            estimateMinutes = row.minutes,
+            kind = row.kind,
+            state = state,
+            stateLabel = when (state) {
+                "done" -> "已完成"
+                "this_week" -> "本周内"
+                else -> "之后"
+            },
+            resources = resources[row.id].orEmpty(),
+        )
     }
 }
 
@@ -280,9 +327,9 @@ internal fun SqliteLearningPlanService.openNodesOf(planId: String, untilDay: Str
         }
     }
 
-private fun SqliteLearningPlanService.dayItems(planId: String, day: String): List<WeekDayItem> =
-    connection.prepareStatement(
-        "SELECT d.id, COALESCE(d.unit_title, d.todo_title), d.status, d.estimate_minutes, d.carried_from, d.unit_kind " +
+private fun SqliteLearningPlanService.dayItems(planId: String, day: String): List<WeekDayItem> {
+    val pairs = connection.prepareStatement(
+        "SELECT d.id, COALESCE(d.unit_title, d.todo_title), d.status, d.estimate_minutes, d.carried_from, d.unit_kind, d.unit_id " +
             "FROM v_occurrence_detail d LEFT JOIN plan_unit pu ON pu.id = d.unit_id " +
             "WHERE d.plan_id = ? AND d.day = ? AND d.status <> 'superseded' " +
             // 同上：天条里的顺序也按路线顺序，保证「索引靠前的节点排在当天前面」。
@@ -301,12 +348,15 @@ private fun SqliteLearningPlanService.dayItems(planId: String, day: String): Lis
                             minutes = rs.getInt(4),
                             carried = rs.getString(5) != null,
                             kind = rs.getString(6) ?: "study",
-                        ),
+                        ) to rs.getString(7),
                     )
                 }
             }
         }
     }
+    val resources = resourcesOf(pairs.mapNotNull { it.second }.distinct())
+    return pairs.map { (item, unitId) -> item.copy(resources = resources[unitId].orEmpty()) }
+}
 
 // ---------------------------------------------------------------------------
 // 地图
@@ -328,9 +378,7 @@ internal fun SqliteLearningPlanService.buildMapView(planId: String): MapView {
     }
     val current = currentWeek()
     val mapWeeks = weeks.map { week ->
-        val units = commitmentUnitsOf(planId, week).map { unit ->
-            MapUnit(unit.second, unitStateIn(planId, week, unit.first))
-        }
+        val units = commitmentUnitsOf(planId, week).map { MapUnit(it.title, it.state) }
         MapWeek(
             week = week,
             state = when {
@@ -434,6 +482,11 @@ internal fun SqliteLearningPlanService.buildPlanState(planId: String): PlanState
         ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
     }
     val pendingReview = lastEndedWeek != null && !reviewExists(planId, lastEndedWeek)
+    // 周日当天：本周已经到期，可以现在就把这一周的总结做了（周六还不算）。
+    val todayDate = today()
+    val current = currentWeek()
+    val reviewableWeek =
+        if (PlanTime.isWeekEnd(todayDate) && !reviewExists(planId, current)) current else null
     val carryPending = connection.prepareStatement(
         "SELECT COUNT(*) FROM event WHERE type = 'carry.pending' AND plan_id = ?",
     ).use { ps ->
@@ -458,10 +511,52 @@ internal fun SqliteLearningPlanService.buildPlanState(planId: String): PlanState
         pendingDraft = pendingDraft,
         pendingReview = pendingReview,
         pendingReviewWeek = lastEndedWeek.takeIf { pendingReview },
+        reviewableWeek = reviewableWeek,
         carryPending = carryPending,
         title = planTitle(planId),
         dailyMinutes = dailyMinutes,
     )
+}
+
+/**
+ * 当前版本的阶段 + 每个阶段周区间内的完成数 / 承诺数。
+ *
+ * done/total 用 occurrence 状态现算（不落地计数列）：拖拽、跳过、撤销都会改状态，
+ * 存一份缓存只会跟事实对不上。total = 区间内被承诺过的单元数（DISTINCT），
+ * done = 其中至少有一次 occurrence 是 done 的单元数。
+ */
+internal fun SqliteLearningPlanService.buildStages(planId: String): List<StageView> {
+    val version = currentVersion(planId) ?: return emptyList()
+    return connection.prepareStatement(
+        "SELECT s.id, s.name, s.week_start, s.week_end, s.focus, " +
+            "(SELECT COUNT(DISTINCT cu.unit_id) FROM commitment c " +
+            "JOIN commitment_unit cu ON cu.commitment_id = c.id " +
+            "WHERE c.plan_version_id = s.plan_version_id AND c.week BETWEEN s.week_start AND s.week_end) AS total, " +
+            "(SELECT COUNT(DISTINCT o.unit_id) FROM occurrence o " +
+            "JOIN commitment c ON c.id = o.commitment_id " +
+            "WHERE c.plan_version_id = s.plan_version_id AND c.week BETWEEN s.week_start AND s.week_end " +
+            "AND o.status = 'done') AS done " +
+            "FROM plan_stage s WHERE s.plan_version_id = ? ORDER BY s.sort_order, s.created_at",
+    ).use { ps ->
+        ps.setString(1, version)
+        ps.executeQuery().use { rs ->
+            buildList {
+                while (rs.next()) {
+                    add(
+                        StageView(
+                            id = rs.getString(1),
+                            name = rs.getString(2),
+                            weekStart = rs.getString(3),
+                            weekEnd = rs.getString(4),
+                            focus = rs.getString(5) ?: "",
+                            done = rs.getInt(7),
+                            total = rs.getInt(6),
+                        ),
+                    )
+                }
+            }
+        }
+    }
 }
 
 internal fun SqliteLearningPlanService.queryTodos(planId: String?): List<TodoView> =
@@ -484,14 +579,6 @@ internal fun SqliteLearningPlanService.queryTodos(planId: String?): List<TodoVie
             }
         }
     }
-
-internal data class Quad(
-    val first: String,
-    val second: String,
-    val third: String,
-    val fourth: Int,
-    val fifth: String = "study",
-)
 
 private fun SqliteLearningPlanService.planExists(planId: String?): Boolean =
     planId != null && planStatus(planId) != null
@@ -572,7 +659,9 @@ internal fun SqliteLearningPlanService.milestonesOf(goalId: String): List<Milest
 
 internal fun SqliteLearningPlanService.plansOfGoal(goalId: String): List<LearningPlanInfo> =
     connection.prepareStatement(
-        "SELECT p.id, pr.title, p.status FROM plan p JOIN process pr ON pr.id = p.process_id " +
+        // 放弃过的计划状态字段仍是 ended，读的时候按 abandoned_at 映射成 abandoned，UI 才分得清「结束」和「放弃」。
+        "SELECT p.id, pr.title, CASE WHEN pr.abandoned_at IS NOT NULL THEN 'abandoned' ELSE p.status END " +
+            "FROM plan p JOIN process pr ON pr.id = p.process_id " +
             "WHERE pr.goal_id = ? ORDER BY p.created_at",
     ).use { ps ->
         ps.setString(1, goalId)

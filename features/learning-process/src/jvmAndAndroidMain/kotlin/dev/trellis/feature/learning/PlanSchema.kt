@@ -72,6 +72,14 @@ internal val PLAN_SCHEMA_V1: List<String> = listOf(
         "kind TEXT NOT NULL DEFAULT 'study' CHECK (kind IN ('study','practice','review')), " +
         "material_segment_id TEXT NULL REFERENCES segment(id), created_at TEXT NOT NULL, " +
         "UNIQUE (plan_version_id, sort_order))",
+    // 单元资料：一个单元可以挂多条（视频分集 + 讲义 + 题单）；整表替换，不做单条增删。
+    "CREATE TABLE IF NOT EXISTS unit_resource (" +
+        "id TEXT PRIMARY KEY, unit_id TEXT NOT NULL REFERENCES plan_unit(id), " +
+        "kind TEXT NOT NULL CHECK (kind IN ('bilibili','web','doc','other')), " +
+        "title TEXT NOT NULL CHECK (length(title) >= 1), " +
+        "url TEXT NOT NULL DEFAULT '', locator TEXT NOT NULL DEFAULT '', " +
+        "source TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_unit_resource_unit ON unit_resource(unit_id)",
     "CREATE TABLE IF NOT EXISTS commitment (" +
         "id TEXT PRIMARY KEY, plan_version_id TEXT NOT NULL REFERENCES plan_version(id), " +
         "week TEXT NOT NULL CHECK (week GLOB '[0-9][0-9][0-9][0-9]-W[0-9][0-9]'), " +
@@ -80,6 +88,15 @@ internal val PLAN_SCHEMA_V1: List<String> = listOf(
         "commitment_id TEXT NOT NULL REFERENCES commitment(id), " +
         "unit_id TEXT NOT NULL REFERENCES plan_unit(id), sort_order INTEGER NOT NULL, " +
         "PRIMARY KEY (commitment_id, unit_id))",
+    // 阶段：把一版计划按 ISO 周区间切开（第 1–4 周 / 第 5–8 周…），给「由面到点」的中间层。
+    // 阶段属于版本：换版时旧阶段随旧版本一起变成历史，新版本重新定阶段。
+    "CREATE TABLE IF NOT EXISTS plan_stage (" +
+        "id TEXT PRIMARY KEY, plan_version_id TEXT NOT NULL REFERENCES plan_version(id), " +
+        "name TEXT NOT NULL, " +
+        "week_start TEXT NOT NULL CHECK (week_start GLOB '[0-9][0-9][0-9][0-9]-W[0-9][0-9]'), " +
+        "week_end TEXT NOT NULL CHECK (week_end GLOB '[0-9][0-9][0-9][0-9]-W[0-9][0-9]'), " +
+        "focus TEXT NOT NULL DEFAULT '', sort_order INTEGER NOT NULL, created_at TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_plan_stage_version ON plan_stage(plan_version_id, sort_order)",
     "CREATE TABLE IF NOT EXISTS occurrence (" +
         "id TEXT PRIMARY KEY, " +
         "commitment_id TEXT NULL REFERENCES commitment(id), " +

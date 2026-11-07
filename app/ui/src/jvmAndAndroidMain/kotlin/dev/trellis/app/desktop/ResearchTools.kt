@@ -8,6 +8,7 @@ import dev.trellis.ai.tool.ToolResult
 import dev.trellis.domain.plan.Actor
 import dev.trellis.domain.plan.CommandEnvelope
 import dev.trellis.domain.plan.LearningPlanService
+import dev.trellis.domain.plan.StageDraft
 import dev.trellis.feature.learning.PlanDocStore
 import java.time.LocalDate
 import java.util.UUID
@@ -23,13 +24,15 @@ import kotlinx.serialization.json.jsonPrimitive
 /**
  * 「由面到点」第一步：只有一句目标时，先做**全局规划**。
  *
- * 产出的是「空壳计划 + 大纲」而不是一堆单元：
+ * 产出的是「空壳计划 + 阶段表 + 大纲 + 排好的第一周」：
  * - `createShell` 建好 process/plan/生效版本（0 单元）；
+ * - `setStages` 把阶段区间写进计划（写失败不挡流程，大纲文档里还有一份）；
  * - 计划文档写目标、验收、各阶段的周数与焦点；
  * - 每个阶段一条里程碑；有 goalId 就挂上，没有就新建一个目标；
+ * - 同一回合用 [planOneWeek] 把**第一周**排出来（先写周文档、再落库铺天），不让用户建完计划面对空周；
  * - 返回每天投入的建议值，由 AGENT 用 `ask_choices` 让用户拍板（不自己定死）。
  *
- * 具体单元留给每周的 `plan_week`（见 [PlanWeekTools]）。
+ * 后续周仍留给每周的 `plan_week`（见 [PlanWeekTools]）。
  */
 class ResearchTools(
     private val service: () -> LearningPlanService?,
@@ -52,7 +55,7 @@ class ResearchTools(
         "   有考试/截止日期就先按今天换算成 YYYY-MM-DD 传给 deadline；不要换算成「先排两周」。",
         "2. research_plan 之后**用 ask_choices 让用户拍板每天投入**（如「先按每天 90 分钟排？」60/90/120/自定义），",
         "   用户选了就调 `set_plan_pace` 写进去；不要替用户定死，也不要一次问超过一个问题。",
-        "3. 具体单元不在这里排：每周开始时用 `plan_week` 从大纲定这一周的内容（宿主铺到天、写周文档）。",
+        "3. 具体单元按周排：research_plan 建完计划会顺手把**第一周**排出来；之后每周开始时用 `plan_week` 从大纲定这一周的内容（宿主铺到天、写周文档）。",
         "4. 用户明确给了材料（bvid、课程名、大纲）就走 `create_learning_plan`，不要用 research_plan。",
         "5. research_plan 失败（超时/输出不可用）退回 create_learning_plan 手写路径，并说清原因，不要假装建好了。",
         "</how_to_research_plan>",
@@ -126,6 +129,16 @@ class ResearchTools(
             val planId = created.value?.planId
                 ?: return ToolResult("建计划失败：" + (created.error?.message ?: "未知原因"), isError = true)
 
+            // 阶段区间先写进计划：每周的单元铺进去之前就要有阶段（有承诺周后阶段区间会被校验），
+            // 所以这一步必须早于下面的第一周排期。写失败不影响计划本身（大纲文档里还有一份阶段表）。
+            val stageDrafts = stageDraftsFor(draft, thisWeek)
+            val stagesWritten = stageDrafts.isNotEmpty() && runCatching {
+                plan.setStages(env(planId, "plan.stages"), planId, stageDrafts).ok
+            }.getOrElse {
+                appendFailedLog("阶段区间写入失败：" + it.message)
+                false
+            }
+
             // 目标 + 里程碑：失败不影响计划本身（计划已经建好了）。
             val goalRef = runCatching {
                 plan.createGoal(
@@ -150,6 +163,21 @@ class ResearchTools(
                 runCatching { store.save(planId, buildOutline(goal, draft)) }
                     .onFailure { appendFailedLog("计划文档写入失败：" + it.message) }
             }
+
+            // 同一回合把第一周排出来：复用 plan_week 的共享实现（先写周文档、再落库铺天）。
+            // 不让用户「建完计划面对一个空周」；失败不算建计划失败，回执里说清并允许 plan_week 重试。
+            val firstWeek = runCatching {
+                planOneWeek(
+                    plan = plan,
+                    planDocStore = planDocStore(),
+                    llm = llm,
+                    clock = clock,
+                    planId = planId,
+                    week = thisWeek,
+                    dailyMinutes = dailySuggestion,
+                    stageFocus = draft.stages.first().focus,
+                )
+            }.getOrNull()
             onChanged(planId)
 
             val totalWeeks = draft.stages.sumOf { it.weeks }
@@ -160,6 +188,16 @@ class ResearchTools(
                     deadline?.let { append("，覆盖到 ").append(it).append(" 的截止日") }
                     append("。")
                     append("计划文档和每个阶段的里程碑都写好了；先按每天 ").append(draft.dailyMinutes).append(" 分钟估的（只是建议）。")
+                    if (stagesWritten) append("阶段区间也写进计划了（").append(stageDrafts.size).append(" 个阶段，计划页能看到进度）。")
+                    if (firstWeek != null && firstWeek.error == null) {
+                        append("第一周（").append(thisWeek).append("）已经排好：").append(firstWeek.placed).append(" 条")
+                        if (firstWeek.docWritten) append("，本周文档也写好了")
+                        append("。")
+                    } else {
+                        append("第一周（").append(thisWeek).append("）这次没排成")
+                        firstWeek?.error?.let { append("：").append(it) }
+                        append("；可以调 plan_week 补排。")
+                    }
                     if (sources != null) {
                         append("这次参考了网上搜到的 ").append(sources.hits.size).append(" 条资料（其中 ")
                             .append(sources.pages.size).append(" 篇读了正文），比如「")
@@ -212,6 +250,23 @@ class ResearchTools(
             if (lastWeek > deadlineWeek) return null
         }
         return ShellDraft(title = title, dailyMinutes = daily, stages = stages)
+    }
+
+    /** 大纲阶段 → 计划里的阶段区间：从本周一（含）起按各阶段周数依次铺，end 是最后一周的周日。 */
+    private fun stageDraftsFor(draft: ShellDraft, thisWeek: String): List<StageDraft> {
+        var cursor = isoWeekStart(thisWeek) ?: return emptyList()
+        return draft.stages.mapIndexed { index, stage ->
+            val start = cursor
+            val end = start.plusWeeks(stage.weeks.toLong()).minusDays(1)
+            cursor = start.plusWeeks(stage.weeks.toLong())
+            StageDraft(
+                name = stage.name,
+                weekStart = isoWeekOf(start),
+                weekEnd = isoWeekOf(end),
+                focus = stage.focus,
+                sortOrder = index,
+            )
+        }
     }
 
     private fun buildOutline(goal: String, draft: ShellDraft): String = buildString {

@@ -12,10 +12,12 @@ import dev.trellis.domain.plan.MilestoneRef
 import dev.trellis.domain.plan.OccurrenceRef
 import dev.trellis.domain.plan.PlanDiff
 import dev.trellis.domain.plan.ReviewRef
+import dev.trellis.domain.plan.ResourceDraft
 import dev.trellis.domain.plan.SavedDraft
 import dev.trellis.domain.plan.SessionRef
 import dev.trellis.domain.plan.SettleResult
 import dev.trellis.domain.plan.SplitPart
+import dev.trellis.domain.plan.StageDraft
 import dev.trellis.domain.plan.TodoRef
 import dev.trellis.domain.plan.UnitDraft
 import dev.trellis.domain.plan.VersionRef
@@ -694,6 +696,16 @@ internal fun SqliteLearningPlanService.cmdPausePlan(
 
 internal fun SqliteLearningPlanService.cmdResumePlan(env: CommandEnvelope, planId: String): CommandResult<Unit> = write(env) {
     if (planStatus(planId) == null) return@write fail(ErrorCode.E_NOT_FOUND, "找不到这个计划。")
+    // 被放弃的计划不接受「恢复」：状态已经 ended，再拉回 active 会和 abandoned 标记打架。
+    val abandonedAt = connection.prepareStatement(
+        "SELECT abandoned_at FROM process WHERE id = (SELECT process_id FROM plan WHERE id = ?)",
+    ).use { ps ->
+        ps.setString(1, planId)
+        ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+    }
+    if (abandonedAt != null) {
+        return@write fail(ErrorCode.E_STATE, "这个计划已经放弃了，不能恢复；要重新开始请新建计划。")
+    }
     connection.prepareStatement("UPDATE plan SET status = 'active' WHERE id = ?").use { ps ->
         ps.setString(1, planId); ps.executeUpdate()
     }
@@ -719,6 +731,137 @@ internal fun SqliteLearningPlanService.cmdEndPlan(
         actor = env.actor, commandId = env.commandId,
     )
     ok(Unit)
+}
+
+/**
+ * 放弃计划：先放弃再换方向时用。
+ *
+ * 不新增 status 取值（`plan`/`process` 的 CHECK 是 v1 契约，改它要迁移所有旧库）：
+ * 状态仍记 `ended`，另写 `process.abandoned_at`；读侧（[plans]）据此把这条映射成
+ * `abandoned`。放弃后计划已是 ended，排期/加单元都会在各自的 ended 检查处被拒。
+ */
+internal fun SqliteLearningPlanService.cmdAbandonPlan(
+    env: CommandEnvelope,
+    planId: String,
+    reason: String,
+): CommandResult<Unit> = write(env) {
+    val status = planStatus(planId) ?: return@write fail(ErrorCode.E_NOT_FOUND, "找不到这个计划。")
+    if (status != "active" && status != "paused") {
+        return@write fail(ErrorCode.E_STATE, "只有进行中或暂停的计划才能放弃（当前状态：$status）。")
+    }
+    connection.prepareStatement("UPDATE plan SET status = 'ended' WHERE id = ?").use { ps ->
+        ps.setString(1, planId); ps.executeUpdate()
+    }
+    connection.prepareStatement(
+        "UPDATE process SET status = 'ended', abandoned_at = ? " +
+            "WHERE id = (SELECT process_id FROM plan WHERE id = ?)",
+    ).use { ps ->
+        ps.setString(1, nowIso())
+        ps.setString(2, planId)
+        ps.executeUpdate()
+    }
+    appendEvent(
+        type = "plan.abandoned", entity = "plan", entityId = planId, planId = planId,
+        payload = eventJson("reason" to JsonPrimitive(reason)),
+        actor = env.actor, commandId = env.commandId,
+    )
+    ok(Unit, warnings = if (env.dryRun) listOf("dry-run：没有落库。") else emptyList())
+}
+
+/** 一个计划最多几个阶段。阶段是「几个星期攻什么」的粗粒度，太多说明该拆计划了。 */
+private const val MAX_STAGES = 20
+
+/**
+ * 幂等替换当前版本的阶段列表。
+ *
+ * 「替换」而不是增删：调用方（研究建计划 / 计划文档同步）每次给的都是完整阶段表，
+ * 按整表换最简单，重复调用结果一致。阶段读的是版本，换版后旧阶段自然留在旧版本里。
+ *
+ * 两条区间规则：`weekStart <= weekEnd`；有承诺时阶段区间必须落在承诺的周范围内
+ * （阶段是给「这些周」贴的标签，越过承诺边界进度永远是 0/0）；计划还没有任何承诺时
+ * 允许任意合法区间 —— 空壳计划先定阶段、每周再排单元就靠这条。
+ */
+internal fun SqliteLearningPlanService.cmdSetStages(
+    env: CommandEnvelope,
+    planId: String,
+    stages: List<StageDraft>,
+): CommandResult<Int> {
+    if (stages.size > MAX_STAGES) {
+        return fail(ErrorCode.E_INVALID, "一个计划最多 $MAX_STAGES 个阶段，多了拆成两个计划。")
+    }
+    // 与库无关的校验先做：一次把错误说清，别让调用方逐条试。
+    val names = mutableSetOf<String>()
+    stages.forEachIndexed { index, draft ->
+        val name = draft.name.trim()
+        if (name.isBlank()) return fail(ErrorCode.E_INVALID, "第 ${index + 1} 个阶段没有名字。")
+        if (!names.add(name)) return fail(ErrorCode.E_INVALID, "阶段名不能重复：「$name」出现了两次。")
+        if (!PlanTime.isWeekFormat(draft.weekStart) || !PlanTime.isWeekFormat(draft.weekEnd)) {
+            return fail(ErrorCode.E_INVALID, "阶段「$name」的周要写成 2026-W44 这种格式。")
+        }
+        if (draft.weekStart > draft.weekEnd) {
+            return fail(ErrorCode.E_INVALID, "阶段「$name」的起始周不能晚于结束周。")
+        }
+    }
+    return write(env) {
+        val status = planStatus(planId) ?: return@write fail(ErrorCode.E_NOT_FOUND, "找不到这个计划。")
+        if (status == "ended") return@write fail(ErrorCode.E_STATE, "这个计划已经结束了，不能再改阶段。")
+        val version = currentVersion(planId)
+            ?: return@write fail(ErrorCode.E_STATE, "这个计划还没有生效的版本；先建计划或先接受草稿。")
+        val committedRange = connection.prepareStatement(
+            "SELECT MIN(week), MAX(week) FROM commitment WHERE plan_version_id = ?",
+        ).use { ps ->
+            ps.setString(1, version)
+            ps.executeQuery().use { rs ->
+                if (rs.next()) rs.getString(1)?.let { first -> rs.getString(2)?.let { first to it } } else null
+            }
+        }
+        if (committedRange != null) {
+            stages.forEach { draft ->
+                if (draft.weekStart < committedRange.first || draft.weekEnd > committedRange.second) {
+                    return@write fail(
+                        ErrorCode.E_INVALID,
+                        "阶段「${draft.name.trim()}」的周区间（${draft.weekStart}–${draft.weekEnd}）" +
+                            "超出了计划承诺的周（${committedRange.first}–${committedRange.second}）。",
+                    )
+                }
+            }
+        }
+        connection.prepareStatement("DELETE FROM plan_stage WHERE plan_version_id = ?").use { ps ->
+            ps.setString(1, version)
+            ps.executeUpdate()
+        }
+        val createdAt = nowIso()
+        stages.forEachIndexed { index, draft ->
+            connection.prepareStatement(
+                "INSERT INTO plan_stage(id,plan_version_id,name,week_start,week_end,focus,sort_order,created_at) " +
+                    "VALUES(?,?,?,?,?,?,?,?)",
+            ).use { ps ->
+                ps.setString(1, Ids.next("st_"))
+                ps.setString(2, version)
+                ps.setString(3, draft.name.trim())
+                ps.setString(4, draft.weekStart)
+                ps.setString(5, draft.weekEnd)
+                ps.setString(6, draft.focus.trim())
+                // sortOrder 显式填了就用它；整列都是 0（调用方没填）时按传进来的顺序排。
+                ps.setInt(7, if (draft.sortOrder != 0) draft.sortOrder else index)
+                ps.setString(8, createdAt)
+                ps.executeUpdate()
+            }
+        }
+        appendEvent(
+            type = "plan.stages_set",
+            entity = "plan",
+            entityId = planId,
+            planId = planId,
+            payload = eventJson(
+                "count" to JsonPrimitive(stages.size),
+                "names" to JsonPrimitive(stages.joinToString(",") { it.name.trim() }),
+            ),
+            actor = env.actor,
+            commandId = env.commandId,
+        )
+        ok(stages.size, warnings = if (env.dryRun) listOf("dry-run：没有落库。") else emptyList())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1578,6 +1721,81 @@ internal fun SqliteLearningPlanService.cmdAppendUnits(
         ok(unitIds, warnings = if (env.dryRun) listOf("dry-run：没有落库。") else emptyList())
     }
 }
+
+/** 一个单元最多几条资料：视频分集 + 讲义 + 题单已经够了，再多说明该拆单元。 */
+private const val MAX_UNIT_RESOURCES = 20
+
+/**
+ * 替换一个单元的整套资料。
+ *
+ * 全量替换（DELETE + INSERT）而不是单条增删：资料是 AI 一次性给的列表，按整表换最简单，
+ * 也天然幂等 —— 同一个命令重放结果一致。单元必须属于当前生效版本：旧版本的单元挂上
+ * 资料也没有视图会读（视图都按当前版本过滤）。
+ */
+internal fun SqliteLearningPlanService.cmdSetUnitResources(
+    env: CommandEnvelope,
+    planId: String,
+    unitId: String,
+    resources: List<ResourceDraft>,
+): CommandResult<Int> {
+    if (resources.size > MAX_UNIT_RESOURCES) {
+        return fail(ErrorCode.E_INVALID, "一个单元最多挂 $MAX_UNIT_RESOURCES 条资料，多了分到别的单元。")
+    }
+    resources.forEachIndexed { index, draft ->
+        if (draft.title.isBlank()) return fail(ErrorCode.E_INVALID, "第 ${index + 1} 条资料没有标题。")
+        if (draft.url.length > 2048) {
+            return fail(ErrorCode.E_INVALID, "第 ${index + 1} 条资料的链接太长了（2048 字符以内）。")
+        }
+    }
+    return write(env) {
+        val status = planStatus(planId) ?: return@write fail(ErrorCode.E_NOT_FOUND, "找不到这个计划。")
+        if (status == "ended") return@write fail(ErrorCode.E_STATE, "这个计划已经结束了，不能再改单元资料。")
+        val version = currentVersion(planId)
+            ?: return@write fail(ErrorCode.E_STATE, "这个计划还没有生效的版本。")
+        val unit = unitRow(unitId) ?: return@write fail(ErrorCode.E_NOT_FOUND, "找不到这个单元。")
+        if (unit.versionId != version) {
+            return@write fail(ErrorCode.E_INVALID, "「${unit.title}」不在当前版本里。")
+        }
+        connection.prepareStatement("DELETE FROM unit_resource WHERE unit_id = ?").use { ps ->
+            ps.setString(1, unitId)
+            ps.executeUpdate()
+        }
+        val createdAt = nowIso()
+        val kinds = mutableListOf<String>()
+        resources.forEach { draft ->
+            val kind = normalizeResourceKind(draft.kind)
+            kinds += kind
+            connection.prepareStatement(
+                "INSERT INTO unit_resource(id,unit_id,kind,title,url,locator,source,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            ).use { ps ->
+                ps.setString(1, Ids.next("res_"))
+                ps.setString(2, unitId)
+                ps.setString(3, kind)
+                ps.setString(4, draft.title.trim())
+                ps.setString(5, draft.url.trim())
+                ps.setString(6, draft.locator.trim())
+                ps.setString(7, draft.source.trim())
+                ps.setString(8, createdAt)
+                ps.executeUpdate()
+            }
+        }
+        appendEvent(
+            type = "plan.unit_resources_set",
+            entity = "unit",
+            entityId = unitId,
+            planId = planId,
+            payload = eventJson(
+                "unitId" to JsonPrimitive(unitId),
+                "count" to JsonPrimitive(resources.size),
+                "kinds" to JsonPrimitive(kinds.joinToString(",")),
+            ),
+            actor = env.actor,
+            commandId = env.commandId,
+        )
+        ok(resources.size, warnings = if (env.dryRun) listOf("dry-run：没有落库。") else emptyList())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 目标 / 项目命令（2026-11-07，G-A1）
 // ---------------------------------------------------------------------------
@@ -1890,4 +2108,15 @@ internal fun unitKindOrStudy(raw: String?): String = when (raw?.trim()?.lowercas
     "practice", "实践" -> "practice"
     "review", "复习" -> "review"
     else -> "study"
+}
+
+/** 资料类型归一：库里只存 bilibili / web / doc / other，外部写法（视频、pdf、链接…）都收进来。 */
+internal fun normalizeResourceKind(raw: String): String {
+    val value = raw.trim().lowercase()
+    return when {
+        value.startsWith("bilibili") || value in setOf("bili", "b站", "视频", "video") -> "bilibili"
+        value in setOf("web", "url", "link", "网页", "网站", "链接") -> "web"
+        value in setOf("doc", "pdf", "文档", "资料", "book", "markdown") -> "doc"
+        else -> "other"
+    }
 }

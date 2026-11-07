@@ -35,6 +35,14 @@ interface LearningPlanService {
     /** 所有计划（不分活跃/归档）；计划页左栏「全部计划」用。 */
     fun plans(): List<LearningPlanInfo>
 
+    /**
+     * 当前版本的学习阶段（按周区间切分，按 sort_order 排）。
+     *
+     * 阶段回答「这几个星期在攻什么」；进度数字（done/total）由后端按承诺单元的
+     * occurrence 状态现算，UI 不自己数。没有阶段、或计划还没有生效版本时返回空列表。
+     */
+    fun stages(planId: String): List<StageView>
+
     // ---------------- 目标 / 项目 ----------------
 
     /** 所有目标；默认不含已归档。计划页顶部的「目标：X · 里程碑 M/N」用。 */
@@ -123,6 +131,26 @@ interface LearningPlanService {
 
     fun endPlan(env: CommandEnvelope, planId: String, reason: String): CommandResult<Unit>
 
+    /**
+     * 放弃一个计划（「不学了」/「换方向了」）。
+     *
+     * 与 [endPlan] 的区别只在记账：两个都把计划和 process 置成 ended，放弃额外写
+     * `process.abandoned_at`，[plans] 里映射成 `status = abandoned`，计划页据此显示
+     * 「已放弃」而不是「已结束」。放弃后计划不能再排期、不能再加单元（status 已是 ended）。
+     *
+     * 允许 active / paused；已经 ended 的再放弃返回 E_STATE。
+     */
+    fun abandonPlan(env: CommandEnvelope, planId: String, reason: String = ""): CommandResult<Unit>
+
+    /**
+     * 幂等替换当前版本的阶段列表。
+     *
+     * 校验：ISO 周格式、weekStart <= weekEnd、区间落在计划已承诺的周范围内
+     * （计划还没有任何承诺时允许任意合法区间，空壳计划先定阶段就靠这条）、阶段名不重复。
+     * 返回写入的阶段数。
+     */
+    fun setStages(env: CommandEnvelope, planId: String, stages: List<StageDraft>): CommandResult<Int>
+
     // ---------------- 计划文档同步 ----------------
 
     /**
@@ -157,6 +185,15 @@ interface LearningPlanService {
     fun createShell(env: CommandEnvelope, title: String, goal: String, deadline: String? = null): CommandResult<CreatedProcess>
 
     suspend fun appendUnits(env: CommandEnvelope, planId: String, drafts: List<UnitDraft>): CommandResult<List<String>>
+
+    /**
+     * 替换一个单元的整套资料（B 站分集 / 网页 / 文档…）。
+     *
+     * 全量替换而不是增删单条：资料列表很短、来源是 AI 一次性给的，按整表换最简单，
+     * 重复调用结果一致（幂等）。单元必须属于当前生效版本；`kind` 归一成
+     * bilibili | web | doc | other。返回写入的资料条数。
+     */
+    fun setUnitResources(env: CommandEnvelope, planId: String, unitId: String, resources: List<ResourceDraft>): CommandResult<Int>
 
     // ---------------- 日层命令（只减/移/缩，不加） ----------------
 
@@ -269,3 +306,23 @@ data class CommitmentDraft(
 
 @kotlinx.serialization.Serializable
 data class SplitPart(val day: String, val estimateMinutes: Int)
+
+/** 一个学习阶段：ISO 周区间 + 一句重点；`sortOrder` 省略时按列表顺序排。 */
+@kotlinx.serialization.Serializable
+data class StageDraft(
+    val name: String,
+    val weekStart: String,
+    val weekEnd: String,
+    val focus: String = "",
+    val sortOrder: Int = 0,
+)
+
+/** 单元的一条资料：`kind` 由后端归一成 bilibili / web / doc / other。 */
+@kotlinx.serialization.Serializable
+data class ResourceDraft(
+    val kind: String,
+    val title: String,
+    val url: String = "",
+    val locator: String = "",
+    val source: String = "",
+)

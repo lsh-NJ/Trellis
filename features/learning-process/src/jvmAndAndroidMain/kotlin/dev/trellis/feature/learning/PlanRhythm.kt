@@ -207,6 +207,16 @@ internal fun SqliteLearningPlanService.cmdGenerateReview(
     today: String,
 ): CommandResult<ReviewRef> {
     if (!PlanTime.isWeekFormat(week)) return fail(ErrorCode.E_INVALID, "周要写成 2026-W44 这种格式。")
+    // 复盘只在「这一周过完」之后做：上周及更早随时可以补，本周要等到周日当天。
+    // 提前做会把只过了一半的数字固化成事实，之后改不了。
+    val todayDate = PlanTime.parseDay(today)
+        ?: return fail(ErrorCode.E_INVALID, "今天要写成 2026-11-08 这种格式。")
+    if (todayDate.isBefore(PlanTime.weekEnd(week))) {
+        val currentWeekIsEnding = week == PlanTime.isoWeek(todayDate) && PlanTime.isWeekEnd(todayDate)
+        if (!currentWeekIsEnding) {
+            return fail(ErrorCode.E_STATE, "这周还没结束，$week 要等到周日才能生成总结。")
+        }
+    }
     return write(env) {
         if (planStatus(planId) == null) return@write fail(ErrorCode.E_NOT_FOUND, "找不到这个计划。")
         val existing = EventPayloads.of(connection, "review.generated", planId, newestFirst = true)

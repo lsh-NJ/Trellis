@@ -205,9 +205,9 @@ class PlanToolsTest {
         assertEquals(40, committed.size, "整门课都要排进全局周表")
         assertTrue(pool.isEmpty(), "全局排完就不该再有待安排：" + pool)
         assertEquals(
-            (1..40).map { "第${it}章 主题 $it" }.toSet(),
+            (1..40).map { "第${it}章 · 主题 $it" }.toSet(),
             committed.toSet(),
-            "整门课 40 集一个都不能少",
+            "整门课 40 集一个都不能少，且标题按章节清洗而不是逐字抄分集标题",
         )
         assertEquals(60, service.planState(planId).dailyMinutes, "每天投入要记进计划")
     }
@@ -231,7 +231,7 @@ class PlanToolsTest {
         assertTrue(!result.isError, result.content)
         val planId = service.activePlanId()!!
         val units = service.week(planId, weekOffset()).commitment.units
-        assertEquals(listOf("第2章 进程管理（上）", "第2章 进程管理（下）"), units.map { it.title })
+        assertEquals(listOf("第2章 · 进程管理（上）", "第2章 · 进程管理（下）"), units.map { it.title })
         assertEquals(listOf(30, 30), units.map { it.estimateMinutes })
         assertEquals(listOf("第2章", "第2章"), units.map { it.chapter })
     }
@@ -295,7 +295,11 @@ class PlanToolsTest {
         val planId = service.activePlanId()!!
         val units = service.week(planId, weekOffset()).commitment.units +
             service.week(planId, weekOffset(1)).commitment.units
-        assertEquals(listOf("前言", "第2章 进程", "P3", "3.1 调度（上）", "3.1 调度（下）"), units.map { it.title })
+        assertEquals(
+            listOf("前言", "第2章 · 进程", "P3", "第3章 · 3.1 调度（上）", "第3章 · 3.1 调度（下）"),
+            units.map { it.title },
+            "标题来自章节 + 清洗后的分集名，不逐字抄分集标题",
+        )
         assertEquals(listOf(25, 10, 20, 30, 30), units.map { it.estimateMinutes })
         assertEquals(listOf("未分章", "第2章", "未分章", "第3章", "第3章"), units.map { it.chapter })
     }
@@ -320,7 +324,10 @@ class PlanToolsTest {
         assertTrue(!result.isError, result.content)
         val planId = service.activePlanId()!!
         val titles = service.week(planId, weekOffset()).commitment.units.map { it.title }
-        assertEquals(listOf("第3章 主题 3", "第4章 主题 4", "第5章 主题 5"), titles)
+        assertEquals(
+            listOf("第3章 · 主题 3", "第4章 · 主题 4", "第5章 · 主题 5"),
+            titles,
+        )
         assertTrue(service.pool(planId).isEmpty(), "只导入 3 集，不该有剩余")
     }
 
@@ -497,5 +504,113 @@ class PlanToolsTest {
         assertEquals(24, service.pool(planId).size, "排不下的要留在待安排池")
         assertTrue(result.content.contains("待安排"), "回复要说明剩下的去哪了：" + result.content)
         assertTrue(result.content.contains(deadline), "回复要提到截止日：" + result.content)
+    }
+
+    // ------------------------------------------------------------------
+    // 目录清洗：片尾/预告不是课，单元名也不是分集标题的复印件
+    // ------------------------------------------------------------------
+
+    private fun part(page: Int, title: String): BilibiliPart =
+        BilibiliPart(page = page, title = title, durationText = "")
+
+    /** 清洗规则：去「第 N 集/P1/【…】/(…)」标签、过滤黑名单、纯英文缩写别误杀。 */
+    @Test
+    fun partTitlesAreCleanedIntoUnitNames() {
+        assertEquals("操作系统概述", cleanPartTitle("P1 第1集 操作系统概述"))
+        assertEquals("进程管理", cleanPartTitle("第3话 (补录) 进程管理"))
+        assertEquals("内存管理", cleanPartTitle("Ep5 内存管理"))
+        assertEquals("内存管理", cleanPartTitle("【第4章】内存管理"))
+        assertEquals("调度算法", cleanPartTitle("第12集 （上）调度算法"))
+
+        assertEquals(null, cleanPartTitle("片尾"))
+        assertEquals(null, cleanPartTitle("花絮【预告】"))
+        assertEquals(null, cleanPartTitle("下一集预告"))
+        assertEquals(null, cleanPartTitle("Trailer (Coming Soon)"))
+        assertEquals(null, cleanPartTitle("Behind the Scenes: 拍摄花絮"))
+        assertEquals(null, cleanPartTitle("   "))
+        assertEquals(null, cleanPartTitle("第1集"), "只剩编号的分集没有信息量")
+        assertEquals("Introduction", cleanPartTitle("Introduction"), "别把 Introduction/AD 转换误杀")
+    }
+
+    /** 目录清洗：过滤片尾/预告；清洗后不足 3 集就退回原始目录，但警告计数保留。 */
+    @Test
+    fun pickCoursePartsFiltersJunkAndFallsBackWhenTooFewRemain() {
+        val course = listOf(
+            part(1, "P1 概述"),
+            part(2, "第2章 进程管理"),
+            part(3, "3.1 调度"),
+            part(4, "片尾"),
+            part(5, "花絮【预告】"),
+        )
+        val (kept, filtered) = pickCourseParts(course)
+        assertEquals(listOf(1, 2, 3), kept.map { it.page })
+        assertEquals(2, filtered)
+
+        // 只有一两集的短视频课：清洗后不足 3 集不能清空，退回原始目录。
+        val shortCourse = listOf(part(1, "第1章 概述"), part(2, "片尾"), part(3, "花絮"))
+        val (fallback, filteredShort) = pickCourseParts(shortCourse)
+        assertEquals(listOf(1, 2, 3), fallback.map { it.page }, "不足 3 集要退回原始分集")
+        assertEquals(2, filteredShort, "退回时仍然保留过滤计数当警告")
+
+        // 空标题不是垃圾：它有用 page 兜底成 P{n} 的价值。
+        val withBlank = listOf(part(1, "第1章 概述"), part(2, ""), part(3, "第3章 内存"), part(4, "预告"))
+        assertEquals(listOf(1, 2, 3), pickCourseParts(withBlank).first.map { it.page })
+    }
+
+    /** bvid 全量导入：片尾/花絮被过滤，单元名按章节清洗，结果里要说清过滤了几条。 */
+    @Test
+    fun aBilibiliImportFiltersTrailersAndCleansTitles() = runTest {
+        val service = LearningPlanStore.inMemory()
+        val parts = listOf(
+            Triple(1, "P1 第1集 操作系统概述", 20 * 60),
+            Triple(2, "第2章 进程管理", 20 * 60),
+            Triple(3, "3.1 调度算法", 60 * 60),
+            Triple(4, "【第4章】内存管理", 20 * 60),
+            Triple(5, "片尾", 5 * 60),
+            Triple(6, "花絮【预告】", 3 * 60),
+        )
+        val tool = PlanTools({ service }, {}, bilibili = fakeBilibili(pageList(parts)))
+            .all.single { it.name == "create_learning_plan" }
+
+        val result = tool.call(
+            buildJsonObject {
+                put("title", "操作系统速通")
+                put("bvid", "BV1YE411D7nH")
+                put("dailyMinutes", 120)
+            },
+        )
+
+        assertTrue(!result.isError, result.content)
+        assertTrue(result.content.contains("清洗"), "结果里要说明清洗过：" + result.content)
+        assertTrue(result.content.contains("过滤 2 条"), "要报出过滤条数：" + result.content)
+
+        val planId = service.activePlanId()!!
+        val units = service.week(planId, weekOffset()).commitment.units
+        assertEquals(
+            listOf(
+                "操作系统概述",
+                "第2章 · 进程管理",
+                "第3章 · 3.1 调度算法（上）",
+                "第3章 · 3.1 调度算法（下）",
+                "第4章 · 内存管理",
+            ),
+            units.map { it.title },
+            "片尾/花絮不该变成节点，标题也不该逐字抄分集标题",
+        )
+        assertEquals(listOf("未分章", "第2章", "第3章", "第3章", "第4章"), units.map { it.chapter })
+        assertTrue(
+            units.none { it.title.contains("片尾") || it.title.contains("花絮") || it.title.contains("预告") },
+            units.map { it.title }.toString(),
+        )
+
+        // 分集资源也要落库：单元是清洗后的学习点，资源是能点回原分集的那一条。
+        assertTrue(units.all { it.resources.size == 1 }, units.map { it.title to it.resources.size }.toString())
+        val first = units.first().resources.single()
+        assertEquals("bilibili", first.kind)
+        assertEquals("P1 第1集 操作系统概述", first.title, "资源标题要保留原分集标题")
+        assertEquals("https://www.bilibili.com/video/BV1YE411D7nH?p=1", first.url)
+        assertTrue(first.locator.startsWith("第 1 集"), first.locator)
+        // 长分集拆成（上）（下）两个单元，但都指向同一集。
+        assertEquals("https://www.bilibili.com/video/BV1YE411D7nH?p=3", units[3].resources.single().url)
     }
 }
