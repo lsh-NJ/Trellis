@@ -238,6 +238,14 @@ interface LearningPlanService {
     fun exportJsonl(planId: String): String
 
     fun importJsonl(jsonl: String): CommandResult<Unit>
+
+    /**
+     * 关掉这一份服务（释放 SQLite 连接）。
+     *
+     * 正常退出可以不调；调试里要删库（`DataWipe`）时必须先关，否则文件句柄还开着。
+     * 关掉之后这个实例不能再用，调用方应把引用置空、下次重新打开。
+     */
+    fun close()
 }
 
 /** 草稿里的一章/一个单元；时长 10–45 分钟。 */

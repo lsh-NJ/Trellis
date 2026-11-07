@@ -17,8 +17,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -68,6 +70,9 @@ fun SettingsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
         // 时间调试：只有开发者模式（TRELLIS_DEV=1）才出现。
         // 拨「应用内今天」而不是改系统时间——跨周/结算/复盘这些逻辑才需要它。
         if (runtime.devModeEnabled) item { DevTimeSection(runtime) }
+
+        // 清除数据（同样只在开发者模式出现）：演示/测试弄脏后一把擦干净。
+        if (runtime.devModeEnabled) item { DevDataSection(runtime) }
 
         item { PluginsSection(runtime) }
 
@@ -738,4 +743,98 @@ private fun StepChip(glyph: String, onClick: () -> Unit) {
     ) {
         Text(glyph, style = MaterialTheme.typography.bodyMedium)
     }
+}
+
+
+/**
+ * 开发者 · 清除数据。
+ *
+ * 只有开发者模式出现；每个按钮都要二次确认，「全部清空」还要手输「清除」。
+ * 删什么、留什么全在 [DataWipe] 里定；这里只负责把「将删除/将保留」摊给用户看，以及把结果说清楚。
+ */
+@Composable
+private fun DevDataSection(runtime: AppRuntime) {
+    var pending by remember { mutableStateOf<WipeScope?>(null) }
+    var typed by remember { mutableStateOf("") }
+    var note by remember { mutableStateOf<String?>(null) }
+
+    SettingsSection(
+        title = "清除数据（开发者）",
+        status = note ?: "只影响 " + runtime.home.relativeOrName(),
+    ) {
+        SettingsStatusLine("不可恢复。清完之后计划页会变成一个空库；建议先备份整个数据目录。")
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            WipeChip("学习计划", WipeScope.Plans) { pending = it }
+            WipeChip("会话", WipeScope.Chats) { pending = it }
+            WipeChip("知识库", WipeScope.Knowledge) { pending = it }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            WipeChip("活动记录", WipeScope.Activity) { pending = it }
+            WipeChip("练习记录", WipeScope.Practice) { pending = it }
+            WipeChip("全部清空", WipeScope.All) { pending = it }
+        }
+        SettingsStatusLine("保留：llm.json、ui.json、study.json、steward/settings.json、activity 下的分类与同步设置。全部清空后建议重启应用。")
+    }
+
+    val scope = pending
+    if (scope != null) {
+        AlertDialog(
+            onDismissRequest = { pending = null; typed = "" },
+            title = { Text(scope.title + "？") },
+            text = {
+                Column {
+                    Text(if (scope == WipeScope.All) "将删除数据目录下除配置外的全部内容：计划、会话、知识库、活动记录、练习记录、插件。" else scope.title + "会删除：")
+                    Spacer(Modifier.height(6.dp))
+                    Text(DataWipe.targets(runtime.home, scope).joinToString("\n") { it.relativeOrName() })
+                    if (scope == WipeScope.All) {
+                        Spacer(Modifier.height(8.dp))
+                        Text("保留 " + DataWipe.preservedPaths(runtime.home, scope).joinToString("、"))
+                        Spacer(Modifier.height(8.dp))
+                        Text("输入「清除」确认：")
+                        ChromeTextField(
+                            value = typed,
+                            onValueChange = { typed = it },
+                            placeholder = "清除",
+                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = scope != WipeScope.All || typed.trim() == "清除",
+                    onClick = {
+                        val result = runtime.clearData(scope)
+                        note = if (result.ok) {
+                            "已删除 " + result.deleted.size + " 项"
+                        } else {
+                            "删了 " + result.deleted.size + " 项，失败 " + result.failed.size + " 项：" + result.failed.joinToString("、")
+                        }
+                        pending = null
+                        typed = ""
+                    },
+                ) { Text("确认清除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pending = null; typed = "" }) { Text("取消") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun WipeChip(label: String, scope: WipeScope, onClick: (WipeScope) -> Unit) {
+    EditorChip(label, active = false, onClick = { onClick(scope) })
+}
+
+/** 数据目录在界面上只显示最后两级，避免一长串 `/Users/...` 把标题挤掉。 */
+private fun java.io.File.relativeOrName(): String {
+    val parts = absolutePath.trimEnd('/').split('/').filter { it.isNotBlank() }
+    return parts.takeLast(2).joinToString("/")
 }

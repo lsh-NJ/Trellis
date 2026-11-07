@@ -381,6 +381,71 @@ class AppRuntime private constructor() {
     }
 
     /**
+     * 调试用：清除数据（开发者模式）。
+     *
+     * 具体删什么见 [DataWipe]：配置（模型 key / 界面偏好 / 学习偏好 / 管家设置 / 活动设置）一律保留。
+     * 先关掉会写文件的句柄再删，删完把内存里的视图状态复位；计划库下一次刷新会惰性重建一个空库。
+     */
+    internal fun clearData(scope: WipeScope): WipeResult {
+        if (chatBusy) {
+            return WipeResult(
+                deleted = emptyList(),
+                failed = listOf("正在对话/整理中，等这一轮结束再清"),
+            )
+        }
+        if (scope == WipeScope.Plans || scope == WipeScope.All) {
+            runCatching { learningPlanService?.close() }
+            learningPlanService = null
+            learningPlanId = null
+            planDocBrowseId = null
+            planAll = emptyList()
+            planWeekCards = emptyList()
+            planFocusId = null
+            planOverdue = null
+            planDayView = null
+            planReview = null
+            planPendingReviewWeek = null
+            planSettingsOpen = false
+            planMessage = null
+        }
+        if (scope == WipeScope.Activity || scope == WipeScope.All) {
+            runCatching { activityStore?.close() }
+            activityStore = null
+            activitySync = null
+            activityAggregator = null
+            activityMessage = null
+            activitySyncedAtMs = null
+        }
+        val result = DataWipe.wipe(home, scope)
+        when (scope) {
+            WipeScope.Plans -> {
+                refreshPlan()
+                refreshGoals()
+            }
+            WipeScope.Chats -> {
+                loadChatSessions()
+                if (currentChatId == null || chatSessions.none { it.id == currentChatId }) newChat()
+            }
+            WipeScope.Knowledge -> Unit // 知识库每次从文件现算，切回去就是空的
+            WipeScope.Activity -> Unit // 下次进活动页会重新打开空库
+            WipeScope.Practice -> reloadExamBank()
+            WipeScope.All -> {
+                loadChatSessions()
+                newChat()
+                reloadExamBank()
+                refreshPlan()
+                refreshGoals()
+                tick++
+            }
+        }
+        appendAppLog(
+            "调试：清除数据（" + scope.title + "）删除 " + result.deleted.size + " 项" +
+                if (result.failed.isEmpty()) "" else "，失败 " + result.failed.size + " 项：" + result.failed.joinToString("、"),
+        )
+        return result
+    }
+
+    /**
      * 测试用：把模型换成假的。
      *
      * 生产的默认实现是 [HttpLlmClient]。留这个口子是为了能端到端测整条链路
