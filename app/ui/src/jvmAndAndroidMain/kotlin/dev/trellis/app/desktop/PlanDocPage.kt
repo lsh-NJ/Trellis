@@ -2,6 +2,9 @@ package dev.trellis.app.desktop
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -26,6 +29,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 /**
@@ -49,51 +54,56 @@ internal fun PlanDocPage(runtime: AppRuntime, planId: String, onClose: () -> Uni
     val planTitle = plans.firstOrNull { it.id == planId }?.title
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 16.dp),
+        modifier = Modifier.fillMaxSize().padding(top = 16.dp, end = 24.dp, bottom = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         ChromeSecondaryHeader(title = "计划文档", onBack = onClose, subtitle = planTitle)
-        Row(modifier = Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-            Column(
-                modifier = Modifier
-                    .width(240.dp)
-                    .fillMaxHeight()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+        Row(modifier = Modifier.fillMaxSize()) {
+            ListSidebar(
+                title = "计划文档",
+                count = weeks.size + 1,
+                actionLabel = "",
+                onAction = null,
             ) {
-                Text(
-                    "计划",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(bottom = 4.dp),
-                )
-                plans.forEach { plan ->
-                    PlanDocEntry(
-                        label = plan.title,
-                        selected = plan.id == planId,
-                        onClick = { runtime.openPlanDocs(plan.id) },
-                    )
-                }
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    "这份计划的文档",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(bottom = 4.dp),
-                )
-                PlanDocEntry(label = "总览", selected = week == null, onClick = { week = null })
-                weeks.forEach { current ->
-                    PlanDocEntry(label = current, selected = week == current, onClick = { week = current })
-                }
-                if (weeks.isEmpty()) {
+                Column(
+                    modifier = Modifier.fillMaxHeight().verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
                     Text(
-                        "还没有按周写的文档：每周排计划时会写在这里。",
-                        style = MaterialTheme.typography.bodySmall,
+                        "计划",
+                        style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 4.dp),
+                        modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
                     )
+                    plans.forEach { plan ->
+                        PlanDocEntry(
+                            label = plan.title,
+                            selected = plan.id == planId,
+                            onClick = { runtime.openPlanDocs(plan.id) },
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "这份计划的文档",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
+                    )
+                    PlanDocEntry(label = "总览", selected = week == null, onClick = { week = null })
+                    weeks.forEach { current ->
+                        PlanDocEntry(label = current, selected = week == current, onClick = { week = current })
+                    }
+                    if (weeks.isEmpty()) {
+                        Text(
+                            "还没有按周写的文档：每周排计划时会写在这里。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 4.dp, top = 4.dp),
+                        )
+                    }
                 }
             }
+            ListSidebarSplitter()
             Column(
                 modifier = Modifier
                     .weight(1f)
@@ -123,28 +133,25 @@ internal fun PlanDocPage(runtime: AppRuntime, planId: String, onClose: () -> Uni
 
 @Composable
 private fun PlanDocEntry(label: String, selected: Boolean, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(6.dp)
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(shape)
-            .background(
-                if (selected) MaterialTheme.colorScheme.primaryContainer
-                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 7.dp),
+            .hoverable(interaction)
+            .listRowSurface(selected, hovered)
+            .clickable(onClick = onClick),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        ListRowSelectionBar(selected)
+        Spacer(Modifier.width(8.dp))
         Text(
             label,
             style = MaterialTheme.typography.bodyMedium,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             maxLines = 1,
-            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        if (selected) {
-            Text("·", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
-        }
     }
 }
