@@ -160,7 +160,8 @@ private fun JsonObject.intArg(name: String): Int? =
  */
 class PlanTools(
     private val service: () -> LearningPlanService?,
-    private val onChanged: () -> Unit,
+    /** 计划落库后回调新建的 planId：调用方拿它把计划页切到新计划。 */
+    private val onChanged: (String) -> Unit,
     /** 设置页里的「每天预计投入」×7；没设置就是 null，计划就只记标题和目标。 */
     private val weeklyCapacity: () -> Int? = { null },
     /** 只读的 B 站客户端；`bvid` 模式直接拉分集生成全部单元。测试可注入假 fetch。 */
@@ -468,7 +469,7 @@ class PlanTools(
         if (accepted.value == null) {
             return ToolResult("生效失败：" + (accepted.error?.message ?: "未知原因"), isError = true)
         }
-        onChanged()
+        onChanged(createdValue.planId)
         return null
     }
 

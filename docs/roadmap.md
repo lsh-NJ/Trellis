@@ -229,9 +229,10 @@
   - 无独立定时器/托盘/开机自启；ticker 只在应用开着时每 60s 跑一次（`startStewardTicker`）。
 - [ ] **G-C3 通知没有闭环（P1，1 天）**
   - 桌面通知 fire-and-forget（`Notifier`：osascript / PowerShell Toast / notify-send），点击不能跳转/回复；只有未读红点。
-- [ ] **G-C4 周复盘未接（P0，1–2 天）**
-  - `ReviewView`/`generateReview` 后端有、UI 没接；「自动周复盘」开关未做（`docs/plan-rhythm-draft.md`）。
-  - 直接对应卖点里的「总结、激励环节」。
+- [x] **G-C4 周复盘 UI（P0，1–2 天）— 2026-11-07 已接最小版**
+  - 计划页 `WeekDetail` 末尾加「周复盘」卡片：选中过去某周时显示 `ReviewView`（narrative / facts / question / suggestion）；引擎没自动补上时显示「$week 已经结束，复盘还没生成」+「生成复盘」按钮（`AppRuntime.generatePlanReview`）。
+  - `PlanStateView.pendingReviewWeek` 给出欠复盘的具体周号（取「最近一个已结束的承诺周」，不再取最大承诺周——全局周表下最大周往往是未来）；`buildPlanState` 据此算 `pendingReview`。
+  - 仍未做：「自动周复盘」开关（`docs/plan-rhythm-draft.md`）；复盘内容的 AI 建议目前走节奏引擎的模板，不做实时对话生成。
 - [ ] **G-C5 「全自动重排」口径冲突（P0，设计题）**
   - 文档明确「不做独立定时器、按日自动顺延/全自动重排」（`docs/plan-rhythm-draft.md` §2.6），但卖点写「逾期维护交给 AGENT」——需定义边界（自动到什么程度、误操作怎么兜），再落代码。
 - [ ] **G-C6 AI 协商重排缺聊天侧实现（P1，文档已记）**
