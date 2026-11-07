@@ -149,6 +149,11 @@ private val TOOL_INTENTS: Map<String, Set<AgentIntent>> = mapOf(
     "review_last_week" to setOf(AgentIntent.PlanManage),
     "set_plan_pace" to setOf(AgentIntent.PlanManage),
 
+    // 跨会话记忆：记住目标/偏好、回忆之前说过的事。这两只是 Chat 唯一的例外 ——
+    // 只读或只追加记忆，不改用户数据；其它工具仍然按意图单选，不进聊天。
+    "remember_memory" to setOf(AgentIntent.Chat, AgentIntent.PlanManage),
+    "recall_memory" to setOf(AgentIntent.Chat, AgentIntent.PlanManage),
+
     // 清单：多步活都要，聊天不要
     "set_plan" to setOf(AgentIntent.CreatePlugin, AgentIntent.ManagePlugin, AgentIntent.ArrangeUi, AgentIntent.FindResource, AgentIntent.PlanManage),
     "step_done" to setOf(AgentIntent.CreatePlugin, AgentIntent.ManagePlugin, AgentIntent.ArrangeUi, AgentIntent.FindResource, AgentIntent.PlanManage),
@@ -169,9 +174,16 @@ private val TOOL_INTENTS: Map<String, Set<AgentIntent>> = mapOf(
 
 private val DEFAULT_INTENTS: Set<AgentIntent> = setOf(AgentIntent.CreatePlugin, AgentIntent.ManagePlugin)
 
-/** 按意图选工具（单选）：不在归属表里的工具按 [DEFAULT_INTENTS] 处理。 */
+/**
+ * 按意图选工具（单选）：不在归属表里的工具按 [DEFAULT_INTENTS] 处理。
+ *
+ * Chat 是唯一例外：默认空手（纯聊天不该拿到能改数据的手），只放行 [TOOL_INTENTS]
+ * 里显式登记了 Chat 的工具 —— 目前只有跨会话记忆的两只（remember/recall）。
+ */
 internal fun toolsForIntent(intent: AgentIntent, all: List<AgentTool>): List<AgentTool> {
-    if (intent == AgentIntent.Chat) return emptyList()
+    if (intent == AgentIntent.Chat) {
+        return all.filter { tool -> TOOL_INTENTS[tool.name]?.contains(AgentIntent.Chat) == true }
+    }
     return all.filter { tool ->
         (TOOL_INTENTS[tool.name] ?: DEFAULT_INTENTS).contains(intent)
     }

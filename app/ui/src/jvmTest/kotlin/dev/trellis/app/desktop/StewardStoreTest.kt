@@ -4,6 +4,7 @@ import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -87,6 +88,26 @@ class StewardStoreTest {
             listOf("周一总结", "周二总结"),
             StewardStore(home).recentDigests(today = "2026-11-04", days = 3).map { it.second.trim() },
         )
+    }
+
+    @Test
+    fun hasNoteMatchesTopicAndAllEntities() {
+        val home = tempHome()
+        StewardStore(home).appendMemory(
+            StewardMemoryEvent(
+                at = 1,
+                day = "2026-11-07",
+                kind = StewardMemoryKind.Note,
+                text = "已经提议过练习",
+                topics = listOf("练习提议"),
+                entities = listOf("pln_1", "pu_1"),
+            ),
+        )
+
+        assertTrue(StewardStore(home).hasNote("练习提议", listOf("pln_1", "pu_1")))
+        assertTrue(StewardStore(home).hasNote("练习提议", listOf("pln_1")), "只看部分对象也算记过")
+        assertFalse(StewardStore(home).hasNote("练习提议", listOf("pln_1", "pu_2")))
+        assertFalse(StewardStore(home).hasNote("别的主题", listOf("pln_1", "pu_1")))
     }
 
     @Test

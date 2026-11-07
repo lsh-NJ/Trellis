@@ -64,6 +64,15 @@ data class ChatLine(
     val proposal: StewardProposal? = null,
     /** 建议被采纳/被「先这样」之后记下来，重启后卡片不再显示按钮。 */
     val proposalState: ProposalState = ProposalState.Open,
+    /**
+     * 学习单元完成后，AI 提议练一道题（模板生成，见 [PracticeProposal]）。
+     *
+     * 普通对话没有这个字段；管家会话里只在「刚学完一个单元、题库里有匹配的题」
+     * 且这一单元还没提议过时出现。
+     */
+    val practiceProposal: PracticeProposal? = null,
+    /** 接受/先不练之后记下来，重启后卡片不再显示按钮。 */
+    val practiceState: PracticeProposalState = PracticeProposalState.Open,
 )
 
 /**

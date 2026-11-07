@@ -855,6 +855,11 @@ private fun RoundView(
             StewardProposalCard(runtime, round.reply, proposal)
         }
 
+        round.reply?.practiceProposal?.let { practice ->
+            Spacer(Modifier.height(10.dp))
+            PracticeProposalCard(runtime, round.reply, practice)
+        }
+
         val meta = metaLabel(round)
         if (meta.isNotEmpty()) {
             Spacer(Modifier.height(4.dp))
@@ -1321,6 +1326,72 @@ private fun StewardProposalCard(
                 ChromeButton(label = "一键采纳", onClick = { runtime.launchAdoptStewardProposal(line.id) })
                 ChromeTextLink("调整一下", onClick = { runtime.negotiateStewardProposal(line.id) })
                 ChromeTextLink("先这样", onClick = { runtime.dismissStewardProposal(line.id) })
+            }
+        }
+    }
+}
+
+/**
+ * 练习提议卡：学完一个单元后，AI 从题库里挑的一道题。
+ *
+ * 和管家建议卡分开画：这张只有「开始练习 / 先不练」两个动作，接受后走二级页
+ * 只显示这一道题，不在会话里展开题面（会话是聊天记录，不是做题界面）。
+ */
+@Composable
+private fun PracticeProposalCard(
+    runtime: AppRuntime,
+    line: ChatLine,
+    proposal: PracticeProposal,
+) {
+    val decided = line.practiceState != PracticeProposalState.Open
+    val tokens = LocalTrellisTokens.current
+    val accent = tokens.colors.accent
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(tokens.radius.card))
+            .background(tokens.colors.accentSoft)
+            .border(1.dp, accent.copy(alpha = 0.35f), RoundedCornerShape(tokens.radius.card))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            "练习建议",
+            style = tokens.type.meta,
+            color = tokens.colors.onAccentSoft,
+            modifier = Modifier
+                .clip(RoundedCornerShape(4.dp))
+                .background(accent.copy(alpha = 0.14f))
+                .padding(horizontal = 6.dp, vertical = 2.dp),
+        )
+        Text(
+            proposal.title,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+        )
+        if (proposal.detail.isNotBlank()) {
+            Text(
+                proposal.detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text(
+            proposal.planTitle + " · " + proposal.subject,
+            style = tokens.type.caption,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (decided) {
+            Text(
+                if (line.practiceState == PracticeProposalState.Accepted) "已接受，练习页里只有这一道" else "这次先不练",
+                style = tokens.type.meta,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ChromeButton(label = "开始练习", onClick = { runtime.acceptPracticeProposal(line.id) })
+                Spacer(Modifier.width(6.dp))
+                ChromeTextLink("先不练", onClick = { runtime.dismissPracticeProposal(line.id) })
             }
         }
     }

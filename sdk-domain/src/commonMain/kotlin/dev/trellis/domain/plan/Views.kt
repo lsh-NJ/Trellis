@@ -30,6 +30,13 @@ data class DayOccurrence(
     val carried: Boolean,
     val origin: OriginLabel,
     val actions: List<String>,
+    /**
+     * 这条 occurrence 属于哪个路线单元；待办型 occurrence 没有单元，是 null。
+     *
+     * 「学完一个单元就给练习」要靠它判断：有 unitId 才算完成了一个学习单元，
+     * 普通待办勾掉不算。
+     */
+    val unitId: String? = null,
 )
 
 @Serializable

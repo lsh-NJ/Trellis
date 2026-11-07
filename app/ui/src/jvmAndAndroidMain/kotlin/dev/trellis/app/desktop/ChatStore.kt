@@ -88,6 +88,10 @@ internal class ChatStore(home: File) {
                 proposalState = ProposalState.entries
                     .firstOrNull { it.name == line["proposalState"]?.jsonPrimitive?.content }
                     ?: ProposalState.Open,
+                practiceProposal = line["practice"]?.jsonObject?.let { parsePractice(it) },
+                practiceState = PracticeProposalState.entries
+                    .firstOrNull { it.name == line["practiceState"]?.jsonPrimitive?.content }
+                    ?: PracticeProposalState.Open,
             )
         } ?: emptyList()
         ChatSession(
@@ -122,6 +126,20 @@ internal class ChatStore(home: File) {
             title = root["title"]?.jsonPrimitive?.content.orEmpty(),
             detail = root["detail"]?.jsonPrimitive?.content.orEmpty(),
             changes = changes,
+        )
+    }
+
+    private fun parsePractice(root: JsonObject): PracticeProposal? {
+        val planId = root["planId"]?.jsonPrimitive?.content ?: return null
+        val exerciseId = root["exerciseId"]?.jsonPrimitive?.content ?: return null
+        return PracticeProposal(
+            id = root["id"]?.jsonPrimitive?.content ?: return null,
+            planId = planId,
+            planTitle = root["planTitle"]?.jsonPrimitive?.content.orEmpty(),
+            subject = root["subject"]?.jsonPrimitive?.content.orEmpty(),
+            exerciseId = exerciseId,
+            title = root["title"]?.jsonPrimitive?.content.orEmpty(),
+            detail = root["detail"]?.jsonPrimitive?.content.orEmpty(),
         )
     }
 
@@ -176,6 +194,23 @@ internal class ChatStore(home: File) {
                         }
                         if (line.proposalState != ProposalState.Open) {
                             put("proposalState", line.proposalState.name)
+                        }
+                        line.practiceProposal?.let { practice ->
+                            put(
+                                "practice",
+                                buildJsonObject {
+                                    put("id", practice.id)
+                                    put("planId", practice.planId)
+                                    put("planTitle", practice.planTitle)
+                                    put("subject", practice.subject)
+                                    put("exerciseId", practice.exerciseId)
+                                    put("title", practice.title)
+                                    put("detail", practice.detail)
+                                },
+                            )
+                        }
+                        if (line.practiceState != PracticeProposalState.Open) {
+                            put("practiceState", line.practiceState.name)
                         }
                         if (line.plan.isNotEmpty()) {
                             putJsonArray("plan") {

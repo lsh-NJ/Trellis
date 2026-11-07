@@ -33,6 +33,7 @@ import dev.trellis.domain.TaskId
 import dev.trellis.domain.TaskStatus
 import dev.trellis.domain.plan.Actor
 import dev.trellis.domain.plan.CommandEnvelope
+import dev.trellis.domain.plan.DayOccurrence
 import dev.trellis.domain.plan.DayView
 import dev.trellis.domain.plan.LearningPlanService
 import dev.trellis.domain.plan.LearningPlanInfo
@@ -167,11 +168,17 @@ internal const val TAB_ACTIVITY = 6
 internal const val TAB_KNOWLEDGE = 7
 
 /**
- * 练习页：从 :features:exams 的题库里抽题做，知识点卡当复习卡。
+ * 练习二级页：不常驻导航，只在用户接受了一条练习提议后从会话页打开，只显示那一道题。
  *
  * 序号同样往后放而不是插进中间，理由见 [TAB_ACTIVITY]。
  */
-internal const val TAB_EXAMS = 8
+internal const val TAB_PRACTICE = 8
+
+/** 练习提议去重用的 topic；同一单元提过一次就不再提。 */
+private const val PRACTICE_PROPOSAL_TOPIC = "练习提议"
+
+/** 这一次运行里已经提议过的练习；重开程序后从空开始（同一单元另有记忆里的去重）。 */
+private val proposedPracticeExerciseIds = mutableSetOf<String>()
 
 internal val RENDERED_MOUNT_POINTS: Set<ExtensionPointId> = setOf(
     Slots.HomeHeader.id,
@@ -708,82 +715,137 @@ class AppRuntime private constructor() {
         openKnowledgeReveal(entry.noteId, start, end)
     }
 
-    // ---- 练习页（:features:exams 题库） ----
+    // ---- 练习：学完一个单元后提议，接受后进二级页只做这一道 ----
 
-    /** 题库：打包的种子 JSONL + `<home>/exams/` 目录里的用户题库，按 id 去重合并。 */
+    /**
+     * 题库：打包的种子 JSONL + `<home>/exams/` 里的用户题库，按 id 去重合并。
+     *
+     * 题库没有浏览页；它只为两件事存在：①匹配「这一单元学完练哪道题」，
+     * ②用户接受提议后按 id 取题渲染。
+     */
     internal var examBank: ExerciseBank = ExerciseBank(emptyList())
         private set
 
-    /** 题库加载时的问题（种子缺失 / 坏行），练习页用一行小字提示，不阻断做其他事。 */
+    /** 题库加载问题（种子缺失 / 坏行）；不阻断其它功能，写进日志供排查。 */
     internal var examLoadNotes: List<String> = emptyList()
         private set
 
-    var examSubject by mutableStateOf<String?>(null)
+    /** 当前练习页展示的那一道题；只可能是用户刚接受的那道，null = 没在练习。 */
+    internal var practiceExercise by mutableStateOf<Exercise?>(null)
         private set
 
-    var examQuery by mutableStateOf("")
+    /** 练习页已勾选的选项标签（判断题也是 A/B）。 */
+    internal var practiceSelected by mutableStateOf<Set<String>>(emptySet())
         private set
 
-    /** 当前这一轮的题（按当前筛选随机抽的队列）。 */
-    internal var examQueue: List<Exercise> = emptyList()
+    internal var practiceAnswerVisible by mutableStateOf(false)
         private set
 
-    internal var examIndex by mutableStateOf(0)
-        private set
+    internal val practiceActive: Boolean get() = practiceExercise != null
 
-    /** 已勾选的选项标签（判断题也是 A/B）。 */
-    internal var examSelected by mutableStateOf<Set<String>>(emptySet())
-        private set
-
-    internal var examAnswerVisible by mutableStateOf(false)
-        private set
-
-    internal val examCurrent: Exercise?
-        get() = examQueue.getOrNull(examIndex)
-
-    internal fun setExamQuery(text: String) {
-        examQuery = text
-        restartExamPractice()
+    internal fun togglePracticeOption(label: String) {
+        if (practiceAnswerVisible) return
+        practiceSelected = if (label in practiceSelected) practiceSelected - label else practiceSelected + label
     }
 
-    internal fun selectExamSubject(subject: String?) {
-        examSubject = subject
-        restartExamPractice()
+    internal fun revealPracticeAnswer() {
+        practiceAnswerVisible = true
     }
 
-    /** 按当前「科目 + 关键字」重排一轮；筛选后没题时队列为空，界面显示空态。 */
-    internal fun restartExamPractice() {
-        val pool = examBank.filter(
-            subject = examSubject,
-            keyword = examQuery.ifBlank { null },
+    /** 关闭练习页：回会话页；下次接受新提议会重新打开。 */
+    internal fun closePractice() {
+        practiceExercise = null
+        practiceSelected = emptySet()
+        practiceAnswerVisible = false
+        currentTab = TAB_CHAT
+    }
+
+    /**
+     * 接受一条练习提议：把卡片标成已接受、落盘，并打开练习二级页只显示这一道题。
+     *
+     * 找不到题目（题库被换掉/删了）时只标记接受 + 写日志，不打开空页面。
+     */
+    internal fun acceptPracticeProposal(lineId: Long) {
+        val index = chat.indexOfFirst { it.id == lineId }
+        if (index < 0) return
+        val proposal = chat[index].practiceProposal ?: return
+        chat[index] = chat[index].copy(practiceState = PracticeProposalState.Accepted)
+        persistChat()
+        val exercise = examBank.get(proposal.exerciseId)
+        if (exercise == null) {
+            appendAppLog("练习提议：题库里找不到 " + proposal.exerciseId)
+            return
+        }
+        practiceExercise = exercise
+        practiceSelected = emptySet()
+        practiceAnswerVisible = false
+        currentTab = TAB_PRACTICE
+    }
+
+    /** 「先不练」：卡片记成已跳过，并把这条提议记进记忆，同一单元不再反复提。 */
+    internal fun dismissPracticeProposal(lineId: Long) {
+        val index = chat.indexOfFirst { it.id == lineId }
+        if (index < 0) return
+        val proposal = chat[index].practiceProposal ?: return
+        chat[index] = chat[index].copy(practiceState = PracticeProposalState.Dismissed)
+        persistChat()
+        stewardStore.appendMemory(
+            StewardMemoryEvent(
+                at = clock.nowMs(),
+                day = clock.today().toString(),
+                kind = StewardMemoryKind.Note,
+                text = "这次先不练：" + proposal.subject,
+                topics = listOf(PRACTICE_PROPOSAL_TOPIC),
+                entities = listOf(proposal.planId, proposal.exerciseId),
+            ),
         )
-        examQueue = pool.shuffled()
-        examIndex = 0
-        examSelected = emptySet()
-        examAnswerVisible = false
     }
 
-    internal fun toggleExamOption(label: String) {
-        if (examAnswerVisible) return
-        examSelected = if (label in examSelected) examSelected - label else examSelected + label
-    }
-
-    internal fun revealExamAnswer() {
-        examAnswerVisible = true
-    }
-
-    internal fun nextExam() {
-        if (examIndex >= examQueue.size - 1) return
-        examIndex += 1
-        examSelected = emptySet()
-        examAnswerVisible = false
-    }
-
-    internal fun prevExam() {
-        if (examIndex <= 0) return
-        examIndex -= 1
-        examSelected = emptySet()
-        examAnswerVisible = false
+    /**
+     * 学完一个单元后看看题库里有没有匹配的练习；有就在管家会话里主动提一条。
+     *
+     * 只对「路线单元」触发（待办勾掉不算）；同一单元只提一次（memory 里记一条 Note，
+     * 按 planId + unitId 去重）。匹配/去重都是本地的，不调模型。
+     */
+    private fun maybeProposePractice(planId: String, occurrence: DayOccurrence) {
+        val unitId = occurrence.unitId ?: return
+        if (examBank.isEmpty || chatBusy) return
+        val planTitle = runCatching { learningPlan()?.planState(planId)?.title }.getOrNull().orEmpty()
+        if (stewardStore.hasNote(PRACTICE_PROPOSAL_TOPIC, listOf(planId, unitId))) return
+        val alreadyProposed = runCatching {
+            chatStore.read(StewardRuntime.STEWARD_SESSION_ID)?.lines.orEmpty()
+                .mapNotNull { line -> line.practiceProposal?.takeIf { it.planId == planId }?.exerciseId }
+                .toSet()
+        }.getOrDefault(emptySet()) + proposedPracticeExerciseIds
+        val exercise = examBank.suggestFor(
+            text = listOf(planTitle, occurrence.title, occurrence.chapter).joinToString(" "),
+            limit = 5,
+            excludeIds = alreadyProposed,
+        ).firstOrNull() ?: return
+        proposedPracticeExerciseIds += exercise.id
+        val proposal = PracticeProposal(
+            id = "practice-" + clock.nowMs(),
+            planId = planId,
+            planTitle = planTitle.ifBlank { "这个计划" },
+            subject = exercise.subjectLabel,
+            exerciseId = exercise.id,
+            title = "学完「" + occurrence.title + "」，练一道题？",
+            detail = "题库里有匹配「" + exercise.subject + "」的练习，只显示这一道；做完就回会话。",
+        )
+        val text = "学完「" + occurrence.title + "」了。" +
+            "题库里有匹配「" + exercise.subject + "」的练习，现在练一道吗？"
+        if (appendStewardLine(StewardRuntime.STEWARD_SESSION_ID, text, practice = proposal)) {
+            stewardStore.appendMemory(
+                StewardMemoryEvent(
+                    at = clock.nowMs(),
+                    day = clock.today().toString(),
+                    kind = StewardMemoryKind.Note,
+                    text = "练习提议：" + exercise.subject + "｜" + exercise.id,
+                    topics = listOf(PRACTICE_PROPOSAL_TOPIC),
+                    entities = listOf(planId, unitId),
+                ),
+            )
+        }
     }
 
     /**
@@ -809,7 +871,7 @@ class AppRuntime private constructor() {
         banks.forEach { bank -> bank.exercises.forEach { merged.putIfAbsent(it.id, it) } }
         examBank = ExerciseBank(merged.values.toList())
         examLoadNotes = notes
-        restartExamPractice()
+        notes.forEach { appendAppLog("题库：" + it) }
     }
 
     private var nextChatLineId = 1L
@@ -1122,7 +1184,12 @@ class AppRuntime private constructor() {
      * 会话正忙（用户在对话里、模型正在回）时返回 false：这次不消耗 checkpoint，
      * 一分钟后再试 —— 不能在用户说话说到一半时往上面插一条系统发言。
      */
-    private fun appendStewardLine(sessionId: String, text: String, proposal: StewardProposal?): Boolean {
+    private fun appendStewardLine(
+        sessionId: String,
+        text: String,
+        proposal: StewardProposal? = null,
+        practice: PracticeProposal? = null,
+    ): Boolean {
         if (chatBusy) return false
         val now = clock.nowMs()
         val existing = chatStore.read(sessionId) ?: ChatSession(
@@ -1133,7 +1200,14 @@ class AppRuntime private constructor() {
             lines = emptyList(),
             kind = SessionKind.Steward,
         )
-        val line = ChatLine(nextChatLineId++, ChatRole.Assistant, text, now, proposal = proposal)
+        val line = ChatLine(
+            nextChatLineId++,
+            ChatRole.Assistant,
+            text,
+            now,
+            proposal = proposal,
+            practiceProposal = practice,
+        )
         val viewing = currentChatId == sessionId
         chatStore.save(
             existing.copy(
@@ -1798,7 +1872,7 @@ class AppRuntime private constructor() {
         TAB_CHAT -> "对话"
         TAB_ACTIVITY -> "活动"
         TAB_KNOWLEDGE -> "知识库"
-        TAB_EXAMS -> "练习"
+        TAB_PRACTICE -> "练习"
         TAB_PLUGINS -> "插件"
         TAB_SETTINGS -> "设置"
         else -> "诊断"
@@ -1817,11 +1891,10 @@ class AppRuntime private constructor() {
             "对话", "chat" -> TAB_CHAT
             "活动", "activity", "activities" -> TAB_ACTIVITY
             "知识库", "知识", "knowledge", "kb" -> TAB_KNOWLEDGE
-            "练习", "题库", "exams", "exam", "practice" -> TAB_EXAMS
             "插件", "plugins", "plugin" -> TAB_PLUGINS
             "诊断", "diag", "diagnostics" -> TAB_DIAG
             "设置", "settings", "setting" -> TAB_SETTINGS
-            else -> return "没有这一页：" + tab + "。只有 任务 / 计划 / 对话 / 活动 / 知识库 / 练习 / 插件 / 诊断 / 设置。"
+            else -> return "没有这一页：" + tab + "。只有 任务 / 计划 / 对话 / 活动 / 知识库 / 插件 / 诊断 / 设置。"
         }
         currentTab = target
         return "切到了「" + tabName(target) + "」页。"
@@ -3067,6 +3140,8 @@ class AppRuntime private constructor() {
     fun completePlanOccurrence(occurrenceId: String) {
         val service = learningPlan() ?: return
         val planId = learningPlanId ?: return
+        // 提议要用完成前那一条的标题/章节/unitId；刷新之后从视图里就找不到了。
+        val occurrence = planDayView?.occurrences?.firstOrNull { it.id == occurrenceId }
         val command = CommandEnvelope(
             commandId = "cmd_" + java.util.UUID.randomUUID().toString().replace("-", ""),
             actor = Actor.USER,
@@ -3079,6 +3154,9 @@ class AppRuntime private constructor() {
                 null
             }
         if (result != null && !result.ok) planMessage = result.error?.message
+        if (result != null && result.ok && occurrence != null) {
+            maybeProposePractice(planId, occurrence)
+        }
         refreshPlan()
         tick++
     }
@@ -4559,7 +4637,6 @@ private fun initialTab(): Int = when (System.getenv("TRELLIS_TAB")?.trim()?.lowe
     "chat" -> TAB_CHAT
     "activity" -> TAB_ACTIVITY
     "knowledge", "kb" -> TAB_KNOWLEDGE
-    "exams", "exam", "practice" -> TAB_EXAMS
     "plugins" -> TAB_PLUGINS
     "diag" -> TAB_DIAG
     "settings" -> TAB_SETTINGS

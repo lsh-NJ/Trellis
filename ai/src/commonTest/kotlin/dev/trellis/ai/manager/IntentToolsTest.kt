@@ -33,6 +33,8 @@ class IntentToolsTest {
         tool("search_bilibili"),
         tool("add_tasks"),
         tool("set_plan"),
+        tool("remember_memory"),
+        tool("recall_memory"),
     )
 
     private fun names(intent: AgentIntent) = toolsForIntent(intent, all).map { it.name }
@@ -66,8 +68,18 @@ class IntentToolsTest {
     }
 
     @Test
-    fun chatHasNoHandsAtAll() {
-        assertEquals(emptyList(), names(AgentIntent.Chat))
+    fun chatOnlySeesTheMemoryHands() {
+        // 聊天默认空手；跨会话记忆是唯一显式例外，而且只放行两只不改数据的工具。
+        assertEquals(listOf("remember_memory", "recall_memory"), names(AgentIntent.Chat))
+        assertEquals(false, "deploy" in names(AgentIntent.Chat))
+        assertEquals(false, "search_bilibili" in names(AgentIntent.Chat))
+    }
+
+    @Test
+    fun planManageAlsoGetsTheMemoryHands() {
+        val plan = names(AgentIntent.PlanManage)
+        assertTrue("remember_memory" in plan)
+        assertTrue("recall_memory" in plan)
     }
 
     @Test

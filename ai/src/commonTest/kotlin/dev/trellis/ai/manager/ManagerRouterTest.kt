@@ -28,6 +28,8 @@ class ManagerRouterTest {
         tool("search_bilibili", "搜 B 站视频"),
         tool("arrange_cards", "摆卡片"),
         tool("list_plugins", "列插件"),
+        tool("remember_memory", "记住长期目标"),
+        tool("recall_memory", "回忆之前说过的事"),
     )
 
     private val router = ManagerRouter(
@@ -62,11 +64,17 @@ class ManagerRouterTest {
     }
 
     @Test
-    fun chatGetsNoToolCatalogueAtAll() {
-        assertTrue(router.tools(AgentIntent.Chat).isEmpty(), "纯聊天不该拿到任何工具")
+    fun chatCatalogueOnlyHasTheMemoryTools() {
+        assertEquals(
+            listOf("remember_memory", "recall_memory"),
+            router.tools(AgentIntent.Chat).map { it.name },
+            "聊天只放行跨会话记忆两只工具",
+        )
 
         val chat = toolCatalogue(router.prompt(AgentIntent.Chat).base)
-        assertTrue(chat.isNotBlank(), "空清单也要有 <tools> 段，模型才知道这一轮没有手")
+        assertTrue(chat.isNotBlank(), "<tools> 段要列出这一轮真的能用的工具")
+        assertTrue("remember_memory" in chat)
+        assertTrue("recall_memory" in chat)
         for (name in listOf("deploy", "search_bilibili", "arrange_cards", "list_plugins")) {
             assertFalse(name in chat, "聊天那一轮的工具目录里不该有 $name")
         }
