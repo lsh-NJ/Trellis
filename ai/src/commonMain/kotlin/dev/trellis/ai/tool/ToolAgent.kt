@@ -77,7 +77,7 @@ class ToolAgent(
      * 存在的理由：模型会理直气壮地说「已经装好了，不用再动」，而其实这一轮它一个文件都没写。
      * 这种话不能只靠提示词防 —— 得在它交活的时候真的去核对。
      */
-    private val beforeFinishing: () -> String? = { null },
+    private val beforeFinishing: (String) -> String? = { null },
 ) {
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -141,7 +141,7 @@ class ToolAgent(
 
             when (val parsed = parse(reply)) {
                 is AgentStep.Reply -> {
-                    val complaint = beforeFinishing()
+                    val complaint = beforeFinishing(parsed.text)
                     if (complaint != null) {
                         note("第 " + step + " 步：还要补：" + complaint)
                         conversation += LlmMessage(LlmRole.User, complaint)

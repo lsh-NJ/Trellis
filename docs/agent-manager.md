@@ -19,24 +19,22 @@
 1. `system`：静态前缀（内核契约、节点词汇表、工具目录、管理守则）—— 一次注入，永不变；
 2. `system`：`<current_state>`（已装插件、停用列表、待审批、当前页）—— 每轮变，但排在静态前缀之后；
 3. `history`：最近 20 条；
-4. `system`：`<task:...>`（按意图插入的任务模块）；
+4. `system`：`<task:work>`（统一工作流；2026-11-07 起不再按意图插任务模块）；
 5. `user`：这一句。
 
 理由：上下文缓存按**前缀**命中。把易变的当前状态夹在静态前缀前面，每轮都会把缓存打掉；任务模块放在历史之后，避免模型把「指令」误读成「上一轮发生的事」。
 
-## 3. 意图路由
+## 3. 意图路由（2026-11-07 已删除）
 
-`KeywordIntentClassifier` 用确定性关键词判六类：`Chat` / `CreatePlugin` / `ManagePlugin` / `ArrangeUi` / `FindResource` / `PlanManage`（2026-10-29 加）。
+**现在没有意图分类器。** 每轮都拿全量工具、同一份静态前缀，模型自己决定这一轮是聊天、动手、还是先问一句。
 
-- 顺序是「强资源 > arrange > manage > create > 计划维护 > 软资源兜底」—— 「把三个插件排一下」含「插件」、「删掉心情插件」也含「插件」，必须先判布局/管理；
-  「复盘这周学习计划」「这周没怎么看，帮我调整」判 `PlanManage`（管已有计划），
-  而「把视频排成学习计划」仍判 `FindResource`（新建计划，要给 `create_learning_plan`）。
-- 不额外调模型判意图：省延迟和 token，可测试，错判还有静态守则兜底。
-- 新词补在 `ai/src/commonMain/kotlin/dev/trellis/ai/manager/Intent.kt` 的 `arrangeWords` / `manageWords` / `createWords` / `resourceWords` / `planWords`。
+删掉的东西（留作历史）：`KeywordIntentClassifier`（按关键词判 `Chat` / `CreatePlugin` / `ManagePlugin` / `ArrangeUi` / `FindResource` / `PlanManage` 六类）、`ManagerRouter.TOOL_INTENTS`（工具 → 意图归属表）、`DEFAULT_INTENTS`、`FALLBACK_PRIORITY`、`forcedIntent`（把上一轮意图带给下一句短回复）、歧义反问（`IntentDecision.ambiguous` → 运行时代弹选项）。
+
+为什么删：真实事故「我想做一个 RAG 项目」被「做一个」判成造插件 → 那一轮手里只有插件工具、执行不了计划/资源动作 → 模型解释「不该造」却被收尾检查判成没做成，界面弹红色失败卡。关键词分类器把「一句话该怎么理解」抢在模型前面定死，错一次就整轮跑偏。设计与迁移记录见 [`agent-harness.md`](agent-harness.md)（P1 + P3，2026-11-07 生效）。
 
 ## 4. 流式对话与轮次
 
-- Chat 意图走 `LlmClient.stream`（SSE，逐片回调）；其它意图走 `ToolAgent` 的工具循环，过程用 `onLog` 实时显示。
+- 每一轮都先走 `LlmClient.stream`（SSE，逐片回调）聊天；流里一旦发现工具调用，就切到 `ToolAgent` 的工具循环，过程用 `onLog` 实时显示。
 - 流里一旦出现 `"tool":`，就认为模型想动手，立刻切到工具模式真执行（`ManagerAgent` 的 `looksLikeToolCall`）；执行结果替换掉那半截裸 JSON。
 - 一轮跑在 `AppRuntime.chatScope`（不是 Composable 的 scope）—— 否则 `open_tab` 切走页面会把这轮掐死。
 - 结束信号：`▍` 光标、「还在做，这一轮没结束」、可点「停止」、以及每轮末尾的 `Status` 界标（完成 / 已停止 / 出错）。
@@ -96,7 +94,7 @@
 4. **事实核验**：声称「装好了/排好了」要去查内核状态。
 
 质量类的事情（好不好看、文案、布局合不合理）交给 agent 用 `describe_screen` / `take_screenshot` 自检，
-不再写成硬编码清单；收尾检查也按意图给：只有造插件才要求「试过/装上/cannotDo」，排版和改样式不挂那道闸。
+不再写成硬编码清单；收尾检查按「声称」给：本轮碰过插件工具、又在回复里声称「装好了/改好了/停用了/删掉了」，才去核对内核状态（`PluginTools.reviewAfterRound`）；没碰插件工具或没声称，就不挂那道闸。
 
 ## 7. 布局与样式也是数据
 
@@ -241,41 +239,34 @@ bento 样片里两个「看起来需要绘图」的部件，最后都做成了�
 
 
 
-## 18. 一条消息的固定流程：意图 → 工具 → 提示词 → 反问 → 模型
+## 18. 一条消息的流程：流式聊天 → 有工具调用就干活 → 说话
 
-> **2026-10-30 已确认改这条门控**：方向改为「稳定工具集 + 权限分级 + 单一提示词」，
-> 设计、证据、迁移与 eval 门槛见 [`agent-harness.md`](agent-harness.md)。**P1/P3 代码落地前，本节仍是现行规则**。
+> 2026-11-07 起，上面几节讲的「意图 → 工具 → 提示词」门控已删除；历史版本保留在 `docs/agent-harness.md` 的决策记录里。
 
-这一节写的是**次序**，不是建议。次序错了会怎么坏，前面每一节都是证据：
-提示词和工具一起塞 → 模型挑一个「看起来在干活」的（越界装插件）；
-意图没定就动手 → 一半的把握去改用户数据（该问没问）。
-
-现在的实现（`ai/src/commonMain/kotlin/dev/trellis/ai/manager/ManagerRouter.kt`）：
+现在的实现（`ai/src/commonMain/kotlin/dev/trellis/ai/manager/ManagerAgent.kt` + `ManagerPrompt.kt`）：
 
 ```
 用户发一句话
-  ↓ ① 提取意图（单选）              KeywordIntentClassifier.decide
-  ↓ ② 有歧义就先问，不往下走         意图 + 两个中文选项 → 输入框上方竖排选项
-  ↓ ③ 按意图选工具（单选）           TOOL_INTENTS：一个工具只属于该去的那些轮次
-  ↓ ④ 按这套工具组装提示词           ManagerPrompt.buildBase(catalog, 这套工具)
-  ↓ ⑤ 发模型请求                     ToolAgent 循环
-  ↓ ⑥ 工具 / 流程调用                每步写进过程行，多步活先 set_plan；要用户拍板就 ask_choices
+  ↓ ① 组装提示词                    ManagerPrompt.messages(state, request, history)
+  ↓ ② 先流式回答                     LlmClient.stream（SSE，逐片回调）
+  ↓ ③ 流里出现工具调用？              looksLikeToolCall
+  ↓ ④ 是 → ToolAgent 循环            全量工具、同一步数上限（无），过程写进过程行
+  ↓ ⑤ 否 → 就是聊天                  剥 DSML/协议壳、Markdown 渲染
 ```
 
 三条约束：
 
-1. **意图是单选，工具也是单选。** 不存在「全套工具减两只」：查资源那一轮
-   `deploy` 不在手里，布局那一轮看不到 `search_bilibili`，聊天一轮什么工具都没有 ——
-   提示词里列的目录就是这一轮真实可用的全部。
-2. **歧义先问，不猜。** 判定只有两类：资源词和排版对象同时出现（「把视频排成一行」），
-   或者整句是「帮我弄一下」这种半句话。问的时候把可能的意思竖着摆成选项，点一下就发出去；
-   「你好」「你是谁」这种完整寒暄不算歧义 —— 有话直答，不要反过来审问用户。
-   除这两类以外，要不要请用户拍板由模型自己调 `ask_choices` 决定，运行时不按痕迹猜。
-3. **提示词跟着意图走，但前缀缓存还在。** 每种意图一份静态前缀（规则 + 该意图的
-   工具目录 + 守则），同一意图的多轮请求逐字节一致，缓存照样命中；切意图才换前缀。
+1. **工具是全集，不是「该去的那几只」。** 每轮提示词里列的目录就是 `allTools`
+   按名排序后的全部；模型自己挑。想改「某工具出现在什么场景」，改它的 description，别再按意图裁。
+2. **先聊后干。** 默认走聊天；只有流里真的出现工具调用才进工具循环。目标型请求
+   （「我要速通 X」）不再靠关键词强制变计划，而是靠 `<task:work>` 的第 2 条守则：
+   必须变成能执行的东西（计划/待办），不许只回一段解释。
+3. **静态前缀只有一份。** 静态前缀 = `PromptBuilder.system` + guidance + 工具目录 + 管理员守则 +
+   `<task:work>`，逐字节稳定；动态 `<current_state>` 和用户这句话排在后面，前缀缓存照样命中。
 
-测试钉在 `ManagerRouterTest`（提示词只列本轮工具、聊天无工具目录、歧义不往下走）
-与 `IntentToolsTest`（每种意图手里到底是哪几只）。
+测试钉在 `ManagerRouterTest`（全量工具、一份前缀、`<task:work>` 只出现一次）、
+`ManagerPromptTest`（前缀逐字节稳定、顺序、工作流覆盖面）与 `ManagerAgentTest`
+（聊天优先、工具调用切循环、收尾核对、refusal 不算失败）。
 
 ### 18.1 目标型请求先变成计划/待办，不许先解释「做不到」
 
@@ -285,17 +276,15 @@ bento 样片里两个「看起来需要绘图」的部件，最后都做成了�
 
 两处都补了：
 
-- **意图**：`resourceWords` 追加目标型词（速通 / 学会 / 掌握 / 考过 / 上岸 / 刷题 / 刷完 /
-  背单词 / 背完 / 备考 / 复习 / 考试）。判成 `Chat` 的话手里一只工具都没有，
-  `set_plan`、`add_tasks`、`ask_choices` 全不存在，只能回一段解释。
+- **工具**：2026-11-07 起每轮都有全量工具，目标型请求不再可能「手里一只工具都没有」；
+  守则里由 `<task:work>` 第 2 条钉住「必须变成计划/待办，不许只解释」。
 - **提示词**：`MANAGER_ROLE` 新增 `<goal_requests>`：第一反应是变成能执行的东西
   （先问范围或给默认拆法 → 查到内容就 `add_tasks` / `set_plan` → 要拍板用
   `ask_choices` 后停下 → 只有用户说「先别建」才停在建议）；
   `find_resource` 任务加第 0 步「先用一句话把目标翻译成可执行范围」。
 
-配套的路由细节：`ask_choices` 属于**所有会改数据的意图**（造插件 / 管插件 / 调界面 /
-找资源），聊天除外。之前它落在「默认只给插件意图」的兜底里，资源轮次调它会得到
-「它想调不存在的工具 ask_choices」，只能把问题写成一段散文。
+配套：`ask_choices` 现在每轮都在工具表里，模型想请用户拍板随时能调；
+删掉意图门控后，不会再出现「模型想调 ask_choices 但这一轮工具集里没有」的情况。
 
 ### 18.2 「排成学习计划」要写进计划页，不是只写这一轮的动作
 
@@ -332,7 +321,7 @@ create_learning_plan」，`set_plan` 只用于标动作。
 「让计划自己推进」的 AI 侧：`FindResource` 负责**新建**计划（`create_learning_plan`），
 `PlanManage` 负责**维护已经有的那份**。分界与设计见 [`plan-rhythm-draft.md`](plan-rhythm-draft.md)。
 
-- **意图**：`planWords`（计划/复盘/这周/上周/下周/节点/完成/顺延/延期/拖延/没做完/调整/排期/学习计划）；
+- **（历史）意图**：`planWords`（计划/复盘/这周/上周/下周/节点/完成/顺延/延期/拖延/没做完/调整/排期/学习计划）—— 分类器已删；
   `planActionWords`（复盘/上周/下周/节点/顺延/延期/拖延/没做完/调整/排期）会盖过资源词，
   所以「复盘这周学习计划」判 PlanManage；「把视频排成学习计划」「速通/学会」仍判 FindResource。
 - **工具**（`app/desktop/.../PlanAdminTools.kt`，6 只，全部走 `LearningPlanService`）：
@@ -342,7 +331,7 @@ create_learning_plan」，`set_plan` 只用于标动作。
   - `review_last_week`：生成/读取上一周复盘。
 - **系统节奏不经过模型**：`AppRuntime.refreshPlan()` 对每个未结束计划调一次 `advanceRhythm`
   （`origin=scheduler`），计划页显示「计划节奏」报告条；模型只在用户问起时读/改。
-- **钉住的测试**：`IntentToolsTest`（意图边界 + 每种意图手里的工具）、
+- **钉住的测试（历史）**：`IntentToolsTest`（意图边界 + 每种意图手里的工具）—— 2026-11-07 已随分类器删除；现在的等价断言在 `ManagerRouterTest`（全量工具目录）、
   `PlanAdminToolsTest`（读/勾/顺延/推进）、`LearningPlanRhythmTest`（4 周滚动，后端）。
 
 ### 18.4 工具报错要自己查（DiagnosticsTools，2026-10-29）
@@ -359,8 +348,8 @@ create_learning_plan」，`set_plan` 只用于标动作。
 2. **`get_diagnostics` 工具**（`app/desktop/.../DiagnosticsTools.kt`）：只读，返回
    home / Java 版本 / 计划库与活动库路径和打开状态 / **JDK 模块自检**
    （`java.sql.DriverManager`、`java.net.http.HttpClient`、`javax.imageio.ImageIO`、`javax.net.ssl.SSLContext`）/
-   LLM 是否配置 / app.log 最近 20 行。五个会动手的意图都登记了它
-   （`ManagerRouter.TOOL_INTENTS`）；静态提示词加了 `<when_a_tool_fails>`，
+   LLM 是否配置 / app.log 最近 20 行。它现在每轮都在工具表里（不再按意图登记）；
+   静态提示词加了 `<when_a_tool_fails>`，
    要求模型先分清「用户填错」和「环境问题」，环境问题先查诊断，再决定重试/绕开/让用户做具体动作。
 3. 打开成功也往 `app.log` 留一行 `计划库已打开：<路径>`，下次排查能确认库到底有没有打开过。
 
@@ -369,3 +358,4 @@ jlink 默认只带推断出来的模块，`java.net.http`、`java.sql` 必须手
 接口加载，jdeps 推断不出来，打包时最容易漏。产物验证：`Trellis.app/Contents/runtime/Contents/Home/release`
 的 `MODULES=` 里要能看到 `java.sql`。想在不覆盖运行中 bundle 的情况下打一份验证：
 `TRELLIS_DIST_DIR=/tmp/trellis-dist ./gradlew :app:desktop:createDistributable`。
+| 2026-11-07 | 删除意图分类器（`Intent.kt`）、`TOOL_INTENTS`、`forcedIntent` 与歧义反问；改为全量工具 + 单一静态前缀 + `<task:work>`；插件收尾核对从「按意图」改成「碰过插件工具且声称做完」 | Lead（用户指令 m06296） |
