@@ -18,11 +18,11 @@ class TaskTools(private val runtime: AppRuntime) {
 
     val guidance: String = listOf(
         "<how_to_add_tasks>",
-        "1. **先问再写**：加待办会改用户的数据。没得到用户明确同意（「加待办」「记下来」「建成任务」）之前，",
-        "   不要调 add_tasks；先说明你挑了什么，然后调 ask_choices 让用户选：只看建议 / 落成待办 / 排成学习计划。",
-        "   选项会竖着摆到输入框上方，调完就停下等用户点，别自己替用户挑。",
-        "2. 用户同意后，用 add_tasks 把每一条建成待办：标题就是那一集/那一章的名字（截到 24 字内），",
-        "   必须带 confirmed=true —— 这个参数就是「用户确实要了」的证据，别默认填。",
+        "1. **不用问「待办还是计划」**：自己判断——一次性、几条能勾完的 → 用 add_tasks；",
+        "   长期、要按周推进的 → 用 create_learning_plan。用户已经在要你做这件事时直接动手，别摆选项让他再选一遍；",
+        "   只有「这件事到底要不要现在做」不清楚时才问一句。",
+        "2. 判断成待办之后，用 add_tasks 把每一条建成待办：标题就是那一集/那一章的名字（截到 24 字内），",
+        "   必须带 confirmed=true —— 用户已经把这件事交给你了，这就是「要了」的证据；完全没头绪时才先问一句。",
         "3. 一次 1–12 条，别把 80 集一次全建；先建用户这一周真会看的那几条。",
         "4. set_plan 只写这一轮的动作（搜索 / 挑集 / 建任务），待办才是留给用户勾的东西；",
         "   用户要的是「排成学习计划」而不是待办时，用 create_learning_plan（那是计划页的入口）。",
@@ -34,7 +34,7 @@ class TaskTools(private val runtime: AppRuntime) {
     private inner class AddTasks : AgentTool {
         override val name: String = "add_tasks"
         override val description: String =
-            "把几条待办任务加进列表（标题必填，一次最多 12 条）。会改用户数据：只有用户明确说要加待办时才调用。"
+            "把几条待办任务加进列表（标题必填，一次最多 12 条）。会改用户数据：用户要这件事变成可勾的待办（或你判断这是一次性任务）时调用。"
         override val parameters: String =
             "titles：字符串数组，每条一个待办标题（1–12 条，每条不超过 24 字）；" +
                 "confirmed：布尔，只有用户明确同意加待办时才传 true。"
@@ -44,8 +44,8 @@ class TaskTools(private val runtime: AppRuntime) {
             if (!confirmed) {
                 return ToolResult(
                     "还没得到用户同意，没有加待办。\n" +
-                        "先别调这个工具：调 ask_choices 让用户选「只看建议 / 落成待办 / 排成计划」，调完停下等用户点。\n" +
-                        "用户点了、或者明确说「加待办」之后，再带 confirmed=true 调一次。",
+                        "先判断形态：一次性、几条能勾完的 → 这就是待办，确认用户确实要这件事后带 confirmed=true 再调一次；\n" +
+                        "长期、要按周推进的 → 改用 create_learning_plan，别在这里加待办。",
                     isError = true,
                 )
             }

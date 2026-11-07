@@ -78,7 +78,7 @@ data class ChatLine(
 /**
  * 输入框上方的一个选项（竖排列表里的一行）。
  *
- * [label] 是那行短名（「落成待办」），[text] 是点了之后真正发给 agent 的
+ * [label] 是那行短名（「看建议」），[text] 是点了之后真正发给 agent 的
  * 原话 —— 让用户挑，而不是替用户决定要不要动数据。
  */
 data class ChatChoice(val label: String, val text: String)

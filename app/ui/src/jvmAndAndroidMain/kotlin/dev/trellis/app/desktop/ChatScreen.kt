@@ -1,5 +1,6 @@
 package dev.trellis.app.desktop
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -8,6 +9,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -518,11 +520,12 @@ private val EMPTY_EXAMPLES = listOf(
 )
 
 /**
- * 输入框上方的「选一个」列表 —— 竖着排，一行一个选项。
+ * 输入框上方的「选一个」列表 —— 经典编号选项：`1.` / `2.` / `3.`，每项至少一整行。
  *
- * 只有模型主动要问（`ask_choices`）时才会出现；运行时不再按「刚刚查过资源」之类
- * 的痕迹替它猜下一步。竖排的理由：横排在窄窗口里会把一串短语挤成两行，
- * 竖排每行都能写完整一句「选它会怎样」，也更好点。
+ * 只有模型主动要问（`ask_choices`）时才会出现。做成编号列表而不是一行一个箭头：
+ * 选项经常是一整句话（「把第二章拆成两周」），每项占满一行才能读完整；
+ * 序号让用户可以用键盘/口头直接指代，也比箭头更像「做决定」的界面。
+ * 每项 hover 有底色、点击即选中，下面保留「不用」退出。
  */
 @Composable
 internal fun ChoiceBar(
@@ -531,49 +534,88 @@ internal fun ChoiceBar(
     onDismiss: () -> Unit,
 ) {
     val tokens = LocalTrellisTokens.current
+    val shape = RoundedCornerShape(10.dp)
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 2.dp)
-            .clip(RoundedCornerShape(6.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
+            .padding(vertical = 4.dp)
+            .clip(shape)
+            .background(tokens.colors.surface)
+            .border(1.dp, tokens.colors.rule, shape),
     ) {
-        Text(
-            "选一个",
-            style = tokens.type.meta,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        for (choice in choices) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(4.dp))
-                    .clickable { onPick(choice) }
-                    .padding(horizontal = 2.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "→",
-                    style = tokens.type.caption,
-                    fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.width(18.dp),
-                )
-                Text(
-                    choice.label,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface,
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("选一个", style = tokens.type.meta, color = tokens.colors.ink3)
+            Spacer(Modifier.weight(1f))
+            Text(
+                "点一行就是了",
+                style = tokens.type.meta,
+                color = tokens.colors.ink3.copy(alpha = 0.72f),
+            )
+        }
+        choices.forEachIndexed { index, choice ->
+            if (index > 0) {
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 14.dp),
+                    thickness = 1.dp,
+                    color = tokens.colors.rule.copy(alpha = 0.55f),
                 )
             }
+            ChoiceOptionRow(index = index, choice = choice, tokens = tokens, onClick = { onPick(choice) })
         }
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 2.dp),
             horizontalArrangement = Arrangement.End,
         ) {
             ChromeTextLink("不用", onClick = onDismiss)
         }
+    }
+}
+
+/** 编号选项的一行：序号 + 整行可选中的文字；hover 时整行染一层浅强调色。 */
+@Composable
+private fun ChoiceOptionRow(
+    index: Int,
+    choice: ChatChoice,
+    tokens: TrellisTokens,
+    onClick: () -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val pressed by interaction.collectIsPressedAsState()
+    val background by animateColorAsState(
+        if (hovered) tokens.colors.accentSoft.copy(alpha = 0.8f) else Color.Transparent,
+        label = "choice-hover",
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 40.dp)
+            .hoverable(interaction)
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .background(background)
+            .alpha(if (pressed) 0.72f else 1f)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Text(
+            "${index + 1}.",
+            style = tokens.type.control,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Medium,
+            color = tokens.colors.accent,
+            modifier = Modifier.width(28.dp),
+        )
+        Text(
+            choice.label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 
