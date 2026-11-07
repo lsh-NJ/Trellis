@@ -401,6 +401,20 @@ internal fun SqliteLearningPlanService.materializeWeek(planId: String, versionId
     }
 
     val weekStart = PlanTime.weekStart(week)
+    val weekEnd = weekStart.plusDays(6)
+    // 被顺延/拖到**别的周**的单元也不能再补回来：旧行 superseded，新行（moved_from 非空）
+    // 挂在目标周承诺上，只看本承诺会以为「这周还没排」，又把它插回原来那天
+    // （现场复现：顺延 9 条后当天仍是 20 件，旧周还多出一条 planned）。
+    val movedAway = connection.prepareStatement(
+        "SELECT DISTINCT unit_id FROM occurrence WHERE unit_id IS NOT NULL AND status = 'planned' " +
+            "AND moved_from IS NOT NULL AND (day < ? OR day > ?)",
+    ).use { ps ->
+        ps.setString(1, weekStart.toString())
+        ps.setString(2, weekEnd.toString())
+        ps.executeQuery().use { rs ->
+            buildSet { while (rs.next()) add(rs.getString(1)) }
+        }
+    }
     val today = today()
     var day = if (today in weekStart..weekStart.plusDays(6)) today else weekStart
     val dailyBudget = planDailyMinutes(planId)
@@ -419,7 +433,7 @@ internal fun SqliteLearningPlanService.materializeWeek(planId: String, versionId
         usedToday = 0
     }
     units.forEach { (unitId, minutes, _) ->
-        if (unitId in placed) return@forEach
+        if (unitId in placed || unitId in movedAway) return@forEach
         // 设了「每天投入」就按容量打包：当天再放会超预算就换下一天；单个单元本身超预算就独占一天。
         // 没设过投入时间时保持老规矩：一天只排一个。
         if (dailyBudget == null) {
@@ -1042,8 +1056,60 @@ internal fun SqliteLearningPlanService.cmdMoveOccurrence(
         if (row.status != "planned") return@write fail(ErrorCode.E_STATE, "这条已经处理过了，不能再顺延。")
         if (row.day == toDay) return@write fail(ErrorCode.E_STATE, "它已经在这一天了。")
         if (row.unitId == null) return@write fail(ErrorCode.E_STATE, "待办请重新排期，不要顺延。")
+        // 跨周挪（管家「无限重排」可以挪到下周）：occurrence 是挂在「某周的承诺」上的。
+        // 只把日期改到下一周、承诺还留在旧周，会出现「周卡在旧周、日条在新周」的错位；
+        // 这里把单元挂进目标周的承诺（没有承诺就建一个），日期和承诺始终同一周。
+        val targetWeek = PlanTime.isoWeek(PlanTime.parseDay(toDay)!!)
+        var targetCommitmentId = row.commitmentId
+        if (row.week != null && row.week != targetWeek) {
+            val planId = row.planId ?: return@write fail(ErrorCode.E_STATE, "这条任务没有关联计划，挪不了。")
+            val versionId = currentVersion(planId)
+                ?: return@write fail(ErrorCode.E_STATE, "计划还没有生效版本，挪不了。")
+            targetCommitmentId = connection.prepareStatement(
+                "SELECT id FROM commitment WHERE plan_version_id = ? AND week = ?",
+            ).use { ps ->
+                ps.setString(1, versionId)
+                ps.setString(2, targetWeek)
+                ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+            } ?: run {
+                val newCommitmentId = Ids.next("cm_")
+                connection.prepareStatement(
+                    "INSERT INTO commitment(id, plan_version_id, week, created_at) VALUES(?,?,?,?)",
+                ).use { ps ->
+                    ps.setString(1, newCommitmentId)
+                    ps.setString(2, versionId)
+                    ps.setString(3, targetWeek)
+                    ps.setString(4, nowIso())
+                    ps.executeUpdate()
+                }
+                newCommitmentId
+            }
+            val alreadyQueued = connection.prepareStatement(
+                "SELECT 1 FROM commitment_unit WHERE commitment_id = ? AND unit_id = ?",
+            ).use { ps ->
+                ps.setString(1, targetCommitmentId)
+                ps.setString(2, row.unitId)
+                ps.executeQuery().use { rs -> rs.next() }
+            }
+            if (!alreadyQueued) {
+                val nextOrder = connection.prepareStatement(
+                    "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM commitment_unit WHERE commitment_id = ?",
+                ).use { ps ->
+                    ps.setString(1, targetCommitmentId)
+                    ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+                }
+                connection.prepareStatement(
+                    "INSERT INTO commitment_unit(commitment_id, unit_id, sort_order) VALUES(?,?,?)",
+                ).use { ps ->
+                    ps.setString(1, targetCommitmentId)
+                    ps.setString(2, row.unitId)
+                    ps.setInt(3, nextOrder)
+                    ps.executeUpdate()
+                }
+            }
+        }
         val newId = insertOccurrence(
-            commitmentId = row.commitmentId, unitId = row.unitId, todoId = null,
+            commitmentId = targetCommitmentId, unitId = row.unitId, todoId = null,
             day = toDay, minutes = row.minutes, mode = row.mode, movedFrom = row.id,
         )
         supersede(row.id, newId)
@@ -1052,7 +1118,8 @@ internal fun SqliteLearningPlanService.cmdMoveOccurrence(
             payload = eventJson(
                 "fromDay" to JsonPrimitive(row.day),
                 "toDay" to JsonPrimitive(toDay),
-                "week" to JsonPrimitive(row.week ?: ""),
+                "week" to JsonPrimitive(targetWeek),
+                "fromWeek" to JsonPrimitive(row.week ?: ""),
                 "reason" to JsonPrimitive(reason ?: ""),
             ),
             actor = env.actor, commandId = env.commandId,

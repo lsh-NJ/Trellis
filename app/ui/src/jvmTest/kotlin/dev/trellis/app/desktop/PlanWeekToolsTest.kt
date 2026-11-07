@@ -113,9 +113,12 @@ class PlanWeekToolsTest {
         origin = "test",
     )
 
-    private suspend fun newHarness(reply: String = weekItemsJson()): Harness {
+    private suspend fun newHarness(
+        reply: String = weekItemsJson(),
+        today: LocalDate = wednesday,
+    ): Harness {
         val home = Files.createTempDirectory("plan-week-tools").toFile()
-        val clock = FixedClock(wednesday, zone)
+        val clock = FixedClock(today, zone)
         // 计划库用内存实现；周文档要落盘，给它一个临时 home。
         val base = LearningPlanStore.inMemory({ clock.nowMs() }, zone)
         val created = base.createShell(env(), "操作系统速通", "两周围绕进程与调度")
@@ -204,6 +207,33 @@ class PlanWeekToolsTest {
         assertTrue(doc.contains("> 本周重点：命令行、Python、数据处理"), doc)
     }
 
+    /**
+     * 一周只剩最后一天时，排不下的条目不硬塞：现场出现过周日一天 20 件、约 700 分钟。
+     * 这里今天=周日（2026-11-08），本周只剩 60 分钟，模型给 85 分钟 → 只排得下第一件。
+     */
+    @Test
+    fun itemsBeyondTheWeekRemainingCapacityAreNotPiledOnTheLastDay() = runTest {
+        val sunday = LocalDate.parse("2026-11-08")
+        val h = newHarness(today = sunday)
+        val result = planOneWeek(
+            plan = h.service,
+            planDocStore = h.docStore,
+            llm = h.llm,
+            clock = h.clock,
+            planId = h.planId,
+            week = thisWeek,
+            dailyMinutes = 60,
+        )
+
+        assertEquals(null, result.error)
+        // 贪心装箱：30 分钟的先放，40 分钟的超了 60 的预算跳过，15 分钟的复盘补进来 → 2 条。
+        assertEquals(2, result.placed, "只剩 60 分钟，30+15 两条装得下、40 分钟那条不行；实际：" + result.note)
+        assertTrue(result.note.contains("剩余容量"), "要说清为什么有一条没排：" + result.note)
+        val week = h.service.week(h.planId, thisWeek)
+        val placedMinutes = week.days.flatMap { it.items }.sumOf { it.minutes }
+        assertTrue(placedMinutes <= 60, "周日不该再堆超过 60 分钟，实际 $placedMinutes")
+    }
+
     /** 非法周号（格式错、不对应真实周、已经过去）一律在写任何东西之前拒绝，也不叫模型。 */
     @Test
     fun anInvalidWeekIsRejectedWithoutWritingAnything() = runTest {
@@ -244,5 +274,60 @@ class PlanWeekToolsTest {
         assertNotNull(doc, "追加失败时已经写好的周文档不能丢")
         assertTrue(doc.contains("进程概念"), doc)
         assertEquals(0, h.service.week(h.planId, thisWeek).days.sumOf { it.items.size }, "追加失败就不该铺天")
+    }
+
+    /** 每天预算按「一天」算，不是整周预算一天用掉：120 分/天时 6×40 分要铺到两天，且每天不超过 120 分。 */
+    @Test
+    fun itemsAreSpreadAcrossTheWeekByTheDailyBudget() = runTest {
+        val sixItems = """
+            {"focus":"进程与调度","items":[
+                {"title":"进程概念","kind":"study","minutes":40},
+                {"title":"进程状态","kind":"study","minutes":40},
+                {"title":"调度算法","kind":"practice","minutes":40},
+                {"title":"优先级调度","kind":"study","minutes":40},
+                {"title":"时间片轮转","kind":"practice","minutes":40},
+                {"title":"本周复盘","kind":"review","minutes":40}
+            ]}
+        """.trimIndent()
+        val h = newHarness(reply = sixItems)
+        val result = planOneWeek(
+            plan = h.service,
+            planDocStore = h.docStore,
+            llm = h.llm,
+            clock = h.clock,
+            planId = h.planId,
+            week = thisWeek,
+            dailyMinutes = 120,
+        )
+
+        assertEquals(null, result.error)
+        assertEquals(6, result.placed, "六条都该铺到天")
+        val week = h.service.week(h.planId, thisWeek)
+        val byDay = week.days
+            .mapNotNull { day -> day.items.takeIf { it.isNotEmpty() }?.let { day.day to it.sumOf { item -> item.minutes } } }
+        assertTrue(byDay.size >= 2, "6×40 分要铺到至少两天，不能全堆第一天：" + byDay)
+        assertTrue(byDay.all { it.second <= 120 }, "每天不超过 120 分钟：" + byDay)
+        val doc = weekDocAt(h, thisWeek)
+        assertNotNull(doc)
+        byDay.forEach { (day, _) -> assertTrue(doc.contains("## " + day), "周文档里的天要和库里一致（缺 $day）：" + doc) }
+    }
+
+    /** 同一周再排一次不能把同样的条目再追加、再铺一遍（现场测试里同一条被排了 11 次）。 */
+    @Test
+    fun runningTheWeekTwiceDoesNotDuplicateItems() = runTest {
+        val h = newHarness()
+        val first = planOneWeek(h.service, h.docStore, h.llm, h.clock, h.planId, thisWeek, 60)
+        assertEquals(null, first.error, first.error)
+        assertTrue(first.placed > 0)
+        val unitsAfterFirst = h.service.week(h.planId, thisWeek).commitment.units.size
+        val occurrencesAfterFirst = h.service.week(h.planId, thisWeek).days.sumOf { it.items.size }
+
+        val second = planOneWeek(h.service, h.docStore, h.llm, h.clock, h.planId, thisWeek, 60)
+
+        assertEquals(null, second.error, second.error)
+        assertEquals(0, second.placed, "重复条目不该再排")
+        assertTrue(second.note.contains("已经排过了"), second.note)
+        assertEquals(unitsAfterFirst, h.service.week(h.planId, thisWeek).commitment.units.size, "不该追加重复单元")
+        assertEquals(occurrencesAfterFirst, h.service.week(h.planId, thisWeek).days.sumOf { it.items.size }, "不该重复铺天")
     }
 }

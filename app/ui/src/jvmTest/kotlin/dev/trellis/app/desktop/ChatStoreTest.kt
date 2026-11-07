@@ -198,4 +198,32 @@ class ChatStoreTest {
         assertEquals(practice, again.practiceProposal)
         assertEquals(PracticeProposalState.Accepted, again.practiceState)
     }
+
+    @Test
+    fun savingLeavesNoTempFileBehind() {
+        val home = tempHome()
+        val store = ChatStore(home)
+        store.save(session("chat-1", "第一次", 1_000L))
+        store.save(session("chat-1", "第二次", 2_000L))
+
+        val chatDir = File(home, "chat")
+        val leftovers = chatDir.listFiles().orEmpty().filter { it.name.endsWith(".tmp") }
+        assertTrue(leftovers.isEmpty(), "写盘应该先写临时文件再原子替换，不应留下 " + leftovers.map { it.name })
+        assertEquals("第二次", store.read("chat-1")!!.title)
+    }
+
+    @Test
+    fun aBrokenSessionFileIsKeptAsABackupInsteadOfDeleted() {
+        val home = tempHome()
+        val store = ChatStore(home)
+        val chatDir = File(home, "chat").apply { mkdirs() }
+        File(chatDir, "chat-bad.json").writeText("{ 写了一半", Charsets.UTF_8)
+
+        assertNull(store.read("chat-bad"))
+        // 原始文件已经不在原来的名字下，但改名留了档：用户的半截记录还在盘上，能人工救。
+        assertTrue(!File(chatDir, "chat-bad.json").exists())
+        val backups = chatDir.listFiles().orEmpty().filter { it.name.startsWith("chat-bad.json.bad-") }
+        assertEquals(1, backups.size, "坏文件应该改名留档")
+        assertTrue(backups.single().readText(Charsets.UTF_8).contains("写了一半"))
+    }
 }
