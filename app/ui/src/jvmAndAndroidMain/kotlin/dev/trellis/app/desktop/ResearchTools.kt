@@ -49,7 +49,7 @@ class ResearchTools(
         "1. 用户用**目标式说法**且没指定材料时（「我想学会 Python 数据分析」「两周复习完数据结构」「系统掌握概率论」），",
         "   **先调 `research_plan(goal=...)`**，不要先 search_bilibili 或 create_learning_plan：宿主会先做**全局规划**——",
         "   把目标拆成阶段/单元、排出从本周起的完整周表，写成计划文档并直接建好计划（之后每周局部推进）。",
-        "   用户提到考试/截止日期（「还有两周考试」）就把 deadline 一起传进去，不要自己把它换算成「先排两周」。",
+        "   用户提到考试/截止日期（「还有两周考试」）就先按今天换算成 YYYY-MM-DD，再把 deadline 一起传进去；不要把它换算成「先排两周」，也不要忽略它。",
         "2. 用户**明确指定了材料**（给了 bvid/链接、点名某门课、说「用这个视频速通」）才走 `create_learning_plan(bvid=...)`；",
         "   用户给了大纲/书单就手写 `units + weeks`。",
         "3. research_plan 失败（模型超时/输出不可用）时退回 `create_learning_plan` 手写路径，并把原因说清楚，不要假装建好了。",
@@ -69,7 +69,7 @@ class ResearchTools(
         override val parameters: String =
             "goal：用户的学习目标原话（必填，越具体越好，例：「两周内复习完数据结构」）；" +
                 "dailyMinutes：建议值，每天能投入的分钟数（15–240；没说就按设置里的每天预计投入/60，不要单独问用户）；" +
-                "deadline：可选截止日期（YYYY-MM-DD）。用户说「XX 天后考试」「月底前学完」就传，周表会覆盖到那天并留出复习。"
+                "deadline：可选截止日期（YYYY-MM-DD）。用户说「XX 天后考试」「月底前学完」时按今天算出日期传进来，周表会覆盖到那天并留出复习。"
 
         override suspend fun call(arguments: JsonObject): ToolResult {
             val plan = service() ?: return ToolResult(
