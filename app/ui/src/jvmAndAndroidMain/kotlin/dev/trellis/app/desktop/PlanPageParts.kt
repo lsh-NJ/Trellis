@@ -752,8 +752,6 @@ internal fun PlanStageStrip(runtime: AppRuntime) {
     val stages = runtime.planStages
     if (stages.isEmpty()) return
     val selectedWeek = runtime.planSelectedWeek
-    val scroll = rememberLazyListState()
-    val scope = rememberCoroutineScope()
     val active = stages.firstOrNull { stage -> stage.covers(selectedWeek) }
     Column(verticalArrangement = Arrangement.spacedBy(tokens.space.s)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -774,29 +772,21 @@ internal fun PlanStageStrip(runtime: AppRuntime) {
                 )
             }
         }
-        LazyRow(
-            state = scroll,
-            horizontalArrangement = Arrangement.spacedBy(tokens.space.xs),
-            modifier = Modifier
-                .fillMaxWidth()
-                .pointerInput(Unit) {
-                    // 桌面端没有横向滚轮：按在条上拖就是滚，和下面的周刻度条同一个手感。
-                    detectDragGestures(
-                        onDrag = { change, drag ->
-                            change.consume()
-                            scope.launch { scroll.scrollBy(-drag.x) }
-                        },
-                    )
-                },
-        ) {
-            items(stages, key = { it.id }) { stage ->
-                PlanStageChip(
-                    stage = stage,
-                    selected = stage.covers(selectedWeek),
-                    onClick = {
-                        stageFirstPlanWeek(runtime, stage)?.let { runtime.selectPlanWeek(it) }
-                    },
-                )
+        // 阶段条按行折行：1440 宽下右侧还有 196dp 阶段进度栏，单行 6 个 chip 会被右栏裁掉。
+        // 每行最多 3 个（6 个阶段 = 两行），窄窗也读得下；比横向滚动更容易一眼看全。
+        Column(verticalArrangement = Arrangement.spacedBy(tokens.space.xs)) {
+            stages.chunked(STAGE_CHIPS_PER_ROW).forEach { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(tokens.space.xs)) {
+                    row.forEach { stage ->
+                        PlanStageChip(
+                            stage = stage,
+                            selected = stage.covers(selectedWeek),
+                            onClick = {
+                                stageFirstPlanWeek(runtime, stage)?.let { runtime.selectPlanWeek(it) }
+                            },
+                        )
+                    }
+                }
             }
         }
     }
@@ -844,8 +834,19 @@ private fun PlanStageChip(stage: StageView, selected: Boolean, onClick: () -> Un
  * 所以 1440pt 的窗口里页面最多只量到 1080dp，永远够不到 `TrellisBreakpoints.medium`——拿页面宽度判
  * 会连宽屏也不显示右栏（联调踩过）。窗口宽度在 PlanScreen 里用 `LocalWindowInfo` 取，和知识库页同一套。
  */
+/** 阶段进度：有单元就显示 done/total；没有单元时退化成「W45–W47」这样的周区间，别让右栏一片「—」。 */
+private fun stageProgressLabel(stage: StageView): String {
+    if (stage.total > 0) return stage.done.toString() + "/" + stage.total
+    val start = stage.weekStart.takeLast(2).trimStart('0')
+    val end = stage.weekEnd.takeLast(2).trimStart('0')
+    return if (start == end) "W" + start else "W" + start + "–W" + end
+}
+
 internal fun shouldShowStageRail(windowWidthDp: Float, stageCount: Int): Boolean =
     windowWidthDp >= TrellisBreakpoints.medium && stageCount > 0
+
+/** 阶段条每行最多几个 chip：3 个一行，6 个阶段两行就摆得下，不会被右侧阶段栏裁掉。 */
+private const val STAGE_CHIPS_PER_ROW = 3
 
 /**
  * 右侧阶段进度栏（宽屏才显示）：一列「阶段名 / 完成 M/N / 3dp 细进度条」，点一行跳到该阶段第一周。
@@ -891,7 +892,7 @@ internal fun PlanStageRail(runtime: AppRuntime, modifier: Modifier = Modifier) {
                         modifier = Modifier.weight(1f),
                     )
                     Text(
-                        if (stage.total > 0) stage.done.toString() + "/" + stage.total else "—",
+                        stageProgressLabel(stage),
                         style = tokens.type.caption,
                         fontFamily = AppFonts.mono,
                         color = if (selected) tokens.colors.accent else tokens.colors.ink3,

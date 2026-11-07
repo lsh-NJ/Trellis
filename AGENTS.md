@@ -285,6 +285,9 @@ ChatScreen ──> AppRuntime.sendChat()
 - `docs/agent-manager.md` — AI 管理员与工具链（分层提示词、工具、界面即插件）
 - `docs/roadmap.md` — 已知缺口与优先级（改东西前先看有没有人已经记过这个坑）
 
+演示/参赛用的材料单独放在仓库根 `pitch/`（路演稿与 PPT 规范）与 `demo/exams/`（演示题库，
+拷到 `$TRELLIS_HOME/exams/` 后练习提议才能在 AI 计划上命中）；录屏流程见 `docs/demo-script.md`。
+
 ---
 
 ## 9. 常见任务配方

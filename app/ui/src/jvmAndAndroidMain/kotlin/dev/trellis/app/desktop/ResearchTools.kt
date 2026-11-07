@@ -71,7 +71,7 @@ class ResearchTools(
 
         override val parameters: String =
             "goal：学习目标，一句话（必填，例：我想当 AI 应用工程师）；" +
-                "deadline：可选截止日期（YYYY-MM-DD）；用户说「还有两周考试」「年底前」时按今天换算；" +
+                "deadline：可选截止日期（YYYY-MM-DD，必须是今天之后）；用户说「还有两周考试」「年底前」时按今天换算；用户没提就别传；" +
                 "dailyMinutes：可选，每天大概投入多少分钟（30–240）；用户没说就省略，宿主按设置里的每天预计投入给建议值。"
 
         override suspend fun call(arguments: JsonObject): ToolResult {
@@ -92,8 +92,8 @@ class ResearchTools(
                 else -> {
                     val parsed = runCatching { LocalDate.parse(deadlineArg) }.getOrNull()
                         ?: return ToolResult("deadline 要写成 YYYY-MM-DD，现在是「$deadlineArg」。", isError = true)
-                    if (parsed.isBefore(today)) return ToolResult("deadline（$deadlineArg）已经过去了。", isError = true)
-                    parsed.toString()
+                    // 模型偶尔会自己编一个过期日期；过去就按「没给截止日」处理，别让整轮调研白跑。
+                    parsed.takeIf { !it.isBefore(today) }?.toString()
                 }
             }
             val thisWeek = isoWeekOf(today)
@@ -115,14 +115,31 @@ class ResearchTools(
                 "调研模型没在 " + (PLAN_TIMEOUT_MS / 1000) + " 秒内回话，这次没写成。可以稍后重试，或改用 create_learning_plan 手写大纲。",
                 isError = true,
             )
-            val draft = parseShell(raw, thisWeek, deadline?.let { isoWeekOf(LocalDate.parse(it)) }, fallbackTitle = goal.take(16))
+            val deadlineWeek = deadline?.let { isoWeekOf(LocalDate.parse(it)) }
+            var draft = parseShell(raw, thisWeek, deadlineWeek, fallbackTitle = goal.take(16))
+            if (draft == null) {
+                // 一次解析失败很常见（模型带了解释/代码块/半截 JSON）。补一句「只要 JSON」再问一次，
+                // 比直接让用户重来更省事；第二次还不行才报错。
+                val retryRaw = withTimeoutOrNull(PLAN_TIMEOUT_MS) {
+                    llm.complete(
+                        listOf(
+                            LlmMessage(LlmRole.System, shellSystemPrompt(thisWeek, deadline, dailySuggestion, sources != null)),
+                            LlmMessage(LlmRole.User, shellUserPrompt(goal, today.toString(), thisWeek, deadline, sources?.render())),
+                            LlmMessage(LlmRole.Assistant, raw.take(4000)),
+                            LlmMessage(LlmRole.User, "上面的输出不是可解析的 JSON。请只输出一个 JSON 对象（不要 markdown 代码块、不要解释），字段与示例完全一致：title / dailyMinutes / stages[{name, weeks, focus, deliverable, acceptance}]。"),
+                        ),
+                    )
+                }
+                draft = retryRaw?.let { parseShell(it, thisWeek, deadlineWeek, fallbackTitle = goal.take(16)) }
+            }
+            val resolved = draft
                 ?: return ToolResult(
                     "调研结果没解析成阶段表（模型可能没说 JSON）。这次没建计划；可以重试，或改用 create_learning_plan 手写。",
                     isError = true,
                 )
             val created = plan.createShell(
                 env(null, "plan.research"),
-                title = draft.title,
+                title = resolved.title,
                 goal = goal,
                 deadline = deadline,
             )
@@ -152,7 +169,7 @@ class ResearchTools(
             }.getOrNull()?.value
             goalRef?.let { ref ->
                 runCatching { plan.linkPlanToGoal(env(planId, "plan.goal_link"), planId, ref.goalId) }
-                draft.stages.forEach { stage ->
+                resolved.stages.forEach { stage ->
                     runCatching {
                         plan.addMilestone(env(planId, "plan.milestone"), ref.goalId, stage.name + "（约 " + stage.weeks + " 周）")
                     }
@@ -175,19 +192,19 @@ class ResearchTools(
                     planId = planId,
                     week = thisWeek,
                     dailyMinutes = dailySuggestion,
-                    stageFocus = draft.stages.first().focus,
+                    stageFocus = resolved.stages.first().focus,
                 )
             }.getOrNull()
             onChanged(planId)
 
-            val totalWeeks = draft.stages.sumOf { it.weeks }
+            val totalWeeks = resolved.stages.sumOf { it.weeks }
             return ToolResult(
                 buildString {
-                    append("计划「").append(draft.title).append("」已建好（空壳 + 大纲）：").append(draft.stages.size).append(" 个阶段、共约 ")
+                    append("计划「").append(resolved.title).append("」已建好（空壳 + 大纲）：").append(resolved.stages.size).append(" 个阶段、共约 ")
                     append(totalWeeks).append(" 周")
                     deadline?.let { append("，覆盖到 ").append(it).append(" 的截止日") }
                     append("。")
-                    append("计划文档和每个阶段的里程碑都写好了；先按每天 ").append(draft.dailyMinutes).append(" 分钟估的（只是建议）。")
+                    append("计划文档和每个阶段的里程碑都写好了；先按每天 ").append(resolved.dailyMinutes).append(" 分钟估的（只是建议）。")
                     if (stagesWritten) append("阶段区间也写进计划了（").append(stageDrafts.size).append(" 个阶段，计划页能看到进度）。")
                     if (firstWeek != null && firstWeek.error == null) {
                         append("第一周（").append(thisWeek).append("）已经排好：").append(firstWeek.placed).append(" 条")
@@ -222,28 +239,62 @@ class ResearchTools(
         // 由调用方（AppRuntime）统一写 app.log；这里只在没有回调时静默。
     }
 
+    /**
+     * 从模型回复里抠出第一个**配平**的 JSON 对象：跳过 ```json 代码块前后的话、只保留花括号内的内容。
+     *
+     * 为什么不用 indexOf('{')..lastIndexOf('}')：回复里常有解释、示例片段或多个对象，
+     * 直接截取会拼出非法 JSON，表现成「模型没说 JSON」。
+     */
+    private fun extractJsonObject(raw: String): String? {
+        val text = raw.trim().removePrefix("```json").removePrefix("```").trimEnd().removeSuffix("```").trim()
+        val start = text.indexOf('{')
+        if (start < 0) return null
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for (index in start until text.length) {
+            val ch = text[index]
+            when {
+                escaped -> escaped = false
+                ch == '\\' && inString -> escaped = true
+                ch == '"' -> inString = !inString
+                inString -> Unit
+                ch == '{' -> depth++
+                ch == '}' -> {
+                    depth--
+                    if (depth == 0) return text.substring(start, index + 1)
+                }
+            }
+        }
+        return null
+    }
+
     private fun parseShell(raw: String, thisWeek: String, deadlineWeek: String?, fallbackTitle: String): ShellDraft? {
-        val start = raw.indexOf('{')
-        val end = raw.lastIndexOf('}')
-        if (start < 0 || end <= start) return null
-        val root = runCatching { Json.parseToJsonElement(raw.substring(start, end + 1)) as? JsonObject }.getOrNull()
+        val jsonText = extractJsonObject(raw) ?: return null
+        val root = runCatching { Json.parseToJsonElement(jsonText) as? JsonObject }.getOrNull()
             ?: return null
         val title = root["title"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
             ?: fallbackTitle
         val daily = root["dailyMinutes"]?.jsonPrimitive?.intOrNull?.coerceIn(30, 240) ?: DEFAULT_DAILY_MINUTES
         val stagesElement = root["stages"] as? JsonArray ?: return null
         if (stagesElement.isEmpty() || stagesElement.size > MAX_STAGES) return null
-        val stages = stagesElement.mapNotNull { element ->
-            val obj = element as? JsonObject ?: return@mapNotNull null
-            val name = obj["name"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
-            val weeks = obj["weeks"]?.jsonPrimitive?.intOrNull ?: return@mapNotNull null
-            if (weeks !in 1..MAX_STAGE_WEEKS) return@mapNotNull null
+        val stages = stagesElement.mapIndexedNotNull { index, element ->
+            val obj = element as? JsonObject ?: return@mapIndexedNotNull null
+            // weeks 有的模型会写成 "4" / "约 4 周"；能抠出数字就收，别因为它整份失败。
+            val weeks = obj["weeks"]?.jsonPrimitive?.let { primitive ->
+                primitive.intOrNull
+                    ?: primitive.contentOrNull?.filter { it.isDigit() }?.toIntOrNull()
+            } ?: return@mapIndexedNotNull null
+            if (weeks !in 1..MAX_STAGE_WEEKS) return@mapIndexedNotNull null
+            val rawName = obj["name"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            val name = rawName.takeIf { it.isNotEmpty() } ?: ("阶段 " + (index + 1))
             val focus = sanitizeStageText(obj["focus"]?.jsonPrimitive?.contentOrNull)
             val deliverable = sanitizeStageText(obj["deliverable"]?.jsonPrimitive?.contentOrNull)
             val acceptance = sanitizeStageText(obj["acceptance"]?.jsonPrimitive?.contentOrNull)
             ShellStage(name = name.take(40).trim(), weeks = weeks, focus = focus, deliverable = deliverable, acceptance = acceptance)
         }
-        if (stages.size != stagesElement.size) return null
+        // 丢了一两条坏阶段还能用；全丢才当解析失败。阶段总数仍要落在 1..MAX_STAGES。
+        if (stages.isEmpty()) return null
         val totalWeeks = stages.sumOf { it.weeks }
         if (totalWeeks > MAX_TOTAL_WEEKS) return null
         if (deadlineWeek != null) {
