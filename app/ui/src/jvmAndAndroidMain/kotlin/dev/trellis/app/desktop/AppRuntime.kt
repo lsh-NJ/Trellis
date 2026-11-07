@@ -349,7 +349,9 @@ class AppRuntime private constructor() {
     /**
      * 是否正在用模拟时间。计划页/对话页顶部要显示徽章——不允许静默生效。
      */
-    val isSimulatingTime: Boolean get() = simulatedToday != null
+    /** 录演示时可以设 TRELLIS_HIDE_SIM_BANNER=1 把「模拟时间」提示条藏掉，避免画面里出现调试控件。 */
+    val isSimulatingTime: Boolean
+        get() = simulatedToday != null && System.getenv("TRELLIS_HIDE_SIM_BANNER")?.trim() != "1"
 
     /**
      * 开发者模式：把「应用内今天」拨到指定日期；传 null 回真实时间。

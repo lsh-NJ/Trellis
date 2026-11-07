@@ -275,11 +275,12 @@ class ResearchToolsTest {
     }
 
     @Test
-    fun pastDeadlineIsRejected() = runTest {
+    fun pastDeadlineIsTreatedAsAbsentInsteadOfFailingTheWholeRound() = runTest {
         val harness = harness(shellJson())
         val result = call(harness, deadline = "2026-10-01")
-        assertTrue(result.isError)
-        assertTrue(result.content.contains("已经过去了"), result.content)
-        assertTrue(harness.service.plans().isEmpty())
+        // 模型偶尔会自己编一个过期日期；过去就按「没给截止日」处理，别让整轮调研白跑。
+        assertFalse(result.isError, result.content)
+        assertTrue(result.content.contains("已建好"), result.content)
+        assertEquals(1, harness.service.plans().size)
     }
 }
