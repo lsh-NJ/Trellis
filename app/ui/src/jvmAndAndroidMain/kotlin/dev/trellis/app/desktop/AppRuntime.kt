@@ -1391,8 +1391,9 @@ class AppRuntime private constructor() {
     }
 
     /**
-     * 自动采纳（G-C1 最小版）：应用不在前台 + 开关打开 + 今天没到上限时，
-     * 自动执行「只挪动逾期」这一类建议（补排欠账仍等用户点）。
+     * 自动采纳：应用不在前台 + 开关打开（可选每日上限）时，自动执行管家建议。
+     *
+     * 用户把重排权限放开后，挪动逾期和补排欠账都会自动做（`autoAdoptDailyLimit = 0` 不限条数）。
      *
      * 不碰界面态：只改落盘的管家会话（建议行标 Adopted + 追加一条状态行）、写记忆、
      * 刷新计划页。用户回来翻管家会话就能看到「它替你挪了什么」。
@@ -1418,7 +1419,7 @@ class AppRuntime private constructor() {
         }
         val summary = stats.summary("自动采纳管家建议：")
         val stamp = clock.nowMs()
-        val statusText = "—— " + summary + "（应用不在前台，只动了「挪动逾期」这一类）"
+        val statusText = "—— " + summary + "（应用不在前台，已自动重排）"
         val updatedLines = session.lines.map { item ->
             if (item.id == line.id) item.copy(proposalState = ProposalState.Adopted) else item
         } + ChatLine(id = nextChatLineId++, role = ChatRole.Status, text = statusText, atMs = stamp)
@@ -2169,7 +2170,11 @@ class AppRuntime private constructor() {
             // 真正的周/单元要 createProcess → saveDraft → acceptDraft 才写得进去。
             val planTools = PlanTools(
                 { learningPlan() },
-                { created -> refreshPlan(focus = created) },
+                { created ->
+                    refreshPlan(focus = created)
+                    // 计划建好就把「想法」落成文档：之后排周/重排时先读文档，不靠对话记忆。
+                    ensurePlanDoc(created)
+                },
                 { studyPrefs.weeklyMinutes },
                 planDbError = { planDbError },
                 clock = clock,
@@ -3244,6 +3249,45 @@ class AppRuntime private constructor() {
     internal fun closePlanDoc() {
         planDocOpen = false
         planDocNote = null
+    }
+
+    /**
+     * 计划建好之后，若还没有计划文档，就按计划库现状生成一份初版。
+     *
+     * 只在文档不存在时写：已有文档（AI 调研写的、用户手改过的）一律不覆盖。
+     */
+    private suspend fun ensurePlanDoc(planId: String) {
+        if (!::planDocStore.isInitialized) return
+        val store = planDocStore
+        if (runCatching { store.load(planId) }.getOrNull() != null) return
+        val service = learningPlan() ?: return
+        val state = runCatching { service.planState(planId) }.getOrNull() ?: return
+        val weeks = runCatching { service.map(planId) }.getOrNull()?.weeks.orEmpty()
+        val pool = runCatching { service.pool(planId) }.getOrNull().orEmpty()
+        val markdown = buildString {
+            appendLine("# 目标与验收")
+            appendLine("- 目标：" + state.title)
+            appendLine("- 验收：按全局周表逐周完成，计划页勾掉即算做完。")
+            weeks.forEach { week ->
+                appendLine("## " + week.week)
+                val detail = runCatching { service.week(planId, week.week) }.getOrNull()
+                if (detail != null) {
+                    detail.commitment.units.forEach { unit ->
+                        appendLine("- " + unit.title + "（约 " + unit.estimateMinutes + " 分钟）")
+                    }
+                } else {
+                    week.units.forEach { unit -> appendLine("- " + unit.title) }
+                }
+            }
+            if (pool.isNotEmpty()) {
+                appendLine("## 待安排")
+                pool.forEach { unit ->
+                    appendLine("- " + unit.title + "（约 " + unit.estimateMinutes + " 分钟）")
+                }
+            }
+        }
+        runCatching { store.save(planId, markdown) }
+            .onFailure { appendAppLog("计划文档自动生成失败：" + it.message) }
     }
 
     internal fun updatePlanDocDraft(text: String) {

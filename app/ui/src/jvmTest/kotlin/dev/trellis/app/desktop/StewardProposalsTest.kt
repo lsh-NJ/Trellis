@@ -61,7 +61,7 @@ class StewardProposalsTest {
     }
 
     @Test
-    fun sundayFallsBackToToday() {
+    fun sundayCanPushIntoTheNextWeek() {
         val sunday = LocalDate.parse("2026-11-08")
         val proposal = StewardProposals.build(
             today = sunday,
@@ -71,7 +71,23 @@ class StewardProposalsTest {
             id = "p4",
         )
         assertNotNull(proposal)
-        assertEquals("2026-11-08", proposal.changes.single().day)
+        assertEquals("2026-11-09", proposal.changes.single().day)
+    }
+
+    @Test
+    fun lateInTheWeekTheProposalCanReachNextWeek() {
+        // 周五：明天起就是周末，再往后可以排到下周周日（无限重排）。
+        val friday = LocalDate.parse("2026-11-06")
+        val proposal = StewardProposals.build(
+            today = friday,
+            weekEnd = LocalDate.parse("2026-11-08"),
+            overdue = listOf(overdue("1", day = "2026-11-02")),
+            backlog = emptyList(),
+            id = "p6",
+        )
+        assertNotNull(proposal)
+        assertEquals("2026-11-07", proposal.changes.single().day)
+        assertTrue(proposal.detail.contains("2026-11-15"), proposal.detail)
     }
 
     @Test

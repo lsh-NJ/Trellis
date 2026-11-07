@@ -80,18 +80,20 @@
 - 状态落盘：`ChatLine.proposal` + `proposalState`（`Open` / `Adopted` / `Dismissed`），
   旧会话文件没有这两个字段时按无卡片处理。
 
-### 5.1 自动采纳（2026-11-07 最小版，G-C1）
+### 5.1 自动采纳 / 无限重排（2026-11-07，G-C1 + G-C5）
 
-- 开关：设置页「管家 → 自动采纳」，落 `steward/settings.json` 的 `autoAdopt`（默认关）。
+- 开关：设置页「管家 → 自动采纳」，落 `steward/settings.json` 的 `autoAdopt`（2026-11-07 晚起默认**开**）。
 - 准入三道闸（`autoAdoptAllowed`）：开关打开、应用**不在前台**（`windowFocused=false`）、
-  今天还没到 `autoAdoptDailyLimit`（默认 3）。计数在 `steward/checkpoints.json`
+  今天还没到 `autoAdoptDailyLimit`。计数在 `steward/checkpoints.json`
   （`autoAdoptDay`/`autoAdoptCount`，换天归零）。
-- 白名单（`StewardProposal.isAutoAdoptable`）：整条建议的改动**全是 `Move`** 才自动执行；
-  含 `Place`（补排欠账）的建议仍要用户点「一键采纳」——补排会动待安排池，风险比挪动大。
+  - `autoAdoptDailyLimit = 0` 表示**不限条数**（2026-11-07 晚起默认 0）；其余值夹在 1–10。
+- 白名单（`StewardProposal.isAutoAdoptable`）：**`Move` 和 `Place` 都自动执行**（用户给了无限重排权限）；
+  跨周也允许——提案候选日从「明天到下周周日」。
 - 触发点：晨/晚仪式成功发出后（`runStewardCheck` 非 `Busy`）与窗口失焦
-  （`onWindowLostFocus`）。执行完在管家会话里把建议行标 `Adopted`、追加一条状态行，
-  并记一条 `Adopted` 记忆 + `app.log` 一行；计划页数据刷新，挪动仍可撤销。
-- 不做：后台无人值守（G-C2）、自动补排、自动采纳后弹通知（G-C3）。
+  （`onWindowLostFocus`）。执行完在管家会话里把建议行标 `Adopted`、追加一条状态行
+  「—— 自动采纳管家建议：挪 N 件、补排 M 个（应用不在前台，已自动重排）」，
+  并记一条 `Adopted` 记忆 + `app.log` 一行；计划页数据刷新，改动仍可在计划页拖回/撤销。
+- 不做：后台无人值守（G-C2）、自动采纳后弹通知（G-C3）、独立定时器/按日自动顺延（仍是建议驱动）。
 
 ## 6. 与普通会话的接线
 

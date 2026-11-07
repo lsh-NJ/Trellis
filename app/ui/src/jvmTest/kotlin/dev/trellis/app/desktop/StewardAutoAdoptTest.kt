@@ -4,7 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/** 自动采纳的准入判断：开关 + 前台 + 每日上限 + 类型白名单（G-C1 最小版）。 */
+/** 自动采纳的准入判断：开关 + 前台 + 可选的每日上限 + 类型白名单。 */
 class StewardAutoAdoptTest {
 
     private fun proposal(vararg changes: StewardChange) = StewardProposal(
@@ -36,12 +36,19 @@ class StewardAutoAdoptTest {
     }
 
     @Test
-    fun onlyPureMoveProposalsAreAutoAdoptable() {
+    fun zeroLimitMeansUnlimitedAdoptions() {
+        val settings = StewardSettings(autoAdopt = true, autoAdoptDailyLimit = 0)
+        assertTrue(autoAdoptAllowed(settings, appFocused = false, adoptedToday = 0))
+        assertTrue(autoAdoptAllowed(settings, appFocused = false, adoptedToday = 99))
+    }
+
+    @Test
+    fun moveAndPlaceProposalsAreBothAutoAdoptable() {
         val move = StewardChange.Move(title = "课时1", occurrenceId = "occ_1", day = "2026-11-07")
         val place = StewardChange.Place(title = "课时9", unitId = "unit_9", day = "2026-11-07")
         assertTrue(proposal(move, move).isAutoAdoptable())
-        assertFalse(proposal(move, place).isAutoAdoptable())
-        assertFalse(proposal(place).isAutoAdoptable())
+        assertTrue(proposal(move, place).isAutoAdoptable())
+        assertTrue(proposal(place).isAutoAdoptable())
         assertFalse(proposal().isAutoAdoptable())
     }
 }

@@ -30,14 +30,15 @@ internal data class StewardSettings(
      *
      * 默认关：自动改用户计划是重手，得由用户自己打开。补排欠账（Place）永远不自动做。
      */
-    val autoAdopt: Boolean = false,
+    val autoAdopt: Boolean = true,
     /** 每天最多自动采纳几条；1–10，默认 3。 */
-    val autoAdoptDailyLimit: Int = 3,
+    val autoAdoptDailyLimit: Int = 0,
 ) {
     fun normalized(): StewardSettings = copy(
         morningTime = normalizeStewardTime(morningTime, DEFAULT_MORNING_TIME),
         eveningTime = normalizeStewardTime(eveningTime, DEFAULT_EVENING_TIME),
-        autoAdoptDailyLimit = autoAdoptDailyLimit.coerceIn(1, 10),
+        // 0 = 不限制；其余夹在 1..10。
+        autoAdoptDailyLimit = autoAdoptDailyLimit.coerceIn(0, 10),
     )
 
     companion object {

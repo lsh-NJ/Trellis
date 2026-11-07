@@ -25,9 +25,10 @@ data class StewardProposal(
 enum class ProposalState { Open, Adopted, Dismissed }
 
 /**
- * 自动采纳的准入判断（G-C1 最小版）：开关打开、应用不在前台、今天还没到上限。
+ * 自动采纳的准入判断：开关打开、应用不在前台、今天还没到上限。
  *
- * 三个条件同时成立才允许尝试；真正执行前还要过 [isAutoAdoptable] 的类型白名单。
+ * 用户把管家的权限放开到「无限重排」以后，`autoAdoptDailyLimit = 0` 表示不限条数；
+ * 其余值仍按天计数。真正执行前还要过 [isAutoAdoptable] 的类型白名单。
  */
 internal fun autoAdoptAllowed(
     settings: StewardSettings,
@@ -35,16 +36,15 @@ internal fun autoAdoptAllowed(
     adoptedToday: Int,
 ): Boolean = settings.autoAdopt &&
     !appFocused &&
-    adoptedToday < settings.autoAdoptDailyLimit
+    (settings.autoAdoptDailyLimit <= 0 || adoptedToday < settings.autoAdoptDailyLimit)
 
 /**
- * 类型白名单：整条建议只含「挪动」才允许自动采纳。
+ * 类型白名单：挪动（Move）和补排欠账（Place）都允许自动采纳。
  *
- * 补排（[StewardChange.Place]）会往待安排池外拉单元、影响承诺，仍要用户点一下。
- * 「只挪动」这一类也有撤销兜底（计划页可再拖回去），自动做风险最低。
+ * 用户明确给了管家「无限重排」的权限：两类改动都走计划后端已有命令，
+ * 都可以在计划页再拖回去 / 撤销，所以不再按类型限制。
  */
-internal fun StewardProposal.isAutoAdoptable(): Boolean =
-    changes.isNotEmpty() && changes.all { it is StewardChange.Move }
+internal fun StewardProposal.isAutoAdoptable(): Boolean = changes.isNotEmpty()
 
 /** 一条可执行的改动。日期都是 `YYYY-MM-DD`（应用内日期，时钟可被开发者模式拨动）。 */
 sealed interface StewardChange {
@@ -78,7 +78,7 @@ internal data class StewardBacklogItem(val unitId: String, val title: String)
 /**
  * 规则生成建议。
  *
- * 只做三件保守的事：本周逾期的挪到「明天及以后、本周内」；更早欠下的补排一两个；
+ * 做两件事：逾期的挪到「明天及以后（可跨到下周）」；更早欠下的补排一两个；
  * 一次最多动 3 件 + 2 个，剩下的留给下次。没有可动的就返回 null（宁可不建议）。
  */
 internal object StewardProposals {
@@ -94,13 +94,19 @@ internal object StewardProposals {
         id: String,
     ): StewardProposal? {
         if (overdue.isEmpty() && backlog.isEmpty()) return null
+        // 「无限重排」从本周一直排到下周周日：本周排不下、或今天已经在周末时，
+        // 建议可以落到下一周，而不是硬塞回今天。
+        val horizonEnd = maxOf(
+            weekEnd,
+            today.with(java.time.temporal.TemporalAdjusters.nextOrSame(java.time.DayOfWeek.SUNDAY))
+                .plusWeeks(1),
+        )
         val days = buildList {
             var day = today.plusDays(1)
-            while (!day.isAfter(weekEnd)) {
+            while (!day.isAfter(horizonEnd)) {
                 add(day)
                 day = day.plusDays(1)
             }
-            // 今天就是周日：本周没有「明天」了，只能放今天（今天的排期还能补）。
             if (isEmpty()) add(today)
         }
 
@@ -120,13 +126,13 @@ internal object StewardProposals {
         val places = changes.count { it is StewardChange.Place }
         val title = when {
             moves > 0 && places > 0 -> "把 $moves 件没做完的往后挪，顺手排 $places 个欠账"
-            moves > 0 -> "把 $moves 件没做完的挪到本周剩下的天"
-            else -> "把 $places 个更早欠下的排进本周"
+            moves > 0 -> "把 $moves 件没做完的挪到之后几天"
+            else -> "把 $places 个更早欠下的排进之后几天"
         }
         val detail = buildString {
             append("本周还有 ${overdue.size} 件没做")
             if (backlog.isNotEmpty()) append("、更早欠下 ${backlog.size} 个")
-            append("；从明天到周日还有 ${days.size} 天可以放。")
+            append("；从明天到 $horizonEnd 还有 ${days.size} 天可以放。")
             append("先动这几件，剩下的下次再说。")
         }
         return StewardProposal(id = id, title = title, detail = detail, changes = changes)
