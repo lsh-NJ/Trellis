@@ -4254,6 +4254,36 @@ class AppRuntime private constructor() {
         tick += 1
     }
 
+    /**
+     * 从计划列表里删除一个「已放弃」的计划。
+     *
+     * 业务上是软删除：`process.deleted_at` 写时间戳，读侧（`plans()` / `activePlanId()`）
+     * 过滤掉它，界面里等价于删掉了。底层事件溯源里的数据行保留（触发器禁止物理删），
+     * 以后要恢复只需清掉这个时间戳，所以文案不要承诺「磁盘上的数据已清空」。
+     *
+     * 只有 abandoned 的计划能删：进行中/正常结束的计划误删代价太大，先放弃再删。
+     */
+    fun deleteAbandonedPlan(planId: String) {
+        val service = learningPlan() ?: return
+        val result = runCatching {
+            service.deletePlan(planAdjustCommand(planId), planId)
+        }.getOrNull()
+        if (result?.ok != true) {
+            reportPlanProblem(result?.error?.message ?: "删除没成功，稍后再试。")
+            return
+        }
+        planSettingsOpen = false
+        if (planFocusId == planId) {
+            planFocusId = null
+            planSelectedWeek = null
+            planSelectedDay = null
+            planPendingSelected = false
+        }
+        refreshPlan()
+        planMessage = "已从计划列表里删除这个计划。"
+        tick += 1
+    }
+
     private fun planMoveOccurrence(occurrenceId: String, toDay: String, reason: String): Boolean {
         val service = learningPlan() ?: return false
         val planId = learningPlanId ?: return false

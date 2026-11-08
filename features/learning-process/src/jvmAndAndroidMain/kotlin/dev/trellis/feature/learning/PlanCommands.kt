@@ -782,6 +782,44 @@ internal fun SqliteLearningPlanService.cmdAbandonPlan(
     ok(Unit, warnings = if (env.dryRun) listOf("dry-run：没有落库。") else emptyList())
 }
 
+/**
+ * 删除一个「已放弃」的计划：只删可见性（软删除）。
+ *
+ * 事件溯源不允许物理删（`plan_version`/`plan_unit`/`occurrence`/`event` 都有 no-delete 触发器），
+ * 所以这里只写 `process.deleted_at`，读侧过滤掉；计划数据与事件都留在库里，便于追溯。
+ */
+internal fun SqliteLearningPlanService.cmdDeletePlan(
+    env: CommandEnvelope,
+    planId: String,
+): CommandResult<Unit> = write(env) {
+    planStatus(planId) ?: return@write fail(ErrorCode.E_NOT_FOUND, "找不到这个计划。")
+    val row = connection.prepareStatement(
+        "SELECT pr.abandoned_at, pr.deleted_at FROM plan p JOIN process pr ON pr.id = p.process_id " +
+            "WHERE p.id = ?",
+    ).use { ps ->
+        ps.setString(1, planId)
+        ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) to rs.getString(2) else null }
+    } ?: return@write fail(ErrorCode.E_NOT_FOUND, "找不到这个计划。")
+    val (abandonedAt, deletedAt) = row
+    if (deletedAt != null) return@write fail(ErrorCode.E_STATE, "这个计划已经删除了。")
+    if (abandonedAt == null) {
+        return@write fail(ErrorCode.E_STATE, "只有已放弃的计划可以删除；进行中或已结束的计划不删。")
+    }
+    connection.prepareStatement(
+        "UPDATE process SET deleted_at = ? WHERE id = (SELECT process_id FROM plan WHERE id = ?)",
+    ).use { ps ->
+        ps.setString(1, nowIso())
+        ps.setString(2, planId)
+        ps.executeUpdate()
+    }
+    appendEvent(
+        type = "plan.deleted", entity = "plan", entityId = planId, planId = planId,
+        payload = eventJson("soft" to JsonPrimitive(true)),
+        actor = env.actor, commandId = env.commandId,
+    )
+    ok(Unit, warnings = if (env.dryRun) listOf("dry-run：没有落库。") else emptyList())
+}
+
 /** 一个计划最多几个阶段。阶段是「几个星期攻什么」的粗粒度，太多说明该拆计划了。 */
 private const val MAX_STAGES = 20
 

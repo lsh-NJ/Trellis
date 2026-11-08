@@ -468,7 +468,9 @@ private fun PlanErrorBanner(message: String, onDismiss: () -> Unit) {
 @Composable
 private fun PlanSettingsDialog(runtime: AppRuntime) {
     var confirmAbandon by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
     val planTitle = runtime.planTitle ?: ""
+    val planAbandoned = runtime.planAll.firstOrNull { it.id == runtime.planFocusId }?.status == "abandoned"
     AlertDialog(
         onDismissRequest = { runtime.closePlanSettings() },
         title = { Text("计划设置") },
@@ -510,24 +512,45 @@ private fun PlanSettingsDialog(runtime: AppRuntime) {
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
-                // 危险区放在最后、和上面的「改数字」隔开：放弃是这一页唯一不可撤销的动作。
+                // 危险区放在最后、和上面的「改数字」隔开：放弃/删除都不可撤销。
                 Spacer(Modifier.height(4.dp))
-                Text(
-                    "放弃这个计划",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.error,
-                )
-                Text(
-                    "放弃后计划会结束：排好的节点不再出现，也不会再自动排周。左栏会留一行灰色「已放弃」，之后还能回来看。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                ChromeButton(
-                    label = "放弃这个计划",
-                    filled = false,
-                    destructive = true,
-                    onClick = { confirmAbandon = true },
-                )
+                if (planAbandoned) {
+                    Text(
+                        "删除这个计划",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    Text(
+                        "计划已经放弃，可以把它从列表里删掉：删除后计划页与计划列表都不再出现它。" +
+                            "底层的事件记录会保留用于追溯（数据文件不会立刻变小），所以删除是不可逆的界面操作。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    ChromeButton(
+                        label = "删除这个计划",
+                        filled = false,
+                        destructive = true,
+                        onClick = { confirmDelete = true },
+                    )
+                } else {
+                    Text(
+                        "放弃这个计划",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    Text(
+                        "放弃后计划会结束：排好的节点不再出现，也不会再自动排周。左栏会留一行灰色「已放弃」，之后还能回来看；" +
+                            "不想留着的话，放弃后可以在同一个弹窗里把它删掉。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    ChromeButton(
+                        label = "放弃这个计划",
+                        filled = false,
+                        destructive = true,
+                        onClick = { confirmAbandon = true },
+                    )
+                }
             }
         },
         confirmButton = {
@@ -559,6 +582,32 @@ private fun PlanSettingsDialog(runtime: AppRuntime) {
             },
             dismissButton = {
                 ChromeTextLink("再想想", onClick = { confirmAbandon = false })
+            },
+        )
+    }
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("从列表里删除「" + planTitle + "」？") },
+            text = {
+                Text(
+                    "删除后它不会出现在计划列表和计划页里，也不会再被任何自动流程排期。" +
+                        "底层事件记录保留用于追溯；界面里没有「恢复」入口，要恢复得改数据。",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            },
+            confirmButton = {
+                ChromeButton(
+                    label = "确认删除",
+                    destructive = true,
+                    onClick = {
+                        confirmDelete = false
+                        runtime.planFocusId?.let { runtime.deleteAbandonedPlan(it) }
+                    },
+                )
+            },
+            dismissButton = {
+                ChromeTextLink("再想想", onClick = { confirmDelete = false })
             },
         )
     }

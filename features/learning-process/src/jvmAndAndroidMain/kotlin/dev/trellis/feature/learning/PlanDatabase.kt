@@ -48,6 +48,8 @@ internal class PlanDatabase private constructor(val connection: Connection) : Au
         // 放弃计划不新增 status 取值（plan/process 的 CHECK 是 v1 契约）：放弃 = ended + 这个时间戳，
         // 读侧靠它把「已放弃」和「正常结束」分开。
         ensureColumn("process", "abandoned_at", "ALTER TABLE process ADD COLUMN abandoned_at TEXT NULL")
+        // 删除是软删：只写时间戳，计划列表/有效计划都不再返回它；事件与计划数据保留用于追溯。
+        ensureColumn("process", "deleted_at", "ALTER TABLE process ADD COLUMN deleted_at TEXT NULL")
         val addedUnitKind = ensureColumn(
             "plan_unit",
             "kind",

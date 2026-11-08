@@ -183,3 +183,18 @@
   旧周铺天会误以为「这个单元还没排」，再插回原来那天（现场：顺延 9 条后当天仍 20 件，
   同一 unit 同时存在旧日与次日两条 planned）。
 - 两条都有回归测试：`LearningPlanServiceTest.aUnitMovedToTheNextWeekIsNotRefilledIntoTheOldWeek`。
+
+## 12 2026-11-08：删除「已放弃」的计划（软删除）
+
+- `process` 补列 `deleted_at`（`PlanDatabase.migrate()` 的 `ensureColumn`），旧库自动迁移。
+- 新命令 `deletePlan(env, planId): CommandResult<Unit>`（`PlanCommands.cmdDeletePlan`）：
+  计划必须存在、`abandoned_at` 非空、尚未删除；通过则 `UPDATE process SET deleted_at = nowIso()`
+  并写事件 `plan.deleted`（payload `{"soft":true}`）。已删除 → `E_STATE`「这个计划已经删除了。」
+  未放弃（进行中 / 正常结束）→ `E_STATE`「只有已放弃的计划可以删除」。
+- 读侧过滤：`plans()` 增加 `WHERE pr.deleted_at IS NULL`；`effectivePlanForToday()`（`activePlanId()`
+  也走它）同样过滤，删除后不会再把被删计划当「当前计划」。
+- **为什么软删**：`plan_version` / `plan_unit` / `occurrence` / `event` 都有 no-delete 触发器，
+  物理删会破坏事件溯源的可追溯性；需要恢复时清掉 `deleted_at` 即可。
+- 测试：`LearningPlanAbandonTest.onlyAnAbandonedPlanCanBeDeletedFromTheList`
+  （进行中拒绝 → 放弃后可删 → `plans()`/`activePlanId()` 不再返回 → 事件只写一次）、
+  `aNormallyEndedPlanCannotBeDeletedEither`；运行时 `PlanDeleteRuntimeTest`。
