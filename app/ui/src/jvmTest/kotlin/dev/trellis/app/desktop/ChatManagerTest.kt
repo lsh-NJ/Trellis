@@ -42,6 +42,7 @@ class ChatManagerTest {
             messages: List<LlmMessage>,
             onDelta: suspend (String) -> Unit,
             onReasoning: suspend (String) -> Unit,
+            jsonMode: Boolean,
         ): String {
             full.chunked(2).forEach { onDelta(it) }
             return full
@@ -56,6 +57,7 @@ class ChatManagerTest {
             messages: List<LlmMessage>,
             onDelta: suspend (String) -> Unit,
             onReasoning: suspend (String) -> Unit,
+            jsonMode: Boolean,
         ): String = awaitCancellation()
     }
 

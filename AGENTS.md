@@ -45,7 +45,7 @@ Set-Location C:\Users\breakM\Desktop\work\Trellis
 |---|---|
 | `TRELLIS_HOME` | 数据根目录，默认 `~/.trellis`；做演示/截图时指到临时目录，别动真实数据 |
 | `TRELLIS_TAB` | 启动落在哪一页：`tasks`（默认）/ `plan` / `knowledge`（也可写 `kb`）/ `chat` / `activity` / `plugins` / `diag` |
-| `TRELLIS_LLM_KEY` / `TRELLIS_LLM_MODEL` / `TRELLIS_LLM_ENDPOINT` | 覆盖 LLM 配置（也可写 `~/.trellis/llm.json`） |
+| `TRELLIS_LLM_KEY` / `TRELLIS_LLM_MODEL` / `TRELLIS_LLM_ENDPOINT` / `TRELLIS_LLM_THINKING` | 覆盖 LLM 配置（也可写 `~/.trellis/llm.json`）；`THINKING` 为 `true/false`，不设时 DeepSeek 地址默认开思考 |
 | `TRELLIS_DEV` | `=1` 开发者模式：设置页出现「时间调试」卡片（可拨应用内日期；见 `docs/time-conventions.md` §7） |
 | `TRELLIS_TODAY` | `YYYY-MM-DD`，启动即把「应用内今天」拨到该日期（计划周滚动/结算/复盘按它走）；只在 `TRELLIS_HOME` 指向非默认目录时生效 |
 | `TRELLIS_DEV_ALLOW_REAL_HOME` | `=1` 允许在默认数据目录玩模拟时间（会真的写 missed/结算事件，唯一用途是调试） |

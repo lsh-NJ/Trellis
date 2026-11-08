@@ -1005,6 +1005,14 @@ private fun RoundView(
     }
 }
 
+/**
+ * 摘要里的「N 个动作」只数工具调用。
+ *
+ * 「判断：它要动手」「思考：…」以及工具的进度行都是解释，
+ * 把它们算成动作会让摘要写成「2 个动作」却只列出一个工具名。
+ */
+internal fun processActionCount(steps: List<ChatLine>): Int = steps.count { it.tool != null }
+
 @Composable
 private fun ProcessSummary(
     steps: List<ChatLine>,
@@ -1014,10 +1022,16 @@ private fun ProcessSummary(
     onClick: () -> Unit,
 ) {
     val tokens = LocalTrellisTokens.current
+    val actions = processActionCount(steps)
     val text = buildString {
         append("过程 · ")
-        append(steps.size)
-        append(" 个动作")
+        if (actions > 0) {
+            append(actions)
+            append(" 个动作")
+        } else {
+            append(steps.size)
+            append(" 条过程")
+        }
         if (changedCount > 0) {
             append(" · 改动 ")
             append(changedCount)
@@ -1142,7 +1156,7 @@ private fun ToolStepRow(line: ChatLine) {
             Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    "· " + toolActionLabel(line.text),
+                    "· " + toolActionLabel(trace.tool),
                     style = MaterialTheme.typography.bodySmall.copy(
                         fontFamily = FontFamily.Monospace,
                         fontSize = 12.sp,
@@ -1161,9 +1175,14 @@ private fun ToolStepRow(line: ChatLine) {
                 )
             }
             Text(
-                if (open) "▴" else "▾",
+                when {
+                    trace.running -> "运行中…"
+                    open -> "▴"
+                    else -> "▾"
+                },
                 style = LocalTrellisTokens.current.type.caption,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                color = if (trace.running) LocalExtraColors.current.data
+                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
             )
         }
         if (open) ToolStepDetail(trace)
@@ -1204,7 +1223,10 @@ private fun ToolStepDetail(trace: ChatToolTrace) {
         }
         Text("结果", style = tokens.type.caption, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
         Text(
-            trace.result.trim().ifBlank { "（没有输出）" },
+            when {
+                trace.running -> "（还在跑…）"
+                else -> trace.result.trim().ifBlank { "（没有输出）" }
+            },
             style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier
@@ -1607,6 +1629,19 @@ internal fun toolActionLabel(raw: String): String {
         "review_last_week" -> "看了上周复盘"
         "set_plan_pace" -> "调了学习节奏"
         "add_tasks" -> "加了待办"
+        "research_plan" -> "调研并建了计划"
+        "plan_week" -> "排了这一周"
+        "read_plan_doc" -> "读了计划文档"
+        "write_plan_doc" -> "写了计划文档"
+        "sync_plan_week" -> "同步了一周"
+        "list_goals" -> "看了目标"
+        "create_goal" -> "建了目标"
+        "add_milestone" -> "加了里程碑"
+        "complete_milestone" -> "勾了里程碑"
+        "link_plan_to_goal" -> "把计划和目标连起来"
+        "archive_goal" -> "归档了目标"
+        "remember_memory" -> "记了一条记忆"
+        "recall_memory" -> "翻了我的记忆"
         "search_bilibili" -> "搜了 B 站课程"
         "list_bilibili_parts" -> "看了课程分集"
         "set_plan" -> "列了步骤"

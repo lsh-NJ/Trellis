@@ -68,6 +68,8 @@ interface LlmClient {
         messages: List<LlmMessage>,
         onDelta: suspend (String) -> Unit,
         onReasoning: suspend (String) -> Unit = {},
+        /** 工具循环要严格 JSON：流式下也开 `response_format: json_object`。对话页保持 false。 */
+        jsonMode: Boolean = false,
     ): String {
         val reply = completeWithReasoning(messages)
         reply.reasoning?.takeIf { it.isNotBlank() }?.let { onReasoning(it) }

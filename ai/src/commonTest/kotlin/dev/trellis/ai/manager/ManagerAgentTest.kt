@@ -31,15 +31,26 @@ class ManagerAgentTest {
             return if (completions.isEmpty()) "{\"done\":true,\"message\":\"好了\"}" else completions.removeAt(0)
         }
 
+        private var streams = 0
+
         override suspend fun stream(
             messages: List<LlmMessage>,
             onDelta: suspend (String) -> Unit,
             onReasoning: suspend (String) -> Unit,
+            jsonMode: Boolean,
         ): String {
             if (failWith != null) throw IllegalStateException(failWith)
+            // 第一次是聊天阶段；进工具循环后每一步也走流式，按 completions 依次吐。
+            val reply = if (streams++ == 0) {
+                streamReply
+            } else if (completions.isEmpty()) {
+                "{\"done\":true,\"message\":\"好了\"}"
+            } else {
+                completions.removeAt(0)
+            }
             reasoning?.chunked(3)?.forEach { onReasoning(it) }
-            streamReply.chunked(3).forEach { onDelta(it) }
-            return streamReply
+            reply.chunked(3).forEach { onDelta(it) }
+            return reply
         }
     }
 

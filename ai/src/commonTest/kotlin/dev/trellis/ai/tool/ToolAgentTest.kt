@@ -191,6 +191,31 @@ class ToolAgentTest {
         assertTrue(!call.isError)
     }
 
+    @Test
+    fun theToolLineOpensBeforeTheToolActuallyRuns() = runTest {
+        val traces = mutableListOf<ToolTrace>()
+        var startedBeforeRun = false
+        val slow = object : AgentTool {
+            override val name = "slow_tool"
+            override val description = "要跑一会儿"
+            override val parameters = "无"
+
+            override suspend fun call(arguments: JsonObject): ToolResult {
+                startedBeforeRun = traces.any { it is ToolTrace.CallStarted }
+                return ToolResult("跑完了", done = true)
+            }
+        }
+
+        ToolAgent(ScriptedLlm("{\"tool\": \"slow_tool\", \"arguments\": {}}"), listOf(slow)).run(
+            "你是插件作者",
+            "跑一下",
+            onTrace = { traces += it },
+        )
+
+        assertTrue(startedBeforeRun, "工具开始时必须先发出 CallStarted，界面才能先占一行")
+        assertTrue(traces.any { it is ToolTrace.CallStarted && it.tool == "slow_tool" })
+    }
+
     /** 带原生思考的假模型：第一次调用给 reasoning，之后不给（钉住「有才显示」）。 */
     private class ThinkingLlm(private val replies: List<String>) : LlmClient {
         private var index = 0

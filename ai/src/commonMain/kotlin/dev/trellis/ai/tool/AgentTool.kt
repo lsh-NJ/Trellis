@@ -16,6 +16,16 @@ interface AgentTool {
     val parameters: String
 
     suspend fun call(arguments: JsonObject): ToolResult
+
+    /**
+     * 同一个工具，但允许它把「正在做什么」报给界面。
+     *
+     * 默认直接忽略进度：绝大多数工具是一步完成的。慢的复合工具
+     * （比如 research_plan：搜索 → 拆阶段 → 建计划 → 排本周）重写这个重载，
+     * 把这些阶段一条条吐出来，过程行才不会十几秒只有一行静态名字。
+     */
+    suspend fun call(arguments: JsonObject, onProgress: (String) -> Unit): ToolResult =
+        call(arguments)
 }
 
 /**

@@ -1,7 +1,9 @@
 package dev.trellis.ai
 
 import kotlin.test.Test
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.serialization.json.JsonNull
 
 /**
  * 发出去的请求体长什么样。
@@ -40,10 +42,54 @@ class HttpLlmClientTest {
     }
 
     @Test
+    fun deepSeekAsksForThinkingAndLeavesRoomForIt() {
+        val deep = HttpLlmClient(
+            LlmConfig(
+                endpoint = "https://api.deepseek.com/v1/chat/completions",
+                apiKey = "k",
+                model = "deepseek-chat",
+            ),
+        )
+        val json = deep.requestBody(listOf(LlmMessage(LlmRole.User, "hi")), stream = true, jsonMode = false)
+        // DeepSeek 服务端默认不思考：不显式发这个开关，reasoning_content 永远为空。
+        assertTrue(json.contains("\"thinking\":{\"type\":\"enabled\"}"), json)
+        // 思考 token 也算 completion，2048 会把正文/JSON 挤没。
+        assertTrue(json.contains("\"max_tokens\":8192"), json)
+    }
+
+    @Test
+    fun otherOpenAiCompatibleEndpointsDoNotGetTheDeepSeekOnlyField() {
+        val json = body(listOf(LlmMessage(LlmRole.User, "hi")))
+        assertTrue(!json.contains("thinking"), json)
+    }
+
+    @Test
+    fun thinkingCanBeSwitchedOffExplicitly() {
+        val off = HttpLlmClient(
+            LlmConfig(
+                endpoint = "https://api.deepseek.com/v1/chat/completions",
+                apiKey = "k",
+                model = "deepseek-chat",
+                thinking = false,
+            ),
+        )
+        val json = off.requestBody(listOf(LlmMessage(LlmRole.User, "hi")), stream = false, jsonMode = false)
+        assertTrue(!json.contains("thinking"), json)
+    }
+
+    @Test
     fun jsonModeIsOptInAndOffForStreaming() {
         assertTrue(!body(listOf(LlmMessage(LlmRole.User, "hi"))).contains("response_format"))
         assertTrue(body(listOf(LlmMessage(LlmRole.User, "hi")), jsonMode = true).contains("response_format"))
         // 流式对话是自由文本，不能开 JSON mode
         assertTrue(!body(listOf(LlmMessage(LlmRole.User, "hi")), stream = true).contains("response_format"))
+    }
+
+    @Test
+    fun aJsonNullChunkIsNotTheStringNull() {
+        // 开思考后，只有 reasoning 的分片 content 是 JSON null。
+        // kotlinx 的 JsonNull.content 恰好是字符串 "null"；若按普通 primitive 取值，
+        // 每个思考分片都会往正文/思考里塞一个 "null"（界面上就是 nullnullnull…）。
+        assertNull(client.flattenText(JsonNull))
     }
 }

@@ -25,6 +25,14 @@ class ManagerPromptTest {
     }
 
     @Test
+    fun theThinkingLanguageIsPinnedToChinese() {
+        // reasoning 跟着系统提示词的语言走：不写这一句，模型会拿英文思考。
+        assertTrue(prompt.base.contains("<thinking_language>"))
+        assertTrue(prompt.base.contains("思考过程（reasoning）也必须用中文"))
+        assertFalse(prompt.base.contains("think in English", ignoreCase = true))
+    }
+
+    @Test
     fun theStaticPrefixIsIdenticalEveryTime() {
         val again = ManagerPrompt.buildBase(catalog, emptyList(), "守则")
         assertEquals(prompt.base, again)

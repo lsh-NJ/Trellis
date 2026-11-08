@@ -8,12 +8,26 @@ package dev.trellis.ai.tool
  */
 sealed interface ToolTrace {
     /**
-     * 模型在动手前写的一句话思路（工具调用 JSON 之外的前言）。
+     * 模型的原生思考（DeepSeek `reasoning_content`）。
      *
-     * 没有就是 null（大多数模型只吐 JSON）；有的话属于「思考过程」，
+     * 没有就不发（模型没开思考、或这一跳没返回）；有的话属于「思考过程」，
      * 不该跟工具结果混在同一行。
      */
     data class Thinking(val text: String) : ToolTrace
+
+    /**
+     * 工具**开始**执行。
+     *
+     * 和 [Call] 分开是为了让界面在工具跑起来的那一刻就占一行、亮出参数，
+     * 而不是等工具跑完（research_plan 可能要十几秒）才突然出现。
+     * 结束时一定会跟一条 [Call]，把结果补上。
+     */
+    data class CallStarted(
+        val step: Int,
+        val tool: String,
+        val description: String,
+        val arguments: String,
+    ) : ToolTrace
 
     /** 一次工具调用：名字、说明（给用户看的用途）、参数、结果。 */
     data class Call(

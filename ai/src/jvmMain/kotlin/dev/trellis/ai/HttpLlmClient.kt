@@ -16,7 +16,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -58,9 +60,11 @@ class HttpLlmClient(
      *
      * 不设的话，一个话痨模型可能把 JSON 写到一半就被截断 ——
      * 而截断的 JSON 报错长得像「模型不会写 JSON」，查起来很费劲。
-     * 一个插件最多三张卡片，2048 绰绰有余。
+     *
+     * 2026-11-08 从 2048 提到 8192：打开思考后 reasoning tokens 也算在
+     * completion 里（DeepSeek 文档），2048 会把正文/JSON 直接挤没。
      */
-    private val maxTokens: Int = 2048,
+    private val maxTokens: Int = 8192,
     /**
      * 流式响应「多久没有新内容」就判定断流，兜底用。
      *
@@ -83,6 +87,17 @@ class HttpLlmClient(
 
     private val json = Json { ignoreUnknownKeys = true }
 
+    /**
+     * 要不要在请求体里带 `thinking={"type":"enabled"}`。
+     *
+     * 只有 DeepSeek 认识这个字段；别的 OpenAI 兼容服务收到未知字段可能直接 400，
+     * 所以默认按地址判断，`llm.json` 里写 `thinking: true/false` 可以覆盖。
+     * 实测（2026-11-08）：不带这个字段时 DeepSeek 默认**不开**思考，
+     * 返回的 reasoning_content 是空的 —— 界面上自然也就没有思考行。
+     */
+    private val thinkingEnabled: Boolean =
+        config.thinking ?: config.endpoint.contains("deepseek", ignoreCase = true)
+
     override suspend fun complete(messages: List<LlmMessage>): String =
         completeWithReasoning(messages).content
 
@@ -101,9 +116,10 @@ class HttpLlmClient(
         messages: List<LlmMessage>,
         onDelta: suspend (String) -> Unit,
         onReasoning: suspend (String) -> Unit,
+        jsonMode: Boolean,
     ): String {
-        // 对话页要的是「边想边说」，所以这里不强制 JSON mode。
-        val request = requestFor(messages, stream = true, jsonMode = false)
+        // 对话页要的是「边想边说」，不强制 JSON mode；工具循环要 JSON，由调用方开。
+        val request = requestFor(messages, stream = true, jsonMode = jsonMode)
         val full = StringBuilder()
 
         withContext(Dispatchers.IO) {
@@ -276,6 +292,9 @@ class HttpLlmClient(
                 put("response_format", buildJsonObject { put("type", "json_object") })
             }
             put("max_tokens", maxTokens)
+            if (thinkingEnabled) {
+                put("thinking", buildJsonObject { put("type", "enabled") })
+            }
             putJsonArray("messages") {
                 for (message in messages) {
                     addJsonObject {
@@ -347,12 +366,15 @@ class HttpLlmClient(
     }
 
     /** content 可能是字符串，也可能是 `[{type:"text", text:"..."}]` 数组；空数组算没有。 */
-    private fun flattenText(element: JsonElement?): String? = when (element) {
-        null -> null
+    internal fun flattenText(element: JsonElement?): String? = when (element) {
+        // JSON null 也是 JsonPrimitive，`.content` 会返回字符串 "null"；
+        // 开思考后首批分片的 content 就是 null，必须显式挡掉，否则每个思考分片都会往正文塞一个 "null"。
+        null, is JsonNull -> null
         is JsonArray -> element.mapNotNull { part ->
-            (part as? JsonObject)?.get("text")?.jsonPrimitive?.content
+            (part as? JsonObject)?.get("text")?.let(::flattenText)
         }.joinToString("").ifEmpty { null }
-        else -> element.jsonPrimitive.content
+        is JsonPrimitive -> element.contentOrNull
+        else -> null
     }
 }
 
