@@ -55,12 +55,13 @@ class PlanWeekToolsTest {
         override fun simulatedDate(): LocalDate? = null
     }
 
-    private class FakeLlm(var reply: String) : LlmClient {
+    private class FakeLlm(var reply: String, var secondReply: String? = null) : LlmClient {
         val seen = mutableListOf<List<LlmMessage>>()
 
         override suspend fun complete(messages: List<LlmMessage>): String {
             seen += messages
-            return reply
+            // 第 2 次调用是「导师检查」：用 secondReply 单独喂，没给就继续用主回复（旧测试不受影响）。
+            return if (seen.size >= 2 && secondReply != null) secondReply!! else reply
         }
     }
 
@@ -117,6 +118,7 @@ class PlanWeekToolsTest {
     private suspend fun newHarness(
         reply: String = weekItemsJson(),
         today: LocalDate = wednesday,
+        secondReply: String? = null,
     ): Harness {
         val home = Files.createTempDirectory("plan-week-tools").toFile()
         val clock = FixedClock(today, zone)
@@ -125,7 +127,7 @@ class PlanWeekToolsTest {
         val created = base.createShell(env(), "操作系统速通", "两周围绕进程与调度")
         assertTrue(created.ok, "建空壳计划失败：" + created.error?.message)
         val planId = created.value!!.planId
-        return Harness(base, PlanDocStore(home), planId, clock, FakeLlm(reply))
+        return Harness(base, PlanDocStore(home), planId, clock, FakeLlm(reply, secondReply))
     }
 
     private fun weekTool(h: Harness, service: LearningPlanService = h.service, onChanged: () -> Unit = {}) =
@@ -360,4 +362,81 @@ class PlanWeekToolsTest {
         assertEquals(1, second.placed, "只该补排新进来的那一条：" + second.note)
         assertEquals(unitsAfterFirst + 1, h.service.week(h.planId, thisWeek).commitment.units.size, "老条目去重、新条目进库")
     }
+    /** 导师视角：这周要「调度算法」，但前置概念还没学 → 补一条并放在依赖那天之前。 */
+    @Test
+    fun theTutorAddsPrerequisitesBeforeTheDependentDay() = runTest {
+        val h = newHarness(
+            secondReply = """
+                {"prerequisites": [
+                  {"title": "进程与线程前置概念", "chapter": "第2章", "kind": "study",
+                   "minutes": 25, "day": "2026-11-05", "before": "调度算法"}
+                ]}
+            """.trimIndent(),
+        )
+        val result = planOneWeek(
+            plan = h.service,
+            planDocStore = h.docStore,
+            llm = h.llm,
+            clock = h.clock,
+            planId = h.planId,
+            week = thisWeek,
+            dailyMinutes = 60,
+        )
+
+        assertEquals(null, result.error)
+        assertTrue(result.note.contains("导师检查后补了 1 条前置知识"), result.note)
+        assertTrue(result.note.contains("进程与线程前置概念"), result.note)
+
+        val week = h.service.week(h.planId, thisWeek)
+        val byTitle = week.days.flatMap { day -> day.items.map { it.title to day.day } }.toMap()
+        val prereqDay = byTitle["进程与线程前置概念"]
+        val dependentDay = byTitle["调度算法"]
+        assertNotNull(prereqDay, "前置知识要铺到天：" + byTitle)
+        assertNotNull(dependentDay, "依赖条目也要在：" + byTitle)
+        assertTrue(prereqDay < dependentDay, "前置必须在依赖那天之前：$prereqDay vs $dependentDay")
+
+        val doc = weekDocAt(h, thisWeek)
+        assertNotNull(doc)
+        assertTrue(doc.contains("## 导师补充的前置知识"), doc)
+        assertTrue(doc.contains("为「调度算法」打底"), doc)
+    }
+
+    /** 导师看完说「没有必须先补的」——也要在回执里明确说一句，别静默。 */
+    @Test
+    fun anEmptyTutorVerdictIsStillAnnounced() = runTest {
+        val h = newHarness(secondReply = "{\"prerequisites\": []}")
+        val result = planOneWeek(
+            plan = h.service,
+            planDocStore = h.docStore,
+            llm = h.llm,
+            clock = h.clock,
+            planId = h.planId,
+            week = thisWeek,
+            dailyMinutes = 60,
+        )
+
+        assertEquals(null, result.error)
+        assertTrue(result.note.contains("没有必须先补的前置知识"), result.note)
+        assertEquals(3, result.placed, "没有前置也要正常排主条目")
+    }
+
+    /** 导师调用失败不能拖垮整周：主条目照排，回执说明导师这次没给结果。 */
+    @Test
+    fun aFailedTutorCheckDoesNotBlockTheWeek() = runTest {
+        val h = newHarness(secondReply = "这不是 JSON")
+        val result = planOneWeek(
+            plan = h.service,
+            planDocStore = h.docStore,
+            llm = h.llm,
+            clock = h.clock,
+            planId = h.planId,
+            week = thisWeek,
+            dailyMinutes = 60,
+        )
+
+        assertEquals(null, result.error)
+        assertTrue(result.note.contains("没给出前置检查结果"), result.note)
+        assertEquals(3, result.placed)
+    }
+
 }

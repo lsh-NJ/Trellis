@@ -148,6 +148,19 @@ internal data class WeekPlanResult(
     val note: String = "",
 )
 
+/** 已经按天排好的一条：导师检查时要知道「哪一天要学什么」。 */
+private data class ScheduleItem(val item: PlannedItem, val day: LocalDate)
+
+/** 导师判断需要提前补的一条前置知识：放在依赖条目之前的那一天。 */
+private data class PrereqTarget(
+    val title: String,
+    val chapter: String,
+    val minutes: Int,
+    val kind: String,
+    val day: LocalDate,
+    val beforeTitle: String,
+)
+
 /**
  * 排一周：校验 → 读大纲/上周 → 模型出条目 → **先写周文档** → appendUnits → 逐日 placeUnit。
  *
@@ -291,11 +304,26 @@ internal suspend fun planOneWeek(
         plannedByDay.getOrPut(day.toString()) { mutableListOf() } += placeable[index]
     }
 
+    // ---- 导师检查：这周要学的东西，有没有「得先会」的前置知识 ----
+    // 用户要的：导师先看一遍这一周的安排——比如周三要学微积分、周四要写 Python，
+    // 就在周一/周二先把导数、环境这些前置补上，别到当天才卡住。只补真正必要的，失败就跳过。
+    val tutorCheck = tutorPrerequisites(
+        llm = llm,
+        week = week,
+        start = start,
+        weekEnd = weekEnd,
+        stageFocus = focus,
+        outline = outline,
+        schedule = placeable.mapIndexed { index, item -> ScheduleItem(item, dayOfItem[index]) },
+        existingTitles = (existingTitles + acceptedTitles).toSet(),
+    )
+    val prerequisites = tutorCheck.items
+
     // ---- 第一步：先写周文档。写不成，这一周就整周不排（不落库、不铺天）。 ----
     var docWritten = false
     if (planDocStore != null) {
         val saved = runCatching {
-            planDocStore.saveWeek(planId, week, weekDoc(week, focus, placeable, plannedByDay, overflow))
+            planDocStore.saveWeek(planId, week, weekDoc(week, focus, placeable, plannedByDay, overflow, prerequisites))
         }
         if (saved.isFailure) {
             val reason = saved.exceptionOrNull()?.message?.takeIf { it.isNotBlank() } ?: "未知原因"
@@ -330,7 +358,44 @@ internal suspend fun planOneWeek(
         val placed = plan.placeUnit(commandEnv(planId, "plan.week"), planId, week, unitIds[itemIndex], day)
         if (placed.ok) placedCount++
     }
+    // ---- 第四步：把导师补的前置知识也追加进计划库，并按算好的「依赖条目之前」铺到天 ----
+    var prereqPlaced = 0
+    if (prerequisites.isNotEmpty()) {
+        val prereqDrafts = prerequisites.map { prereq ->
+            UnitDraft(
+                chapter = prereq.chapter.ifBlank { "前置知识" },
+                title = prereq.title,
+                estimateMinutes = prereq.minutes.coerceIn(10, 45),
+                kind = prereq.kind,
+            )
+        }
+        val prereqUnits = plan.appendUnits(commandEnv(planId, "plan.prereq"), planId, prereqDrafts).value
+        if (prereqUnits != null) {
+            prerequisites.forEachIndexed { index, prereq ->
+                val placed = plan.placeUnit(
+                    commandEnv(planId, "plan.prereq"),
+                    planId,
+                    week,
+                    prereqUnits[index],
+                    prereq.day.toString(),
+                )
+                if (placed.ok) prereqPlaced++
+            }
+        }
+    }
     val note = buildString {
+        when {
+            prerequisites.isNotEmpty() -> {
+                append("导师检查后补了 ").append(prereqPlaced).append(" 条前置知识：")
+                append(prerequisites.joinToString("；") { prereq ->
+                    prereq.title + "（" + weekdayCn(prereq.day) + " " + prereq.day.toString().takeLast(5) +
+                        "，为「" + prereq.beforeTitle + "」打底）"
+                })
+                append("。")
+            }
+            tutorCheck.checked -> append("导师看过这周安排：没有必须先补的前置知识。")
+            else -> append("导师这次没给出前置检查结果（不影响这周的排布）。")
+        }
         if (dropped > 0) append("去掉了 ").append(dropped).append(" 条本周已经有的重复条目。")
         if (overflow > 0) {
             append("本周剩余容量只够 ").append(remainingCapacity).append(" 分钟，先铺了 ")
@@ -454,6 +519,7 @@ private fun weekSystemPrompt(week: String, dailyMinutes: Int): String = buildStr
     appendLine("{\"focus\":\"这周重点（≤20 字）\",\"items\":[{\"title\":\"条目标题（≤20 字）\",\"chapter\":\"章节或主题\",\"kind\":\"study|practice|review\",\"minutes\":30}]}")
     appendLine("约束：条目 3–14 个；每条 10–45 分钟；本周每天投入约 " + dailyMinutes + " 分钟。")
     appendLine("内容规则：看视频/看书算 study；动手写代码、做项目、做题算 practice；复盘/重做错题/回顾算 review。")
+    appendLine("交付物整理规则：整理 README/文档/提交历史/仓库结构这类收尾工作算 practice，只在阶段收尾周出现一次，不要每周都排。")
     appendLine("前几周通识偏 study，专业技术路线要给 practice（写出能被运行/看到的东西）；复习安排在阶段收尾。")
 }
 
@@ -478,6 +544,7 @@ private fun weekDoc(
     items: List<PlannedItem>,
     placed: Map<String, List<PlannedItem>>,
     overflow: Int = 0,
+    prerequisites: List<PrereqTarget> = emptyList(),
 ): String = buildString {
     appendLine("# " + week + " 本周计划")
     if (focus.isNotBlank()) appendLine("> 本周重点：" + focus)
@@ -494,6 +561,15 @@ private fun weekDoc(
         appendLine("（这一周还没有铺到天的条目。）")
         items.forEach { item -> appendLine("- " + item.title + "（" + kindLabel(item.kind) + " · 约 " + item.minutes + " 分钟）") }
     }
+    if (prerequisites.isNotEmpty()) {
+        appendLine("## 导师补充的前置知识")
+        prerequisites.forEach { prereq ->
+            appendLine(
+                "- " + prereq.day.toString() + "（" + weekdayCn(prereq.day) + "）· " + prereq.title +
+                    "（" + kindLabel(prereq.kind) + " · 约 " + prereq.minutes + " 分钟）—— 为「" + prereq.beforeTitle + "」打底",
+            )
+        }
+    }
 }
 
 private fun weekdayCn(day: LocalDate): String =
@@ -508,4 +584,141 @@ private fun kindLabel(kind: String): String = when (kind) {
 private fun previousWeekOf(week: String): String {
     val start = isoWeekStart(week) ?: return week
     return isoWeekOf(start.minusWeeks(1))
+}
+
+// ---------------------------------------------------------------------------
+// 导师检查：本周要学的东西，有没有「得先会」的前置知识
+// ---------------------------------------------------------------------------
+
+private const val TUTOR_TIMEOUT_MS = 20_000L
+
+private val TUTOR_SYSTEM_PROMPT: String = """
+    你是这份学习计划的导师。下面给出这一周已经排好的安排（每一条都有日期）。
+    你的任务是判断：这些条目里有哪些需要「前置知识」才能学懂——例如周三要学「微积分应用」但还没学导数，
+    周四要写「Python 爬虫」但还没学 requests / HTML 基础，周五要做项目但环境还没装过。
+
+    只输出一个 JSON 对象，不要 markdown、不要解释：
+    {"prerequisites":[{"title":"前置条目标题（≤20 字）","chapter":"所属主题","kind":"study|practice","minutes":30,"day":"YYYY-MM-DD","before":"依赖的条目标题（逐字抄上面的）"}]}
+
+    规则：
+    1. 最多 3 条，只列真正必要的；本周不需要前置就给 {"prerequisites":[]}，不要凑数。
+       注意：需要动手跑代码/装环境/用某个库或工具、但计划里还没学过相关基础的，都算「必要前置」，
+       例如「按 README 从零跑通项目」之前要先有「环境搭建与依赖安装」，
+       「写接口测试」之前要先有「测试框架入门」。不要因为条目看起来简单就一律给空数组。
+    2. day 必须早于依赖条目那天，最好提前一天；如果依赖条目在周一，就把前置放在同一天最前面（day 写那天）。
+    3. 前置条目本身要能在 10–45 分钟内做完（一个概念/一次环境搭建/一个小练习），不要写「学完整个数学」这种大条目。
+    4. title 要具体、和依赖条目有明确衔接（如「导数与极限基础」「Python 环境与 requests 入门」）。
+""".trimIndent()
+
+/**
+ * 让模型以「导师」视角看一遍本周安排，找出必须先补的前置知识，并算出该放哪天。
+ *
+ * 失败（超时/解析不出）返回 checked=false：导师检查是锦上添花，不能因为它让整周排不成。
+ * 放天规则也在这里兜底：模型给的日期必须严格早于依赖条目那天，否则退到前一天；
+ * 前一天早于本周开始就放本周第一天（周一的依赖条目只能同日热身）。
+ */
+private suspend fun tutorPrerequisites(
+    llm: LlmClient,
+    week: String,
+    start: LocalDate,
+    weekEnd: LocalDate,
+    stageFocus: String,
+    outline: String,
+    schedule: List<ScheduleItem>,
+    existingTitles: Set<String>,
+): TutorCheck {
+    if (schedule.isEmpty()) return TutorCheck(checked = false)
+    val scheduleText = schedule.joinToString("\n") { entry ->
+        "- " + entry.day.toString() + "（" + weekdayCn(entry.day) + "）：" + entry.item.title +
+            "（" + kindLabel(entry.item.kind) + " · " + entry.item.minutes + " 分钟）"
+    }
+    val userPrompt = buildString {
+        appendLine("这一周（" + week + "）的安排：")
+        appendLine(scheduleText)
+        if (stageFocus.isNotBlank()) appendLine("本周阶段焦点：" + stageFocus)
+        appendLine("计划大纲（供判断前后知识依赖）：")
+        appendLine(outline.ifBlank { "（没有文档）" })
+    }
+    val raw = withTimeoutOrNull(TUTOR_TIMEOUT_MS) {
+        llm.complete(
+            listOf(
+                LlmMessage(LlmRole.System, TUTOR_SYSTEM_PROMPT),
+                LlmMessage(LlmRole.User, userPrompt),
+            ),
+        )
+    } ?: return TutorCheck(checked = false)
+    val candidates = parseTutorPrereqs(raw) ?: return TutorCheck(checked = false)
+
+    val normalizedExisting = existingTitles.map { normalizeTitle(it) }.toMutableList()
+    val accepted = mutableListOf<PrereqTarget>()
+    candidates.take(3).forEach { candidate ->
+        val titleNorm = normalizeTitle(candidate.title)
+        if (titleNorm.isBlank()) return@forEach
+        if (normalizedExisting.any { isSameTitle(it, titleNorm) }) return@forEach
+        val dependencyDay = schedule.firstOrNull {
+            isSameTitle(normalizeTitle(it.item.title), normalizeTitle(candidate.before))
+        }?.day
+        var day = candidate.day
+        if (dependencyDay != null) {
+            // 前置必须在依赖条目之前；模型给了当天或更晚就退到前一天，前一天早于本周就同日热身。
+            if (!day.isBefore(dependencyDay) || day.isBefore(start)) day = dependencyDay.minusDays(1)
+            if (day.isBefore(start)) day = start
+        } else if (day.isBefore(start) || day.isAfter(weekEnd)) {
+            day = start
+        }
+        if (day.isAfter(weekEnd)) return@forEach
+        accepted += PrereqTarget(
+            title = candidate.title,
+            chapter = candidate.chapter,
+            minutes = candidate.minutes.coerceIn(10, 45),
+            kind = candidate.kind,
+            day = day,
+            beforeTitle = candidate.before.ifBlank { "本周内容" },
+        )
+        normalizedExisting += titleNorm
+    }
+    return TutorCheck(checked = true, items = accepted)
+}
+
+/** 导师检查结果：[checked]=模型是否给出了可解析的结论（空列表也算检查过）。 */
+private data class TutorCheck(val checked: Boolean, val items: List<PrereqTarget> = emptyList())
+
+private data class PrereqCandidate(
+    val title: String,
+    val chapter: String,
+    val minutes: Int,
+    val kind: String,
+    val day: LocalDate,
+    val before: String,
+)
+
+private fun parseTutorPrereqs(raw: String): List<PrereqCandidate>? {
+    val start = raw.indexOf('{')
+    val end = raw.lastIndexOf('}')
+    if (start < 0 || end <= start) return null
+    val root = runCatching {
+        Json.parseToJsonElement(raw.substring(start, end + 1)) as? JsonObject
+    }.getOrNull() ?: return null
+    val array = root["prerequisites"] as? JsonArray ?: return null
+    return array.mapNotNull { element ->
+        val obj = element as? JsonObject ?: return@mapNotNull null
+        val title = obj["title"]?.jsonPrimitive?.contentOrNull?.trim()
+            ?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+        val dayText = obj["day"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val day = runCatching { LocalDate.parse(dayText) }.getOrNull() ?: return@mapNotNull null
+        val minutes = obj["minutes"]?.jsonPrimitive?.intOrNull ?: 30
+        val kind = when (obj["kind"]?.jsonPrimitive?.contentOrNull?.trim()?.lowercase()) {
+            "practice", "实践" -> "practice"
+            "review", "复习" -> "review"
+            else -> "study"
+        }
+        PrereqCandidate(
+            title = title,
+            chapter = obj["chapter"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty(),
+            minutes = minutes,
+            kind = kind,
+            day = day,
+            before = obj["before"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty(),
+        )
+    }
 }
