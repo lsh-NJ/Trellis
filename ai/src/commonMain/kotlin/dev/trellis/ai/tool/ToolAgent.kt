@@ -89,12 +89,14 @@ class ToolAgent(
         system: String,
         request: String,
         onLog: (String) -> Unit = {},
+        onTrace: (ToolTrace) -> Unit = {},
     ): ToolRun = run(
         messages = listOf(
             LlmMessage(LlmRole.System, system + "\n\n" + catalogue()),
             LlmMessage(LlmRole.User, request),
         ),
         onLog = onLog,
+        onTrace = onTrace,
     )
 
     /**
@@ -106,6 +108,7 @@ class ToolAgent(
     suspend fun run(
         messages: List<LlmMessage>,
         onLog: (String) -> Unit = {},
+        onTrace: (ToolTrace) -> Unit = {},
     ): ToolRun {
         val conversation = messages.toMutableList()
         val transcript = mutableListOf<String>()
@@ -175,6 +178,8 @@ class ToolAgent(
                                 tools.joinToString("、") { it.name },
                         )
                     } else {
+                        // 模型在工具调用 JSON 之外写的话，就是它这一步的思路；丢弃太可惜。
+                        thoughtBefore(reply)?.let { onTrace(ToolTrace.Thinking(it)) }
                         note("第 " + step + " 步：" + parsed.name)
                         val signature = parsed.name + "|" + parsed.arguments
                         if (signature == lastSignature) {
@@ -197,6 +202,16 @@ class ToolAgent(
                         } catch (t: Throwable) {
                             ToolResult("工具自己出错了：" + (t.message ?: "未知错误"), isError = true)
                         }
+                        onTrace(
+                            ToolTrace.Call(
+                                step = step,
+                                tool = parsed.name,
+                                description = tool.description,
+                                arguments = parsed.arguments.toString(),
+                                result = result.content,
+                                isError = result.isError,
+                            ),
+                        )
                         note("　→ " + result.content.lineSequence().first())
                         if (result.image != null) {
                             pendingImages += result.image
@@ -215,6 +230,24 @@ class ToolAgent(
                 }
             }
         }
+    }
+
+    /**
+     * 模型在工具调用 JSON 前面写的那句话。
+     *
+     * 工具模式下大多数模型只吐 JSON，这时返回 null；偶尔它会先写一句
+     * 「先查一下课程目录」，那就是它这一步的思路，值得放进过程里。
+     */
+    private fun thoughtBefore(reply: String): String? {
+        val starts = listOf(reply.indexOf('{'), reply.indexOf('<')).filter { it > 0 }
+        val cut = starts.minOrNull() ?: return null
+        val think = reply.substring(0, cut)
+            .trim()
+            .trim('`', '*', '#', ' ', '\n', '\r')
+            .trim()
+        if (think.length < 8 || think.length > 240) return null
+        if (think.none { it.isLetter() }) return null
+        return think
     }
 
     private fun parse(reply: String): AgentStep {

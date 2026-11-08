@@ -164,4 +164,27 @@ class ToolAgentTest {
         assertEquals("有一个 task.completed", run.message)
     }
 
+    @Test
+    fun aToolCallIsReportedWithItsDetailsForTheProcessPanel() = runTest {
+        val llm = ScriptedLlm(
+            """{"tool": "list_events", "arguments": {"limit": 3}}""",
+            """{"done": true, "message": "有一个 task.completed"}""",
+        )
+        val traces = mutableListOf<ToolTrace>()
+
+        ToolAgent(llm, listOf(Recorder())).run(
+            "你是插件作者",
+            "有什么事件",
+            onTrace = { traces += it },
+        )
+
+        // 过程行只需要人话；参数、说明、结果这些大块内容放在 trace 里，点开才看。
+        val call = traces.filterIsInstance<ToolTrace.Call>().single()
+        assertEquals(1, call.step)
+        assertEquals("list_events", call.tool)
+        assertEquals("看看有哪些事件能触发规则", call.description)
+        assertTrue(call.arguments.contains("limit"), call.arguments)
+        assertTrue(call.result.contains("task.completed"), call.result)
+        assertTrue(!call.isError)
+    }
 }

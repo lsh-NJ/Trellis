@@ -20,6 +20,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -151,12 +152,17 @@ class ResearchToolsTest {
             """{"title":"本周复盘","chapter":"复盘","kind":"review","minutes":15}""" +
             """]}"""
 
-    private suspend fun call(harness: Harness, deadline: String? = null) = harness.tools.all
+    private suspend fun call(
+        harness: Harness,
+        deadline: String? = null,
+        dailyMinutes: Int? = null,
+    ) = harness.tools.all
         .single { it.name == "research_plan" }
         .call(
             buildJsonObject {
                 put("goal", "我想当 AI 应用工程师")
                 if (deadline != null) put("deadline", deadline)
+                if (dailyMinutes != null) put("dailyMinutes", dailyMinutes)
             },
         )
 
@@ -194,24 +200,38 @@ class ResearchToolsTest {
         assertTrue(doc.contains("# 目标与验收"), doc)
         assertTrue(doc.contains("基础与工具"), doc)
 
-        // 第一周必须已经排好：有单元、有 occurrence、有周文档，回执要说清。
+        // 节奏由用户拍板：工具里没传 dailyMinutes 时**不排本周**，
+        // 等 AGENT 用 ask_choices 问完、set_plan_pace 之后再 plan_week。
         val week = harness.service.week(planId, thisWeek)
-        assertTrue(week.commitment.units.isNotEmpty(), "第一周要有单元：" + week.commitment.summary)
-        assertEquals(
-            setOf("命令行 30 讲", "写一个最小 RAG", "本周复盘"),
-            week.commitment.units.map { it.title }.toSet(),
-        )
-        assertTrue(week.days.any { it.items.isNotEmpty() }, "第一周要铺到天")
-        val weekDoc = harness.docStore.readWeek(planId, thisWeek)
-        assertNotNull(weekDoc, "第一周的周文档要写出来")
-        assertTrue(weekDoc.contains("命令行 30 讲"), weekDoc)
-        assertTrue(weekDoc.contains("本周重点"), weekDoc)
-        assertTrue(result.content.contains("第一周") && result.content.contains("已经排好"), result.content)
+        assertTrue(week.commitment.units.isEmpty(), "没定节奏前不该排第一周：" + week.commitment.summary)
+        assertTrue(week.days.none { it.items.isNotEmpty() }, "没定节奏前不该铺到天")
+        assertNull(harness.docStore.readWeek(planId, thisWeek), "没定节奏前不该写周文档")
+        assertTrue(result.content.contains("ask_choices"), result.content)
+        assertTrue(result.content.contains("plan_week"), result.content)
 
         val goal = harness.service.goals().singleOrNull()
         assertNotNull(goal, "要顺手建一个目标")
         assertEquals(3, goal.milestones.size)
         assertTrue(goal.plans.any { it.id == planId })
+    }
+
+    @Test
+    fun whenDailyMinutesIsGivenTheFirstWeekIsScheduledAtOnce() = runTest {
+        val harness = harness(shellJson())
+        val result = call(harness, dailyMinutes = 90)
+        assertFalse(result.isError, result.content)
+        val planId = assertNotNull(harness.service.activePlanId())
+
+        // 用户这句话里已经给了时长：写进节奏，并同轮把本周排好，不再问。
+        val week = harness.service.week(planId, thisWeek)
+        assertEquals(
+            setOf("命令行 30 讲", "写一个最小 RAG", "本周复盘"),
+            week.commitment.units.map { it.title }.toSet(),
+        )
+        assertTrue(week.days.any { it.items.isNotEmpty() }, "给了时长就要铺到天")
+        val weekDoc = harness.docStore.readWeek(planId, thisWeek)
+        assertNotNull(weekDoc, "给了时长就要写周文档")
+        assertTrue(result.content.contains("每天 90 分钟"), result.content)
     }
 
     @Test

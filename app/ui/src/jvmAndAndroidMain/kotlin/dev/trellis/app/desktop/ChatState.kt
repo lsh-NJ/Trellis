@@ -47,6 +47,20 @@ data class PlanStep(
     val dependsOn: List<Int> = emptyList(),
 )
 
+/**
+ * 一次工具调用的详情（过程行里那条「· 查了学习计划」点开之后看到的东西）。
+ *
+ * 为什么单独存：参数和结果经常是几十行 JSON，塞进过程行文本会把折叠区撑爆；
+ * 文本行只留人话摘要，细节点开看。
+ */
+data class ChatToolTrace(
+    val tool: String,
+    val description: String,
+    val arguments: String,
+    val result: String,
+    val isError: Boolean,
+)
+
 data class ChatLine(
     val id: Long,
     val role: ChatRole,
@@ -73,6 +87,12 @@ data class ChatLine(
     val practiceProposal: PracticeProposal? = null,
     /** 接受/先不练之后记下来，重启后卡片不再显示按钮。 */
     val practiceState: PracticeProposalState = PracticeProposalState.Open,
+    /**
+     * 工具调用详情（有就渲染成一条可展开的工具行）。
+     *
+     * 旧会话没有这个字段：过程行还是纯文本，展开后按老样子平铺。
+     */
+    val tool: ChatToolTrace? = null,
 )
 
 /**

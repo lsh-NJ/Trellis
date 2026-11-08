@@ -388,3 +388,11 @@ note 含「已经排过了」、单元与 occurrence 数不增。
   该计划有阶段才显示；抽屉打开时让位隐藏。窄窗口暂时看不到阶段（大纲仍可在「计划文档」里看）。
 - 回归：`PlanPageRuntimeTest.PlanStageRailVisibilityTest` 仍钉右栏显隐的窗口宽度断点；
   `:app:ui:compileKotlinJvm` 通过。
+
+## 20 2026-11-09：先定节奏，再排本周（research_plan 不再抢先排第一周）
+
+问题：`research_plan` 建完空壳计划后立刻用建议时长排了第一周，紧接着又用 `ask_choices` 问用户每天投入——用户选完只影响之后补承诺/铺天，第一周已排的不动，既冗余又看不出「先排后问」。
+
+现在：`research_plan` 只建壳/大纲/阶段/里程碑；**用户这句话里已经给了时长才传 `dailyMinutes`**（工具写进节奏并同轮排好，不再问），否则回执明确说「节奏还没定」，由 AGENT `ask_choices`（60/90/120/先按建议）→ `set_plan_pace` → `plan_week` 在同一轮把本周排出来。`<task:work>` 提示词同步改。
+
+测试：`ResearchToolsTest` 默认路径断言第一周为空、不写周文档、回执含 ask_choices/plan_week；新增 `whenDailyMinutesIsGivenTheFirstWeekIsScheduledAtOnce` 钉住传时长时同轮排好。

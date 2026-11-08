@@ -226,4 +226,30 @@ class ChatStoreTest {
         assertEquals(1, backups.size, "坏文件应该改名留档")
         assertTrue(backups.single().readText(Charsets.UTF_8).contains("写了一半"))
     }
+
+    @Test
+    fun toolTraceSurvivesASaveAndReload() {
+        val home = tempHome()
+        val at = 5_000L
+        val trace = ChatToolTrace(
+            tool = "plan_week",
+            description = "把某一周排出来",
+            arguments = """{"week":"2026-W45"}""",
+            result = "排好了 7 条",
+            isError = false,
+        )
+        ChatStore(home).save(
+            ChatSession(
+                id = "chat-tool",
+                title = "排本周",
+                createdAt = at,
+                updatedAt = at,
+                lines = listOf(ChatLine(1, ChatRole.Step, "第 1 步：plan_week", at, tool = trace)),
+            ),
+        )
+
+        val line = ChatStore(home).read("chat-tool")!!.lines.single()
+        assertEquals("第 1 步：plan_week", line.text)
+        assertEquals(trace, line.tool, "展开工具详情要能跨重启保留")
+    }
 }
