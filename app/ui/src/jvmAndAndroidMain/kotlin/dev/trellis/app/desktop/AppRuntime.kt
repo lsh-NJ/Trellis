@@ -22,6 +22,7 @@ import dev.trellis.ai.tool.AgentTool
 import dev.trellis.ai.tool.DeepSeekMarkup
 import dev.trellis.ai.manager.ManagerPrompt
 import dev.trellis.ai.manager.ManagerRouter
+import dev.trellis.ai.steward.ProactivePrompt
 import dev.trellis.ai.steward.StewardPrompt
 import dev.trellis.ai.steward.StewardRitual
 import dev.trellis.ai.tool.ToolAgent
@@ -56,6 +57,7 @@ import dev.trellis.feature.exams.ExerciseBank
 import dev.trellis.feature.exams.ExerciseFileStore
 import dev.trellis.feature.exams.SubjectMastery
 import dev.trellis.feature.exams.masteryOf
+import dev.trellis.feature.exams.summarizeMastery
 import dev.trellis.activity.ActivityAggregator
 import dev.trellis.activity.ActivityClassifier
 import dev.trellis.activity.ActivitySettings
@@ -1126,6 +1128,20 @@ class AppRuntime private constructor() {
     }
 
     private var chatJob: Job? = null
+
+    /**
+     * 一次排队中的「完成事件」自主检查。
+     *
+     * 完成节点后立刻判定；真正开跑要等这一轮收尾（chatBusy 落回 false），
+     * 否则流式回答和工具循环会互相踩。排队只保留最近一次：连着勾完两个阶段时，
+     * 用户想看的是「现在」的完整现状，不是逐条补播。
+     */
+    private var pendingAutonomy: PendingAutonomy? = null
+
+    /** 正在跑的自主检查属于哪个计划；普通对话轮为 null。 */
+    private var autonomyPlanId: String? = null
+    private var autonomyPlanTitle: String = ""
+    private var autonomyRested: Boolean = false
 
     /** 从界面发起一轮对话：job 挂在 runtime 上，切页不会把它掐断。 */
     fun ask(request: String) {
@@ -2364,7 +2380,28 @@ class AppRuntime private constructor() {
         return renderCrossSessionMemory(stewardStore, clock.today().toString(), maxChars)
     }
 
+    /**
+     * 一次等待开跑的自主检查：从哪个计划的哪个完成事件来、带着什么证据。
+     *
+     * 证据是完成瞬间抓的：刷新之后阶段视图/待安排池都可能变，事后补不出来。
+     */
+    private data class PendingAutonomy(
+        val planId: String,
+        val planTitle: String,
+        val unitTitle: String,
+        val event: AutonomyEvent,
+        val evidence: List<String>,
+    )
+
+    /** 一轮跑完的结果：自主检查据此决定要不要标未读、发系统通知。 */
+    private data class TurnOutcome(
+        val ok: Boolean,
+        val text: String,
+        val rested: Boolean = false,
+    )
+
     /** 一轮对话要用的全套工具与提示词；普通会话和「计划会话里的周计划」共用。 */
+
     private class ChatRig(
         val catalog: CapabilityCatalog,
         val pluginTools: PluginTools,
@@ -2372,7 +2409,11 @@ class AppRuntime private constructor() {
         val promptGuidance: String,
     )
 
-    private fun buildChatRig(llm: LlmClient, researchGateway: ResearchGateway?): ChatRig {
+    private fun buildChatRig(
+        llm: LlmClient,
+        researchGateway: ResearchGateway?,
+        autonomy: Boolean = false,
+    ): ChatRig {
             val catalog = CapabilityCatalog.of(kernel.extensions, RENDERED_MOUNT_POINTS)
             val installer = KernelPluginInstaller(pluginsDir, kernel)
             val selfTest = PluginSelfTest()
@@ -2447,6 +2488,17 @@ class AppRuntime private constructor() {
             // 和管家仪式共用同一份 append-only 记忆 —— 目标不该只有晨/夜仪式才有机会落盘。
             val memoryTools = MemoryTools(stewardStore, clock)
             val goalTools = GoalTools(this)
+            // 完成事件触发的「自主检查」轮专用手：只读现状、查资料、推一张练习卡。
+            // 会改计划/任务的工具这一轮一个都不装 —— 建议之后由用户点选项，下一轮普通轮再执行。
+            val autonomyTools = AutonomyTools(
+                learningOverview = { autonomyLearningOverview() },
+                knowledgeOverview = { keyword -> autonomyKnowledgeOverview(keyword) },
+                searchWeb = { query, limit -> autonomySearchWeb(query, limit) },
+                searchExercises = { keyword, subject, limit -> autonomySearchExercises(keyword, subject, limit) },
+                recommendExercises = { text, limit -> autonomyRecommendExercises(text, limit) },
+                proposePractice = { exerciseId, title, detail -> autonomyProposePractice(exerciseId, title, detail) },
+                rest = { autonomyRested = true },
+            )
             // 手机上「看」可以，「动手」不行：截屏/点击/按键/打字在安卓沙箱里没有对应能力，
             // 四条工具留在清单里只会让模型挑一个注定失败的动作，然后空跑一轮。
             // 所以按平台裁剪工具清单与说明 —— 不是改文案，是不给它做不到的选项。
@@ -2467,18 +2519,44 @@ class AppRuntime private constructor() {
                 planAdminTools.all + planDocTools.all + researchTools.all + planWeekTools.all +
                 diagnosticsTools.all + memoryTools.all +
                 goalTools.all
+            val memorySection = memoryBlock()
+            // 常驻扩容说明：普通会话和普通管家对话都能主动读现状/提建议；
+            // 真正写计划仍然要用户拍板，见 ProactivePrompt 的边界。
+            val expandGuidance = ProactivePrompt.guidance
+            if (autonomy) {
+                // 自主检查轮只读：白名单之外的工具（建计划/排周/勾节点/挪节点/改节奏/写文档…）
+                // 一律不进这一轮，程序层保证「只建议、不直接改」，不靠提示词自觉。
+                val readOnlyNames = setOf(
+                    "get_learning_plan",
+                    "read_plan_doc",
+                    "list_goals",
+                    "recall_memory",
+                    "ask_choices",
+                )
+                val readOnly = allTools.filter { it.name in readOnlyNames }
+                val promptGuidance = buildString {
+                    append(autonomyTools.guidance)
+                    append("\n\n")
+                    append(expandGuidance)
+                    if (memorySection.isNotBlank()) {
+                        append("\n\n")
+                        append(memorySection)
+                    }
+                }
+                return ChatRig(catalog, tools, readOnly + autonomyTools.all, promptGuidance)
+            }
             val guidance = tools.guidance + "\n\n" + screenGuidance +
                 "\n\n" + layoutTools.guidance + "\n\n" + styleTools.guidance +
                 "\n\n" + workflowTools.guidance + "\n\n" + bilibiliTools.guidance +
                 "\n\n" + taskTools.guidance + "\n\n" + researchTools.guidance + "\n\n" + planWeekTools.guidance +
                 "\n\n" + planTools.guidance +
                 "\n\n" + planAdminTools.guidance + "\n\n" + planDocTools.guidance +
-                "\n\n" + diagnosticsTools.guidance + "\n\n" + memoryTools.guidance + "\n\n" + goalTools.guidance
+                "\n\n" + diagnosticsTools.guidance + "\n\n" + memoryTools.guidance +
+                "\n\n" + goalTools.guidance + "\n\n" + expandGuidance
             // 跨会话记忆块只随记忆内容变化，接在 guidance 最末尾：两条路径（普通 / 管家）
             // 都用同一份 promptGuidance，静态前缀逐字节稳定，前缀缓存只从记忆块开始失效。
-            val memorySection = memoryBlock()
             val promptGuidance = if (memorySection.isBlank()) guidance else guidance + "\n\n" + memorySection
-        return ChatRig(catalog, tools, allTools, promptGuidance)
+            return ChatRig(catalog, tools, allTools, promptGuidance)
     }
 
     /**
@@ -2491,13 +2569,29 @@ class AppRuntime private constructor() {
      * 没有可空返回：对话页永远有反馈（没 key 时把配置指引当一行过程贴出来）。
      */
     suspend fun sendChat(request: String) {
+        runTurn(request, hidden = false, autonomy = false)
+    }
+
+    /**
+     * 一轮对话 / 一次自主检查的唯一实现。
+     *
+     * 两条路径共用流式、工具循环、过程行与收尾逻辑，只在三处分叉：
+     * - [hidden]：不写用户那句话（自主检查表现为管家自己开口），也不写「本轮完成」状态行；
+     * - [autonomy]：提示词换成「只读 + 只建议」的覆盖层，工具集只留只读工具 + 提议工具；
+     * - 收尾时若排着下一件完成事件，接着开跑。
+     */
+    private suspend fun runTurn(
+        request: String,
+        hidden: Boolean,
+        autonomy: Boolean,
+    ): TurnOutcome {
         val text = request.trim()
-        if (text.isEmpty() || chatBusy) return
+        if (text.isEmpty() || chatBusy) return TurnOutcome(false, "")
 
         val config = LlmConfigLoader.load(home)
         if (config == null) {
-            addChatLine(ChatRole.Step, llmSetupHint())
-            return
+            if (!hidden) addChatLine(ChatRole.Step, llmSetupHint())
+            return TurnOutcome(false, "")
         }
 
         val llm = llmOverride ?: HttpLlmClient(config)
@@ -2512,8 +2606,10 @@ class AppRuntime private constructor() {
         chatBusy = true
         activePlanId = null
         chatChoices = emptyList()
-        addChatLine(ChatRole.User, text)
-        rememberRound(chat.last().id)
+        if (!hidden) {
+            addChatLine(ChatRole.User, text)
+            rememberRound(chat.last().id)
+        }
         val answer = addChatLine(ChatRole.Assistant, "")
         // 原始流和「给人看的文本」分开存：工具协议是给程序读的 JSON，
         // 边流边糊进聊天气泡的话，用户看到的全是 {"tool": ...}。
@@ -2526,7 +2622,7 @@ class AppRuntime private constructor() {
         }
 
         try {
-            val rig = buildChatRig(llm, researchGateway)
+            val rig = buildChatRig(llm, researchGateway, autonomy)
 
 
             // 一份提示词 + 全量工具：不再按意图裁工具、也不再换任务模块。
@@ -2535,15 +2631,21 @@ class AppRuntime private constructor() {
             // 静态前缀换成管家自己的（克制、只基于事实、一次只给一条建议）。
             val stewardSession = currentChatId
                 ?.let { id -> chatSessions.firstOrNull { it.id == id }?.kind } == SessionKind.Steward
-            if (stewardSession && ::stewardRuntime.isInitialized) {
+            if (stewardSession && !hidden && ::stewardRuntime.isInitialized) {
                 // 用户回管家的话原样记一条：下次仪式能读到「上次他怎么说」，
-                // 不用再靠模型从上下文里猜。
+                // 不用再靠模型从上下文里猜。自主检查不是用户发言，不记。
                 runCatching { stewardRuntime.rememberUserReply(clock.today(), text) }
             }
             val router = if (stewardSession) {
                 val base = buildString {
                     append(StewardPrompt.systemPrompt())
                     append("\n\n")
+                    // 自主检查轮叠加「只读 + 只建议」的覆盖层：和普通管家对话共用同一段会话，
+                    // 但这一轮的边界不一样，不能让模型把「晨间总结」的人格直接拿来用。
+                    if (autonomy) {
+                        append(ProactivePrompt.systemPrompt())
+                        append("\n\n")
+                    }
                     append(ToolAgent.catalogueOf(rig.allTools))
                     if (rig.promptGuidance.isNotBlank()) {
                         append("\n\n")
@@ -2690,14 +2792,25 @@ class AppRuntime private constructor() {
             // 不再有「意图歧义」这种停顿：模型想先问清楚时会自己调 ask_choices
             // （它落到 offerChoices），运行时不再替它猜、也不再留一个意图给下一轮。
 
-            if (result.ok) {
-                addChatLine(ChatRole.Status, "—— 本轮完成")
-            } else {
-                addChatLine(ChatRole.Status, "—— 本轮没做成，原因见上")
+            if (!hidden) {
+                if (result.ok) {
+                    addChatLine(ChatRole.Status, "—— 本轮完成")
+                } else {
+                    addChatLine(ChatRole.Status, "—— 本轮没做成，原因见上")
+                }
             }
 
-            chatHistory += LlmMessage(LlmRole.User, text)
-            chatHistory += LlmMessage(LlmRole.Assistant, displayText)
+            // 自主检查的「用户那句话」是系统替管家写的，不能让下一轮普通对话把它当成
+            // 用户真的说过的话——它带着「这一轮只读」的边界，混进历史会让模型误判工具集。
+            // 只把管家自己说出口的那句接回上下文。
+            if (hidden) {
+                if (displayText.isNotBlank()) {
+                    chatHistory += LlmMessage(LlmRole.Assistant, displayText)
+                }
+            } else {
+                chatHistory += LlmMessage(LlmRole.User, text)
+                chatHistory += LlmMessage(LlmRole.Assistant, displayText)
+            }
             while (chatHistory.size > 20) chatHistory.removeAt(0)
 
             // 每一轮都重取一次界面数据：工具可能动了插件、计划、样式中的任何一样，
@@ -2706,21 +2819,27 @@ class AppRuntime private constructor() {
 
             // 注意：这里**不再**替模型推断「下一步该问用户什么」。
             // 要问就让模型自己调 ask_choices（它会落到 offerChoices），运行时不猜。
+            // 自主检查调了 rest / 没说话：不留一个空气泡在会话里。
+            if (hidden && displayText.isBlank()) chat.removeAll { it.id == answer.id }
+            return TurnOutcome(result.ok, displayText, autonomyRested)
         } catch (cancel: CancellationException) {
             // 用户点了「停止」、或程序正在退出：半截回答留在原地，补一行说明就收。
             // 不重抛 —— 重抛会让 job 以取消收场，界面反而看不出「这一轮到底停没停」。
             settlePlanAfterRound(ok = false)
-            addChatLine(ChatRole.Status, "—— 已停止")
+            if (!hidden) addChatLine(ChatRole.Status, "—— 已停止")
+            return TurnOutcome(false, displayText)
         } catch (t: Throwable) {
             val reason = t.message ?: (t::class.simpleName ?: "未知错误")
             if (displayText.isEmpty()) {
                 displayText = "出错了：" + reason
                 renderAnswer()
-            } else {
+            } else if (!hidden) {
                 addChatLine(ChatRole.Step, "出错了：" + reason)
             }
+            if (hidden) appendAppLog("管家自主检查出错：" + reason)
             settlePlanAfterRound(ok = false)
-            addChatLine(ChatRole.Status, "—— 本轮出错，停在上面那行")
+            if (!hidden) addChatLine(ChatRole.Status, "—— 本轮出错，停在上面那行")
+            return TurnOutcome(false, displayText)
         } finally {
             // 进程被杀/网络断时工具可能停在 running；收尾时统一落成「没有返回结果」，
             // 否则下次打开聊天会看到永远转圈的一行。
@@ -2737,7 +2856,317 @@ class AppRuntime private constructor() {
             }
             persistChat()
             chatBusy = false
+            // 完成事件可能在这一轮跑的期间又攒下一件：现在这一轮收尾了，接着开自主检查。
+            if (pendingAutonomy != null) launchAutonomyTurn()
         }
+    }
+
+    // ---- 完成事件触发的自主检查 ----
+
+    /** 完成事件后先入队；真正开跑要等当前这一轮收尾（见 [runTurn] 的 finally）。 */
+    private fun queueAutonomy(
+        planId: String,
+        planTitle: String,
+        before: List<StageView>,
+        after: List<StageView>,
+        poolEmpty: Boolean,
+        unitTitle: String,
+    ) {
+        val event = detectAutonomyEvent(before, after, poolEmpty) ?: return
+        pendingAutonomy = PendingAutonomy(
+            planId = planId,
+            planTitle = planTitle,
+            unitTitle = unitTitle,
+            event = event,
+            evidence = autonomyEvidence(event, unitTitle),
+        )
+        launchAutonomyTurn()
+    }
+
+    private fun launchAutonomyTurn() {
+        if (chatBusy) return
+        val pending = pendingAutonomy ?: return
+        val config = LlmConfigLoader.load(home)
+        if (llmOverride == null && (config == null || config.apiKey.isBlank())) {
+            pendingAutonomy = null
+            appendAppLog("管家自主检查：没有配置模型，跳过（" + pending.planTitle + "）")
+            return
+        }
+        pendingAutonomy = null
+        chatScope.launch {
+            try {
+                runAutonomyTurn(pending)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                appendAppLog("管家自主检查失败：" + (error.message ?: error::class.simpleName))
+            }
+        }
+    }
+
+    private suspend fun runAutonomyTurn(pending: PendingAutonomy) {
+        autonomyPlanId = pending.planId
+        autonomyPlanTitle = pending.planTitle
+        autonomyRested = false
+        try {
+            ensureStewardSession()
+            openChat(StewardRuntime.STEWARD_SESSION_ID)
+            if (currentChatId != StewardRuntime.STEWARD_SESSION_ID) {
+                // 被别的会话占着：放回去，等下一轮收尾再试，别在错误的会话里自说自话。
+                pendingAutonomy = pending
+                return
+            }
+            val outcome = runTurn(autonomyBrief(pending), hidden = true, autonomy = true)
+            if (!outcome.ok) {
+                appendAppLog("管家自主检查没跑成：" + pending.planTitle)
+                return
+            }
+            if (outcome.rested || outcome.text.isBlank()) return
+            // 用户没在看着这段会话：留一个未读红点；窗口在后台再发系统通知。
+            if (currentTab != TAB_CHAT) {
+                val saved = chatStore.read(StewardRuntime.STEWARD_SESSION_ID)
+                if (saved != null && !saved.unread) {
+                    chatStore.save(saved.copy(unread = true))
+                    loadChatSessions()
+                }
+            }
+            if (!windowFocused) notifyWithTarget("管家", outcome.text.take(80), NotifyTarget.Chat)
+        } finally {
+            autonomyPlanId = null
+            autonomyPlanTitle = ""
+            autonomyRested = false
+        }
+    }
+
+    /** 自主检查的「用户请求」：只交代发生了什么，判断留给模型。 */
+    private fun autonomyBrief(pending: PendingAutonomy): String = buildString {
+        append("（自主检查触发，不是用户发来的对话；用户现在没有在跟你说话）\n")
+        append("用户刚完成了「").append(pending.unitTitle.ifBlank { "一个单元" }).append("」，")
+        append("当前计划：").append(pending.planTitle).append("。\n")
+        when (pending.event.kind) {
+            AutonomyEventKind.StageDone -> {
+                append("事件：阶段「").append(pending.event.stage?.name ?: "这一阶段").append("」已经完成。\n")
+            }
+            AutonomyEventKind.PlanDone -> append("事件：整份计划已经完成。\n")
+        }
+        if (pending.evidence.isNotEmpty()) {
+            append("完成瞬间的数据：\n")
+            pending.evidence.forEach { append("- ").append(it).append("\n") }
+        }
+        append("\n先读现状，再自己判断这一轮值不值得开口、说什么。")
+        append("本轮工具集只有只读工具、ask_choices、propose_practice 和 rest；")
+        append("任何计划/任务的修改都只能写成建议 + 选项，用户点了选项后的下一轮普通对话才会真的执行。")
+        append("如果是通识课且有匹配练习，可以挑一道推练习卡；")
+        append("如果计划已完成，读记忆目标、学习数据和知识网络，调研下一步，给「下一步方案 + 2–3 个选项」；")
+        append("如果只是阶段完成、后面还有安排，就看下一阶段要不要调整，只有确实值得说才开口；")
+        append("如果没有值得说的事，直接调用 rest，不要为了说话而说话。")
+    }
+
+    private fun autonomyEvidence(event: AutonomyEvent, unitTitle: String): List<String> = buildList {
+        if (unitTitle.isNotBlank()) add("刚完成的单元：" + unitTitle)
+        event.stage?.let { stage ->
+            add(
+                "阶段：" + stage.name + "（第 " + stage.weekStart + "–" + stage.weekEnd +
+                    " 周，" + stage.done + "/" + stage.total + "）",
+            )
+            if (stage.focus.isNotBlank()) add("阶段重点：" + stage.focus)
+        }
+        if (event.planDone) add("整份计划的所有阶段都已完成，待安排池为空。")
+    }
+
+    /** 自主检查读学习现状：计划、阶段、待安排池、每天投入、练习掌握度。 */
+    private fun autonomyLearningOverview(): String {
+        val service = runCatching { learningPlan() }.getOrNull()
+            ?: return "学习计划库还没打开，暂时读不到学习数据。"
+        val plans = runCatching { service.plans() }.getOrDefault(emptyList())
+        if (plans.isEmpty()) return "还没有学习计划。"
+        val activeId = runCatching { service.activePlanId() }.getOrNull()
+        return buildString {
+            append("学习现状（共 ").append(plans.size).append(" 份计划）：")
+            for (plan in plans) {
+                append("\n\n计划：").append(plan.title)
+                append("（").append(plan.status)
+                append(if (plan.id == activeId) "，当前活跃" else "")
+                append("）")
+                val state = runCatching { service.planState(plan.id) }.getOrNull()
+                val daily = state?.dailyMinutes
+                if (daily != null && daily > 0) append("；每天约 ").append(daily).append(" 分钟")
+                val pool = runCatching { service.pool(plan.id) }.getOrDefault(emptyList())
+                append("；待安排 ").append(pool.size).append(" 条")
+                val stages = runCatching { service.stages(plan.id) }.getOrDefault(emptyList())
+                if (stages.isEmpty()) {
+                    append("\n- 还没有阶段划分")
+                } else {
+                    for (stage in stages) {
+                        append("\n- 阶段「").append(stage.name).append("」")
+                        append(" ").append(stage.weekStart).append("–").append(stage.weekEnd)
+                        append("：").append(stage.done).append("/").append(stage.total)
+                        if (stage.total > 0 && stage.done >= stage.total) append("（已完成）")
+                        if (stage.focus.isNotBlank()) append("；重点：").append(stage.focus)
+                    }
+                }
+            }
+            val mastery = summarizeMastery(practiceAttempts, limit = 6)
+            if (mastery.isNotEmpty()) {
+                append("\n\n练习掌握度：")
+                mastery.forEach { m ->
+                    append("\n- ").append(m.subject).append("：").append(m.correct).append("/").append(m.attempts)
+                }
+            }
+        }
+    }
+
+    /**
+     * 自主检查读知识网络。
+     *
+     * 口径由用户定：笔记/概念默认表示「已经了解、基本掌握」，这里是能力证据与已覆盖范围，
+     * 不是待学清单；推荐应当向上、向外（项目、进阶、整合、输出），而不是重复已记下来的内容。
+     */
+    private fun autonomyKnowledgeOverview(keyword: String): String {
+        if (!::knowledgeStore.isInitialized) return "知识库还没打开。"
+        val notes = runCatching { knowledgeStore.allNotes() }.getOrDefault(emptyList())
+        if (notes.isEmpty()) return "知识库还没有笔记。"
+        val concepts = runCatching { ConceptMetaStore(home).load() }.getOrDefault(emptyMap())
+        val graphStore = runCatching { KnowledgeGraphStore(home, clock) }.getOrNull()
+        val user = runCatching { graphStore?.loadUser() }.getOrNull() ?: GraphUserData.Empty
+        val cache = runCatching { graphStore?.loadCache() }.getOrNull() ?: GraphAiCache.Empty
+        val graph = runCatching { buildKnowledgeGraph(notes, concepts, user, cache) }.getOrNull()
+        val index = runCatching { knowledgeStore.conceptIndex(notes) }.getOrDefault(emptyList())
+        return buildString {
+            append("知识网络（这些默认表示用户已经了解、基本掌握，用它们当能力证据）：")
+            append("\n笔记 ").append(notes.size).append(" 篇，概念 ").append(index.size).append(" 个")
+            graph?.let {
+                val stats = it.stats
+                append("；分类 ").append(stats.categoryCount)
+                    .append(" 个（根分类 ").append(stats.rootCategoryCount).append("）")
+                    .append("；已归类概念 ").append(stats.classifiedCount)
+                    .append("，未归类 ").append(stats.unclassifiedCount)
+                    .append("；关系边 ").append(stats.relationEdgeCount)
+            }
+            val recent = notes.sortedByDescending { it.updatedAt }.take(6)
+            if (recent.isNotEmpty()) {
+                append("\n最近笔记：")
+                recent.forEach { note ->
+                    append("\n- ").append(note.title)
+                    if (note.concepts.isNotEmpty()) append("（").append(note.concepts.joinToString("、").take(80)).append("）")
+                }
+            }
+            val top = index.sortedByDescending { it.mentionCount }.take(8)
+            if (top.isNotEmpty()) {
+                append("\n高频概念：")
+                top.forEach { concept ->
+                    append("\n- ").append(concept.name).append("（提及 ").append(concept.mentionCount).append(" 次）")
+                }
+            }
+            val key = keyword.trim()
+            if (key.isNotEmpty()) {
+                val matchedNotes = notes.filter {
+                    it.title.contains(key, ignoreCase = true) || it.body.contains(key, ignoreCase = true)
+                }.take(5)
+                val matchedConcepts = index.filter { it.name.contains(key, ignoreCase = true) }.take(5)
+                append("\n关键词「").append(key).append("」匹配：笔记 ").append(matchedNotes.size).append(" 篇")
+                matchedNotes.forEach { append("\n- 笔记：").append(it.title) }
+                if (matchedConcepts.isNotEmpty()) {
+                    append("\n- 概念：").append(matchedConcepts.joinToString("、") { it.name })
+                }
+            }
+        }
+    }
+
+    /** 自主检查联网查资料：复用调研网关，只读，不建计划。 */
+    private suspend fun autonomySearchWeb(query: String, limit: Int): String {
+        val q = query.trim()
+        if (q.isEmpty()) return "search_web 需要 query（要搜什么）。"
+        val config = LlmConfigLoader.load(home) ?: return "没有配置模型，无法联网搜索。"
+        if (llmOverride == null && config.apiKey.isBlank()) return "没有配置 API key，无法联网搜索。"
+        val gateway = createWebResearch(config) ?: return "联网搜索不可用（当前环境没有可用的网络/接口）。"
+        val sources = runCatching { gateway.gather(q) }.getOrNull() ?: return "没有搜到可用资料。"
+        return buildString {
+            append("搜索「").append(q).append("」的结果（外部资料，只作参考，不要整段照搬）：")
+            sources.hits.take(limit).forEach { hit ->
+                append("\n- ").append(hit.title)
+                if (hit.url.isNotBlank()) append("｜").append(hit.url)
+                if (hit.summary.isNotBlank()) append("\n  ").append(hit.summary.take(220))
+            }
+            sources.pages.take(2).forEach { page ->
+                append("\n\n正文摘录（").append(page.url).append("）：\n").append(page.markdown.take(1200))
+            }
+        }
+    }
+
+    /** 自主检查在题库里搜题：只返回 id/科目/题干，让模型自己挑。 */
+    private fun autonomySearchExercises(keyword: String, subject: String, limit: Int): String {
+        if (examBank.isEmpty) return "题库为空：把题库文件放到 <home>/exams/ 后再试。"
+        val key = keyword.trim()
+        val subj = subject.trim()
+        val hits = examBank.search(key)
+            .filter { subj.isBlank() || it.subject.contains(subj, ignoreCase = true) }
+            .take(limit)
+        if (hits.isEmpty()) {
+            val what = listOf(key, subj).filter { it.isNotBlank() }.joinToString(" ")
+            return "题库里没有匹配「" + what + "」的题。"
+        }
+        return buildString {
+            append("题库匹配 ").append(hits.size).append(" 道：")
+            hits.forEach { exercise ->
+                append("\n- ").append(exercise.id).append("｜").append(exercise.subject)
+                    .append("｜").append(exercise.course).append("｜").append(exercise.stem.take(80))
+            }
+        }
+    }
+
+    /** 自主检查按学习内容推荐题：错题优先、没做过次之。 */
+    private fun autonomyRecommendExercises(text: String, limit: Int): String {
+        if (examBank.isEmpty) return "题库为空：把题库文件放到 <home>/exams/ 后再试。"
+        val query = text.trim()
+        if (query.isEmpty()) return "recommend_exercises 需要 text（计划/阶段/单元名）。"
+        val picks = examBank.recommendFor(text = query, attempts = practiceAttempts, limit = limit)
+        if (picks.isEmpty()) return "题库里没有匹配「" + query + "」的题。"
+        return buildString {
+            append("按「").append(query).append("」推荐 ").append(picks.size).append(" 道：")
+            picks.forEach { exercise ->
+                append("\n- ").append(exercise.id).append("｜").append(exercise.subject)
+                    .append("｜").append(exercise.course).append("｜").append(exercise.stem.take(120))
+                masteryOf(practiceAttempts, exercise.subject)?.let { m ->
+                    append("（该科 ").append(m.correct).append("/").append(m.attempts).append("）")
+                }
+            }
+        }
+    }
+
+    /**
+     * 自主检查推一张练习卡：轮内直写当前会话，不走 [appendStewardLine]。
+     *
+     * 那一层有 `chatBusy` 门闩，本来就是为了挡住「轮外往会话里插话」；这一轮自己正在跑，
+     * 走它必然失败。卡本身只是一次提议：用户接受才进练习页，不改计划、不记完成。
+     */
+    private fun autonomyProposePractice(exerciseId: String, title: String, detail: String): String {
+        val exercise = examBank.get(exerciseId.trim())
+            ?: return "题库里没有 id 为「" + exerciseId + "」的题；先用 search_exercises / recommend_exercises 查真实 id。"
+        if (proposedPracticeExerciseIds.contains(exercise.id)) return "这道题已经提过了，换一道或直接收尾。"
+        val alreadyInChat = chat.any {
+            it.practiceProposal?.exerciseId == exercise.id && it.practiceState == PracticeProposalState.Open
+        }
+        if (alreadyInChat) return "会话里已经有一张这道题的练习卡了。"
+        val now = clock.nowMs()
+        val proposal = PracticeProposal(
+            id = "practice-" + now + "-" + exercise.id,
+            planId = autonomyPlanId ?: learningPlanId.orEmpty(),
+            planTitle = autonomyPlanTitle.ifBlank { "这个计划" },
+            subject = exercise.subjectLabel,
+            exerciseId = exercise.id,
+            title = title.trim().ifBlank { "这一阶段学完了，练一道题？" },
+            detail = detail.trim().ifBlank { exercise.stem.take(100) },
+        )
+        chat += ChatLine(
+            nextChatLineId++,
+            ChatRole.Assistant,
+            proposal.title,
+            now,
+            practiceProposal = proposal,
+        )
+        proposedPracticeExerciseIds += exercise.id
+        return "已把练习卡放进当前管家会话（用户接受后才进练习页）。"
     }
 
     var tasks by mutableStateOf<List<Task>>(emptyList())
@@ -3869,6 +4298,8 @@ class AppRuntime private constructor() {
         val planId = learningPlanId ?: return
         // 提议要用完成前那一条的标题/章节/unitId；刷新之后从视图里就找不到了。
         val occurrence = planDayView?.occurrences?.firstOrNull { it.id == occurrenceId }
+        // 自主检查也看「完成前/后」的阶段快照：单节点完成不打扰，阶段/计划完成才说话。
+        val beforeStages = runCatching { service.stages(planId) }.getOrDefault(emptyList())
         val command = CommandEnvelope(
             commandId = "cmd_" + java.util.UUID.randomUUID().toString().replace("-", ""),
             actor = Actor.USER,
@@ -3881,8 +4312,28 @@ class AppRuntime private constructor() {
                 null
             }
         if (result != null && !result.ok) reportPlanProblem(result.error?.message ?: "这次没挪成。")
-        if (result != null && result.ok && occurrence != null) {
-            maybeProposePractice(planId, occurrence)
+        if (result != null && result.ok) {
+            val afterStages = runCatching { service.stages(planId) }.getOrDefault(emptyList())
+            val poolEmpty = runCatching { service.pool(planId).isEmpty() }.getOrDefault(false)
+            val planTitle = runCatching { service.planState(planId)?.title }.getOrNull().orEmpty()
+            // 阶段/计划完成时，练习该不该推由自主检查轮判断（用户确认过的边界：
+            // 「通识课完成阶段后才由 AGENT 决定推不推」）；单节点完成或没配模型时，
+            // 仍走原来的模板兜底，行为不变。
+            val modelReady = llmOverride != null || LlmConfigLoader.load(home)?.apiKey?.isNotBlank() == true
+            val event = detectAutonomyEvent(beforeStages, afterStages, poolEmpty)
+            if ((event == null || !modelReady) && occurrence != null) {
+                maybeProposePractice(planId, occurrence)
+            }
+            if (event != null) {
+                queueAutonomy(
+                    planId = planId,
+                    planTitle = planTitle.ifBlank { "这个计划" },
+                    before = beforeStages,
+                    after = afterStages,
+                    poolEmpty = poolEmpty,
+                    unitTitle = occurrence?.title.orEmpty(),
+                )
+            }
         }
         refreshPlan()
         tick++
@@ -3896,6 +4347,8 @@ class AppRuntime private constructor() {
      */
     internal fun completeTodoPlanNode(node: PlanNodeRow) {
         val service = learningPlan() ?: return
+        // 完成前先记阶段快照：判定「刚完成一个阶段/整份计划」只能靠前后对比。
+        val beforeStages = runCatching { service.stages(node.planId) }.getOrDefault(emptyList())
         val command = CommandEnvelope(
             commandId = "cmd_" + java.util.UUID.randomUUID().toString().replace("-", ""),
             actor = Actor.USER,
@@ -3908,6 +4361,18 @@ class AppRuntime private constructor() {
                 null
             }
         if (result != null && !result.ok) planMessage = result.error?.message
+        if (result != null && result.ok) {
+            val afterStages = runCatching { service.stages(node.planId) }.getOrDefault(emptyList())
+            val poolEmpty = runCatching { service.pool(node.planId).isEmpty() }.getOrDefault(false)
+            queueAutonomy(
+                planId = node.planId,
+                planTitle = node.planTitle.ifBlank { "这个计划" },
+                before = beforeStages,
+                after = afterStages,
+                poolEmpty = poolEmpty,
+                unitTitle = node.title,
+            )
+        }
         refreshPlan()
         tick++
     }
