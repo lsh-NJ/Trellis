@@ -270,8 +270,13 @@
 - **右侧阶段进度栏**（`PlanStageRail`）：按阶段显示「阶段 M/N + 名字 + 细条」，点击跳该阶段第一周；
   只在窗口宽度 ≥ `TrellisBreakpoints.medium`（1100dp）且有阶段时显示。
   ⚠️ 判据必须用**窗口宽度**（`LocalWindowInfo.current.containerSize.width`），不能用页面 `BoxWithConstraints.maxWidth`——
-  计划页被外壳包在 `widthIn(max = 1120.dp)` + 左右 20dp 里，页面 maxWidth 在 1440pt 窗口下也只有 1080dp，
-  永远小于 1100，右栏会恒不显示（2026-11-08 修掉，`PlanPageParts.shouldShowStageRail` 注释里记了这坑）。
+  2026-11-08 白天时计划页还被外壳包在 `widthIn(max = 1120.dp)` + 左右 20dp 里，页面 maxWidth 在 1440pt 窗口下只有 1080dp，
+  永远小于 1100，右栏会恒不显示（`PlanPageParts.shouldShowStageRail` 注释里记了这坑）。
+  **2026-11-08 晚改版后**计划页和对话/知识库一样是 flush 页（`AppScreen.flushPage` 含 `TAB_PLAN`），
+  页面拿整幅宽度、正文列自己 `widthIn(max = 1120.dp)` 居中；判据仍看窗口宽度这条不变。
+- **左栏贴边、可拖宽**（2026-11-08 晚）：计划列表和对话/知识库共用 `ListSidebar` + `ListSidebarSplitter`
+  （贴导航栏、220–360dp 拖动调宽、三页共享同一个 `ListSidebarState.width`）。
+  改之前整页被外壳居中限宽，1440 窗口里左栏距离导航栏还有 200dp+ 的空白，看着像表单页；现在左栏紧跟在导航栏后面。
 - **周总结**：周日当天（`PlanStateView.reviewableWeek == 当前周`）页面底部出现「本周总结」+「生成本周总结」；
   生成后显示 `narrative` 与统计（完成单元 X/Y、投入时间）。周六及之前不出现；生成过的不再出现。
 - **放弃计划**：计划设置弹窗底部「放弃这个计划」→ 二次确认；`abandonPlan` 把计划与 process 标 `ended`、
