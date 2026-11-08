@@ -4,7 +4,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,7 +18,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -748,7 +746,7 @@ private fun resourceKindLabel(kind: String): String = when (kind) {
     else -> "资料"
 }
 
-// ---------------------------------------------------------------- 阶段条 / 阶段进度
+// ---------------------------------------------------------------- 阶段进度
 
 /**
  * 右侧阶段进度栏的显示开关：宽窗 + 有阶段才显示。
@@ -851,93 +849,4 @@ private fun stageFirstPlanWeek(runtime: AppRuntime, stage: StageView): String? {
     return cards.firstOrNull { it.week >= stage.weekStart && it.week <= stage.weekEnd }?.week
         ?: cards.firstOrNull { it.week >= stage.weekStart }?.week
         ?: cards.lastOrNull()?.week
-}
-
-/**
- * 阶段条：把整份计划的阶段**完整**摆出来（两行），一眼看全，不做截断。
- *
- * 早前删过一版，是因为它和右侧阶段进度栏重复；但用户要的是「进度栏 + 这条能看全的横条」：
- * 只显示当前阶段/被裁一半的条读不出全局，所以按需求恢复，并固定最多两行：
- * 两个阶段一行，最多 4 个一行；条目多时每行可横向滚动兜底，不会把名字裁成省略号。
- *
- * 点 chip 跳到该阶段第一周（和右栏一致）。阶段为空时不占位。
- */
-@Composable
-internal fun PlanStageStrip(runtime: AppRuntime) {
-    val tokens = LocalTrellisTokens.current
-    val stages = runtime.planStages
-    if (stages.isEmpty()) return
-    val selectedWeek = runtime.planSelectedWeek
-    val active = stages.firstOrNull { stage -> stage.covers(selectedWeek) }
-    // 固定两行：perRow = ceil(n / 2)；n <= 2 时自然一行。这样 6/8/10 个阶段都能完整铺开。
-    val perRow = if (stages.size <= 2) stages.size else (stages.size + 1) / 2
-    Column(verticalArrangement = Arrangement.spacedBy(tokens.space.s)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "阶段",
-                style = tokens.type.meta,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (active != null && active.focus.isNotBlank()) {
-                Spacer(Modifier.width(tokens.space.s))
-                Text(
-                    active.focus,
-                    style = tokens.type.meta,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-        }
-        Column(verticalArrangement = Arrangement.spacedBy(tokens.space.xs)) {
-            stages.chunked(perRow).forEach { row ->
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(tokens.space.xs),
-                ) {
-                    row.forEach { stage ->
-                        PlanStageChip(
-                            stage = stage,
-                            selected = stage.covers(selectedWeek),
-                            onClick = {
-                                stageFirstPlanWeek(runtime, stage)?.let { runtime.selectPlanWeek(it) }
-                            },
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-/** 一个阶段 chip：28dp 高、名字 + 等宽进度；选中浅强调底 + accent 边。 */
-@Composable
-private fun PlanStageChip(stage: StageView, selected: Boolean, onClick: () -> Unit) {
-    val tokens = LocalTrellisTokens.current
-    val shape = RoundedCornerShape(tokens.radius.control)
-    Row(
-        modifier = Modifier
-            .height(28.dp)
-            .clip(shape)
-            .background(if (selected) tokens.colors.accentSoft else Color.Transparent)
-            .border(1.dp, if (selected) tokens.colors.accent else tokens.colors.rule, shape)
-            .clickable(onClick = onClick)
-            .padding(horizontal = tokens.space.m),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(tokens.space.s),
-    ) {
-        Text(
-            stage.name,
-            style = tokens.type.control,
-            color = if (selected) tokens.colors.onAccentSoft else tokens.colors.ink2,
-            maxLines = 1,
-        )
-        Text(
-            stage.done.toString() + "/" + stage.total,
-            style = tokens.type.caption,
-            fontFamily = AppFonts.mono,
-            color = if (selected) tokens.colors.onAccentSoft else tokens.colors.ink3,
-        )
-    }
 }
