@@ -135,8 +135,7 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                 if (runtime.planTitle == null) {
                     item { PlanEmpty(runtime) }
                 } else {
-                    // 阶段条（两行、完整显示）；右栏的阶段进度只在宽屏常驻。
-                    item { PlanStageStrip(runtime) }
+                    // 阶段进度只在宽屏右栏常驻（见下方 PlanStageRail）：这里不再重复一条阶段条。
                     item { PlanWeekTicker(runtime) }
                     if (runtime.planPendingSelected) {
                         item { PendingDetail(runtime) }
