@@ -141,6 +141,15 @@ internal class ChatStore(home: File, private val log: (String) -> Unit = {}) {
                 practiceState = PracticeProposalState.entries
                     .firstOrNull { it.name == line["practiceState"]?.jsonPrimitive?.content }
                     ?: PracticeProposalState.Open,
+                tool = line["tool"]?.jsonObject?.let { trace ->
+                    ChatToolTrace(
+                        tool = trace["tool"]?.jsonPrimitive?.content ?: "",
+                        description = trace["description"]?.jsonPrimitive?.content ?: "",
+                        arguments = trace["arguments"]?.jsonPrimitive?.content ?: "",
+                        result = trace["result"]?.jsonPrimitive?.content ?: "",
+                        isError = trace["isError"]?.jsonPrimitive?.booleanOrNull == true,
+                    )
+                },
             )
         } ?: emptyList()
         ChatSession(
@@ -260,6 +269,18 @@ internal class ChatStore(home: File, private val log: (String) -> Unit = {}) {
                         }
                         if (line.practiceState != PracticeProposalState.Open) {
                             put("practiceState", line.practiceState.name)
+                        }
+                        line.tool?.let { trace ->
+                            put(
+                                "tool",
+                                buildJsonObject {
+                                    put("tool", trace.tool)
+                                    if (trace.description.isNotEmpty()) put("description", trace.description)
+                                    put("arguments", trace.arguments)
+                                    put("result", trace.result)
+                                    if (trace.isError) put("isError", true)
+                                },
+                            )
                         }
                         if (line.plan.isNotEmpty()) {
                             putJsonArray("plan") {

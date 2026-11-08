@@ -79,6 +79,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import dev.trellis.ai.tool.DeepSeekMarkup
 import dev.trellis.ui.LocalExtraColors
 import java.time.Instant
@@ -1056,13 +1058,20 @@ private fun ProcessSummary(
 private fun ProcessDetails(steps: List<ChatLine>) {
     Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
         for (line in steps) {
+            // 新会话：工具调用单独一行，「点开看说明/参数/结果」。
+            if (line.tool != null) {
+                ToolStepRow(line)
+                continue
+            }
             val isResult = line.text.startsWith("　→")
             val isJudgement = line.text.startsWith("判断：")
+            val isThinking = line.text.startsWith("思考：")
             // 旧会话里存过「它说完了」的收尾行：成功的那条不再显示，
             // 「…，但 X」保留补做原因，别把有用信息一起扔掉。
             if (line.text.contains("它说完了") && !line.text.contains("它说完了，但 ")) continue
             val text = line.text
                 .replace("判断：", "")
+                .replace("思考：", "")
                 .replace(Regex("^第 \\d+ 步："), "· ")
                 .replace("　→", "↳")
                 .replace("· 它说完了，但 ", "· 还要补：")
@@ -1082,7 +1091,12 @@ private fun ProcessDetails(steps: List<ChatLine>) {
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    (if (isResult) "↳ " else "") + (if (isJudgement) "判断 · " else "") + text.removePrefix("↳ "),
+                    (if (isResult) "↳ " else "") +
+                        when {
+                            isThinking -> "思考 · "
+                            isJudgement -> "判断 · "
+                            else -> ""
+                        } + text.removePrefix("↳ "),
                     style = MaterialTheme.typography.bodySmall.copy(
                         fontFamily = FontFamily.Monospace,
                         fontSize = if (isResult) 11.sp else 12.sp,
@@ -1096,6 +1110,123 @@ private fun ProcessDetails(steps: List<ChatLine>) {
         }
     }
 }
+
+@Composable
+private fun ToolStepRow(line: ChatLine) {
+    val trace = line.tool ?: return
+    var open by remember(line.id) { mutableStateOf(false) }
+    val args = remember(trace.arguments) { compactArguments(trace.arguments) }
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(4.dp))
+                .clickable { open = !open }
+                .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Box(
+                Modifier
+                    .padding(top = 6.dp)
+                    .width(5.dp)
+                    .height(5.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (trace.isError) MaterialTheme.colorScheme.error
+                        else LocalExtraColors.current.data.copy(alpha = 0.8f),
+                    ),
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "· " + toolActionLabel(line.text),
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    trace.tool + if (args.isNotEmpty()) "（" + args + "）" else "",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 10.sp,
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Text(
+                if (open) "▴" else "▾",
+                style = LocalTrellisTokens.current.type.caption,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+            )
+        }
+        if (open) ToolStepDetail(trace)
+    }
+}
+
+@Composable
+private fun ToolStepDetail(trace: ChatToolTrace) {
+    val tokens = LocalTrellisTokens.current
+    Column(
+        modifier = Modifier
+            .padding(start = 13.dp, top = 4.dp, bottom = 6.dp)
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(4.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+            .padding(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        if (trace.description.isNotBlank()) {
+            Text(
+                trace.description,
+                style = tokens.type.meta,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        val args = remember(trace.arguments) { prettyArguments(trace.arguments) }
+        if (args.isNotBlank() && args != "{}") {
+            Text("参数", style = tokens.type.caption, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
+            Text(
+                args,
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 130.dp)
+                    .verticalScroll(rememberScrollState()),
+            )
+        }
+        Text("结果", style = tokens.type.caption, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
+        Text(
+            trace.result.trim().ifBlank { "（没有输出）" },
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 160.dp)
+                .verticalScroll(rememberScrollState()),
+        )
+    }
+}
+
+/** 参数一行预览：折叠时只给人扫一眼，长 JSON 不进过程行。 */
+internal fun compactArguments(raw: String, max: Int = 48): String {
+    val trimmed = raw.trim()
+    if (trimmed.isEmpty() || trimmed == "{}") return ""
+    val flat = trimmed.replace(Regex("\\s+"), " ")
+    return if (flat.length <= max) flat else flat.take(max) + "…"
+}
+
+/** 缩进用的 Json 实例只建一次（每次展开都 new 一个，Kotlin 会警告）。 */
+private val prettyJson = Json { prettyPrint = true }
+
+/** 参数详情：能解析成 JSON 就缩进排开，解析不了原样给。 */
+internal fun prettyArguments(raw: String): String = runCatching {
+    prettyJson.encodeToString(JsonElement.serializer(), Json.parseToJsonElement(raw))
+}.getOrDefault(raw.trim())
 
 @Composable
 private fun FailureBlock(round: ChatBlock.Round, diff: List<String>) {

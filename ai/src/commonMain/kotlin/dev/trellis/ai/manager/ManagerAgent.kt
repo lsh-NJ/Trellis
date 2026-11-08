@@ -76,6 +76,7 @@ class ManagerAgent(
         history: List<LlmMessage> = emptyList(),
         onDelta: suspend (String) -> Unit = {},
         onLog: (String) -> Unit = {},
+        onTrace: (dev.trellis.ai.tool.ToolTrace) -> Unit = {},
     ): ManagerResult {
         val messages = router.prompt.messages(state, request, history)
 
@@ -106,7 +107,7 @@ class ManagerAgent(
                 tools = router.tools,
                 maxSteps = maxSteps,
                 beforeFinishing = beforeFinishing,
-            ).run(messages, onLog)
+            ).run(messages, onLog, onTrace)
         } catch (cancel: kotlinx.coroutines.CancellationException) {
             throw cancel
         } catch (t: Throwable) {

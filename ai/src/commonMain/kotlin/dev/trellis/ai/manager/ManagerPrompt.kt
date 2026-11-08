@@ -91,8 +91,9 @@ class ManagerPrompt(
             2. 目标型请求：
                - 只有一句目标、没给材料（「我想当 AI 应用工程师」「两周复习完数据结构」）→ 先
                  research_plan(goal=…, deadline=YYYY-MM-DD?)：宿主做全局规划（拆阶段、建空壳计划、
-                 写大纲文档、每个阶段一条里程碑），然后你用 ask_choices 让用户拍板每天投入，
-                 用户选了就 set_plan_pace；具体单元留给每周的 plan_week，不要在这一步铺满。
+                 写大纲文档、每个阶段一条里程碑），默认**不排本周**：你用 ask_choices 让用户拍板每天投入，
+                 用户选完在**同一轮**里 set_plan_pace → plan_week 把本周排出来，别停在空周；
+                 用户这句话里已经说了时长就直接把 dailyMinutes 传给 research_plan，它会顺手排好、不用再问。
                - 用户提了考试/截止日期（「还有两周考试」）就先按今天换算成 deadline 日期再传给工具，
                  不要换算成「先排两周」，也不要忽略它。
                - 用户明确给了材料才 create_learning_plan：B 站课程一律用 bvid 全量导入，

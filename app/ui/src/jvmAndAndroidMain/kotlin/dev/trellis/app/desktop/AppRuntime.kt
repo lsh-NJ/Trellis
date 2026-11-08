@@ -25,6 +25,7 @@ import dev.trellis.ai.manager.ManagerRouter
 import dev.trellis.ai.steward.StewardPrompt
 import dev.trellis.ai.steward.StewardRitual
 import dev.trellis.ai.tool.ToolAgent
+import dev.trellis.ai.tool.ToolTrace
 import dev.trellis.domain.Plan
 import dev.trellis.domain.PlanService
 import dev.trellis.domain.PlanSummary
@@ -2559,6 +2560,8 @@ class AppRuntime private constructor() {
             // 插件工具自己记账：这一轮碰过插件工具、又只看了看没动手，才在收尾时拦。
             // 不再按意图判断（意图分类器已删），也不再无条件要求「必须试过、装上了」。
             rig.pluginTools.beginRound()
+            // 「第 N 步：tool_name」这条过程行对应的工具详情，会在 onTrace 里挂上去。
+            var lastStepToolLineId: Long? = null
             val agent = ManagerAgent(
                 llm = llm,
                 router = router,
@@ -2577,11 +2580,41 @@ class AppRuntime private constructor() {
                     renderAnswer()
                 },
                 onLog = { line ->
-                    addChatLine(ChatRole.Step, line)
+                    // 结果行已经并进工具行的详情里（见下面的 onTrace），过程行不再单独占一行。
+                    val mergedIntoPrevious = line.startsWith("　→") &&
+                        lastStepToolLineId != null
+                    if (!mergedIntoPrevious) {
+                        val added = addChatLine(ChatRole.Step, line)
+                        if (Regex("^第 \\d+ 步：[a-z_]+$").matches(line)) lastStepToolLineId = added.id
+                    }
                     // 过程行是「第 N 步：tool_name」；新的一步开始，清单上就该亮起来，
                     // 顺手把工具名记进去 —— 展开区要写「这一步在做什么」。
                     if (line.startsWith("第 ")) {
                         markPlanRunning(Regex("：([a-z_]+)").find(line)?.groupValues?.get(1).orEmpty())
+                    }
+                },
+                onTrace = { trace ->
+                    when (trace) {
+                        is ToolTrace.Thinking -> addChatLine(ChatRole.Step, "思考：" + trace.text)
+                        is ToolTrace.Call -> {
+                            val detail = ChatToolTrace(
+                                tool = trace.tool,
+                                description = trace.description,
+                                arguments = trace.arguments,
+                                result = trace.result,
+                                isError = trace.isError,
+                            )
+                            val index = lastStepToolLineId?.let { id -> chat.indexOfFirst { it.id == id } } ?: -1
+                            if (index >= 0) {
+                                chat[index] = chat[index].copy(tool = detail)
+                            } else {
+                                addChatLine(ChatRole.Step, "第 " + trace.step + " 步：" + trace.tool).also { added ->
+                                    val at = chat.indexOfFirst { it.id == added.id }
+                                    if (at >= 0) chat[at] = chat[at].copy(tool = detail)
+                                    lastStepToolLineId = added.id
+                                }
+                            }
+                        }
                     }
                 },
             )
