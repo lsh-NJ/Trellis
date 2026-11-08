@@ -40,10 +40,12 @@ import dev.trellis.app.desktop.KnowledgeNote
 import dev.trellis.app.desktop.KnowledgeStore
 import dev.trellis.app.desktop.MarkdownText
 import dev.trellis.app.desktop.NoteSummary
+import dev.trellis.app.desktop.alignAiFills
 import dev.trellis.app.desktop.applyAiFills
 import dev.trellis.app.desktop.buildKnowledgeExtractionMessages
 import dev.trellis.app.desktop.displayTitle
 import dev.trellis.app.desktop.extractionBodyChunks
+import dev.trellis.app.desktop.findAiFillSlots
 import dev.trellis.app.desktop.markConceptAnnotations
 import dev.trellis.app.desktop.mergeExtractionResults
 import dev.trellis.app.desktop.parseExtractionResult
@@ -515,16 +517,21 @@ private suspend fun organizeNote(
     client: dev.trellis.ai.LlmClient,
 ): String {
     if (note.body.isBlank()) return "正文是空的，没什么可整理"
+    val slots = findAiFillSlots(note.body)
     val chunks = extractionBodyChunks(note.body)
     val raws = ArrayList<String>()
+    var consumedLines = 0
     for ((index, chunk) in chunks.withIndex()) {
+        // 分段送模型时，空位 id 仍然按整篇的行号算：模型看到的「slot@12」在主笔记里也是第 12 行。
+        val chunkSlots = if (chunks.size == 1) slots else findAiFillSlots(chunk, consumedLines)
+        consumedLines += chunk.count { it == '\n' }
         val raw = runCatching {
             client.complete(
                 buildKnowledgeExtractionMessages(
                     title = note.title,
                     body = chunk,
                     existing = note.concepts,
-                    slots = emptyList(),
+                    slots = chunkSlots,
                     chunkIndex = index,
                     chunkCount = chunks.size,
                 ),
@@ -535,7 +542,7 @@ private suspend fun organizeNote(
     if (raws.isEmpty()) return "AI 整理失败，不影响笔记保存；可以稍后重试"
     val merged = mergeExtractionResults(raws.map(::parseExtractionResult))
 
-    val filled = applyAiFills(note.body, merged.fills.associate { it.label to it.text })
+    val filled = applyAiFills(note.body, alignAiFills(slots, merged.fills))
     val identitiesForRetain = (
         metaStore.identities() + note.concepts.map { ConceptIdentity(it) } +
             merged.candidates.map { ConceptIdentity(it.name, it.aliases) }

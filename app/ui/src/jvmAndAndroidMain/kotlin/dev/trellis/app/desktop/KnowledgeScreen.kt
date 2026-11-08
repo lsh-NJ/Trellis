@@ -52,6 +52,10 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+
+/** 单槽补全最多等这么久：超时就当这次没补上，用户可以重试。 */
+private const val AI_FILL_TIMEOUT_MS: Long = 60_000
 
 /** 「定位」请求：等目标笔记真正载入后再选中命中处。 */
 private data class PendingReveal(val noteId: String, val start: Int, val end: Int)
@@ -292,6 +296,13 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
             extracting = true
             // 长笔记按段落切成多段分别整理：一次只送 6000 字，后面没看到的段落就永远抽不到概念。
             val chunks = extractionBodyChunks(note.body)
+            // 分段后每段的局部行号要换算成整篇行号，补全才能落回原文同一行。
+            val chunkLineOffsets = ArrayList<Int>(chunks.size)
+            var consumedLines = 0
+            for (chunk in chunks) {
+                chunkLineOffsets += consumedLines
+                consumedLines += chunk.count { it == '\n' }
+            }
             val headings = parseOutline(note.body)
                 .filter { it.level <= 2 }
                 .map { it.text }
@@ -299,14 +310,14 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
             val raws = ArrayList<String>()
             for ((index, chunk) in chunks.withIndex()) {
                 // 空位只送这一段里的：否则模型会凭标签猜后面几段的空位。
-                val chunkSlots = if (chunks.size == 1) slots else findAiFillSlots(chunk)
+                val chunkSlots = if (chunks.size == 1) slots else findAiFillSlots(chunk, chunkLineOffsets[index])
                 val raw = try {
                     client.complete(
                         buildKnowledgeExtractionMessages(
                             note.title,
                             chunk,
                             note.concepts,
-                            chunkSlots.map { it.label },
+                            chunkSlots,
                             headings = headings,
                             chunkIndex = index,
                             chunkCount = chunks.size,
@@ -353,7 +364,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
             val current = store.read(id) ?: return@launch
             // 调模型期间人又改了：这轮结果作废，等下次焦点离开再整理（不覆盖新内容）。
             if (bodyForAiComparison(current.body) != bodyForAiComparison(note.body)) return@launch
-            val filled = applyAiFills(current.body, result.fills.associate { it.label to it.text })
+            val filled = applyAiFills(current.body, alignAiFills(slots, result.fills))
             // 抽到的概念在正文第一次出现处包成 [[概念]]：标记才是「本文概念」的唯一来源，
             // frontmatter 的 concepts 只是按标注重算出来的缓存（见 synchronizeConceptMembership）。
             val markedBody = markConceptAnnotations(filled.body, result.candidates)
@@ -440,6 +451,90 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                 "AI 整理了 " + conceptsAdded + " 个概念（点 × 可删除）" + chunkNote + graphNote
             }
         }
+    }
+
+    /**
+     * 编辑器里的「AI 补全」：只补光标所在的那一行。
+     *
+     * 上下文规则（用户定的）：该行所在段落 + 前后各两段 + 该行之前的直系标题链；
+     * 整行只有 `。。。`、没有标签时，退化成用整篇正文当上下文。
+     *
+     * 补全成功后立刻写盘并同步 [loaded]/[notes]/[savedAtMs]/[aiBaselines]：
+     * 否则下一次失焦整理会拿旧基线判断，把刚补的内容当成「正文变了」再整理一遍。
+     *
+     * @return 补全后的整篇正文（由编辑器落回自己的缓冲）；失败返回 null，并写 [message]。
+     */
+    suspend fun fillSingleSlot(draft: String, lineIndex: Int): String? {
+        val id = selectedId ?: loaded?.id
+        if (id == null) {
+            message = "AI 补全失败：先选中一篇笔记"
+            return null
+        }
+        val slot = findAiFillSlotAt(draft, lineIndex)
+        if (slot == null) {
+            message = "AI 补全失败：这一行已经不是空位了"
+            return null
+        }
+        // 点击按钮本身可能让正文失焦、触发一次整篇整理；两边同时落盘会互相覆盖，先停掉整理。
+        aiJob?.cancel()
+        aiJob = null
+        extracting = false
+        val client = runtime.llmClientOrNull()
+        if (client == null) {
+            message = "AI 没配置：补全空位需要先在设置里导入模型"
+            return null
+        }
+        val lineText = draft.replace("\r\n", "\n").split('\n').getOrNull(lineIndex)?.trimEnd().orEmpty()
+        val messages = buildSingleSlotFillMessages(
+            title = title.ifBlank { slot.lineText },
+            headingChain = headingChainBefore(draft, lineIndex),
+            context = if (slot.label.isEmpty()) draft else aiFillContextAround(draft, lineIndex),
+            lineText = lineText,
+            label = slot.label,
+        )
+        val raw = try {
+            withTimeoutOrNull(AI_FILL_TIMEOUT_MS) { client.complete(messages) }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failed: Exception) {
+            null
+        }
+        val text = raw?.let(::normalizeAiFillText).orEmpty()
+        if (text.isEmpty()) {
+            message = "AI 补全失败：这次没补上，可以再试一次"
+            return null
+        }
+        // 等模型期间用户又改了正文：以他现在的文本为准，别拿旧草稿覆盖新内容。
+        if (body != draft) {
+            message = "AI 补全失败：等模型时正文又改了，可以再试一次"
+            return null
+        }
+        val filled = applyAiFills(draft, mapOf(slot.id to text))
+        if (filled.applied.isEmpty()) {
+            message = "AI 补全失败：空位已经不在了"
+            return null
+        }
+        val base = store.read(id) ?: loaded ?: return null
+        // 以编辑缓冲为准：等模型期间用户可能又改了别的行，补全只动这一行。
+        val next = synchronizeConceptMembership(
+            base.copy(title = title, body = filled.body, updatedAt = clock.nowMs()),
+            currentIdentities(),
+        )
+        if (!store.save(next)) {
+            message = "AI 补全失败：保存失败，写不进 " + store.notesDir.absolutePath
+            return null
+        }
+        notes = store.list()
+        aiBaselines[id] = bodyForAiComparison(next.body)
+        if (selectedId == id && loaded?.id == id) {
+            loaded = next
+            savedAtMs = next.updatedAt
+            body = filled.body
+            revision++
+        }
+        runtime.knowledgeNoteId = id
+        message = null
+        return filled.body
     }
 
     fun createNote() {
@@ -936,6 +1031,8 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                                             }
                                         },
                                         conceptNames = conceptHighlightNames(),
+                                        // 编辑器里输入 `。。。` 后点「AI 补全」：只补这一行，不整篇整理。
+                                        onRequestAiFill = { draft, lineIndex -> fillSingleSlot(draft, lineIndex) },
                                         onDeleteAiLine = { line ->
                                             val next = removeAiBlockLine(body, line)
                                             if (next != null) {

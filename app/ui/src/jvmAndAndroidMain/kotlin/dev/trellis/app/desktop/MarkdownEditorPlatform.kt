@@ -25,4 +25,6 @@ internal expect fun PlatformMarkdownEditor(
     revealToken: Int,
     onPageShortcut: ((String) -> Unit)?,
     onEditingFinished: (() -> Unit)?,
+    /** 编辑器里的「AI 补全」：传入当前正文与槽位行号，返回补全后的整篇正文。 */
+    onRequestAiFill: (suspend (String, Int) -> String?)?,
 )

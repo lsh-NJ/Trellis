@@ -324,40 +324,133 @@ internal const val MAX_AI_FILL_SLOTS: Int = 3
 /** 一个槽位补出来的内容上限：一句话解释，不是小作文。 */
 internal const val MAX_AI_FILL_CHARS: Int = 80
 
-/** 槽位冒号前的标签长度上限。 */
-private const val MAX_AI_SLOT_LABEL_CHARS: Int = 20
+/** 槽位标签的展示上限：标签只是给模型看的提示，超长就截断，绝不因此丢掉槽位。 */
+internal const val AI_SLOT_LABEL_DISPLAY_MAX: Int = 40
 
-/** 正文里还没被 AI 补过的槽位。 */
-internal data class AiFillSlot(val label: String)
+/** `。。。` 槽位的稳定标识：同一行号永远同一个 id，模型回传后按它对齐。 */
+internal fun aiSlotId(lineIndex: Int): String = "slot@$lineIndex"
 
-/** 补全结果：新正文 + 这次真的补上的标签（顺序与正文一致）。 */
-internal data class AiFillResult(val body: String, val applied: List<String>)
-
-/**
- * 槽位语法：整行是 `标签：。。。`（可带 `- ` 列表前缀，允许中文/英文冒号）。
- *
- * `。。。` 必须在行尾——正文中间三个句号只是普通标点，不触发补全；
- * 代码块和 `:::ai` 块里的行也不算（见 [forEachPlainBodyLine]）。
- */
-private val aiSlotPattern: Regex =
-    Regex("^\\s*(?:[-*+]\\s+)?([^：:\\n]{1,24})[：:]\\s*" + Regex.escape(AI_SLOT_MARKER) + "\\s*$")
-
-/** 一行是不是槽位；是就返回规范化后的标签。 */
-internal fun aiFillSlotLabel(line: String): String? {
-    val match = aiSlotPattern.matchEntire(line.trimEnd()) ?: return null
-    val label = normalizeConceptName(match.groupValues[1])
-    return label.takeIf { it.isNotEmpty() && it.length <= MAX_AI_SLOT_LABEL_CHARS }
+/** 正文里还没被 AI 补过的槽位；[lineText] 是那一行的原文（给提示词看，可能已截断）。 */
+internal data class AiFillSlot(
+    val label: String,
+    val lineIndex: Int,
+    val lineText: String = "",
+) {
+    /** 稳定标识：同一行号 → 同一个 id，模型回传时按它对齐。 */
+    val id: String get() = aiSlotId(lineIndex)
 }
 
-/** 找出这篇笔记里所有待补全的槽位（去重、最多 [MAX_AI_FILL_SLOTS] 个，保持正文顺序）。 */
-internal fun findAiFillSlots(body: String): List<AiFillSlot> {
-    val slots = LinkedHashMap<String, AiFillSlot>()
-    forEachPlainBodyLine(body) { _, line ->
+/** 补全结果：新正文 + 这次真的补上的槽位（标签，空标签用「第 N 行」）。 */
+internal data class AiFillResult(val body: String, val applied: List<String>)
+
+/** 标签前面的列表前缀：`- ` / `* ` / `+ ` / `1. ` / `1) `，可有可无。 */
+private val aiSlotLabelPrefixPattern = Regex("^\\s*(?:[-*+]\\s+|\\d+[.)]\\s+)?")
+
+/** 标签里的 `[[概念]]` / `{{AI 内容}}` 只保留里面的字。 */
+private val aiSlotLabelAnnotationPattern = Regex("\\[\\[([^\\]]*)\\]\\]|\\{\\{([^}]*)\\}\\}")
+
+/**
+ * 槽位语法：行尾是 `。。。`，前面写什么都行。
+ *
+ * 三个句号必须在行尾——正文中间出现只是普通标点，不触发补全；
+ * 代码块和 `:::ai` 块里的行也不算（见 [forEachPlainBodyLine]）。
+ * 标签不是必需的：整行只有 `。。。` 也是合法槽位（空标签）。
+ */
+internal fun aiFillSlotLabel(line: String): String? {
+    val trimmed = line.trimEnd()
+    if (!trimmed.endsWith(AI_SLOT_MARKER)) return null
+    return aiSlotLabelFrom(trimmed.dropLast(AI_SLOT_MARKER.length))
+}
+
+/**
+ * 从 `。。。` 前面那段文字里提取标签。
+ *
+ * 去列表前缀、去 `[[…]]`/`{{…}}` 包装、去 Markdown 强调符、去结尾冒号、折叠空白；
+ * 空标签返回空串（不是 null）——空串 = 「这一行没有标签」，仍然是槽位。
+ */
+private fun aiSlotLabelFrom(raw: String): String {
+    var text = aiSlotLabelPrefixPattern.replace(raw, "")
+    text = aiSlotLabelAnnotationPattern.replace(text) { match ->
+        match.groupValues[1].ifEmpty { match.groupValues[2] }
+    }
+    text = text.replace('*', ' ').replace('_', ' ').replace('`', ' ')
+    text = text.trim().trimEnd('：', ':')
+    text = text.replace(Regex("\\s+"), " ").trim()
+    return text.take(AI_SLOT_LABEL_DISPLAY_MAX)
+}
+
+/**
+ * 找出这篇笔记里所有待补全的槽位（最多 [MAX_AI_FILL_SLOTS] 个，保持正文顺序）。
+ *
+ * 不同行即使标签相同也各算各的：id 由行号决定，回填不会认错行。
+ * [lineOffset] 给长笔记分段用：把某一段的局部行号换算成整篇行号，id 才能落回原文。
+ */
+internal fun findAiFillSlots(body: String, lineOffset: Int = 0): List<AiFillSlot> {
+    val slots = ArrayList<AiFillSlot>()
+    forEachPlainBodyLine(body) { index, line ->
         if (slots.size >= MAX_AI_FILL_SLOTS) return@forEachPlainBodyLine
         val label = aiFillSlotLabel(line) ?: return@forEachPlainBodyLine
-        slots.putIfAbsent(conceptKey(label), AiFillSlot(label))
+        slots += AiFillSlot(label, index + lineOffset, line)
     }
-    return slots.values.toList().take(MAX_AI_FILL_SLOTS)
+    return slots
+}
+
+/** 取整篇正文里指定行上的槽位；那行不是槽位（或在代码块里）就返回 null。 */
+internal fun findAiFillSlotAt(body: String, lineIndex: Int): AiFillSlot? {
+    if (lineIndex < 0) return null
+    var found: AiFillSlot? = null
+    forEachPlainBodyLine(body) { index, line ->
+        if (index != lineIndex) return@forEachPlainBodyLine
+        val label = aiFillSlotLabel(line) ?: return@forEachPlainBodyLine
+        found = AiFillSlot(label, index, line)
+    }
+    return found
+}
+
+/**
+ * 单槽补全的上下文：该行所在段落 + 前后各 [radius] 段（段落按空行切）。
+ *
+ * 段落只认空行分界：列表、引用连着写算同一段，和用户「一段话」的直觉一致。
+ */
+internal fun aiFillContextAround(body: String, lineIndex: Int, radius: Int = 2): String {
+    val lines = body.replace("\r\n", "\n").split('\n')
+    if (lines.isEmpty()) return ""
+    val target = lineIndex.coerceIn(0, lines.lastIndex)
+    var start = target
+    while (start > 0 && lines[start - 1].isNotBlank()) start--
+    var end = target
+    while (end < lines.lastIndex && lines[end + 1].isNotBlank()) end++
+    repeat(radius.coerceAtLeast(0)) {
+        var previous = start - 1
+        while (previous >= 0 && lines[previous].isBlank()) previous--
+        if (previous < 0) return@repeat
+        while (previous > 0 && lines[previous - 1].isNotBlank()) previous--
+        start = previous
+    }
+    repeat(radius.coerceAtLeast(0)) {
+        var next = end + 1
+        while (next <= lines.lastIndex && lines[next].isBlank()) next++
+        if (next > lines.lastIndex) return@repeat
+        while (next < lines.lastIndex && lines[next + 1].isNotBlank()) next++
+        end = next
+    }
+    return lines.subList(start, end + 1).joinToString("\n").trim()
+}
+
+/** 该行之前最近的直系标题链（从一级到最近一级），给单槽补全当上下文。 */
+internal fun headingChainBefore(body: String, lineIndex: Int): List<String> {
+    val chain = ArrayList<Pair<Int, String>>()
+    // parseOutline 只返回树根，必须按文档顺序把整棵树拍平再按行号过滤。
+    fun visit(items: List<OutlineItem>) {
+        for (item in items) {
+            if (item.lineIndex >= lineIndex) continue
+            while (chain.isNotEmpty() && chain.last().first >= item.level) chain.removeAt(chain.lastIndex)
+            chain += item.level to item.text
+            visit(item.children)
+        }
+    }
+    visit(parseOutline(body))
+    return chain.map { it.second }
 }
 
 /**
@@ -366,13 +459,13 @@ internal fun findAiFillSlots(body: String): List<AiFillSlot> {
  * 只替换行尾那一个 `。。。`，其它字符一字不动；填进去的内容包成 `{{…}}`，
  * 预览时渲染成绿色大引号。已经补过的行没有 `。。。` 了，所以再跑一次不会变。
  *
- * @param fills 标签 → 补全内容；标签比较大小写不敏感。
+ * @param fills 槽位 id（`slot@行号`）→ 补全内容；按 id 落行，不会认错行。
  */
 internal fun applyAiFills(body: String, fills: Map<String, String>): AiFillResult {
     if (fills.isEmpty()) return AiFillResult(body, emptyList())
     val wanted = fills.entries
-        .mapNotNull { (label, text) ->
-            val key = conceptKey(label)
+        .mapNotNull { (id, text) ->
+            val key = id.trim()
             val value = normalizeAiFillText(text)
             if (key.isEmpty() || value.isEmpty()) null else key to value
         }
@@ -383,10 +476,10 @@ internal fun applyAiFills(body: String, fills: Map<String, String>): AiFillResul
     val applied = mutableListOf<String>()
     forEachPlainBodyLine(body) { index, line ->
         val label = aiFillSlotLabel(line) ?: return@forEachPlainBodyLine
-        val text = wanted[conceptKey(label)] ?: return@forEachPlainBodyLine
-        lines[index] = line.trimEnd()
-            .replaceFirst(AI_SLOT_MARKER, AI_INLINE_OPEN + text + AI_INLINE_CLOSE)
-        applied += label
+        val text = wanted[aiSlotId(index)] ?: return@forEachPlainBodyLine
+        // 只动行尾那个槽位标记：行里前面若也有「。。。」（普通标点）保持原样。
+        lines[index] = line.removeSuffix(AI_SLOT_MARKER) + AI_INLINE_OPEN + text + AI_INLINE_CLOSE
+        applied += label.ifEmpty { "第 ${index + 1} 行" }
     }
     if (applied.isEmpty()) return AiFillResult(body, emptyList())
     return AiFillResult(lines.joinToString("\n"), applied)
