@@ -134,13 +134,19 @@ class ToolAgent(
                 note("保险丝断了（" + safetyLimit + " 步）")
                 return ToolRun(false, "它在 " + safetyLimit + " 步里没收敛，已经停下。", transcript)
             }
-            val reply = try {
-                llm.complete(conversation)
+            val stepReply = try {
+                llm.completeWithReasoning(conversation)
             } catch (t: Throwable) {
                 note("第 " + step + " 步：模型没回上来（" + (t.message ?: "未知错误") + "）")
                 return ToolRun(false, "模型没回上来：" + (t.message ?: "未知错误"), transcript)
             }
+            val reply = stepReply.content
             conversation += LlmMessage(LlmRole.Assistant, reply)
+            // 模型的原生思考（DeepSeek reasoning_content）先于本步解析进过程行；
+            // 没开思考/没返回就不显示，不再由宿主从正文里猜。
+            stepReply.reasoning?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                onTrace(ToolTrace.Thinking(it))
+            }
 
             when (val parsed = parse(reply)) {
                 is AgentStep.Reply -> {
@@ -178,8 +184,6 @@ class ToolAgent(
                                 tools.joinToString("、") { it.name },
                         )
                     } else {
-                        // 模型在工具调用 JSON 之外写的话，就是它这一步的思路；丢弃太可惜。
-                        thoughtBefore(reply)?.let { onTrace(ToolTrace.Thinking(it)) }
                         note("第 " + step + " 步：" + parsed.name)
                         val signature = parsed.name + "|" + parsed.arguments
                         if (signature == lastSignature) {
@@ -230,24 +234,6 @@ class ToolAgent(
                 }
             }
         }
-    }
-
-    /**
-     * 模型在工具调用 JSON 前面写的那句话。
-     *
-     * 工具模式下大多数模型只吐 JSON，这时返回 null；偶尔它会先写一句
-     * 「先查一下课程目录」，那就是它这一步的思路，值得放进过程里。
-     */
-    private fun thoughtBefore(reply: String): String? {
-        val starts = listOf(reply.indexOf('{'), reply.indexOf('<')).filter { it > 0 }
-        val cut = starts.minOrNull() ?: return null
-        val think = reply.substring(0, cut)
-            .trim()
-            .trim('`', '*', '#', ' ', '\n', '\r')
-            .trim()
-        if (think.length < 8 || think.length > 240) return null
-        if (think.none { it.isLetter() }) return null
-        return think
     }
 
     private fun parse(reply: String): AgentStep {

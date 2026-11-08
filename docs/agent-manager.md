@@ -367,6 +367,6 @@ jlink 默认只带推断出来的模块，`java.net.http`、`java.sql` 必须手
 - **摘要行**（默认收起）：`过程 · N 个动作 · 改动 M 处`，右侧前 4 个动作的人话预览。
 - **工具行**（展开后每条工具调用一行）：`· 查了学习计划  get_learning_plan（{…}）`——人话动作 + 工具名 + 参数预览（`compactArguments`，超过 48 字截断）。
 - **单条详情**（点这一行的 ▾）：工具 description（它是干什么的）、缩进 JSON 参数、结果原文（各自限制高度、内部滚动）。长 JSON 不再撑爆过程区。
-- **思考行**：模型在工具调用 JSON 前写的那句说明由 `ToolAgent.thoughtBefore()` 取出，单独一行「思考 · …」；模型只吐 JSON 时没有这一行。`LlmClient` 目前不返回 reasoning_content，所以暂无「原生思维链」，只有模型自述 + 宿主的判断行（「判断 · 它要动手，切到工具模式」）。
+- **思考行**：就是模型的真实思考 `reasoning_content`（DeepSeek 流式 `delta.reasoning_content`），不是宿主猜的。工具循环里 `ToolAgent` 每轮用 `llm.completeWithReasoning(...)` 取一次，非空就发 `ToolTrace.Thinking`；聊天流里 `ManagerAgent` 边流边累积，流结束后经 `onThinking` 补一行。模型没给 reasoning 就不显示这一行（`thoughtBefore()` 那套「从回复文本里挑一句当思考」已删）。过程行里另有宿主的判断行（「判断 · 它要动手，切到工具模式」）。
 
-落点：`ChatLine.tool: ChatToolTrace?`（`tool/description/arguments/result/isError`）、`ai/.../tool/ToolTrace.kt`（`ToolAgent` 的 `onTrace` 回调：`Thinking`/`Call`）、`ManagerAgent.respond(onTrace)` 透传、`AppRuntime.sendChat` 把 trace 挂到「第 N 步：tool」那一行并把随后的 `→ 结果` 行并入详情（不再单独占行）、`ChatStore` 序列化往返、`ChatScreen.ProcessDetails` 渲染 `ToolStepRow`/`ToolStepDetail`。旧会话没有 `tool` 字段，仍按纯文本平铺。
+落点：`ChatLine.tool: ChatToolTrace?`（`tool/description/arguments/result/isError`）、`ai/.../tool/ToolTrace.kt`（`ToolAgent` 的 `onTrace` 回调：`Thinking`/`Call`）、`ManagerAgent.respond(onTrace, onThinking)`（工具路径透传 `onTrace`，聊天路径走 `onThinking`）、`AppRuntime.sendChat` 把 trace 挂到「第 N 步：tool」那一行并把随后的 `→ 结果` 行并入详情（不再单独占行）、`ChatStore` 序列化往返、`ChatScreen.ProcessDetails` 渲染 `ToolStepRow`/`ToolStepDetail`。旧会话没有 `tool` 字段，仍按纯文本平铺。

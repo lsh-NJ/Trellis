@@ -1,5 +1,8 @@
 package dev.trellis.ai.tool
 
+import dev.trellis.ai.LlmClient
+import dev.trellis.ai.LlmMessage
+import dev.trellis.ai.LlmReply
 import dev.trellis.ai.ScriptedLlm
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
@@ -186,5 +189,49 @@ class ToolAgentTest {
         assertTrue(call.arguments.contains("limit"), call.arguments)
         assertTrue(call.result.contains("task.completed"), call.result)
         assertTrue(!call.isError)
+    }
+
+    /** 带原生思考的假模型：第一次调用给 reasoning，之后不给（钉住「有才显示」）。 */
+    private class ThinkingLlm(private val replies: List<String>) : LlmClient {
+        private var index = 0
+
+        override suspend fun complete(messages: List<LlmMessage>): String {
+            val reply = replies[minOf(index, replies.size - 1)]
+            index += 1
+            return reply
+        }
+
+        override suspend fun completeWithReasoning(messages: List<LlmMessage>): LlmReply =
+            LlmReply(
+                content = complete(messages),
+                reasoning = if (index == 1) "  先查一下有哪些事件  " else null,
+            )
+    }
+
+    @Test
+    fun theModelsOwnReasoningGoesIntoTheProcessPanel() = runTest {
+        // DeepSeek 的 reasoning_content 才是真思考；宿主不再从正文里猜。
+        val llm = ThinkingLlm(
+            listOf(
+                """我先查查 {"tool": "list_events", "arguments": {}}""",
+                """{"done": true, "message": "有一个 task.completed"}""",
+            ),
+        )
+        val traces = mutableListOf<ToolTrace>()
+
+        val run = ToolAgent(llm, listOf(Recorder())).run(
+            "你是插件作者",
+            "有什么事件",
+            onTrace = { traces += it },
+        )
+
+        assertTrue(run.ok, run.message)
+        val thinking = traces.filterIsInstance<ToolTrace.Thinking>().single()
+        assertEquals("先查一下有哪些事件", thinking.text)
+        // 思考行要排在本步工具调用之前：它是这一步的依据，不是结果的注脚。
+        assertTrue(
+            traces.indexOf(thinking) < traces.indexOfFirst { it is ToolTrace.Call },
+            traces.joinToString("\n"),
+        )
     }
 }

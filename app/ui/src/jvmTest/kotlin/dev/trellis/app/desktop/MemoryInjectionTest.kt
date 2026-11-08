@@ -55,6 +55,7 @@ class MemoryInjectionTest {
         override suspend fun stream(
             messages: List<LlmMessage>,
             onDelta: suspend (String) -> Unit,
+            onReasoning: suspend (String) -> Unit,
         ): String {
             calls += messages
             onDelta(reply)

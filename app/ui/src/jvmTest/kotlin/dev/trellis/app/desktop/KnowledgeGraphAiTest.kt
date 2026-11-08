@@ -559,8 +559,11 @@ class KnowledgeGraphAiTest {
             lastPrompt = messages.joinToString("\n") { it.content }
             return answers.removeAt(0).invoke()
         }
-        override suspend fun stream(messages: List<LlmMessage>, onDelta: suspend (String) -> Unit): String =
-            complete(messages).also { onDelta(it) }
+        override suspend fun stream(
+            messages: List<LlmMessage>,
+            onDelta: suspend (String) -> Unit,
+            onReasoning: suspend (String) -> Unit,
+        ): String = complete(messages).also { onDelta(it) }
     }
 
     @Test

@@ -24,15 +24,14 @@ import kotlinx.serialization.json.jsonPrimitive
 /**
  * 「由面到点」第一步：只有一句目标时，先做**全局规划**。
  *
- * 产出的是「空壳计划 + 阶段表 + 大纲」（节奏由用户拍板后再排本周）：
+ * 产出的是「空壳计划 + 阶段表 + 大纲」，其余都由模型决定：
  * - `createShell` 建好 process/plan/生效版本（0 单元）；
  * - `setStages` 把阶段区间写进计划（写失败不挡流程，大纲文档里还有一份）；
  * - 计划文档写目标、验收、各阶段的周数与焦点；
  * - 每个阶段一条里程碑；有 goalId 就挂上，没有就新建一个目标；
- * - 默认**不排本周**：先返回每天投入的建议值，由 AGENT 用 `ask_choices` 让用户拍板；
- *   用户选完、`set_plan_pace` 之后由同一轮接着调 `plan_week` 排本周；
- * - 用户这句话里已经明确给了时长（传了 dailyMinutes）时，直接写节奏并用 [planOneWeek] 排本周，
- *   不再重复问同一个问题。
+ * - 每天投入：模型显式传了 `dailyMinutes` 才写进节奏；没传只给一个建议值，不写；
+ * - 本周：`scheduleFirstWeek = true` 时用（传入时长 ?: 建议值）把本周排出来，
+ *   不传/false 就不排。要不要问时长、要不要排本周，都归模型判断。
  *
  * 后续周仍留给每周的 `plan_week`（见 [PlanWeekTools]）。
  */
@@ -55,9 +54,9 @@ class ResearchTools(
         "   宿主会先用 DeepSeek 官方搜索 + 网页抓取查资料，再做全局规划——拆阶段，建**空壳计划**（还没有单元），",
         "   写大纲文档，每个阶段一条里程碑，并给出每天投入建议（这些资料只用于规划，不改用户笔记）。",
         "   有考试/截止日期就先按今天换算成 YYYY-MM-DD 传给 deadline；不要换算成「先排两周」。",
-        "2. research_plan 建完只会留下空壳 + 大纲：**用 ask_choices 让用户拍板每天投入**（如「先按每天 90 分钟排？」60/90/120/先按建议），",
-        "   用户选完在**同一轮**里接着调 `set_plan_pace` 写进节奏，再调 `plan_week` 把本周排出来；不要替用户定死，也别停在空周。",
-        "   如果用户这句话里已经说了时长（「每天两小时」），直接把 dailyMinutes 传给 research_plan，它会顺手排好本周，不用再问。",
+        "2. 每天投入和本周安排都由你判断：问不问时长、排不排本周自己决定；",
+        "   用户这句话里已经说清时长（「每天两小时」）就直接传 dailyMinutes（会写进节奏）；",
+        "   想在同一轮把本周也排出来就传 scheduleFirstWeek=true，宿主按你给的时长（没给就用建议值）铺，建议值不会写进节奏。",
         "3. 之后每周开始时用 `plan_week` 从大纲定这一周的内容（宿主铺到天、写周文档）。",
         "4. 用户明确给了材料（bvid、课程名、大纲）就走 `create_learning_plan`，不要用 research_plan。",
         "5. research_plan 失败（超时/输出不可用）退回 create_learning_plan 手写路径，并说清原因，不要假装建好了。",
@@ -70,12 +69,13 @@ class ResearchTools(
         override val name: String = "research_plan"
 
         override val description: String =
-            "只有一句学习目标时先做全局规划：拆阶段、建空壳计划、写大纲文档、每个阶段一条里程碑，并建议每天投入。默认不排本周：用户定完每天投入后，在同一轮用 set_plan_pace + plan_week 排本周；用户已经说清时长时把 dailyMinutes 传进来，会直接排好本周。"
+            "只有一句学习目标时先做全局规划：拆阶段、建空壳计划、写大纲文档、每个阶段一条里程碑，并建议每天投入。本周排不排由你决定：要现在排就传 scheduleFirstWeek=true；用户已经说清时长时把 dailyMinutes 一并传进来（会写进节奏）。"
 
         override val parameters: String =
             "goal：学习目标，一句话（必填，例：我想当 AI 应用工程师）；" +
                 "deadline：可选截止日期（YYYY-MM-DD，必须是今天之后）；用户说「还有两周考试」「年底前」时按今天换算；用户没提就别传；" +
-                "dailyMinutes：可选，每天大概投入多少分钟（30–240）。**只有用户已经说清时长时才传**（如「每天两小时」→120），传了会直接写进节奏并排好本周；用户没说就省略——宿主会给建议值，之后用 ask_choices 问。"
+                "dailyMinutes：可选，每天大概投入多少分钟（30–240）。**只有用户已经说清时长时才传**（如「每天两小时」→120）；传了会写进节奏，不传只给建议值、不写；" +
+                "scheduleFirstWeek：可选，是否顺带把本周排出来（true / false）。传 true 时按 dailyMinutes（没传则用建议值）铺本周；不传或 false 就不排。要不要排由你判断。"
 
         override suspend fun call(arguments: JsonObject): ToolResult {
             val plan = service() ?: return ToolResult(
@@ -100,10 +100,17 @@ class ResearchTools(
                 }
             }
             val thisWeek = isoWeekOf(today)
-            // 用户在这句话里已经说清时长 → 直接采信；没说 → 给建议值，等 ask_choices 拍板。
+            // 每天投入：只有模型显式传了时长才写进节奏；没传只算一个建议值（用于排周/回执）。
             val explicitDaily = arguments["dailyMinutes"]?.jsonPrimitive?.intOrNull?.coerceIn(30, 240)
             val dailySuggestion = (explicitDaily ?: weeklyCapacity()?.div(7) ?: 60)
                 .coerceIn(30, 240)
+            // 本周排不排、什么时候排，都由模型决定：只有显式 scheduleFirstWeek=true 才在同一轮排。
+            val scheduleFirstWeek = when (
+                arguments["scheduleFirstWeek"]?.jsonPrimitive?.contentOrNull?.trim()?.lowercase()
+            ) {
+                "true", "1", "yes" -> true
+                else -> false
+            }
             val sources = research?.let { gateway ->
                 withTimeoutOrNull(RESEARCH_TIMEOUT_MS) {
                     runCatching { gateway.gather(goal) }.getOrNull()
@@ -186,14 +193,16 @@ class ResearchTools(
                     .onFailure { appendFailedLog("计划文档写入失败：" + it.message) }
             }
 
-            // 节奏与本周的安排都放在「用户拍板之后」：
-            // - 用户已经说清时长：写节奏 + 同一回合排好本周（不再问同一个问题）；
-            // - 用户没说：只建壳，回执里让 AGENT 去 ask_choices，选完 set_plan_pace → plan_week。
+            // 节奏与本周安排都只做「被要求的事」：
+            // - 模型显式传了 dailyMinutes → 写进节奏（这是用户在对话里说清的时长，属数据写入）；
+            // - 模型显式 scheduleFirstWeek=true → 排本周；时长优先用传入值，没有就用建议值
+            //   （建议值只用于排周，不写进节奏）。
             if (explicitDaily != null) {
                 runCatching { plan.setPlanDailyMinutes(env(planId, "plan.pace"), planId, explicitDaily) }
                     .onFailure { appendFailedLog("节奏写入失败：" + it.message) }
             }
-            val firstWeek = if (explicitDaily != null) {
+            val scheduledMinutes = explicitDaily ?: resolved.dailyMinutes
+            val firstWeek = if (scheduleFirstWeek) {
                 runCatching {
                     planOneWeek(
                         plan = plan,
@@ -202,7 +211,7 @@ class ResearchTools(
                         clock = clock,
                         planId = planId,
                         week = thisWeek,
-                        dailyMinutes = explicitDaily,
+                        dailyMinutes = scheduledMinutes,
                         stageFocus = resolved.stages.first().focus,
                     )
                 }.getOrNull()
@@ -218,17 +227,27 @@ class ResearchTools(
                     append(totalWeeks).append(" 周")
                     deadline?.let { append("，覆盖到 ").append(it).append(" 的截止日") }
                     append("。")
-                    append("计划文档和每个阶段的里程碑都写好了；每天投入先按 ").append(resolved.dailyMinutes).append(" 分钟估的（只是建议）。")
+                    append("计划文档和每个阶段的里程碑都写好了。")
                     if (stagesWritten) append("阶段区间也写进计划了（").append(stageDrafts.size).append(" 个阶段，计划页能看到进度）。")
-                    if (firstWeek != null && firstWeek.error == null) {
-                        append("已按你说的每天 ").append(resolved.dailyMinutes).append(" 分钟写进节奏，第一周（")
-                            .append(thisWeek).append("）也排好了：").append(firstWeek.placed).append(" 条")
-                        if (firstWeek.docWritten) append("，本周文档也写好了")
-                        append("。")
-                    } else if (firstWeek != null) {
-                        append("第一周（").append(thisWeek).append("）这次没排成")
-                        firstWeek.error?.let { append("：").append(it) }
-                        append("；可以调 plan_week 补排。")
+                    if (explicitDaily != null) {
+                        append("每天投入已按你说的 ").append(explicitDaily).append(" 分钟写进节奏。")
+                    } else {
+                        append("每天投入目前只是建议值（约 ").append(resolved.dailyMinutes).append(" 分钟/天），还没写进节奏。")
+                    }
+                    when {
+                        firstWeek != null && firstWeek.error == null -> {
+                            append("第一周（").append(thisWeek).append("）排好了：").append(firstWeek.placed).append(" 条，按每天 ")
+                                .append(scheduledMinutes).append(" 分钟铺开")
+                            if (explicitDaily == null) append("（这个时长是建议值，没有写进节奏）")
+                            if (firstWeek.docWritten) append("，本周文档也写好了")
+                            append("。")
+                        }
+                        firstWeek != null -> {
+                            append("第一周（").append(thisWeek).append("）这次没排成")
+                            firstWeek.error?.let { append("：").append(it) }
+                            append("。")
+                        }
+                        else -> append("本周（").append(thisWeek).append("）这次没有排。")
                     }
                     if (sources != null) {
                         append("这次参考了网上搜到的 ").append(sources.hits.size).append(" 条资料（其中 ")
@@ -236,13 +255,7 @@ class ResearchTools(
                             .append(sources.hits.take(2).joinToString("」「") { it.title.take(24) })
                             .append("」。")
                     }
-                    if (explicitDaily == null) {
-                        append("下一步：用 ask_choices 让用户拍板每天投入（60 / 90 / 120 / 先按建议）；")
-                        append("用户选完在同一轮里调 set_plan_pace 写进节奏，紧接着调 plan_week 把本周（").append(thisWeek).append("）排出来，别停在空周。")
-                        append("之后每周开始时用 plan_week 排那一周的具体内容。")
-                    } else {
-                        append("之后每周开始时用 plan_week 排那一周的具体内容。")
-                    }
+                    append("要改每天投入可以调 set_plan_pace；要排某一周可以调 plan_week。")
                 },
             )
         }

@@ -77,16 +77,23 @@ class ManagerAgent(
         onDelta: suspend (String) -> Unit = {},
         onLog: (String) -> Unit = {},
         onTrace: (dev.trellis.ai.tool.ToolTrace) -> Unit = {},
+        /** 聊天这步模型的原生思考（DeepSeek `reasoning_content`）；没有就不调。 */
+        onThinking: (String) -> Unit = {},
     ): ManagerResult {
         val messages = router.prompt.messages(state, request, history)
 
         // ① 先按聊天跑：流式吐字，用户不用等整段生成。
         val streamed = StringBuilder()
+        val reasoning = StringBuilder()
         val text = try {
-            llm.stream(messages, onDelta = { delta ->
-                streamed.append(delta)
-                onDelta(delta)
-            })
+            llm.stream(
+                messages,
+                onDelta = { delta ->
+                    streamed.append(delta)
+                    onDelta(delta)
+                },
+                onReasoning = { piece -> reasoning.append(piece) },
+            )
         } catch (cancel: kotlinx.coroutines.CancellationException) {
             throw cancel
         } catch (t: Throwable) {
@@ -94,6 +101,9 @@ class ManagerAgent(
             onLog("出错了：" + reason)
             return ManagerResult("模型没回上来：" + reason, ok = false)
         }
+
+        // 模型自己的思考过程原样交给界面；不裁剪、不加工，没有就不显示。
+        reasoning.toString().trim().takeIf { it.isNotEmpty() }?.let(onThinking)
 
         // ② 它想动手：把同一份上下文交给工具循环真去干。
         // 这不是「它在瞎说」——静态前缀里列了全套工具，它照着协议点名工具是正常行为。
