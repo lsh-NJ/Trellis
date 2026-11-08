@@ -1191,30 +1191,35 @@ class AppRuntime private constructor() {
         private set
 
     /**
-     * 这一轮里模型要求用户拍板的选项，贴在输入框上方、竖着排。
+     * 这一轮里模型要求用户拍板的一次提问：问题 + 选项。
      *
      * 只在**模型主动要问**时出现（它调 `ask_choices`），不是运行时替它猜下一步。
      * 以前这里是运行时按「查过资源但没落待办」自动塞三个按钮，看着聪明，其实越界：
      * 要不要动待办是用户的选择，不是运行时的推断。
+     *
+     * 问答卡渲染在这一轮回复里（见 `ChatScreen.AskCard`），只活一轮、不落盘：
+     * 答完就清空，会话记录里不留问卷。
      */
-    var chatChoices by mutableStateOf<List<ChatChoice>>(emptyList())
+    var chatAsk by mutableStateOf<ChatAsk?>(null)
         private set
 
-    /** 模型开了个选择：把选项竖着摆到输入框上方，等用户点。 */
-    fun offerChoices(options: List<String>) {
+    /** 模型提了个问题：问题和 2–5 个选项一起挂到这一轮的回复下面，等用户点。 */
+    fun offerChoices(question: String, options: List<String>) {
         val clean = options.map { it.trim() }.filter { it.isNotEmpty() }.take(6)
         if (clean.isEmpty()) return
-        chatChoices = clean.map { ChatChoice(it, it) }
+        chatAsk = ChatAsk(
+            question = question.trim().ifBlank { "选一个" },
+            options = clean.map { ChatChoice(it, it) },
+        )
     }
 
-    /** 点了某个选项：把选项里的原话当成用户发的，接着跑。 */
+    /** 点了某个选项：问题卡收起，把选项里的原话当成用户发的，接着跑下一轮。 */
     fun applyChoice(choice: ChatChoice) {
-        chatChoices = emptyList()
+        // 这一轮还在跑（工具循环没结束）时先别接：`ask()` 有 chatBusy 门闩会直接返回，
+        // 提问卡却已经清空 —— 等于把这一问白丢了。卡本身也要等收尾后才显示可点。
+        if (chatBusy) return
+        chatAsk = null
         ask(choice.text)
-    }
-
-    fun dismissChoices() {
-        chatChoices = emptyList()
     }
 
     /** 从别的页面把一句话带进对话：切页 + 预填草稿。 */
@@ -1234,8 +1239,8 @@ class AppRuntime private constructor() {
         currentChatId = null
         chat.clear()
         chatHistory.clear()
-        // 选项属于上一轮对话：换会话后还留着，点一下会当成新会话的提问发出去。
-        chatChoices = emptyList()
+        // 提问属于上一轮对话：换会话后还留着，点一下会当成新会话的提问发出去。
+        chatAsk = null
         // 行 id 是**整个进程**单调递增的：会话之间、重启前后都不能撞，
         // 否则界面按 id 做 key、按 id 找行（采纳建议）都会指错行。
     }
@@ -1247,7 +1252,7 @@ class AppRuntime private constructor() {
         currentChatId = session.id
         chat.clear()
         chat += session.lines
-        chatChoices = emptyList()
+        chatAsk = null
         // 只升不降：从任意一段历史会话切过来，新行都不能复用别的会话已有的 id。
         nextChatLineId = maxOf(nextChatLineId, (session.lines.maxOfOrNull { it.id } ?: 0L) + 1)
         chatHistory.clear()
@@ -2606,7 +2611,7 @@ class AppRuntime private constructor() {
             }
         chatBusy = true
         activePlanId = null
-        chatChoices = emptyList()
+        chatAsk = null
         if (!hidden) {
             addChatLine(ChatRole.User, text)
             rememberRound(chat.last().id)
@@ -2740,6 +2745,7 @@ class AppRuntime private constructor() {
                                 result = "",
                                 isError = false,
                                 running = true,
+                                notes = trace.notes,
                             )
                             val index = lastStepToolLineId
                                 ?.let { id -> chat.indexOfFirst { it.id == id } }
@@ -2765,6 +2771,7 @@ class AppRuntime private constructor() {
                                 result = trace.result,
                                 isError = trace.isError,
                                 running = false,
+                                notes = trace.notes,
                             )
                             val index = lastStepToolLineId?.let { id -> chat.indexOfFirst { it.id == id } } ?: -1
                             if (index >= 0) {
@@ -5954,10 +5961,11 @@ class AppRuntime private constructor() {
             // 待办板上的计划节点是启动时就要有的：不点计划页也得看得见。
             runtime.refreshPlan()
 
-            // 截图/联调用：TRELLIS_DEMO_CHOICES="看建议|开始|先不改" 直接模拟「模型调了 ask_choices」，
-            // 把选项竖着摆到输入框上方。真实路径是模型调工具，这里只是省得每次都等模型。
+            // 截图/联调用：TRELLIS_DEMO_CHOICES="这次先改哪块？|对话页|计划页|先都不改" 模拟「模型调了
+            // ask_choices」：第一段是问题，其余是选项。真实路径是模型调工具，这里只是省得每次都等模型。
             System.getenv("TRELLIS_DEMO_CHOICES")?.takeIf { it.isNotBlank() }?.let { raw ->
-                runtime.offerChoices(raw.split("|").map { it.trim() })
+                val parts = raw.split("|").map { it.trim() }
+                runtime.offerChoices(parts.first(), parts.drop(1))
             }
             // 演示「歧义先问」：TRELLIS_DEMO_SEND="帮我弄一下" 启动后自动发这句，
             // 走的是完整流程（意图 → 歧义 → 反问 + 按钮），不是摆假数据。

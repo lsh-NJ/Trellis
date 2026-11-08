@@ -48,8 +48,10 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -67,6 +69,8 @@ import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
@@ -87,6 +91,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * 和插件管理员对话。
@@ -97,9 +102,15 @@ import kotlinx.coroutines.delay
  * 现在的信息分五层：
  * - L1 你的输入：右侧青柠气泡；
  * - L2 结论：15.5px / 行高 1.78 / 最宽 34em，全页唯一需要完整读的文本；
- * - L3 过程摘要：一行「过程 · N 个动作 · 改动 M 处」，可展开；
- * - L4 过程细节：等宽小字，机器语法只允许出现在这一层；
+ * - L3 过程：默认收着，只留回合头一行；回合头整行就是把手（点一下整组收起/展开），状态字后面一个 ▾/▴ 折角说明能收；
+ *   这一轮还在跑时自动铺开、跑完自动收回，手动点过就以用户为准；
+ *   展开后每条过程只占一行（思考 / 判断 / 结果 / 工具名），不做预览摘要，点开某一行的正文才出现；
+ * - L4 过程窗口：整块最多半屏多一点、超出在块内滚，同一时刻只展开一条（手风琴）；
+ *   宿主纠正模型的返工记录（格式不对等）不在列表里占行，收进工具详情；
  * - L5 元信息：时间 · 步数 · 耗时，以及「撤销 / 看差异 / 复制」。
+ *
+ * 提问（`ask_choices`）排在结论之后、属于这一轮的回复（`AskCard`）：先给上下文，再让用户选；
+ * 它只活一轮、不落盘，输入框上方只留一行「还有一问没答」的跳转提醒。
  */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -400,6 +411,9 @@ private fun ChatConversation(
     var input by remember(runtime.currentChatId) { mutableStateOf("") }
     var lastPrompt by remember(runtime.currentChatId) { mutableStateOf("") }
     var localNote by remember(runtime.currentChatId) { mutableStateOf<String?>(null) }
+    // 过程行的「手风琴」：整个对话里同一时刻只展开一条详情。
+    // 状态提到这里而不是每轮各存一份 —— 上一轮展开着的，点下一轮的过程行时要自己收回去。
+    var openStepId by remember(runtime.currentChatId) { mutableStateOf<Long?>(null) }
     val tokens = LocalTrellisTokens.current
 
     val blocks = remember(runtime.chat.size, runtime.chat.lastOrNull()?.text?.length) { blocksOf(runtime.chat) }
@@ -426,6 +440,8 @@ private fun ChatConversation(
         ) {
             // 用户消息按列宽的比例收窄，agent 消息占满整列（见下面的条宽计算）。
             val userBubbleMax = maxWidth * 0.62f
+            // 过程区滑动窗口的高度上限：长过程只在自己的块里滚，不把整页顶穿。
+            val processPanelMax = processPanelMaxHeight(maxHeight)
             Column(Modifier.fillMaxSize()) {
             if (runtime.chat.isEmpty()) {
                 EmptyConversation(onPick = { input = it }, modifier = Modifier.weight(1f))
@@ -451,6 +467,14 @@ private fun ChatConversation(
                                 isLast = block === blocks.lastOrNull(),
                                 stewardSession = stewardSession,
                                 userBubbleMax = userBubbleMax,
+                                processPanelMax = processPanelMax,
+                                openStepId = openStepId,
+                                onToggleStep = { id ->
+                                    openStepId = if (openStepId == id) null else id
+                                },
+                                // 提问卡只挂在最后一轮：它属于这一轮，答完就没了。
+                                liveAsk = if (block === blocks.lastOrNull()) runtime.chatAsk else null,
+                                onPickChoice = { runtime.applyChoice(it) },
                                 onOpenPlan = onOpenPlan,
                             )
                         }
@@ -469,14 +493,33 @@ private fun ChatConversation(
                 )
             }
 
-            // 模型主动开了个选择（ask_choices）：选项竖着摆在输入框上方，等用户点。
-            // 这里不再有「运行时猜下一步」的建议条 —— 要不要继续做什么，由模型决定要不要问。
-            if (runtime.chatChoices.isNotEmpty()) {
-                ChoiceBar(
-                    choices = runtime.chatChoices,
-                    onPick = { runtime.applyChoice(it) },
-                    onDismiss = { runtime.dismissChoices() },
-                )
+            // 提问卡本体在这一轮的回复里（结论之后）；这里只留一行提醒：
+            // 用户往上翻、看不到那张卡时，点一下滚到那一轮。
+            runtime.chatAsk?.takeIf { !runtime.chatBusy }?.let { ask ->
+                val scope = rememberCoroutineScope()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 2.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable {
+                            val target = blocks.lastIndex
+                            if (target >= 0) scope.launch { listState.animateScrollToItem(target) }
+                        }
+                        .padding(horizontal = 6.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "↑ 还有一问没答：" + ask.question,
+                        style = tokens.type.meta,
+                        color = tokens.colors.accent,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("去看", style = tokens.type.meta, color = tokens.colors.accent)
+                }
             }
 
             val shownNote = localNote ?: note
@@ -536,66 +579,57 @@ private val EMPTY_EXAMPLES = listOf(
 )
 
 /**
- * 输入框上方的「选一个」列表 —— 经典编号选项：`1.` / `2.` / `3.`，每项至少一整行。
+ * 这一轮的提问卡：问题在上、编号选项在下，点了就等于回它一句。
  *
- * 只有模型主动要问（`ask_choices`）时才会出现。做成编号列表而不是一行一个箭头：
- * 选项经常是一整句话（「把第二章拆成两周」），每项占满一行才能读完整；
- * 序号让用户可以用键盘/口头直接指代，也比箭头更像「做决定」的界面。
- * 每项 hover 有底色、点击即选中，下面保留「不用」退出。
+ * 只有模型主动要问（`ask_choices`）时才会出现。以前它只是输入框上方一排没有题干的选项，
+ * 用户不知道自己点的是哪个问题的答案；现在问题和选项一起排在回复里（结论之后），
+ * 成了这一轮对话的一部分 —— 答完就消失，不进会话记录。
+ *
+ * 做成编号列表而不是一行一个箭头：选项经常是一整句话（「把第二章拆成两周」），
+ * 每项占满一行才能读完整；序号让用户可以用键盘/口头直接指代，也比箭头更像「做决定」的界面。
+ * 没有「不用」：不选就停在这一问上，用户随时可以不理它去说别的。
  */
 @Composable
-internal fun ChoiceBar(
-    choices: List<ChatChoice>,
+private fun AskCard(
+    ask: ChatAsk,
     onPick: (ChatChoice) -> Unit,
-    onDismiss: () -> Unit,
 ) {
     val tokens = LocalTrellisTokens.current
     val shape = RoundedCornerShape(10.dp)
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp)
             .clip(shape)
             .background(tokens.colors.surface)
             .border(1.dp, tokens.colors.rule, shape),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
         ) {
-            Text("选一个", style = tokens.type.meta, color = tokens.colors.ink3)
-            Spacer(Modifier.weight(1f))
+            Text("问题", style = tokens.type.meta, color = tokens.colors.ink3)
+            Spacer(Modifier.height(4.dp))
             Text(
-                "点一行就是了",
-                style = tokens.type.meta,
-                color = tokens.colors.ink3.copy(alpha = 0.72f),
+                ask.question,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.fillMaxWidth(),
             )
         }
-        // 最多 6 条、每条一整句话：限高 + 滚动，别把对话区和输入条挤出窗口。
+        // 最多 6 条、每条一整句话：限高 + 滚动，别把结论和输入条挤出窗口。
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(max = 264.dp)
                 .verticalScroll(rememberScrollState()),
         ) {
-            choices.forEachIndexed { index, choice ->
-                if (index > 0) {
-                    HorizontalDivider(
-                        modifier = Modifier.padding(horizontal = 14.dp),
-                        thickness = 1.dp,
-                        color = tokens.colors.rule.copy(alpha = 0.55f),
-                    )
-                }
+            ask.options.forEachIndexed { index, choice ->
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 14.dp),
+                    thickness = 1.dp,
+                    color = tokens.colors.rule.copy(alpha = 0.55f),
+                )
                 ChoiceOptionRow(index = index, choice = choice, tokens = tokens, onClick = { onPick(choice) })
             }
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 2.dp),
-            horizontalArrangement = Arrangement.End,
-        ) {
-            ChromeTextLink("不用", onClick = onDismiss)
         }
     }
 }
@@ -772,6 +806,12 @@ private fun RoundView(
     isLast: Boolean,
     stewardSession: Boolean,
     userBubbleMax: Dp,
+    processPanelMax: Dp,
+    openStepId: Long?,
+    onToggleStep: (Long) -> Unit,
+    /** 模型这一轮在等用户拍板（`ask_choices`）：问题和选项排在结论之后。 */
+    liveAsk: ChatAsk? = null,
+    onPickChoice: (ChatChoice) -> Unit = {},
     onOpenPlan: () -> Unit = {},
 ) {
     val key = round.keyId
@@ -790,7 +830,11 @@ private fun RoundView(
         runtime.pluginCardStyles,
     ) { runtime.diffForRound(key) }
 
-    var expanded by remember(key) { mutableStateOf(false) }
+    // 整组的开合：默认收着，只留回合头一行。这一轮还在跑的时候自动铺开（思考/工具正在流进来），
+    // 跑完自动收回；用户手动点过就以用户为准，不再被运行状态覆盖。
+    // 失败的原因由下面的 FailureBlock 说清楚，过程行不该替它抢版面。
+    var processChoice by remember(key) { mutableStateOf<Boolean?>(null) }
+    val processOpen = processOpenFor(running, processChoice)
     var diffOpen by remember(key) { mutableStateOf(false) }
     var note by remember(key) { mutableStateOf<String?>(null) }
     // 只有最后一轮常驻「撤销 / 看差异 / 复制」；旧轮次鼠标移上去才露出来，
@@ -799,18 +843,6 @@ private fun RoundView(
     val hovered by hoverSource.collectIsHoveredAsState()
 
     val tokens = LocalTrellisTokens.current
-    val expandedNow = expanded || running || failed
-    val toolNames = steps.mapNotNull { step ->
-        val raw = Regex("^第 \\d+ 步：(.+)$").find(step.text)?.groupValues?.get(1)?.trim()
-            ?: return@mapNotNull null
-        when {
-            raw.isEmpty() -> null
-            raw == "它说完了" -> null
-            raw.startsWith("它说完了，但 ") -> "还要补"
-            else -> toolActionLabel(raw)
-        }
-    }
-    val changedCount = diff.size
     val dotColor = when {
         running -> RunningAmber
         failed -> MaterialTheme.colorScheme.error
@@ -836,8 +868,23 @@ private fun RoundView(
             it.state == PlanStepState.Running || it.state == PlanStepState.Pending
         } == true
 
-        // 回合头：谁在说 + 状态 + 耗时
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        // 回合头：谁在说 + 状态 + 耗时；有过程时整行就是过程的收起/展开把手（状态后面的折角）。
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(4.dp))
+                .then(
+                    if (steps.isNotEmpty()) {
+                        Modifier
+                            .pointerHoverIcon(PointerIcon.Hand)
+                            .clickable { processChoice = !processOpen }
+                    } else {
+                        Modifier
+                    },
+                )
+                .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Box(Modifier.width(6.dp).height(6.dp).clip(CircleShape).background(dotColor))
             Spacer(Modifier.width(6.dp))
             Text(
@@ -867,27 +914,33 @@ private fun RoundView(
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                 )
             }
-            if (running) {
+            // 折角紧跟状态字：它就是这一行的收起/展开把手，放行尾会远到看不见。
+            // 收着时是「▾」，点一下整组铺开变「▴」（运行中的轮次会自动铺开）。
+            if (steps.isNotEmpty()) {
                 Spacer(Modifier.width(8.dp))
+                Text(
+                    if (processOpen) "▴" else "▾",
+                    style = tokens.type.caption,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            if (running) {
                 CircularProgressIndicator(Modifier.height(11.dp).width(11.dp), strokeWidth = 1.6.dp)
-                Spacer(Modifier.weight(1f))
+                Spacer(Modifier.width(8.dp))
                 ChromeTextLink("停止生成", onClick = { runtime.stopChat() })
             }
         }
 
-        if (steps.isNotEmpty()) {
-            Spacer(Modifier.height(6.dp))
-            ProcessSummary(
+        if (steps.isNotEmpty() && processOpen) {
+            Spacer(Modifier.height(4.dp))
+            ProcessRows(
                 steps = steps,
-                toolNames = toolNames,
-                changedCount = changedCount,
-                expanded = expandedNow,
-                onClick = { expanded = !expanded },
+                running = running,
+                openStepId = openStepId,
+                maxHeight = processPanelMax,
+                onToggle = onToggleStep,
             )
-            if (expandedNow) {
-                Spacer(Modifier.height(6.dp))
-                ProcessDetails(steps)
-            }
         }
 
         Spacer(Modifier.height(8.dp))
@@ -910,6 +963,13 @@ private fun RoundView(
                 modifier = Modifier.fillMaxWidth(),
                 bodyStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.5.sp, lineHeight = 27.6.sp),
             )
+        }
+
+        // 提问卡紧跟结论：先读它的判断，再回答问题 —— 用户要的是「这一问是什么」的上下文。
+        // 收尾前不显示：这一轮还在跑（工具循环/流式），点下去会被 ask() 的门闩挡掉。
+        liveAsk?.takeIf { !running }?.let { ask ->
+            Spacer(Modifier.height(10.dp))
+            AskCard(ask = ask, onPick = onPickChoice)
         }
 
         round.reply?.proposal?.let { proposal ->
@@ -1006,219 +1066,291 @@ private fun RoundView(
 }
 
 /**
- * 摘要里的「N 个动作」只数工具调用。
+ * 过程行折叠成一行时的样子：只有标签，正文点开才看。
  *
- * 「判断：它要动手」「思考：…」以及工具的进度行都是解释，
- * 把它们算成动作会让摘要写成「2 个动作」却只列出一个工具名。
+ * 折叠态不做预览摘要（用户定过：「不做摘要，工具只显示使用工具名称即可」）：
+ * 思考就写「思考」，工具只写工具名，判断/结果只有标签。
  */
-internal fun processActionCount(steps: List<ChatLine>): Int = steps.count { it.tool != null }
+internal data class ProcessRowView(
+    /** 折叠行上的字：思考 / 判断 / 结果 / 工具名 / 原文。 */
+    val label: String,
+    /** 点开后显示的正文；null 表示这条没有可展开的内容。 */
+    val detail: String?,
+)
 
+/** 思考行的标签；该行还在流式生成时显示「思考中」。 */
+internal const val ThinkingLabel = "思考"
+private const val ThinkingActiveLabel = "思考中"
+
+/**
+ * 把一条过程文本压成折叠行（纯函数，单测在 ProcessTraceFormatTest）。
+ *
+ * - 「思考：…」→「思考」，正文进 detail；「判断：…」→「判断」；「　→ …」→「结果」；
+ * - 「第 N 步：tool_name」→ 只写工具名（参数/结果在 ChatLine.tool 里，点开看详情）；
+ * - 其它（进度行、出错原因）→ 原文当标签。
+ *
+ * 旧会话存过「它说完了」的收尾行：成功的那条返回 null（不显示），
+ * 「…，但 X」保留补做原因。
+ *
+ * 宿主纠正模型的内部返工（「格式不对…让它重说」「想调不存在的工具」）也不显示：
+ * 新会话把这类记录收进工具详情（`ChatToolTrace.notes`），旧会话已经落成独立行，
+ * 这里一并滤掉，免得老对话一翻又是一屏看不懂的话。
+ */
+internal fun processRowView(text: String): ProcessRowView? {
+    val raw = text.trim()
+    if (raw.isEmpty()) return null
+    if (raw.contains("格式不对（") && raw.contains("重说")) return null
+    if (raw.contains("调不存在的工具")) return null
+    if (raw.contains("它说完了")) {
+        val but = "它说完了，但 "
+        if (!raw.contains(but)) return null
+        return ProcessRowView("还要补", raw.substringAfter(but).trim().ifBlank { null })
+    }
+    val tool = Regex("^第 \\d+ 步：(.+)$").find(raw)?.groupValues?.get(1)?.trim()
+    if (!tool.isNullOrEmpty()) return ProcessRowView(tool, null)
+    fun row(label: String, body: String): ProcessRowView =
+        ProcessRowView(label, body.trim().ifBlank { null })
+    return when {
+        raw.startsWith("思考：") -> row(ThinkingLabel, raw.removePrefix("思考："))
+        raw.startsWith("判断：") -> row("判断", raw.removePrefix("判断："))
+        raw.startsWith("→") -> row("结果", raw.removePrefix("→"))
+        else -> ProcessRowView(raw, raw)
+    }
+}
+
+/**
+ * 过程区滑动窗口的高度上限。
+ *
+ * 取视口的一半多一点，钳在 220–560dp：太矮看不清展开的思考，
+ * 太高等于没限高（一屏都被过程占满）。纯函数，单测直接钉死。
+ */
+internal fun processPanelMaxHeight(viewport: Dp): Dp =
+    (viewport * 0.55f).coerceIn(220.dp, 560.dp)
+
+/**
+ * 过程区默认收着（历史轮次、跑完的轮次、刚打开会话时都只剩回合头一行）。
+ * 这一轮还在跑的时候自动铺开，让思考/工具一边流一边看得见；跑完自动收回。
+ * 用户手动点过折角就以用户为准（[choice] 非空），不再被运行状态覆盖。
+ */
+internal fun processOpenFor(running: Boolean, choice: Boolean?): Boolean = choice ?: running
+
+/**
+ * 整组折叠的把手不再是单独一行「过程」：
+ * 回合头（「● 管家 完成 45.3s」）整行可点，行尾一个 ▾/▴ 折角说明能收。
+ * 用户之前找不到「过程」那一行的入口 —— 折角挂在一直在的回合头上，扫一眼就能发现。
+ */
+
+/** 展开后的正文样式：等宽小字，和折叠行的字号同一档。 */
 @Composable
-private fun ProcessSummary(
+private fun processDetailStyle() = MaterialTheme.typography.bodySmall.copy(
+    fontFamily = FontFamily.Monospace,
+    fontSize = 12.sp,
+    lineHeight = 19.sp,
+)
+
+/**
+ * 过程行本体：每条只占一行（折叠态），整块最多 [maxHeight] 高、超出就自己滚。
+ *
+ * 展开的正文直接排在这个窗口里，不再套内层小滚动框（用户定过：不做翻页预览）；
+ * 同一时刻只有一条展开 —— openStepId 由对话页持有，跨轮也只有一个。
+ */
+@Composable
+internal fun ProcessRows(
     steps: List<ChatLine>,
-    toolNames: List<String>,
-    changedCount: Int,
-    expanded: Boolean,
+    running: Boolean,
+    openStepId: Long?,
+    maxHeight: Dp,
+    onToggle: (Long) -> Unit,
+) {
+    val scroll = rememberScrollState()
+    var revealBottom by remember { mutableStateOf(false) }
+    // 运行中：新行冒出来、思考还在长，窗口自己跟到底，别让人手动追。
+    LaunchedEffect(steps.size, steps.lastOrNull()?.text?.length, scroll.maxValue) {
+        if (running && scroll.maxValue > 0) scroll.animateScrollTo(scroll.maxValue)
+    }
+    // 点开靠下的那几条时，详情会落在窗口外：等布局把它算进可滚范围，再滚到底。
+    LaunchedEffect(revealBottom) {
+        if (!revealBottom) return@LaunchedEffect
+        withFrameNanos { }
+        withFrameNanos { }
+        scroll.animateScrollTo(scroll.maxValue)
+        revealBottom = false
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = maxHeight)
+            .verticalScroll(scroll),
+        verticalArrangement = Arrangement.spacedBy(1.dp),
+    ) {
+        for ((index, line) in steps.withIndex()) {
+            val open = openStepId == line.id
+            // 靠窗口底部的行展开后详情会落到看不见的地方：先记一笔，布局完再滚到底。
+            val toggle = {
+                if (!open && index >= steps.lastIndex - 2) revealBottom = true
+                onToggle(line.id)
+            }
+            val trace = line.tool
+            val view = if (trace == null) processRowView(line.text) else null
+            when {
+                trace != null -> ToolStepRow(trace = trace, open = open, onClick = toggle)
+                view != null -> ProcessTextRow(
+                    view = view,
+                    open = open,
+                    active = running && index == steps.lastIndex,
+                    onClick = toggle,
+                )
+            }
+        }
+    }
+}
+
+/** 思考/判断/结果/进度行的折叠态：一行标签，点开才给正文。 */
+@Composable
+private fun ProcessTextRow(
+    view: ProcessRowView,
+    open: Boolean,
+    active: Boolean,
     onClick: () -> Unit,
 ) {
     val tokens = LocalTrellisTokens.current
-    val actions = processActionCount(steps)
-    val text = buildString {
-        append("过程 · ")
-        if (actions > 0) {
-            append(actions)
-            append(" 个动作")
-        } else {
-            append(steps.size)
-            append(" 条过程")
-        }
-        if (changedCount > 0) {
-            append(" · 改动 ")
-            append(changedCount)
-            append(" 处")
-        }
-        if (toolNames.isNotEmpty()) {
-            append("   ")
-            append(toolNames.take(4).joinToString(" → "))
-            if (toolNames.size > 4) append(" …")
-        }
-    }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(34.dp)
-            .clip(RoundedCornerShape(4.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f))
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(4.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(Modifier.width(5.dp).height(5.dp).clip(CircleShape).background(LocalExtraColors.current.data))
-        Spacer(Modifier.width(8.dp))
-        Text(
-            text,
-            style = tokens.type.meta,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
-        Text(if (expanded) "▴" else "▾", style = tokens.type.caption)
-    }
-}
-
-@Composable
-private fun ProcessDetails(steps: List<ChatLine>) {
-    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-        for (line in steps) {
-            // 新会话：工具调用单独一行，「点开看说明/参数/结果」。
-            if (line.tool != null) {
-                ToolStepRow(line)
-                continue
-            }
-            val isResult = line.text.startsWith("　→")
-            val isJudgement = line.text.startsWith("判断：")
-            val isThinking = line.text.startsWith("思考：")
-            // 旧会话里存过「它说完了」的收尾行：成功的那条不再显示，
-            // 「…，但 X」保留补做原因，别把有用信息一起扔掉。
-            if (line.text.contains("它说完了") && !line.text.contains("它说完了，但 ")) continue
-            val text = line.text
-                .replace("判断：", "")
-                .replace("思考：", "")
-                .replace(Regex("^第 \\d+ 步："), "· ")
-                .replace("　→", "↳")
-                .replace("· 它说完了，但 ", "· 还要补：")
-                .trim()
-            if (text.isEmpty()) continue
-            Row(verticalAlignment = Alignment.Top) {
-                Box(
-                    Modifier
-                        .padding(top = 6.dp)
-                        .width(5.dp)
-                        .height(5.dp)
-                        .clip(CircleShape)
-                        .background(
-                            if (line.text.contains("出错")) MaterialTheme.colorScheme.error
-                            else LocalExtraColors.current.data.copy(alpha = if (isResult) 0.45f else 0.8f),
-                        ),
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    (if (isResult) "↳ " else "") +
-                        when {
-                            isThinking -> "思考 · "
-                            isJudgement -> "判断 · "
-                            else -> ""
-                        } + text.removePrefix("↳ "),
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = if (isResult) 11.sp else 12.sp,
-                    ),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(
-                        alpha = if (isResult) 0.75f else 1f,
-                    ),
-                    modifier = Modifier
-                        .padding(start = if (isResult) 8.dp else 0.dp)
-                        // 思考可能是一整段话：占满剩余宽度、自动换行，不截行数。
-                        .fillMaxWidth(),
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ToolStepRow(line: ChatLine) {
-    val trace = line.tool ?: return
-    var open by remember(line.id) { mutableStateOf(false) }
-    val args = remember(trace.arguments) { compactArguments(trace.arguments) }
+    val detail = view.detail
+    val label = if (active && view.label == ThinkingLabel) ThinkingActiveLabel else view.label
+    val error = view.label.contains("出错")
     Column(Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(4.dp))
-                .clickable { open = !open }
-                .padding(vertical = 2.dp),
-            verticalAlignment = Alignment.Top,
+                .then(if (detail != null) Modifier.clickable(onClick = onClick) else Modifier)
+                .padding(vertical = 1.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                Modifier
-                    .padding(top = 6.dp)
-                    .width(5.dp)
-                    .height(5.dp)
-                    .clip(CircleShape)
-                    .background(
-                        if (trace.isError) MaterialTheme.colorScheme.error
-                        else LocalExtraColors.current.data.copy(alpha = 0.8f),
-                    ),
+            Text(
+                label,
+                style = tokens.type.caption,
+                fontFamily = FontFamily.Monospace,
+                color = if (error) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (active) 1f else 0.8f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                // 标签自己撑开会把 ▾ 挤出屏幕：只按内容占宽（fill=false），剩余宽度留白给整行点按。
+                modifier = Modifier.weight(1f, fill = false),
             )
-            Spacer(Modifier.width(8.dp))
-            Column(Modifier.weight(1f)) {
+            if (detail != null) {
+                Spacer(Modifier.width(4.dp))
                 Text(
-                    "· " + toolActionLabel(trace.tool),
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 12.sp,
-                    ),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    trace.tool + if (args.isNotEmpty()) "（" + args + "）" else "",
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 10.sp,
-                    ),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                    if (open) "▴" else "▾",
+                    style = tokens.type.caption,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                 )
             }
+        }
+        if (open && detail != null) {
+            Text(
+                detail,
+                style = processDetailStyle(),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 10.dp, top = 2.dp, bottom = 4.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 工具调用折叠成一行：只写工具名（机器语法本身），点开才给参数与结果。
+ *
+ * 不再把人话标签和参数预览摆在折叠行上 —— 用户要的是「一眼扫过去看到调了什么」，
+ * 一句一句解释留给详情。
+ */
+@Composable
+private fun ToolStepRow(trace: ChatToolTrace, open: Boolean, onClick: () -> Unit) {
+    val tokens = LocalTrellisTokens.current
+    val dotColor = when {
+        trace.isError -> MaterialTheme.colorScheme.error
+        trace.running -> LocalExtraColors.current.data
+        else -> LocalExtraColors.current.data.copy(alpha = 0.6f)
+    }
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(4.dp))
+                .clickable(onClick = onClick)
+                .padding(vertical = 1.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.width(5.dp).height(5.dp).clip(CircleShape).background(dotColor))
+            Spacer(Modifier.width(8.dp))
+            Text(
+                trace.tool,
+                style = tokens.type.caption,
+                fontFamily = FontFamily.Monospace,
+                color = if (trace.isError) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                // 同 ProcessTextRow：工具名再长也不许把「运行中」/▾ 挤出去。
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            Spacer(Modifier.width(4.dp))
             Text(
                 when {
-                    trace.running -> "运行中…"
+                    trace.running -> "运行中"
                     open -> "▴"
                     else -> "▾"
                 },
-                style = LocalTrellisTokens.current.type.caption,
+                style = tokens.type.caption,
                 color = if (trace.running) LocalExtraColors.current.data
-                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
             )
         }
         if (open) ToolStepDetail(trace)
     }
 }
 
+/** 工具详情：一句人话 + 参数 + 结果，直接排在过程窗口里（不套内层滚动框）。 */
 @Composable
 private fun ToolStepDetail(trace: ChatToolTrace) {
     val tokens = LocalTrellisTokens.current
+    val args = remember(trace.arguments) { prettyArguments(trace.arguments) }
     Column(
         modifier = Modifier
-            .padding(start = 13.dp, top = 4.dp, bottom = 6.dp)
             .fillMaxWidth()
-            .clip(RoundedCornerShape(4.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
-            .padding(8.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+            .padding(start = 13.dp, top = 2.dp, bottom = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp),
     ) {
-        if (trace.description.isNotBlank()) {
+        Text(
+            toolActionLabel(trace.tool),
+            style = tokens.type.meta,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+        )
+        // 宿主纠正模型的记录（格式不对 / 调了不存在的工具）：模型和宿主之间的返工，
+        // 不在过程列表里占行，只在这里露出来 —— 要查的人点开看得到，其他人不被它打断。
+        if (trace.notes.isNotEmpty()) {
             Text(
-                trace.description,
-                style = tokens.type.meta,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                "宿主提示",
+                style = tokens.type.caption,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
             )
+            trace.notes.forEach { note ->
+                Text(
+                    note,
+                    style = processDetailStyle(),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         }
-        val args = remember(trace.arguments) { prettyArguments(trace.arguments) }
         if (args.isNotBlank() && args != "{}") {
             Text("参数", style = tokens.type.caption, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
             Text(
                 args,
-                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
+                style = processDetailStyle(),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 130.dp)
-                    .verticalScroll(rememberScrollState()),
+                modifier = Modifier.fillMaxWidth(),
             )
         }
         Text("结果", style = tokens.type.caption, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
@@ -1227,22 +1359,11 @@ private fun ToolStepDetail(trace: ChatToolTrace) {
                 trace.running -> "（还在跑…）"
                 else -> trace.result.trim().ifBlank { "（没有输出）" }
             },
-            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
+            style = processDetailStyle(),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 160.dp)
-                .verticalScroll(rememberScrollState()),
+            modifier = Modifier.fillMaxWidth(),
         )
     }
-}
-
-/** 参数一行预览：折叠时只给人扫一眼，长 JSON 不进过程行。 */
-internal fun compactArguments(raw: String, max: Int = 48): String {
-    val trimmed = raw.trim()
-    if (trimmed.isEmpty() || trimmed == "{}") return ""
-    val flat = trimmed.replace(Regex("\\s+"), " ")
-    return if (flat.length <= max) flat else flat.take(max) + "…"
 }
 
 /** 缩进用的 Json 实例只建一次（每次展开都 new 一个，Kotlin 会警告）。 */

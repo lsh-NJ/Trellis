@@ -84,7 +84,7 @@ class BilibiliAgentLiveTest {
             appendLine("== answer ==")
             appendLine(answer)
             appendLine("== choices ==")
-            appendLine(runtime.chatChoices.map { it.label })
+            appendLine(runtime.chatAsk?.options?.map { it.label } ?: "(没有提问)")
         }
         File("build/live-bilibili-short.txt").apply { parentFile.mkdirs() }.writeText(report)
 
@@ -94,7 +94,7 @@ class BilibiliAgentLiveTest {
         // 运行时不再替模型猜下一步，所以这里不强制一定有选项条。
         val planned = steps.any { "set_plan" in it || "add_tasks" in it }
         if (!planned) {
-            val offered = runtime.chatChoices.isNotEmpty() ||
+            val offered = runtime.chatAsk != null ||
                 listOf("待办", "计划", "建议").any { answer.contains(it) }
             assertTrue(offered, "只查没排时应当问用户下一步：\n$report")
         }

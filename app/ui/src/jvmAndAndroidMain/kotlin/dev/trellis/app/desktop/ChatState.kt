@@ -66,6 +66,13 @@ data class ChatToolTrace(
      * （进程被杀/网络断），读回来时会被收尾成 false。
      */
     val running: Boolean = false,
+    /**
+     * 宿主在上一步纠正过模型的记录（「输出格式不对，已让它重说」/「想调不存在的工具」）。
+     *
+     * 这些是模型和宿主之间的返工，不进过程列表；只在工具详情里露一行，谁要查再点开看。
+     * 旧会话没有这个字段，读回来是空。
+     */
+    val notes: List<String> = emptyList(),
 )
 
 data class ChatLine(
@@ -103,12 +110,27 @@ data class ChatLine(
 )
 
 /**
- * 输入框上方的一个选项（竖排列表里的一行）。
+ * 一个问题下面的一个选项（竖排列表里的一行）。
  *
  * [label] 是那行短名（「看建议」），[text] 是点了之后真正发给 agent 的
  * 原话 —— 让用户挑，而不是替用户决定要不要动数据。
  */
 data class ChatChoice(val label: String, val text: String)
+
+/**
+ * 模型这一轮要用户拍板的一次提问（`ask_choices`）。
+ *
+ * 为什么带 [question]：以前只把选项摆到输入框上方，用户不知道自己点的是哪个问题的答案；
+ * 问题现在和选项一起渲染成这一轮回复里的一块（结论之后），点一项就等于回了它一句。
+ *
+ * 只活在这一轮里、**不落盘**：答完（或换会话/开下一轮）就清空，不攒历史问卷 ——
+ * 用户要的是回答问题，不是回看一堆问过什么。
+ */
+data class ChatAsk(
+    /** 一句话问题；模型没写 question 时给兜底文案「选一个」。 */
+    val question: String,
+    val options: List<ChatChoice>,
+)
 
 /**
  * 这段会话是谁。

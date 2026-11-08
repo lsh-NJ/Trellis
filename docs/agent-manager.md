@@ -230,8 +230,10 @@ bento 样片里两个「看起来需要绘图」的部件，最后都做成了�
 配套的「下一步」：查学习资源这类事天然分两步（先看有什么、再决定要不要动数据）。**写操作之前必须先问**：
 
 - 提示词层面：资源任务只搜、只挑、只说明；`add_tasks` 被描述成「会改用户数据，得到同意才调」；
-- 工具层面：模型需要用户拍板时调 `ask_choices(question, options)`，选项竖着摆到输入框上方
-  （`AppRuntime.offerChoices` + `ChatScreen.ChoiceBar`），点哪个才发哪句；调完就停下等用户点。
+- 工具层面：模型需要用户拍板时调 `ask_choices(question, options)`，**问题和编号选项作为这一轮回复的
+  一部分**排在结论之后（`AppRuntime.chatAsk` + `ChatScreen.AskCard`），点哪个才发哪句；调完就停下等用户点。
+  提问卡只活一轮、不落盘：答完或开下一轮即清空，会话记录里不留问卷；输入框上方只留一行
+  「还有一问没答」的跳转提醒，避免用户滚上去之后失去入口。
   运行时**不再**按「刚才查过资源」之类的痕迹自动弹选项——问不问由模型决定，运行时不猜；
 - 工具层面：`add_tasks` 必须带 `confirmed=true`，否则直接拒绝并回一句「先用 ask_choices 问用户」——提示词管不住的时候，闸要管得住。
 
@@ -360,13 +362,20 @@ jlink 默认只带推断出来的模块，`java.net.http`、`java.sql` 必须手
 `TRELLIS_DIST_DIR=/tmp/trellis-dist ./gradlew :app:desktop:createDistributable`。
 | 2026-11-07 | 删除意图分类器（`Intent.kt`）、`TOOL_INTENTS`、`forcedIntent` 与歧义反问；改为全量工具 + 单一静态前缀 + `<task:work>`；插件收尾核对从「按意图」改成「碰过插件工具且声称做完」 | Lead（用户指令 m06296） |
 
-## 17. 过程行：逐步工具调用 + 思考 + 可展开详情（2026-11-09，2026-11-10 补流式与运行中）
+## 17. 过程行：逐步工具调用 + 思考 + 可展开详情（2026-11-09，2026-11-10 补流式与运行中；2026-11-08 改成每条一行 + 块内滚动 + 手风琴；同日晚把手把挪到回合头）
 
-以前过程行是一行「过程 · N 个动作」折叠成平铺小字：用户看不到它每一步调了什么工具、为什么调，也看不到参数与返回。现在分三层：
+以前过程行是一行「过程 · N 个动作」折叠成平铺小字：用户看不到它每一步调了什么工具、为什么调，也看不到参数与返回。
+2026-11-08 又改一次版式：过程区默认**整组收着**（只剩回合头一行），展开后每条**只占一行**，整块**限高内滚**，**同一时刻只展开一条**（借鉴 dsh 的对话过程区）。现在分四层：
 
-- **摘要行**（默认收起）：`过程 · N 个动作 · 改动 M 处`，右侧前 4 个动作的人话预览。**N 只数真正的工具调用**（`steps.count { it.tool != null }`）；「判断：」「思考：」和进度行都是解释，不算动作。没有工具时写「N 条过程」。
-- **工具行**（展开后每条工具调用一行）：`· 查了学习计划  get_learning_plan（{…}）`——人话动作 + 工具名 + 参数预览（`compactArguments`，超过 48 字截断）。工具**开始执行时**就先发 `ToolTrace.CallStarted` 占行、显示「运行中…」；跑完再由 `ToolTrace.Call` 把结果补进同一条详情。慢的复合工具（`research_plan`：联网查资料 → 拆阶段 → 建计划 → 写大纲 → 排本周）通过 `AgentTool.call(arguments, onProgress)` 把阶段以「　· …」过程行吐出来，不会十几秒只有一行静态名字。
-- **单条详情**（点这一行的 ▾）：工具 description（它是干什么的）、缩进 JSON 参数、结果原文（各自限制高度、内部滚动）。长 JSON 不再撑爆过程区。运行中时结果区显示「（还在跑…）」。
-- **思考行**：就是模型的真实思考 `reasoning_content`（DeepSeek 流式 `delta.reasoning_content`），不是宿主猜的。**DeepSeek 服务端默认不思考**，所以 `HttpLlmClient.requestBody()` 必须显式发 `thinking: {"type":"enabled"}`；`LlmConfig.thinking` 为 `null` 时只对 DeepSeek 地址自动开（其它 OpenAI 兼容服务不发这个字段，免得 400），也可以用 `TRELLIS_LLM_THINKING=false`/`llm.json` 的 `thinking` 关掉。`max_tokens` 默认 8192：思考 token 也算 completion，2048 会把正文/JSON 挤没。聊天流和工具循环都走 `llm.stream(..., onReasoning)`（工具循环传 `jsonMode = true`，流式也开 `response_format: json_object`，否则模型容易回成人话、浪费一次「让它重说」），`onThinkingDelta` 把增量并进同一个「思考：」行（每步开始/工具开始时断开）；SSE 分片里的 `content`/`reasoning_content` 是 JSON null 时必须当「没有」（kotlinx 的 `JsonNull.content` 就是字符串 `"null"`，否则开思考后正文会多出一串 `null`）；没有增量回调的假模型仍回退成整段 `ToolTrace.Thinking`。模型没给 reasoning 就不显示这一行（`thoughtBefore()` 那套「从回复文本里挑一句当思考」已删）。静态前缀里另有 `<thinking_language>` 明确要求 reasoning 也用中文（工具名/参数名/代码不翻译）—— 不写这一句，模型会拿英文思考；它只是语言偏好，不能保证每轮 100% 遵从。过程行里另有宿主的判断行（「判断 · 它要动手，切到工具模式」）。
+- **整组把手**（回合头那一行）：**不再单独有「过程」一行** —— 用户反馈「写过程实则更看不到入口，我找了半天」，所以把手挪到一直在的回合头（「● 管家 完成 45.3s」）：整行可点收/展开（有过程时鼠标变手型），「管家 完成 45.3s」后面紧跟一个有过程时才出现的 ▴/▾ 折角（展开时朝上、收起时朝下）负责告诉人「这里能收」——折角必须贴着状态字，放行尾会远到看不见。**默认收着**：历史轮次、跑完的轮次、刚打开会话时都只剩回合头一行（只留折角）；这一轮还在跑的时候自动铺开（思考/工具正在流进来），跑完自动收回；用户手动点过就以用户为准（`processChoice: Boolean?` 盖上自动状态，不再被运行状态覆盖）。收起状态不带动作数/改动数/工具名列表——那不是摘要，是噪音。「运行中」「没做成」也不再强制展开；失败原因由回合尾部的失败块说清楚；运行中时行尾的「停止生成」是子级点击，不会误触收起。
+- **每条过程一行**（折叠态不做任何预览摘要，用户定的）：
+  - 思考行只写「思考」，该行还在流式生成时写「思考中」；
+  - 工具行只写工具名（`read_learning_overview` 这种机器语法本身），不再挂人话动作和参数预览；
+  - 判断/结果行只写「判断」/「结果」；宿主进度行（「　· …」）保留原文，因为它本身就是一句短话；
+  - 旧会话里的「它说完了」收尾行不再显示，「它说完了，但 X」收成一行「还要补」；
+  - **宿主纠正模型的返工不给用户看**（用户定的「格式不对给 ai 看就行了，不要给用户看」）：模型输出格式不对被要求重说、想调不存在的工具，这两类不再出现在过程列表里；`ToolAgent` 用 `quiet()` 只写进 `transcript`，并攒进 `pendingNotes` 挂到下一条工具调用的 `ToolTrace.CallStarted/Call.notes` 上，界面只在**工具详情的「宿主提示」**里露出来（要查的人点开看得到，其他人不被它打断）；旧会话里已经落成独立文本行的同类记录由 `processRowView` 一并滤掉。
+- **点开某一行的正文**：思考正文、判断、结果、工具的参数与结果**直接排在同一块里**，不再套内层小滚动框/翻页预览；只有整块（滑动窗口）自己在滚。工具详情里先给一句人话（`toolActionLabel`），再给缩进 JSON 参数和结果原文。运行中时结果区显示「（还在跑…）」。
+- **整块限高**：`processPanelMaxHeight(视口)` = 视口 55%，钳在 220–560dp；超过就在块内 `verticalScroll`，不把整页顶穿。**手风琴**：`openStepId` 提到 `ChatConversation`，整个对话同一时刻只展开一条，点开下一轮的过程行时上一轮的自动收起；点开靠窗口底部的行会把窗口滚到底（详情不会被挡在窗口外）。
+- **思考行内容**：就是模型的真实思考 `reasoning_content`（DeepSeek 流式 `delta.reasoning_content`），不是宿主猜的。**DeepSeek 服务端默认不思考**，所以 `HttpLlmClient.requestBody()` 必须显式发 `thinking: {"type":"enabled"}`；`LlmConfig.thinking` 为 `null` 时只对 DeepSeek 地址自动开（其它 OpenAI 兼容服务不发这个字段，免得 400），也可以用 `TRELLIS_LLM_THINKING=false`/`llm.json` 的 `thinking` 关掉。`max_tokens` 默认 8192：思考 token 也算 completion，2048 会把正文/JSON 挤没。聊天流和工具循环都走 `llm.stream(..., onReasoning)`（工具循环传 `jsonMode = true`，流式也开 `response_format: json_object`，否则模型容易回成人话、浪费一次「让它重说」），`onThinkingDelta` 把增量并进同一个「思考：」行（每步开始/工具开始时断开）；SSE 分片里的 `content`/`reasoning_content` 是 JSON null 时必须当「没有」（kotlinx 的 `JsonNull.content` 就是字符串 `"null"`，否则开思考后正文会多出一串 `null`）；没有增量回调的假模型仍回退成整段 `ToolTrace.Thinking`。模型没给 reasoning 就不显示这一行（`thoughtBefore()` 那套「从回复文本里挑一句当思考」已删）。静态前缀里另有 `<thinking_language>` 明确要求 reasoning 也用中文（工具名/参数名/代码不翻译）—— 不写这一句，模型会拿英文思考；它只是语言偏好，不能保证每轮 100% 遵从。过程行里另有宿主的判断行（「判断」+ 正文「它要动手，切到工具模式」）。
 
-落点：`ChatLine.tool: ChatToolTrace?`（`tool/description/arguments/result/isError/running`）、`ai/.../tool/ToolTrace.kt`（`Thinking`/`CallStarted`/`Call`）、`ManagerAgent.respond(onTrace, onThinking, onThinkingDelta)`（工具路径透传 `onTrace` 与 `onThinkingDelta`）、`AgentTool.call(arguments, onProgress)` 默认忽略进度、`AppRuntime.sendChat` 把 trace 挂到「第 N 步：tool」那一行、把 `→ 结果` 并进详情、结束/异常时把仍 `running` 的 trace 收尾、`ChatStore` 序列化往返（`running` 读回一律 false）、`ChatScreen.ProcessDetails` 渲染 `ToolStepRow`/`ToolStepDetail`。旧会话没有 `tool` 字段，仍按纯文本平铺。
+落点：`ChatLine.tool: ChatToolTrace?`（`tool/description/arguments/result/isError/running/notes`）、`ai/.../tool/ToolTrace.kt`（`Thinking`/`CallStarted(notes)`/`Call(notes)`）、`ToolAgent` 的 `note()`/`quiet()` 与 `pendingNotes`、`ManagerAgent.respond(onTrace, onThinking, onThinkingDelta)`（工具路径透传 `onTrace` 与 `onThinkingDelta`）、`AgentTool.call(arguments, onProgress)` 默认忽略进度、`AppRuntime.sendChat` 把 trace 挂到「第 N 步：tool」那一行、把 `→ 结果` 并进详情、结束/异常时把仍 `running` 的 trace 收尾、`ChatStore` 序列化往返（`running` 读回一律 false，`notes` 缺省空）、`ChatScreen` 的回合头折叠把手 + `ProcessRows`/`ProcessTextRow`/`ToolStepRow`/`ToolStepDetail` 渲染（折叠行由纯函数 `processRowView` 切标签与正文并滤掉宿主返工行，限高由纯函数 `processPanelMaxHeight` 算）。旧会话没有 `tool` 字段，仍按纯文本行折叠（`processRowView` 兼容旧前缀）。测试：`ProcessTraceFormatTest`（纯函数）、`ChatProcessRenderTest`（离屏渲染出 `app/ui/build/ui-shot-process-*.png`）、`ToolAgentTest`（`theHostsCorrectionsGoIntoTheToolDetailInsteadOfTheProcessList`）。

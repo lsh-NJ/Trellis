@@ -150,6 +150,8 @@ internal class ChatStore(home: File, private val log: (String) -> Unit = {}) {
                         isError = trace["isError"]?.jsonPrimitive?.booleanOrNull == true,
                         // 上次退出时还没跑完的工具不会自己复活，读回来一律当已结束。
                         running = false,
+                        notes = trace["notes"]?.jsonArray
+                            ?.mapNotNull { (it as? JsonPrimitive)?.content } ?: emptyList(),
                     )
                 },
             )
@@ -282,6 +284,11 @@ internal class ChatStore(home: File, private val log: (String) -> Unit = {}) {
                                     put("result", trace.result)
                                     if (trace.isError) put("isError", true)
                                     if (trace.running) put("running", true)
+                                    if (trace.notes.isNotEmpty()) {
+                                        putJsonArray("notes") {
+                                            trace.notes.forEach { add(it) }
+                                        }
+                                    }
                                 },
                             )
                         }
