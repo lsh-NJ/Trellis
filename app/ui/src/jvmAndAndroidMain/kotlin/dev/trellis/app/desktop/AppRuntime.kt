@@ -4280,6 +4280,8 @@ class AppRuntime private constructor() {
             planPendingSelected = false
         }
         refreshPlan()
+        // 删计划可能连带软删目标（或解绑），目标页的状态要跟着更新。
+        refreshGoals()
         planMessage = "已从计划列表里删除这个计划。"
         tick += 1
     }

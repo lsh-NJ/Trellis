@@ -176,8 +176,9 @@ private fun PlanWeekScale(runtime: AppRuntime, cards: List<PlanWeekCard>) {
 /**
  * 一个刻度：上面是周次（当前周直接写「本周」），中间一根竖刻，下面是这一周的开始日期。
  *
- * 竖刻高度区分「选中 / 当前 / 普通」，不靠加粗整格底来抢视觉——一排里有且只有一个选中，
- * 那个用浅强调底；当前周即使没选中也要能一眼认出来，所以刻线用 accent 色。
+ * 选中 / 当前 / 普通共用同一套几何：格子固定高 70dp，竖线都在 22dp 轨道里，选中只换底色、
+ * 加粗与线高——这样一排刻度的上下边界永远对齐，不会出现「只有下边界被往下推」的错位感。
+ * 一排里有且只有一个选中，用浅强调底；当前周即使没选中也靠 accent 色的刻线认出来。
  */
 @Composable
 private fun PlanWeekTick(
@@ -189,15 +190,16 @@ private fun PlanWeekTick(
     val tokens = LocalTrellisTokens.current
     val shape = RoundedCornerShape(tokens.radius.control)
     val emphasized = selected || current
+    // 所有刻度固定同高：选中只换底色/字重/线高，格子本身的上下边界不动，整排刻度才对得齐。
     Column(
         modifier = Modifier
             .width(74.dp)
+            .height(70.dp)
             .clip(shape)
             .background(if (selected) tokens.colors.accentSoft.copy(alpha = 0.35f) else Color.Transparent)
-            .clickable(onClick = onClick)
-            .padding(vertical = 6.dp),
+            .clickable(onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
     ) {
         Text(
             if (current) "本周" else card.label,
@@ -207,13 +209,16 @@ private fun PlanWeekTick(
             color = if (emphasized) tokens.colors.accent else tokens.colors.ink3,
             maxLines = 1,
         )
-        Box(
-            Modifier
-                .width(if (selected) 3.dp else 2.dp)
-                .height(if (selected) 22.dp else 14.dp)
-                .clip(RoundedCornerShape(1.dp))
-                .background(if (emphasized) tokens.colors.accent else tokens.colors.ruleStrong),
-        )
+        // 竖线固定在 22dp 轨道里：选中时只变高变粗，不影响格子几何。
+        Box(Modifier.height(22.dp), contentAlignment = Alignment.Center) {
+            Box(
+                Modifier
+                    .width(if (selected) 3.dp else 2.dp)
+                    .height(if (selected) 22.dp else 14.dp)
+                    .clip(RoundedCornerShape(1.dp))
+                    .background(if (emphasized) tokens.colors.accent else tokens.colors.ruleStrong),
+            )
+        }
         Text(
             card.rangeLabel.substringBefore(" – ").ifBlank { card.label },
             style = tokens.type.caption,
@@ -228,15 +233,16 @@ private fun PlanWeekTick(
 @Composable
 private fun PlanPendingTick(count: Int, selected: Boolean, onClick: () -> Unit) {
     val tokens = LocalTrellisTokens.current
+    // 和 PlanWeekTick 同样的固定格高，保证「待安排」与周刻度在同一条基线上。
     Column(
         modifier = Modifier
             .width(74.dp)
+            .height(70.dp)
             .clip(RoundedCornerShape(tokens.radius.control))
             .background(if (selected) tokens.colors.accentSoft.copy(alpha = 0.35f) else Color.Transparent)
-            .clickable(onClick = onClick)
-            .padding(vertical = 6.dp),
+            .clickable(onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
     ) {
         Text(
             "待安排",
@@ -245,13 +251,15 @@ private fun PlanPendingTick(count: Int, selected: Boolean, onClick: () -> Unit) 
             color = if (selected) tokens.colors.accent else tokens.colors.ink3,
             maxLines = 1,
         )
-        Box(
-            Modifier
-                .width(2.dp)
-                .height(if (selected) 22.dp else 14.dp)
-                .clip(RoundedCornerShape(1.dp))
-                .background(if (selected) tokens.colors.accent else tokens.colors.ruleStrong),
-        )
+        Box(Modifier.height(22.dp), contentAlignment = Alignment.Center) {
+            Box(
+                Modifier
+                    .width(if (selected) 3.dp else 2.dp)
+                    .height(if (selected) 22.dp else 14.dp)
+                    .clip(RoundedCornerShape(1.dp))
+                    .background(if (selected) tokens.colors.accent else tokens.colors.ruleStrong),
+            )
+        }
         Text(
             count.toString() + " 个",
             style = tokens.type.caption,

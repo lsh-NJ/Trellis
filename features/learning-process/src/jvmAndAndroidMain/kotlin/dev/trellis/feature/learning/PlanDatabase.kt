@@ -50,6 +50,8 @@ internal class PlanDatabase private constructor(val connection: Connection) : Au
         ensureColumn("process", "abandoned_at", "ALTER TABLE process ADD COLUMN abandoned_at TEXT NULL")
         // 删除是软删：只写时间戳，计划列表/有效计划都不再返回它；事件与计划数据保留用于追溯。
         ensureColumn("process", "deleted_at", "ALTER TABLE process ADD COLUMN deleted_at TEXT NULL")
+        // 目标的软删除是给 deletePlan 级联用的：目标下已没有未删计划时，目标也跟着消失。
+        ensureColumn("goal", "deleted_at", "ALTER TABLE goal ADD COLUMN deleted_at TEXT NULL")
         val addedUnitKind = ensureColumn(
             "plan_unit",
             "kind",

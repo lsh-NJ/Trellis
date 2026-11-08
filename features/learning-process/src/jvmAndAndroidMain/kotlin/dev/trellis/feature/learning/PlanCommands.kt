@@ -817,6 +817,69 @@ internal fun SqliteLearningPlanService.cmdDeletePlan(
         payload = eventJson("soft" to JsonPrimitive(true)),
         actor = env.actor, commandId = env.commandId,
     )
+    // 计划删了，目标不该孤零零留在目标页：这个目标下没有别的未删计划时，目标跟着软删；
+    // 还有别的计划在用就只解绑，不能把用户共用的目标一起删掉。
+    val processId = connection.prepareStatement("SELECT process_id FROM plan WHERE id = ?").use { ps ->
+        ps.setString(1, planId)
+        ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+    }
+    val goalId = processId?.let { id ->
+        connection.prepareStatement("SELECT goal_id FROM process WHERE id = ?").use { ps ->
+            ps.setString(1, id)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+        }
+    }
+    if (processId != null && goalId != null) {
+        val otherPlans = connection.prepareStatement(
+            "SELECT COUNT(*) FROM process WHERE goal_id = ? AND id <> ? AND deleted_at IS NULL",
+        ).use { ps ->
+            ps.setString(1, goalId)
+            ps.setString(2, processId)
+            ps.executeQuery().use { rs -> rs.next(); rs.getInt(1) }
+        }
+        if (otherPlans == 0) {
+            val now = nowIso()
+            connection.prepareStatement(
+                "UPDATE goal SET deleted_at = ?, updated_at = ? WHERE id = ?",
+            ).use { ps ->
+                ps.setString(1, now)
+                ps.setString(2, now)
+                ps.setString(3, goalId)
+                ps.executeUpdate()
+            }
+            val milestones = connection.prepareStatement(
+                "SELECT COUNT(*) FROM goal_milestone WHERE goal_id = ?",
+            ).use { ps ->
+                ps.setString(1, goalId)
+                ps.executeQuery().use { rs -> rs.next(); rs.getInt(1) }
+            }
+            appendEvent(
+                type = "goal.deleted", entity = "goal", entityId = goalId, planId = planId,
+                payload = eventJson(
+                    "goalId" to JsonPrimitive(goalId),
+                    "planId" to JsonPrimitive(planId),
+                    "milestones" to JsonPrimitive(milestones),
+                    "soft" to JsonPrimitive(true),
+                ),
+                actor = env.actor, commandId = env.commandId,
+            )
+        } else {
+            connection.prepareStatement(
+                "UPDATE process SET goal_id = NULL WHERE id = ?",
+            ).use { ps ->
+                ps.setString(1, processId)
+                ps.executeUpdate()
+            }
+            appendEvent(
+                type = "plan.goal_unlinked", entity = "plan", entityId = planId, planId = planId,
+                payload = eventJson(
+                    "goalId" to JsonPrimitive(goalId),
+                    "reason" to JsonPrimitive("目标还有其他计划，只解除关联"),
+                ),
+                actor = env.actor, commandId = env.commandId,
+            )
+        }
+    }
     ok(Unit, warnings = if (env.dryRun) listOf("dry-run：没有落库。") else emptyList())
 }
 

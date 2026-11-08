@@ -34,6 +34,7 @@ class PlanDeleteRuntimeTest {
         val runtime: AppRuntime,
         val store: LearningPlanService,
         val planId: String,
+        val goalId: String,
     )
 
     private fun tempHome(): File =
@@ -78,7 +79,15 @@ class PlanDeleteRuntimeTest {
             listOf(CommitmentDraft(week, listOf(0))),
         ).unwrap()
         store.acceptDraft(env(created.planId), draft.versionId, week).unwrap()
-        return Harness(runtime, store, created.planId)
+        // 计划建的时候目标也是一起建的：删计划时目标要跟着从目标页消失（软删）。
+        val goal = store.createGoal(
+            env(created.planId),
+            "删除验收的目标",
+            intent = "验证级联",
+            success = "目标页不再出现",
+        ).unwrap()
+        store.linkPlanToGoal(env(created.planId), created.planId, goal.goalId).unwrap()
+        return Harness(runtime, store, created.planId, goal.goalId)
     }
 
     @Test
@@ -104,6 +113,10 @@ class PlanDeleteRuntimeTest {
             assertTrue(
                 harness.store.plans().none { it.id == harness.planId },
                 "后端读侧也要过滤 deleted_at，重开程序不会再出现",
+            )
+            assertTrue(
+                harness.runtime.goals.none { it.id == harness.goalId },
+                "删除后目标页也要刷新，不能留下孤立目标，goals=${harness.runtime.goals}",
             )
         } finally {
             harness.runtime.shutdown()

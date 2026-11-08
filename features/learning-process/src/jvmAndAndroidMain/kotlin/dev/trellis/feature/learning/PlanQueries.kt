@@ -590,8 +590,9 @@ internal fun SqliteLearningPlanService.dayDate(day: String): LocalDate? = PlanTi
 // ---------------------------------------------------------------------------
 
 internal fun SqliteLearningPlanService.buildGoals(includeArchived: Boolean): List<GoalView> {
-    val sql = "SELECT id,title,kind,intent,success,deadline,status,parent_id FROM goal " +
-        (if (includeArchived) "" else "WHERE status <> 'archived' ") +
+    // 已软删除的目标不再出现在目标页；archived 仍按 includeArchived 决定。
+    val sql = "SELECT id,title,kind,intent,success,deadline,status,parent_id FROM goal WHERE deleted_at IS NULL " +
+        (if (includeArchived) "" else "AND status <> 'archived' ") +
         "ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END, updated_at DESC"
     return connection.prepareStatement(sql).use { ps ->
         ps.executeQuery().use { rs ->
@@ -619,7 +620,7 @@ internal fun SqliteLearningPlanService.buildGoals(includeArchived: Boolean): Lis
 
 internal fun SqliteLearningPlanService.buildGoal(goalId: String): GoalView? =
     connection.prepareStatement(
-        "SELECT id,title,kind,intent,success,deadline,status,parent_id FROM goal WHERE id = ?",
+        "SELECT id,title,kind,intent,success,deadline,status,parent_id FROM goal WHERE id = ? AND deleted_at IS NULL",
     ).use { ps ->
         ps.setString(1, goalId)
         ps.executeQuery().use { rs ->
@@ -662,7 +663,8 @@ internal fun SqliteLearningPlanService.plansOfGoal(goalId: String): List<Learnin
         // 放弃过的计划状态字段仍是 ended，读的时候按 abandoned_at 映射成 abandoned，UI 才分得清「结束」和「放弃」。
         "SELECT p.id, pr.title, CASE WHEN pr.abandoned_at IS NOT NULL THEN 'abandoned' ELSE p.status END " +
             "FROM plan p JOIN process pr ON pr.id = p.process_id " +
-            "WHERE pr.goal_id = ? ORDER BY p.created_at",
+            // 已删除（软删）的计划不再挂在目标下面。
+            "WHERE pr.goal_id = ? AND pr.deleted_at IS NULL ORDER BY p.created_at",
     ).use { ps ->
         ps.setString(1, goalId)
         ps.executeQuery().use { rs ->

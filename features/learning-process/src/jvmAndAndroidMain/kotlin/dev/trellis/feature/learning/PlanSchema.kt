@@ -36,6 +36,8 @@ internal val PLAN_SCHEMA_V1: List<String> = listOf(
         "deadline TEXT NULL, " +
         "status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','archived')), " +
         "parent_id TEXT NULL REFERENCES goal(id), " +
+        // 删除计划时可能级联软删目标：只写时间戳，目标页与目标读取都过滤它，事件保留用于追溯。
+        "deleted_at TEXT NULL, " +
         "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS idx_goal_status ON goal(status, updated_at)",
     "CREATE TABLE IF NOT EXISTS goal_milestone (" +
