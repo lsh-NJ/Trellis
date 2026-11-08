@@ -100,9 +100,12 @@ fun AppScreen(runtime: AppRuntime) {
             if (navLeft) {
                 NavRail(runtime)
             }
-            // 对话 / 知识库是「列表 + 正文」的横向结构：列表要贴导航栏、正文贴右边界。
+            // 对话 / 知识库 / 计划都是「列表 + 正文」的横向结构：列表贴导航栏、正文贴右边界。
             // 其它页维持 1120dp 居中——把表单/卡片拉满宽屏反而更难读。
-            val flushPage = runtime.currentTab == TAB_CHAT || runtime.currentTab == TAB_KNOWLEDGE
+            // 计划页 2026-11-08 晚起也走 flush：左栏跟对话/知识库同一条线，正文自己限宽（见 PlanScreen）。
+            val flushPage = runtime.currentTab == TAB_CHAT ||
+                runtime.currentTab == TAB_KNOWLEDGE ||
+                runtime.currentTab == TAB_PLAN
             Column(
                 modifier = Modifier.weight(1f).fillMaxHeight(),
                 horizontalAlignment = Alignment.CenterHorizontally,

@@ -122,10 +122,18 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                 PlanList(runtime)
                 ListSidebarSplitter()
             }
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
+            // 正文列自己限宽 1120 居中：本页现在是 flush 页（外壳不再套 1120 居中列），
+            // 不设上限的话 2K/4K 窗口会把周卡拉成一整屏长条。窄窗下它照旧吃满剩余宽度。
+            Box(Modifier.weight(1f).fillMaxHeight()) {
+                LazyColumn(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .widthIn(max = 1120.dp)
+                        .fillMaxWidth()
+                        .fillMaxHeight()
+                        .padding(horizontal = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
                 // 页头：计划页此前没有页标题，左边 232dp 的列表里孤零零一个「计划」。
                 // 计划级动作（重排 / 计划设置）从周卡标题行搬到页头右上角，和周卡内容解耦。
                 item { PlanHeader(runtime) }
@@ -147,6 +155,7 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                             item { PlanAutoCompletionCard(runtime) }
                         }
                     }
+                }
                 }
             }
             // 宽屏右栏：阶段进度常驻。抽屉打开时先让位——296 抽屉 + 232 列表 + 196 右栏
