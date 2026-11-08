@@ -117,15 +117,16 @@
      顶部实心「待安排」胶囊、中间节点数、底部「点开看」。
    - 点开后下方换成「待安排 · N 个节点」：合计分钟 +「按每天 60 分钟算，约 N 天」+ 按章节分组的节点与预计时间。
    - 运行时字段：`AppRuntime.planPendingNodes`、`planPendingSelected`、`selectPlanPending()`。
-2. **排期按每天投入分钟数打包**
+2. **排期按每天投入分钟数摊开（参考值，不是上限）**
    - `PlanStateView.dailyMinutes`（= `process.weekly_capacity_minutes / 7`）。
-   - `materializeWeek` 按每天预算塞（20+25 同一天，超过预算换下一天；单单元超预算独占一天）。
-   - 没设过投入时间的计划保持旧规矩「一天一个」，不猜容量。
+   - `materializeWeek` 按每天参考值摊（20+25 同一天，超过参考值换下一天；整周到参考值后摊到当前分钟最少的那天）。
+     2026-11-08 晚起不再因超出参考而拒绝或堆周日，见 §21。
+   - 没设过投入时间的计划保持旧规矩「一天一个」，不猜参考值。
 3. **计划设置（计划级属性，不是全局设置）**
    - 入口：计划页头部右侧「计划设置」文字按钮（有当前计划才出现）。
    - 弹窗：`PlanSettingsDialog` ——「只改当前这个计划（标题）；换一个计划就是另一套。」、
-     −/＋ 调 15–240、预设 30′/45′/60′/90′/120′、说明「排程按这个数往一天里塞节点；
-     已经排好的天不会自动重排，只影响之后铺的天数。」、取消/保存。
+     −/＋ 调 15–240、预设 30′/45′/60′/90′/120′、说明「时间只做参考：排程会尽量按这个数往一天里摊开，
+     不会因为超出就不排；已经排好的天不会自动重排。」、取消/保存。
    - 保存走 `setPlanDailyMinutes`（见 `plan-backend.md`），成功后关弹窗并 `refreshPlan()`。
    - 运行时：`planSettingsOpen`、`planDailyDraft`、`openPlanSettings/closePlanSettings/
      bumpPlanDailyDraft/choosePlanDailyDraft/savePlanDailyMinutes`。
@@ -163,9 +164,9 @@
    - 「本周到期没做完」逐条给三个动作：**今天做**（`moveOccurrence` 到今天）、**顺延一天**
      （`moveOccurrence` 到后一天；已到周日就提示等周结算，不硬塞下周）、**跳过**
      （`skipOccurrence`，只标这一天，本周承诺不释放）。
-   - 「今天能多投入？」一排 `不加时 / +30 / +60 / +90`：按「每天投入 + 加时 − 今天已排」，
-     把逾期项按路线顺序补进今天；答复会写进 `study.json` 的 `catchUpMinutes`（0–120），
-     下次默认带上，方便 AI 以后按这个推荐。
+   - 「今天能多投入？」一排 `不加时 / +30 / +60 / +90`：把本周逾期项**全部**补进今天
+     （2026-11-08 晚起时间只做参考，不再按「今天容量」过滤，见 §21）；答复会写进 `study.json` 的
+     `catchUpMinutes`（0–120），下次默认带上，方便 AI 以后按这个推荐。
    - 更早欠账（`backlog`）只展示；容量够时自动被 `ensureCommitment` 收进本周/下一周。
 2. **为什么没有「这周先不排 / 放弃」按钮**：活跃版本的承诺单元受 schema 触发器保护
    （`commitment_unit_no_rewrite` / `no_delete`，`PlanSchema.kt:141-147`），移出承诺要开新版本、
@@ -403,3 +404,18 @@ note 含「已经排过了」、单元与 occurrence 数不增。
 问不问时长、排不排本周全由 AGENT 判断，`<task:work>` 提示词同步改成中性描述。
 
 测试：`ResearchToolsTest` 默认路径断言第一周为空、不写周文档、回执不含「必须」/`ask_choices`；`explicitDailyMinutesAndScheduleFirstWeekWriteThePaceAndScheduleTheWeek` 钉住写节奏 + 同轮排周；`dailyMinutesAloneWritesThePaceWithoutSchedulingTheWeek` 与 `scheduleFirstWeekWithoutDailyMinutesUsesTheSuggestionButDoesNotWriteIt` 分别钉住两个参数互不牵连。
+
+---
+
+## 21 2026-11-08 晚：周时间只做参考（排程不再按容量截断）
+
+用户定的口径：「时间存在的本意是让 AGENT 作为参考值决定大概安排多少周任务，因此更多的应该是参考作用；计划产生可适当进行更多时间投入的补做和整体延期，我的倾向是告诉他参考就够了，不做硬性限制。」后端侧细节见 `docs/plan-backend.md` §14。
+
+- **`plan_week` 不再拒排**：删掉 `remainingCapacity`/`placeableIndices`/`overflow` 与「这一周没有剩余容量了…这些条目不硬塞」的早退；条目全部追加、全部铺天，回执在合计超过参考量时补一句「时间只做参考，超出也照排，觉得多可以整体延期」。
+- **摊天**：`assignDays` 先按每天参考值往后摊，整周都到参考值后回环挑**当前分钟最少**的那天（不堆周日）。前置知识检查、去重、「一周只排一次 / `replan=true`」这些保护不变。
+- **全局周表**：`create_learning_plan` 每周预算改成 `dailyMinutes × 7`（去掉 ×0.8），跨过参考值的那一条也带上；截止日仍截断，剩下的留待安排。
+- **节奏引擎**：`pickPoolUnitsForWeek` 参考量 = `daily × 7`，跨参考的那条也带上、池子够时每周至少 3 条；每周 ≤7 条只是引擎步子上限。
+- **补做**：「今天能多投入？」不再按今天容量过滤，逾期项全部挪到今天，回执报条数与参考分钟数。
+- **文案统一成「参考」**：计划设置弹窗、待安排合计（「参考每天 D 分钟，约 K 天」）、移动端「每天投入」「×7 只是参考投入」、`set_plan_pace` 回执与工具描述。
+- **只读事实保留**：逾期投影的 `remainingMinutes` 与管家上下文「本周还剩约 N 分钟可投入」仍是参考信息，不改语义。
+- **测试**：`PlanWeekToolsTest.itemsBeyondTheDailyReferenceAreStillScheduled`（85 > 参考 60 也全排）、`PlanToolsTest.aDeadlineStopsTheGlobalWeekTableAndLeavesTheRestInThePool`（30×7=210/周、两周 22 个、池 18）、`LearningPlanRhythmTest.theWeeklyPickIsCappedAtSevenUnits`（7 条上限不变）。

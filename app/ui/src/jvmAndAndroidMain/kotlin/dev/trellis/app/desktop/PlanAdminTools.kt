@@ -45,7 +45,7 @@ class PlanAdminTools(
         "2. 完成/顺延/改每天投入都会改用户数据：先得到明确同意，再带 confirmed=true 调；",
         "   不确定就先 ask_choices 问一句，别替用户拍板。",
         "3. 用户说「排下周 / 把下周排一下」时调 plan_week（week 传下周的 ISO 周，如 2026-W46）；",
-        "   plan_week 会按天预算生成条目并铺到天，已经排过的周会明确拒绝、不会重复追加。",
+        "   plan_week 会按每天的参考分钟数生成条目并铺到天，已经排过的周会明确拒绝、不会重复追加。",
         "   plan_next_week 只用于跨周对账（结算/补承诺/复盘/幂等推进），它**不重新生成周内容**；",
         "   不要自己算周号、也不要为了排下周重建计划；复盘调 review_last_week；一次只动一个计划。",
         "4. 文案不羞辱：说「上周完成 2/4，这周先排 3 个」，不说「落后 N 天」「欠了 N 个」。",
@@ -416,8 +416,8 @@ class PlanAdminTools(
     private inner class SetPlanPace : AgentTool {
         override val name: String = "set_plan_pace"
         override val description: String =
-            "改这份计划「每天投入多少分钟」（15–240）。会改用户数据，也影响之后补承诺/铺天的容量；" +
-                "只有用户明确说改、且确认了数字时才带 confirmed=true。"
+            "改这份计划「每天投入多少分钟」（15–240）。会改用户数据，也影响之后补承诺/铺天的参考投入；" +
+                "时间只做参考、不是硬上限。只有用户明确说改、且确认了数字时才带 confirmed=true。"
         override val parameters: String =
             "dailyMinutes：每天投入分钟数（15–240 的整数）；confirmed：布尔，只有用户确认后才传 true。"
 
@@ -447,8 +447,8 @@ class PlanAdminTools(
                 }
                 onChanged()
                 ToolResult(
-                    "每天投入改成 $dailyMinutes 分钟（大约每周 ${dailyMinutes * 7} 分钟）。" +
-                        "之后补承诺、铺天会按新的容量来；已经排好的节点不会被删。",
+                    "每天投入改成 $dailyMinutes 分钟（大约每周 ${dailyMinutes * 7} 分钟，只做参考）。" +
+                        "之后补承诺、铺天会按新的参考投入摊开；已经排好的节点不会被删。",
                 )
             }
         }

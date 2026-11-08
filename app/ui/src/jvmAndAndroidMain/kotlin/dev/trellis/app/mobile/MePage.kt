@@ -147,7 +147,7 @@ fun MePage(runtime: AppRuntime, onOpen: (PhoneSubPage) -> Unit) {
                         )
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            "×7 就是学习计划每周的容量",
+                            "×7 只是学习计划每周的参考投入，不硬性限制",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

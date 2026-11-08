@@ -154,16 +154,17 @@ internal fun SqliteLearningPlanService.advanceRhythmInternal(
  * 从待安排池里挑下一周要承诺的单元。
  *
  * 规则只有这一份（选量逻辑散在 UI/AI 里，两边就会排得不一样）：
- * - 周容量 = 每天投入 × 7 × 80%，留 20% 缓冲；
+ * - 参考量 = 每天投入 × 7（时间只做参考：2026-11-08 用户定的，不硬卡）；
  * - 按路线顺序取，尽量不在一章中间停；
+ * - 参考量用完时，跨过它的那一条也带上；池子够的话每周至少取 3 条（参考值小也不会一周只推 1 条）；
  * - 最近一段过去的周完成率 < 60% 就再缩 15%（「这周本来就排多了」）；
- * - 一周最多 7 个；单个单元再长也要先取一个，不然永远排不动。
+ * - 一周最多 7 个（引擎自身的步子上限，防止待安排池一次全倒进一周）；单个单元再长也要先取一个。
  */
 internal fun SqliteLearningPlanService.pickPoolUnitsForWeek(planId: String, versionId: String): List<String> {
     val pool = poolRows(planId)
     if (pool.isEmpty()) return emptyList()
     val daily = planDailyMinutes(planId) ?: 60
-    var budget = (daily * 7 * 0.8).toInt().coerceAtLeast(60)
+    var budget = (daily * 7).coerceAtLeast(60)
     val lastPastWeek = commitmentWeeksOfVersion(versionId).lastOrNull { it < currentWeek() }
     if (lastPastWeek != null) {
         val stats = weekCompletion(planId, versionId, lastPastWeek)
@@ -175,8 +176,10 @@ internal fun SqliteLearningPlanService.pickPoolUnitsForWeek(planId: String, vers
     var sum = 0
     var chapter = ""
     for (unit in pool) {
-        if (picked.isNotEmpty() && sum + unit.minutes > budget) break
-        if (picked.isNotEmpty() && unit.chapter != chapter && sum >= budget * 0.6) break
+        // 少于最少条数时先保证条数：参考值再小，也别一周只推一条。
+        val belowMinimum = picked.size < MIN_UNITS_PER_WEEK
+        if (picked.isNotEmpty() && !belowMinimum && sum >= budget) break
+        if (picked.isNotEmpty() && !belowMinimum && unit.chapter != chapter && sum >= budget * 0.6) break
         picked += unit.id
         sum += unit.minutes
         chapter = unit.chapter
@@ -184,6 +187,9 @@ internal fun SqliteLearningPlanService.pickPoolUnitsForWeek(planId: String, vers
     }
     return picked
 }
+
+/** 每周至少取这么多条（池子够时）；时间只做参考，不能因为参考值小就一周只推一条。 */
+private const val MIN_UNITS_PER_WEEK = 3
 
 /** 这一周有没有结过账（`plan.settled` 事件）。 */
 internal fun SqliteLearningPlanService.hasSettled(planId: String, week: String): Boolean =

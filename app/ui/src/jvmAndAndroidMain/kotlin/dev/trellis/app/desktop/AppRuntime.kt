@@ -4725,10 +4725,11 @@ class AppRuntime private constructor() {
     }
 
     /**
-     * 今天能多补多少：先记下用户答复的加时，再把本周逾期、且今天装得下的项补进来。
+     * 今天能多补多少：先记下用户答复的加时，再把本周逾期的项全部补进今天。
      *
-     * 只补「今天容量 = 每天投入 + 加时 - 今天已排」以内的，按路线顺序；
-     * 装不下的留在原处，等用户再顺延/跳过，或交给下一步的协商重排。
+     * 时间只做参考（2026-11-08 用户定的：每天投入 × 7 只对 AGENT 起参考作用，不硬性限制）：
+     * 不做容量过滤，逾期项不会因为「今天装不下」被留在原地。加时与每天投入只在回执里
+     * 给一个参考值，具体补多少由用户自己看着办，不合适就在计划页拖到别的天。
      */
     fun planCatchUpToday(extraMinutes: Int) {
         val service = learningPlan() ?: return
@@ -4740,29 +4741,23 @@ class AppRuntime private constructor() {
         studyPrefs = prefs
         if (::studyPrefsStore.isInitialized) studyPrefsStore.save(prefs)
         val today = clock.today().toString()
-        val plannedToday = runCatching { service.today(planId, today) }
-            .getOrNull()?.occurrences?.sumOf { it.minutes } ?: 0
-        var remaining = (planDailyMinutes ?: overdue.dailyMinutes ?: DEFAULT_DAILY_MINUTES) +
-            clean - plannedToday
         var moved = 0
+        var movedMinutes = 0
         overdue.thisWeek.forEach { item ->
-            if (item.minutes <= remaining) {
-                val result = runCatching {
-                    service.moveOccurrence(planAdjustCommand(planId), item.occurrenceId, today, "今天补做")
-                }.getOrNull()
-                if (result?.ok == true) {
-                    remaining -= item.minutes
-                    moved++
-                }
+            val result = runCatching {
+                service.moveOccurrence(planAdjustCommand(planId), item.occurrenceId, today, "今天补做")
+            }.getOrNull()
+            if (result?.ok == true) {
+                moved++
+                movedMinutes += item.minutes
             }
         }
-        val leftover = overdue.thisWeek.size - moved
+        val reference = (planDailyMinutes ?: overdue.dailyMinutes ?: DEFAULT_DAILY_MINUTES) + clean
         planMessage = when {
-            moved == 0 && leftover > 0 ->
-                "今天没有余量了：把每天投入或加时调大，或者把这几条顺延/跳过。"
-            leftover > 0 -> "今天补了 " + moved + " 项（记下加时 " + clean + " 分钟），还剩 " + leftover + " 项放不下。"
-            moved > 0 -> "今天补了 " + moved + " 项，本周逾期的都排上了（加时 " + clean + " 分钟）。"
-            else -> "这周没有逾期的项。"
+            overdue.thisWeek.isEmpty() -> "这周没有逾期的项。"
+            moved == 0 -> "这次没能把逾期项挪到今天，检查一下计划库；加时先记下了（" + clean + " 分钟）。"
+            else -> "今天补了 " + moved + " 项（约 " + movedMinutes + " 分钟；参考每天 " + reference +
+                " 分钟，时间只做参考），觉得多可以在计划页拖到别的天。"
         }
         refreshPlan()
         tick++
