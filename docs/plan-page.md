@@ -372,3 +372,19 @@ note 含「已经排过了」、单元与 occurrence 数不增。
   （共用目标 → 只解绑、`plan.goal_unlinked`、目标仍可见）
 - `PlanDeleteRuntimeTest.anAbandonedPlanDisappearsFromTheListAfterDeleting` 追加
   「删除后 `runtime.goals` 里也不再有这个目标」的断言。
+
+---
+
+## 19 2026-11-09：去掉重复的顶部阶段条，只保留右侧「阶段进度」
+
+05:40 实拍：1440dp 窗口里计划页同时有顶部阶段条（3 个一行、两行）与右侧「阶段进度」栏，
+两处列的是同一份阶段、同一套 `done/total`，内容重复且把周刻度往下挤。
+
+- **删掉** `PlanStageStrip` / `PlanStageChip` / `STAGE_CHIPS_PER_ROW`（`PlanPageParts.kt`），
+  计划页不再渲染顶部阶段条（`PlanScreen.kt` 的 `item { PlanStageStrip(runtime) }` 一并去掉）。
+- **保留** 右侧 `PlanStageRail`：阶段名 + 进度（有单元时 `done/total`，还没单元时退化成
+  `W48–W51` 周区间）+ 细进度条；点一行仍跳到该阶段第一周。
+- 右栏判据不变：`shouldShowStageRail(windowWidthDp, stageCount)`——窗口 ≥ 1100dp 且
+  该计划有阶段才显示；抽屉打开时让位隐藏。窄窗口暂时看不到阶段（大纲仍可在「计划文档」里看）。
+- 回归：`PlanPageRuntimeTest.PlanStageRailVisibilityTest` 仍钉右栏显隐的窗口宽度断点；
+  `:app:ui:compileKotlinJvm` 通过。

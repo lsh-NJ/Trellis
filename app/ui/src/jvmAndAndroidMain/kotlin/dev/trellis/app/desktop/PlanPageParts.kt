@@ -749,93 +749,6 @@ private fun resourceKindLabel(kind: String): String = when (kind) {
 // ---------------------------------------------------------------- 阶段条 / 阶段进度
 
 /**
- * 阶段条（周刻度条上方）：整份计划按大纲切成几段，一段一个 chip，当前选中周落在哪段哪段高亮。
- *
- * chip 上同时摆「阶段名 + 完成/总数」：窄窗口右侧阶段进度栏会隐藏，进度得在这里还能看到。
- * 点 chip 跳到该阶段第一张周卡——不是跳到周号本身，因为阶段区间未必和排出来的周严丝合缝。
- */
-@Composable
-internal fun PlanStageStrip(runtime: AppRuntime) {
-    val tokens = LocalTrellisTokens.current
-    val stages = runtime.planStages
-    if (stages.isEmpty()) return
-    val selectedWeek = runtime.planSelectedWeek
-    val active = stages.firstOrNull { stage -> stage.covers(selectedWeek) }
-    Column(verticalArrangement = Arrangement.spacedBy(tokens.space.s)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "阶段",
-                style = tokens.type.meta,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (active != null && active.focus.isNotBlank()) {
-                Spacer(Modifier.width(tokens.space.s))
-                Text(
-                    active.focus,
-                    style = tokens.type.meta,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-        }
-        // 阶段条按行折行：1440 宽下右侧还有 196dp 阶段进度栏，单行 6 个 chip 会被右栏裁掉。
-        // 每行最多 3 个（6 个阶段 = 两行），窄窗也读得下；比横向滚动更容易一眼看全。
-        Column(verticalArrangement = Arrangement.spacedBy(tokens.space.xs)) {
-            stages.chunked(STAGE_CHIPS_PER_ROW).forEach { row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(tokens.space.xs)) {
-                    row.forEach { stage ->
-                        PlanStageChip(
-                            stage = stage,
-                            selected = stage.covers(selectedWeek),
-                            onClick = {
-                                stageFirstPlanWeek(runtime, stage)?.let { runtime.selectPlanWeek(it) }
-                            },
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-/**
- * 一个阶段 chip：28dp 高、4dp 圆角的硬朗小条（不是药丸），名字 + 等宽进度。
- *
- * 选中用浅强调底 + accent 边；未选中只留发丝线——和页面「少描边、选中才亮」的规矩一致。
- */
-@Composable
-private fun PlanStageChip(stage: StageView, selected: Boolean, onClick: () -> Unit) {
-    val tokens = LocalTrellisTokens.current
-    val shape = RoundedCornerShape(tokens.radius.control)
-    Row(
-        modifier = Modifier
-            .height(28.dp)
-            .clip(shape)
-            .background(if (selected) tokens.colors.accentSoft else Color.Transparent)
-            .border(1.dp, if (selected) tokens.colors.accent else tokens.colors.rule, shape)
-            .clickable(onClick = onClick)
-            .padding(horizontal = tokens.space.m),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(tokens.space.s),
-    ) {
-        Text(
-            stage.name,
-            style = tokens.type.control,
-            color = if (selected) tokens.colors.onAccentSoft else tokens.colors.ink2,
-            maxLines = 1,
-        )
-        Text(
-            stage.done.toString() + "/" + stage.total,
-            style = tokens.type.caption,
-            fontFamily = AppFonts.mono,
-            color = if (selected) tokens.colors.onAccentSoft else tokens.colors.ink3,
-        )
-    }
-}
-
-/**
  * 右侧阶段进度栏的显示开关：宽窗 + 有阶段才显示。
  *
  * 判据用**窗口宽度**，不是页面自己的 `maxWidth`：计划页被外壳限宽在 1120dp（再减左右各 20dp 内边距），
@@ -852,9 +765,6 @@ private fun stageProgressLabel(stage: StageView): String {
 
 internal fun shouldShowStageRail(windowWidthDp: Float, stageCount: Int): Boolean =
     windowWidthDp >= TrellisBreakpoints.medium && stageCount > 0
-
-/** 阶段条每行最多几个 chip：3 个一行，6 个阶段两行就摆得下，不会被右侧阶段栏裁掉。 */
-private const val STAGE_CHIPS_PER_ROW = 3
 
 /**
  * 右侧阶段进度栏（宽屏才显示）：一列「阶段名 / 完成 M/N / 3dp 细进度条」，点一行跳到该阶段第一周。
