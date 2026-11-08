@@ -127,16 +127,20 @@
 | `app/desktop/.../StewardStore.kt` | 设置/checkpoints/记忆/摘要落盘，旧 plan-check 迁移 |
 | `app/desktop/.../StewardRuntime.kt` | 仪式编排：check() 幂等与合并、forceRun() 调试触发、模板/润色、记忆写入、通知 |
 | `app/desktop/.../StewardProposal.kt` | 建议模型、变更类型、模板生成规则 |
+| `app/desktop/.../AutonomyTrigger.kt` | 完成事件纯函数：完成前后 `stages()` 快照对比 → `StageDone` / `PlanDone`（空壳阶段、待安排池判定） |
+| `app/desktop/.../AutonomyTools.kt` | 自主轮 7 个只读/提议工具：`read_learning_overview` / `read_knowledge_overview` / `search_web` / `search_exercises` / `recommend_exercises` / `propose_practice` / `rest` |
+| `ai/.../steward/ProactivePrompt.kt` | 自主轮提示词覆盖层（只读+只提议、rest、知识网络默认已掌握）+ `<how_to_expand>` guidance |
 | `app/desktop/.../Notifier.kt` | 跨平台系统通知（失败静默） |
 | `ai/.../steward/StewardPrompt.kt` | 人格提示词、事实块、晨/晚/合并模板 |
-| `app/desktop/.../ChatState.kt` | `SessionKind`、`ChatLine.proposal`/`proposalState` |
+| `app/desktop/.../ChatState.kt` | `SessionKind`、`ChatLine.proposal`/`proposalState`、`ChatSession.unread` |
 | `app/desktop/.../ChatStore.kt` | kind / proposal / proposalState 的序列化（旧文件兼容） |
-| `app/desktop/.../AppRuntime.kt` | 接线：focus/ticker、`appendStewardLine`、`sendChat` 人格分叉、采纳/拒绝/协商 |
+| `app/desktop/.../AppRuntime.kt` | 接线：focus/ticker、`appendStewardLine`、`sendChat` 人格分叉、采纳/拒绝/协商；自主轮（完成事件检测、只读工具集、未读/通知） |
 | `app/desktop/.../ChatScreen.kt` | 管家置顶行、主动消息与普通会话同一渲染管线（`ChatBlock.Round.user` 可空）、建议卡（渐变+框内滚动） |
 | `app/desktop/.../SettingsScreen.kt` | 管家设置区 |
 
 测试：`StewardStoreTest`、`StewardRuntimeTest`、`StewardProposalsTest`、`NotifierTest`、
-`ChatStoreTest`（kind/proposal 往返）、`ai` 的 `StewardPromptTest`。
+`ChatStoreTest`（kind/proposal 往返）、`ai` 的 `StewardPromptTest`；
+自主检查：`AutonomyToolsTest`、`AutonomyTriggerTest`、`ai` 的 `ProactivePromptTest`。
 
 ## 9. 已知边界 / 后续
 
@@ -168,3 +172,73 @@
 - 执行：每条未结束的计划优先进它绑定的会话；会话不存在/没绑定则由管家代跑（请求开头是「【代排】」）。
   这一轮用的是完整的工具与提示词（`buildChatRig`），和用户自己说话完全同一条链路；结果写回目标会话（用户和管家的消息都留痕，带「—— 本周已排 / 本周没排成」状态行）。
 - 开关：设置页「管家 · 每周自动排周计划」，关掉后不会再自动跑；用户仍可在会话里说「排本周」。
+
+## 5.3 自主检查（阶段/计划完成后，2026-11-08）
+
+用户口径：**不用按钮、不用让用户点「检查一下」**——用户把计划推进到「一个阶段完成」或「一份计划完成」时，
+管家静默跑一轮自主检查，看能帮用户做什么；没事就什么都不说。两条典型链路是「通识课学完 → 推一道练习」
+和「一个就业向计划学完 → 给下一步方案」。
+
+### 触发条件（`AutonomyTrigger.kt`）
+
+- 完成一个节点时，`AppRuntime` 在命令前后各取一次 `service.stages(planId)` 快照，交给纯函数
+  `detectAutonomyEvent(before, after, poolEmpty)` 对比；**只有两种情况触发**：
+  1. **阶段完成（StageDone）**：同一个阶段 id 在 before 里没完成、after 里完成了（`total>0 && done>=total`）；
+  2. **计划完成（PlanDone）**：after 里所有阶段都 `total>0 && done>=total`，且待安排池为空（`poolEmpty`）。
+     计划完成优先于阶段完成（刚完成的是最后一个阶段时返回 PlanDone，并带上那个阶段）。
+- **单节点完成不触发**：既不唤醒自主轮，也不标未读/发通知；单节点完成仍走原来的模板练习提议
+  （`AppRuntime.maybeProposePractice`）。
+- **练习卡由谁推**：阶段/计划完成、且配了模型时，练习由自主轮用 `propose_practice` 判断，
+  模板提议跳过；没配模型时仍由模板兜底（行为同旧版）。
+- **只对用户动作触发**：计划页勾节点（`origin = "ui.plan"`）与任务页勾节点（`origin = "ui.tasks.node"`）。
+  笔记自动勾选（`knowledge.auto-complete`）、系统节奏结算（`scheduler`）、撤销/取消完成都不触发。
+- 边界：before/after 为空、阶段 `total = 0`（空壳阶段）、计划已结束/已放弃、同一轮已有自主检查在跑
+  （`chatBusy`）时——不重复触发；繁忙时只留一个待跑标记，这一轮结束后再补跑。
+
+### 这一轮怎么跑
+
+- **静默切到管家会话跑一轮**：不写用户发言、不切导航页；聊天忙时排队。产出作为管家的主动消息写进
+  置顶管家会话（渲染与晨/夜消息同一套）。
+- **未读**：用户当时不在对话页 → 会话标未读红点（打开即清）；人在对话页就直接看到。
+- **通知**：只有「应用失焦 + 设置页桌面通知开」才发系统通知（复用 `Notifier.kt`，失败静默）。
+- **rest 静默**：没有值得说的事就调 `rest` 收尾——不写可见消息、不标未读、不弹通知，也**不是**错误。
+  语气要求「一次只说一件最重要的事」，不为说话而说话。
+
+### 只读 + 只提议（这一轮的工具边界）
+
+- 这一轮工具集**只含只读工具 + 提议/收尾工具**：
+  `read_learning_overview`、`read_knowledge_overview`、`get_learning_plan`、`read_plan_doc`、
+  `list_goals`、`recall_memory`、`search_web`、`search_exercises`、`recommend_exercises`，
+  以及 `propose_practice`、`ask_choices`、`rest`。
+- **写工具本轮不可用**：建计划、调研建计划、排周、改/勾/挪节点、改节奏、建/改目标与里程碑、写计划文档、
+  同步周文档、加待办——都不在工具集里。提示词同样禁止说「已经帮你建好/改好/排好了」。
+- `propose_practice` 只往会话里推一张用户可接受/忽略的练习卡，不修改计划；
+  `ask_choices` 只把 2–5 个选项摆到输入框上方，让用户拍板。
+- **用户点选后，写操作在下一轮普通轮执行**（那时工具集恢复全量，写工具仍需 `confirmed=true`/审批）。
+  所以「用户点一下确认」不是硬编码的剧本，而是设计里必须的一步：方向由用户拍板。
+
+### 知识网络默认表示「已掌握」
+
+- `read_knowledge_overview` 把知识网络里的**笔记/概念默认当作「用户已了解、基本掌握」**：
+  它们是能力证据与已覆盖范围，不是待办。
+- 推荐方向「向上/向外」：项目、进阶、整合、输出；**不建议重复学习**已经覆盖的内容；
+  练习（`recommend_exercises` → `propose_practice`）用来巩固/检验，而不是从头再学。
+
+### 两条典型产出
+
+- **通识课阶段完成**（题库能匹配）：`recommend_exercises` 挑一道（优先没做过/做错过的），
+  `propose_practice` 推练习卡；用户点「开始练习」进现有练习二级页，作答落 `<home>/exams/attempts.jsonl`。
+- **计划完成（由点到面）**：`recall_memory` 看目标与偏好 → `read_learning_overview` /
+  `read_knowledge_overview` / `list_goals` 看学习与知识现状 → 必要时 `search_web` 调研外部要求 →
+  给出「下一步方案」（为什么、学什么、阶段与周次、第一周做什么、与已掌握内容的关系）+
+  `ask_choices` 2–3 个方向；用户点选后，下一轮普通轮才真正建计划/排周。
+
+### 与既有机制的边界（本轮都不改）
+
+- **晨/夜仪式（§3）**：触发、幂等 checkpoint、合并规则、模板/润色、摘要全不变；自主轮不消耗晨/晚
+  checkpoint，也不写 `digests/`。
+- **自动采纳（§5.1）**：仍只管 `StewardProposal` 的 `Move`/`Place`；自主轮不产 `StewardProposal`、
+  不触发自动采纳，`autoAdopt` 开关对它无影响。
+- **每周自动排周计划（§5.2）**：仍按「周日 18:00 后 / 周一 + 同一周一次」用完整工具链跑；
+  自主轮不排周、不改节奏。两条线互不调用。
+- 不新增按钮或手动入口：触发完全由完成事件驱动；演示/验收时把某阶段最后一个节点勾掉即可。
