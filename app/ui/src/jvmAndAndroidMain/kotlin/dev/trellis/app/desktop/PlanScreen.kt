@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.padding
@@ -56,6 +57,7 @@ import androidx.compose.ui.text.font.FontWeight
 import java.time.LocalDate
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.trellis.domain.plan.LearningPlanInfo
 import dev.trellis.ui.LocalCardStyle
 import kotlinx.coroutines.launch
 
@@ -166,19 +168,36 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     if (runtime.planSettingsOpen) PlanSettingsDialog(runtime)
 }
 
-/** 左侧计划列表：和对话页/知识库共用 `ListSidebar` 骨架（贴边、可拖宽、同一套行样式）。 */
+/**
+ * 左侧计划列表：和对话页/知识库共用 `ListSidebar` 骨架（贴边、可拖宽、同一套行样式）。
+ *
+ * 已完成的计划（[AppRuntime.completedPlanIds]，由 `refreshPlan` 按「阶段全完成 + 待安排池空」算好）
+ * 从原分类里摘出来，收进底部固定的「已完成」折叠组：
+ * - 进行中的计划仍留在原分类下，分类被摘空就整段不画（不留只有标题的空分组）；
+ * - 已完成默认收起，标题带数量；组内行与分类里的行是同一套 [PlanSidebarRow]、同一个 `selectPlan`，
+ *   计划完成只影响分组位置，不影响用户点开查看/操作。
+ */
 @Composable
 private fun PlanList(runtime: AppRuntime) {
     val visible = runtime.planAll.filter { it.status != "ended" }
-    val grouped = visible.groupBy { runtime.planCategories[it.id] ?: "未分类" }
+    val completed = visible.filter { it.id in runtime.completedPlanIds }
+    val active = visible.filter { it.id !in runtime.completedPlanIds }
+    val grouped = active.groupBy { runtime.planCategories[it.id] ?: "未分类" }
     ListSidebar(
         title = "学习计划",
-        count = visible.size,
+        // 头部只数分类里还在进行的那些：完成数由底部「已完成 N」自己报，不重复计。
+        count = active.size,
         actionLabel = "",
         onAction = null,
     ) {
-        Column(Modifier.fillMaxHeight().verticalScroll(rememberScrollState())) {
+        Column(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState()),
+        ) {
             grouped.forEach { (category, plans) ->
+                if (plans.isEmpty()) return@forEach
                 Text(
                     category,
                     style = LocalTrellisTokens.current.type.meta,
@@ -186,15 +205,82 @@ private fun PlanList(runtime: AppRuntime) {
                     modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 2.dp),
                 )
                 plans.forEach { plan ->
+                    PlanCategorySidebarRow(runtime, plan)
+                }
+            }
+        }
+        if (completed.isNotEmpty()) {
+            PlanCompletedGroup(runtime, completed)
+        }
+    }
+}
+
+/** 分类下的一行计划：子标题按状态切换（已放弃 / 进行中 / 草稿 / 已排）。 */
+@Composable
+private fun PlanCategorySidebarRow(runtime: AppRuntime, plan: LearningPlanInfo) {
+    PlanSidebarRow(
+        title = plan.title,
+        sub = when {
+            // 放弃的计划还留在左栏（历史还能回来看），但要和进行中的一眼分开。
+            plan.status == "abandoned" -> "已放弃"
+            plan.id == runtime.planFocusId -> "进行中"
+            plan.status == "draft" -> "草稿"
+            else -> "已排"
+        },
+        selected = runtime.planFocusId == plan.id,
+        muted = plan.status == "abandoned",
+        onClick = { runtime.selectPlan(plan.id) },
+    )
+}
+
+/**
+ * 底部固定的「已完成」分组：标题带数量、默认收起，展开后最多占 220dp（内部滚动），
+ * 保证它下面的列表头始终留在视野里。行复用 [PlanSidebarRow]，选中态与分类里的计划一致。
+ */
+@Composable
+private fun PlanCompletedGroup(runtime: AppRuntime, plans: List<LearningPlanInfo>) {
+    val tokens = LocalTrellisTokens.current
+    var expanded by remember { mutableStateOf(false) }
+    // 焦点落进组里时自动摊开一次：否则用户正在看的计划藏在收起的分组里，找不到选中态。
+    val focusInside = plans.any { it.id == runtime.planFocusId }
+    LaunchedEffect(focusInside) { if (focusInside) expanded = true }
+    Column(Modifier.fillMaxWidth().padding(top = 6.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(4.dp))
+                .clickable { expanded = !expanded }
+                .padding(start = 4.dp, end = 4.dp, top = 6.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "已完成",
+                style = tokens.type.meta,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                " " + plans.size,
+                style = tokens.type.meta,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                if (expanded) "▾" else "▸",
+                style = tokens.type.meta,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+            )
+        }
+        if (expanded) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 220.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                plans.forEach { plan ->
                     PlanSidebarRow(
                         title = plan.title,
-                        sub = when {
-                            // 放弃的计划还留在左栏（历史还能回来看），但要和进行中的一眼分开。
-                            plan.status == "abandoned" -> "已放弃"
-                            plan.id == runtime.planFocusId -> "进行中"
-                            plan.status == "draft" -> "草稿"
-                            else -> "已排"
-                        },
+                        sub = if (plan.status == "abandoned") "已放弃" else "已完成",
                         selected = runtime.planFocusId == plan.id,
                         muted = plan.status == "abandoned",
                         onClick = { runtime.selectPlan(plan.id) },

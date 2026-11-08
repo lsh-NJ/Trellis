@@ -77,14 +77,22 @@ class PlanAdminTools(
         )
     }
 
-    /** 所有工具都对着「当前唯一活跃计划」：一次只动一个计划，这是提示词和工具一起守的边界。 */
-    private fun withActivePlan(block: (LearningPlanService, String) -> ToolResult): ToolResult {
+    /**
+     * 所有工具都对着「当前唯一活跃计划」：一次只动一个计划，这是提示词和工具一起守的边界。
+     *
+     * [writable]=true 时先挡住已完成计划；只读的 get_learning_plan / review_last_week 传 false。
+     */
+    private fun withActivePlan(
+        writable: Boolean = true,
+        block: (LearningPlanService, String) -> ToolResult,
+    ): ToolResult {
         val svc = service() ?: return noService()
         val planId = svc.activePlanId() ?: return ToolResult(
             "现在没有活跃的学习计划，没法管。先在「计划」页建一份；" +
                 "如果用户想从 B 站课程排一份计划，那是「排成学习计划」（另一条路）。",
             isError = true,
         )
+        if (writable) completedPlanGuard(svc, planId)?.let { return it }
         return block(svc, planId)
     }
 
@@ -130,7 +138,7 @@ class PlanAdminTools(
                 "管计划前先调它，不要凭记忆猜用户排了什么。"
         override val parameters: String = "不需要参数。"
 
-        override suspend fun call(arguments: JsonObject): ToolResult = withActivePlan { svc, planId ->
+        override suspend fun call(arguments: JsonObject): ToolResult = withActivePlan(writable = false) { svc, planId ->
             val today = planToday()
             val todayStr = today.toString()
             val week = isoWeekOf(today)
@@ -358,7 +366,7 @@ class PlanAdminTools(
             "生成/读取上一周的复盘：完成单元数、投入时间、动手天数和一条下周建议。已经生成过就直接读，不重复写。"
         override val parameters: String = "不需要参数。"
 
-        override suspend fun call(arguments: JsonObject): ToolResult = withActivePlan { svc, planId ->
+        override suspend fun call(arguments: JsonObject): ToolResult = withActivePlan(writable = false) { svc, planId ->
             val today = planToday()
             val week = isoWeekOf(today.minusWeeks(1))
             val existing = svc.review(planId, week)

@@ -75,6 +75,38 @@ class ProactivePromptTest {
     }
 
     @Test
+    fun aCompletedPlanStaysDoneAndExpansionOpensANewPlan() {
+        // 旧计划完成就保持完成：拓展 / 进阶内容进新计划，不往旧计划里继续排。
+        assertTrue(prompt.contains("旧计划已经完成"), prompt)
+        assertTrue(prompt.contains("保持完成状态"), prompt)
+        assertTrue(prompt.contains("不再往里面追加单元、不再排周、不再改节奏"), prompt)
+        assertTrue(prompt.contains("新计划"), prompt)
+        assertTrue(prompt.contains("create_learning_plan"), prompt)
+        assertTrue(prompt.contains("research_plan"), prompt)
+        assertTrue(prompt.contains("goalId"), prompt)
+        assertTrue(prompt.contains("不塞进已完成的那份计划里"), prompt)
+        assertTrue(prompt.contains("这一轮不要声称已经建好"), prompt)
+        // 不能留下「在原计划上继续排」的口径。
+        assertFalse(prompt.contains("在原计划上继续"), prompt)
+        assertFalse(prompt.contains("往已完成计划里加"), prompt)
+        assertFalse(prompt.contains("旧计划里继续排"), prompt)
+    }
+
+    @Test
+    fun stageCompletionNeverClaimsTheScheduleIsAlreadyChanged() {
+        assertTrue(prompt.contains("也不要说「已经排好」"), prompt)
+        assertTrue(prompt.contains("新开计划口径"), prompt)
+        assertFalse(prompt.contains("已排好"), prompt)
+    }
+
+    @Test
+    fun guidanceSaysExpansionNeedsANewPlan() {
+        val guidance = ProactivePrompt.guidance
+        assertTrue(guidance.contains("新开一份计划"), guidance)
+        assertTrue(guidance.contains("不往已经完成的计划里加"), guidance)
+    }
+
+    @Test
     fun thePromptHardcodesNoSubjectsOrDirections() {
         // 学什么由用户的数据和记忆决定；提示词一旦写死科目，别的方向就会被带偏。
         for (subject in listOf(

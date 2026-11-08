@@ -216,3 +216,43 @@
   等命令表现为「找不到这个目标」，不会把新数据挂到已删目标上。
 - **为什么软删**：与计划的删除语义保持一致（事件溯源表不可物理删），恢复只需清 `deleted_at`。
 - **测试**：见 `docs/plan-page.md` §18.3。
+
+---
+
+## 14 2026-11-08 晚：周时间只做参考，不再硬性限制
+
+用户定的口径（原话）：「时间存在的本意是让 AGENT 作为参考值决定大概安排多少周任务，因此更多的应该是参考作用；计划产生可适当进行更多时间投入的补做和整体延期，我的倾向是告诉他参考就够了，不做硬性限制。」
+
+以前 `每天投入 × 7` 是一条硬上限，四条链路都按它拒排/截断。现在只做参考：
+
+- `plan_week`（`PlanWeekTools.planOneWeek`）：去掉 `remainingCapacity`/`placeableIndices`/`overflow`——
+  条目**全部**追加进本周、全部铺到天，不再因为「超出参考分钟数」漏排或丢进待安排池。
+  `assignDays` 先按每天参考值往后摊，整周都到参考值后回环摊到当前分钟数最少的那天（不堆周日）；
+  回执在合计超过参考量时说「时间只做参考，超出也照排，觉得多可以整体延期」。
+- `create_learning_plan`（`PlanTools.autoCommitments`）：周表预算 = `dailyMinutes × 7`（去掉 ×0.8），
+  `takeWeekBatch` 会带上跨过参考值的那一条；截止日仍然算数，截止后剩下的留待安排并提示「整体延期」。
+- `advanceRhythm` 的选量（`PlanAdvance.pickPoolUnitsForWeek`）：参考量 = `daily × 7`，
+  跨过参考的那条也带上，池子够时每周至少 3 条；完成率 < 60% 的 15% 收缩保留；
+  每周 ≤ 7 条是引擎步子上限，不是时间规则。
+- `planCatchUpToday`：不再按「今天容量」过滤，本周逾期项全部补进今天；回执说明参考每天多少分钟。
+- 只读事实不变：`overdue().remainingMinutes`、管家上下文「本周还剩约 N 分钟可投入」仍然只是参考信息。
+- 文案：设置页/计划设置/待安排合计/移动端统一改成「参考」，工具描述与 guidance 同步。
+- 测试：`PlanWeekToolsTest.itemsBeyondTheDailyReferenceAreStillScheduled`（85 分钟 > 参考 60 也全排）、
+  `PlanToolsTest.aDeadlineStopsTheGlobalWeekTableAndLeavesTheRestInThePool`（30×7=210/周、两周 22 个）、
+  `LearningPlanRhythmTest.theWeeklyPickIsCappedAtSevenUnits`（7 条上限仍在）。
+
+---
+
+## 15 2026-11-08 晚：完成态（stages + pool 算出来的，不自动 `endPlan`）
+
+计划「完成」没有独立的状态字段，也没有一条「结束计划」的系统命令。它是**算出来的**：
+
+- **定义**：所有阶段都 `total>0 && done>=total`，且待安排池为空。纯函数 `isPlanComplete(stages, poolEmpty)`
+  是唯一定义，`AutonomyTrigger.detectAutonomyEvent` 里的 `PlanDone` 与它同一口径。
+- **落地**：计划页把完成态的计划移进左侧「已完成」分组（可折叠、默认收起、带数量）；
+  **用户侧不冻结**，仍可打开、查看、勾选/撤销、拖拽。不写 `process.status`，也不自动 `endPlan`。
+- **AGENT 侧只读**：`plan_week`、`write_plan_doc`、`sync_plan_week`、`plan_next_week`、`complete_plan_node`、
+  `move_plan_node`、`set_plan_pace` 对完成态计划一律拒绝（读工具不受影响）；每周自动排周计划也跳过。
+- **拓展 = 新开计划**：`create_learning_plan` / `research_plan` 新建一份（可带 `goalId` 挂到同一目标），
+  不在旧计划上追加阶段/单元/周次。
+- `endPlan` 仍然存在，但只由用户/显式命令调用，完成态不会自动触发它。
