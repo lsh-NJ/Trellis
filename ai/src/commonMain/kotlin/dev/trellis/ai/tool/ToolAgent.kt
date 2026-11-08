@@ -124,6 +124,17 @@ class ToolAgent(
             onLog(line)
         }
 
+        // 宿主纠正模型的记录（格式不对、调了不存在的工具）：这些是模型和宿主之间的返工，
+        // 用户看不懂、也不该被它打断 —— 只记进 transcript，并挂到下一条工具调用的详情上
+        // （见 ToolTrace.CallStarted.notes），不在过程列表里单独占一行。
+        val pendingNotes = mutableListOf<String>()
+
+        fun quiet(line: String) {
+            transcript += line
+            pendingNotes += line
+            while (pendingNotes.size > 5) pendingNotes.removeAt(0)
+        }
+
         var step = 0
         var lastSignature: String? = null
         var repeats = 0
@@ -184,7 +195,7 @@ class ToolAgent(
                 }
 
                 is AgentStep.Malformed -> {
-                    note("第 " + step + " 步：格式不对（" + parsed.reason + "），让它重说")
+                    quiet("第 " + step + " 步输出格式不对（" + parsed.reason + "），已让它重说")
                     conversation += LlmMessage(
                         LlmRole.User,
                         "你的输出不是我能认的格式：" + parsed.reason +
@@ -195,7 +206,7 @@ class ToolAgent(
                 is AgentStep.UseTool -> {
                     val tool = tools.firstOrNull { it.name == parsed.name }
                     if (tool == null) {
-                        note("第 " + step + " 步：它想调不存在的工具 " + parsed.name)
+                        quiet("第 " + step + " 步想调不存在的工具 " + parsed.name + "，已纠正")
                         conversation += LlmMessage(
                             LlmRole.User,
                             "没有叫 " + parsed.name + " 的工具。能用的只有：" +
@@ -221,12 +232,16 @@ class ToolAgent(
                         }
                         // 先占行：工具跑起来的那一刻界面就能看到「正在做什么」，
                         // 而不是等十几秒（research_plan 的调研）结束后才出现。
+                        // 之前攒下的宿主纠正记录跟着这次调用一起交出去（界面只在详情里显示）。
+                        val notesForCall = pendingNotes.toList()
+                        pendingNotes.clear()
                         onTrace(
                             ToolTrace.CallStarted(
                                 step = step,
                                 tool = parsed.name,
                                 description = tool.description,
                                 arguments = parsed.arguments.toString(),
+                                notes = notesForCall,
                             ),
                         )
                         val result = try {
@@ -242,6 +257,7 @@ class ToolAgent(
                                 arguments = parsed.arguments.toString(),
                                 result = result.content,
                                 isError = result.isError,
+                                notes = notesForCall,
                             ),
                         )
                         note("　→ " + result.content.lineSequence().first())

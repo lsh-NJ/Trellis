@@ -216,9 +216,38 @@ class ToolAgentTest {
         assertTrue(traces.any { it is ToolTrace.CallStarted && it.tool == "slow_tool" })
     }
 
+    @Test
+    fun theHostsCorrectionsGoIntoTheToolDetailInsteadOfTheProcessList() = runTest {
+        // 真实事故（2026-11-08）：模型没吐 JSON，宿主让它重说 —— 这行不该出现在
+        // 用户能看到的过程里（看不懂、还占一排）；但要挂到下一次工具调用的详情上，查得着。
+        val llm = ScriptedLlm(
+            "这一轮我先说人话，不给你 JSON。",
+            """{"tool": "list_events", "arguments": {}}""",
+            """{"done": true, "message": "有一个 task.completed"}""",
+        )
+        val log = mutableListOf<String>()
+        val traces = mutableListOf<ToolTrace>()
+
+        val run = ToolAgent(llm, listOf(Recorder())).run(
+            "你是插件作者",
+            "有什么事件",
+            onLog = { log += it },
+            onTrace = { traces += it },
+        )
+
+        assertTrue(run.ok, run.message)
+        assertTrue(log.none { it.contains("格式不对") }, log.toString())
+        // 调试记录里要留着：排查「它为什么反复重试」只能靠它。
+        assertTrue(run.transcript.any { it.contains("格式不对") }, run.transcript.toString())
+        val started = traces.filterIsInstance<ToolTrace.CallStarted>().first()
+        assertTrue(started.notes.any { it.contains("格式不对") }, started.notes.toString())
+        // 结果回来后的 Call 也要带着同一份记录（否则详情在跑完那一刻就丢了）。
+        val call = traces.filterIsInstance<ToolTrace.Call>().first()
+        assertTrue(call.notes.any { it.contains("格式不对") }, call.notes.toString())
+    }
+
     /** 带原生思考的假模型：第一次调用给 reasoning，之后不给（钉住「有才显示」）。 */
-    private class ThinkingLlm(private val replies: List<String>) : LlmClient {
-        private var index = 0
+    private class ThinkingLlm(private val replies: List<String>) : LlmClient {        private var index = 0
 
         override suspend fun complete(messages: List<LlmMessage>): String {
             val reply = replies[minOf(index, replies.size - 1)]

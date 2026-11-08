@@ -252,4 +252,42 @@ class ChatStoreTest {
         assertEquals("第 1 步：plan_week", line.text)
         assertEquals(trace, line.tool, "展开工具详情要能跨重启保留")
     }
+
+    @Test
+    fun hostNotesInsideAToolDetailSurviveAReload() {
+        val home = tempHome()
+        val at = 6_000L
+        val trace = ChatToolTrace(
+            tool = "plan_week",
+            description = "把某一周排出来",
+            arguments = """{"week":"2026-W45"}""",
+            result = "排好了 7 条",
+            isError = false,
+            notes = listOf("第 1 步输出格式不对（里面没有 JSON），已让它重说"),
+        )
+        ChatStore(home).save(
+            ChatSession(
+                id = "chat-tool",
+                title = "排本周",
+                createdAt = at,
+                updatedAt = at,
+                lines = listOf(ChatLine(1, ChatRole.Step, "第 1 步：plan_week", at, tool = trace)),
+            ),
+        )
+
+        val line = ChatStore(home).read("chat-tool")!!.lines.single()
+        // 宿主的纠错记录跟着工具详情走：重启后点开那一步还能看到「为什么重说过」。
+        assertEquals(trace.notes, line.tool?.notes)
+
+        // 旧会话文件里的 tool 没有 notes 字段：读回空列表而不是 null，界面不用额外判空。
+        File(File(home, "chat"), "chat-legacy-tool.json").writeText(
+            """{"id":"chat-legacy-tool","title":"旧的","createdAt":1,"updatedAt":2,"lines":[
+                {"id":1,"role":"Step","text":"第 1 步：plan_week","atMs":1,
+                 "tool":{"tool":"plan_week","description":"排周","arguments":"{}","result":"好了","isError":false}}
+            ]}""".trimIndent(),
+            Charsets.UTF_8,
+        )
+        val legacy = ChatStore(home).read("chat-legacy-tool")!!.lines.single()
+        assertEquals(emptyList<String>(), legacy.tool?.notes)
+    }
 }

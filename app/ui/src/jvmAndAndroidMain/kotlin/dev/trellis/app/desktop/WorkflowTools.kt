@@ -33,7 +33,7 @@ class WorkflowTools(private val runtime: AppRuntime) {
         "5. 每完成一步立刻调 step_done：index 从 0 开始，ok=true 表示做成了；做不成也照样调，ok=false 并在 note 里写一句为什么。",
         "6. 清单会实时出现在右侧栏；用户关掉右栏时它会缩成输入框上方的常驻条，所以别在回答里再抄一遍清单。",
         "7. 中途计划要变（少一步/多一步），再调一次 set_plan 覆盖：已经打勾的步骤会保留勾。",
-        "8. 真正需要用户拍板时（要不要改界面、改成什么风格、范围怎么定）才调 ask_choices：把 2–5 个选项摆到输入框上方，然后停下等用户点；做待办还是排计划由你自己判断，别拿这个问用户。",
+        "8. 真正需要用户拍板时（要不要改界面、改成什么风格、范围怎么定）才调 ask_choices：question 一句话说清在问什么，再给 2–5 个选项；问题会连着选项作为你这一轮回复的一部分出现在对话里，然后停下等用户点。做待办还是排计划由你自己判断，别拿这个问用户。",
         "</how_to_plan>",
     ).joinToString("\n")
 
@@ -75,7 +75,7 @@ class WorkflowTools(private val runtime: AppRuntime) {
     }
 
     /**
-     * 请用户拍板：把选项竖着摆到输入框上方。
+     * 请用户拍板：问题 + 选项成为这一轮回复的一部分，摆在同一轮里等用户点。
      *
      * 为什么做成工具而不是运行时自己猜：要不要动待办/计划、要不要改界面，是用户的
      * 选择。运行时按「刚才查过资源」之类痕迹自动弹按钮，等于替用户做决定，之前就
@@ -84,11 +84,11 @@ class WorkflowTools(private val runtime: AppRuntime) {
     private inner class AskChoices : AgentTool {
         override val name: String = "ask_choices"
         override val description: String =
-            "需要用户拍板时，把 2–5 个选项竖着摆到输入框上方，等用户点。调完就停下，别继续动工具。" +
-                "待办还是计划由你自己判断，不要用这个问。"
+            "需要用户拍板时，问一句并给 2–5 个选项。问题和选项会作为你这一轮回复的一部分出现在对话里，" +
+                "等用户点。调完就停下，别继续动工具。待办还是计划由你自己判断，不要用这个问。"
         override val parameters: String =
-            "question：一句话说清在问什么；options：数组 2..5 项，每项一句短话（≤12 字），" +
-                "例：[\"浅色\",\"深色\",\"先不改\"]"
+            "question：一句话说清在问什么（必填，用户靠它知道自己在选什么）；" +
+                "options：数组 2..5 项，每项一句短话（≤12 字），例：[\"浅色\",\"深色\",\"先不改\"]"
 
         override suspend fun call(arguments: JsonObject): ToolResult {
             val question = arguments["question"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
@@ -96,17 +96,24 @@ class WorkflowTools(private val runtime: AppRuntime) {
                 ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.trim() }
                 ?.filter { it.isNotEmpty() }
                 ?: emptyList()
+            if (question.isEmpty()) {
+                // 没有题干，用户就不知道自己在选哪个问题的答案——这正是这个工具存在的理由。
+                return ToolResult(
+                    "ask_choices 需要 question：用一句话说清在问什么（用户靠它知道自己在选什么）",
+                    isError = true,
+                )
+            }
             if (options.size < 2 || options.size > 5) {
                 return ToolResult("ask_choices 的 options 需要 2 到 5 项，现在有 " + options.size + " 项", isError = true)
             }
-            runtime.offerChoices(options)
+            runtime.offerChoices(question, options)
             val head = if (question.isEmpty()) "" else "问的是：$question。"
-            // 调完这一只之后不要再动别的工具；但也不能一句 JSON 都不吐，否则外层会判「格式不对」
-            // 再要一轮，过程行里多出一条噪音。所以直接把「下一步该输出什么」写在这句话里。
+            // 问题和选项已经作为一块挂在回复下面，所以这里只交代「你怎么收尾」：
+            // 解释一句就停，别把选项再抄一遍（抄了界面就是两份）。
             return ToolResult(
-                head + "已经把 " + options.size + " 个选项竖着摆到输入框上方：" +
+                head + "问题和 " + options.size + " 个选项已经作为一块挂在你的回复下面：" +
                     options.joinToString(" / ") + "。停下来等用户点。\n" +
-                    "现在用一句话说清你为什么这么选、用户点每个会发生什么，" +
+                    "现在用一两句话说明你为什么这么问、用户点每个会发生什么 —— 不要再把选项逐条抄一遍；" +
                     "然后用 {\"done\": true, \"message\": \"…\"} 结束这一轮（不要再调工具）。",
             )
         }

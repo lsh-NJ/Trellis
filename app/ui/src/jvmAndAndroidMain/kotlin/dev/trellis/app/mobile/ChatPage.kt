@@ -182,9 +182,22 @@ fun ChatPage(runtime: AppRuntime) {
             }
         }
 
-        if (runtime.chatChoices.isNotEmpty()) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = Gap.l)) {
-                runtime.chatChoices.forEach { choice ->
+        // 模型在等用户拍板：手机上没有侧栏，问题 + 选项贴在输入框上方（桌面端排进回复里）。
+        runtime.chatAsk?.let { ask ->
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Gap.l)
+                    .padding(bottom = Gap.s),
+            ) {
+                Text(
+                    "问题",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(ask.question, style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(Gap.xs))
+                ask.options.forEach { choice ->
                     Box(
                         Modifier
                             .fillMaxWidth()
@@ -197,7 +210,6 @@ fun ChatPage(runtime: AppRuntime) {
                         Text(choice.label, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
-                Spacer(Modifier.height(Gap.s))
             }
         }
 

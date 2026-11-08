@@ -27,6 +27,13 @@ sealed interface ToolTrace {
         val tool: String,
         val description: String,
         val arguments: String,
+        /**
+         * 宿主在这之前纠正过它（格式不对 / 调了不存在的工具）时，把记录挂在这里。
+         *
+         * 这些是宿主和模型之间的返工，不该在过程列表里单独占一行；
+         * 收进工具详情，谁查得着、也不挡路。
+         */
+        val notes: List<String> = emptyList(),
     ) : ToolTrace
 
     /** 一次工具调用：名字、说明（给用户看的用途）、参数、结果。 */
@@ -37,5 +44,7 @@ sealed interface ToolTrace {
         val arguments: String,
         val result: String,
         val isError: Boolean,
+        /** 同 [CallStarted.notes]：带着上一跳的宿主纠正记录，界面只在详情里显示。 */
+        val notes: List<String> = emptyList(),
     ) : ToolTrace
 }

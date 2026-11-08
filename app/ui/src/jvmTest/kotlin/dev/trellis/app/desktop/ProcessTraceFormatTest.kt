@@ -1,47 +1,85 @@
 package dev.trellis.app.desktop
 
+import androidx.compose.ui.unit.dp
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** 过程行折叠时只露一行参数预览，点开才展开完整 JSON。 */
+/**
+ * 过程行：折叠态每条只留一个标签（不做预览摘要），点开才给正文；
+ * 整块的高度上限按视口算，超出的在块内滚。
+ */
 class ProcessTraceFormatTest {
 
     @Test
-    fun longArgumentsAreCutToASinglePreviewLine() {
-        val raw = """{"week": "2026-W45", "focus": "命令行与 Python 起步", "items": [1,2,3]}"""
-        val compact = compactArguments(raw, max = 24)
-        assertTrue(compact.length <= 25, compact)
-        assertTrue(compact.endsWith("…"), compact)
-        assertTrue(!compact.contains("\n"), compact)
+    fun thinkingRowOnlySaysThinkingAndCarriesTheBodyAsDetail() {
+        val view = processRowView("思考：先看看它想干嘛，再决定要不要动手。")
+        assertEquals(ProcessRowView("思考", "先看看它想干嘛，再决定要不要动手。"), view)
     }
 
     @Test
-    fun compactArgumentsCollapsesWhitespaceAndHidesEmptyObjects() {
-        assertEquals("{ \"a\": 1 }", compactArguments("{\n \"a\":  1\n}"))
-        assertEquals("", compactArguments("{}"))
-        assertEquals("", compactArguments("   "))
+    fun judgementAndResultRowsUseShortLabels() {
+        assertEquals(ProcessRowView("判断", "它要动手，切到工具模式"), processRowView("判断：它要动手，切到工具模式"))
+        assertEquals(ProcessRowView("结果", "查到 3 条资料"), processRowView("　→ 查到 3 条资料"))
     }
 
     @Test
-    fun theActionCountOnlyCountsRealToolCalls() {
-        val trace = ChatToolTrace(
-            tool = "research_plan",
-            description = "查资料并建计划",
-            arguments = "{}",
-            result = "好了",
-            isError = false,
-        )
-        val steps = listOf(
-            ChatLine(1, ChatRole.Step, "思考：先看看它想干嘛"),
-            ChatLine(2, ChatRole.Step, "判断：它要动手，切到工具模式"),
-            ChatLine(3, ChatRole.Step, "第 1 步：research_plan", tool = trace),
-            ChatLine(4, ChatRole.Step, "　· 查到 3 条资料，开始拆阶段"),
-        )
+    fun toolRowsShowOnlyTheToolNameAndHaveNoTextDetail() {
+        // 参数和结果在 ChatLine.tool 里，折叠行的文本行不该再重复它们。
+        val view = processRowView("第 1 步：research_plan")
+        assertEquals(ProcessRowView("research_plan", null), view)
+    }
 
-        // 「2 个动作」的旧算法把思考/判断也算进去，摘要就和个人体验对不上。
-        assertEquals(1, processActionCount(steps))
-        assertEquals(0, processActionCount(emptyList()))
+    @Test
+    fun thinkingDetailIsBlankWhenThereIsNoBody() {
+        // 「思考：」后面没字：标签还在，但没有可展开的正文。
+        val view = processRowView("思考：")
+        assertEquals("思考", view?.label)
+        assertNull(view?.detail)
+    }
+
+    @Test
+    fun oldSessionsFinishedMarkerIsHiddenUnlessThereIsACatchUpReason() {
+        assertNull(processRowView("　· 它说完了"))
+        assertEquals(
+            ProcessRowView("还要补", "补一张图"),
+            processRowView("　· 它说完了，但 补一张图"),
+        )
+    }
+
+    @Test
+    fun plainProgressLinesKeepTheirOwnText() {
+        assertEquals(ProcessRowView("出错了：LLM 没配置", "出错了：LLM 没配置"), processRowView("出错了：LLM 没配置"))
+        assertNull(processRowView("   "))
+    }
+
+    @Test
+    fun hostCorrectionsAreHiddenFromTheProcessList() {
+        // 模型没吐 JSON、宿主让它重说：这是宿主和模型之间的返工，不给用户看。
+        // 旧会话里这类行已经落成独立文本行，读取时也要滤掉。
+        assertNull(processRowView("第 2 步：格式不对（里面没有 JSON），让它重说"))
+        assertNull(processRowView("第 2 步输出格式不对（里面没有 JSON），已让它重说"))
+        assertNull(processRowView("第 3 步：它想调不存在的工具 shell"))
+    }
+
+    @Test
+    fun processWindowTakesJustOverHalfTheViewportWithinBounds() {
+        assertEquals(440.dp, processPanelMaxHeight(800.dp))
+        assertEquals(220.dp, processPanelMaxHeight(200.dp))
+        assertEquals(560.dp, processPanelMaxHeight(1400.dp))
+    }
+
+    @Test
+    fun processAreaStaysFoldedUnlessThisRoundIsStillRunningOrTheUserOpenedIt() {
+        // 默认收着：历史轮次、跑完的轮次、刚打开会话时都只剩回合头一行。
+        assertFalse(processOpenFor(running = false, choice = null))
+        // 这一轮还在跑的时候自动铺开，跑完自动收回。
+        assertTrue(processOpenFor(running = true, choice = null))
+        // 用户手动点过折角，就以用户为准，运行状态不再覆盖它。
+        assertTrue(processOpenFor(running = false, choice = true))
+        assertFalse(processOpenFor(running = true, choice = false))
     }
 
     @Test
@@ -53,8 +91,8 @@ class ProcessTraceFormatTest {
     }
 
     @Test
-    fun toolRowsShowAHumanActionNotTheStepPrefix() {
-        // ToolStepRow 传进来的是工具名，不是「第 1 步：xxx」；否则会原样露出内部名字。
+    fun toolDetailShowsAHumanActionNotTheStepPrefix() {
+        // 展开详情里的一句人话：工具名 → 动作；折叠行本身已经只写工具名了。
         assertEquals("读了计划文档", toolActionLabel("read_plan_doc"))
         assertEquals("调研并建了计划", toolActionLabel("research_plan"))
         assertEquals("查了学习计划", toolActionLabel("get_learning_plan"))
