@@ -59,6 +59,7 @@ internal fun MarkdownEditor(
     revealToken: Int = 0,
     onPageShortcut: ((String) -> Unit)? = null,
     onEditingFinished: (() -> Unit)? = null,
+    onRequestAiFill: (suspend (String, Int) -> String?)? = null,
 ) {
     // 真正落到哪个编辑器由平台决定：桌面可以选 JavaFX WebView（`TRELLIS_EDITOR=webview`），
     // 安卓只有 Compose 版（没有 JavaFX，也不该为了一段文字引入 WebView）。
@@ -73,6 +74,7 @@ internal fun MarkdownEditor(
         revealToken = revealToken,
         onPageShortcut = onPageShortcut,
         onEditingFinished = onEditingFinished,
+        onRequestAiFill = onRequestAiFill,
     )
 }
 

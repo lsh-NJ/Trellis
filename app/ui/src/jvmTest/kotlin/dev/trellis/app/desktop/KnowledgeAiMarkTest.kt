@@ -14,8 +14,8 @@ import kotlin.test.assertTrue
  * AI 补全约定（`docs/knowledge-base-draft.md` §11）的纯函数测试。
  *
  * 约定三件事：
- *  - 用户写 `标签：。。。` 表示留了空位，只认行尾、最多 3 个；
- *  - 模型补出来的内容包成 `{{…}}` 写回正文，其它字不动、补完不重复；
+ *  - 任意一行以 `。。。` 结尾就是空位（标签/冒号都可省），只认行尾、最多 3 个；
+ *  - 模型补出来的内容包成 `{{…}}` 写回正文，按行号 id 对齐，其它字不动、补完不重复；
  *  - 预览里 `{{…}}` 画成大绿引号，`:::ai` 块画成带 × 的 AI 内容，概念名绿色高亮。
  */
 class KnowledgeAiMarkTest {
@@ -23,12 +23,32 @@ class KnowledgeAiMarkTest {
     // ---- 槽位识别 ----
 
     @Test
-    fun slotRequiresLabelAndMarkerAtLineEnd() {
+    fun slotIsAnyLineEndingWithTheMarker() {
+        // 冒号可有可无、前面有什么都行：这就是「以后触发快速补全选项为 AI 补全」的规则。
         assertEquals("RAG", aiFillSlotLabel("RAG：。。。"))
         assertEquals("向量检索", aiFillSlotLabel("- 向量检索：。。。"))
         assertEquals("GraphRAG", aiFillSlotLabel("GraphRAG: 。。。"))
+        assertEquals("向量检索", aiFillSlotLabel("1. 向量检索：。。。"))
+        assertEquals("docker compose up -d db", aiFillSlotLabel("[[docker compose up]] -d db:。。。"))
+        assertEquals("已有内容", aiFillSlotLabel("{{已有内容}}：。。。"))
+        assertEquals("代码", aiFillSlotLabel("`代码`：。。。"))
+        assertEquals("", aiFillSlotLabel("。。。"))
+        assertEquals("", aiFillSlotLabel("  。。。  "))
+    }
+
+    @Test
+    fun slotMarkerMustBeAtLineEnd() {
         assertNull(aiFillSlotLabel("RAG：。。。 但是后面还有正文"))
-        assertNull(aiFillSlotLabel("。。。"))
+        assertNull(aiFillSlotLabel("中间 。。。 不是槽位"))
+        assertNull(aiFillSlotLabel("RAG："))
+        assertNull(aiFillSlotLabel(""))
+    }
+
+    @Test
+    fun slotLabelTruncatesInsteadOfDropping() {
+        val label = aiFillSlotLabel("标题".repeat(30) + "：。。。")
+        assertEquals(AI_SLOT_LABEL_DISPLAY_MAX, label?.length)
+        assertEquals(40, AI_SLOT_LABEL_DISPLAY_MAX)
     }
 
     @Test
@@ -46,10 +66,11 @@ class KnowledgeAiMarkTest {
         """.trimIndent()
         val slots = findAiFillSlots(body)
         assertEquals(listOf("RAG"), slots.map { it.label })
+        assertEquals(listOf("slot@0"), slots.map { it.id })
     }
 
     @Test
-    fun slotsDedupeAndCapAtThree() {
+    fun slotsKeepBodyOrderAndCapAtThree() {
         val body = """
             RAG：。。。
             BM25：。。。
@@ -60,6 +81,64 @@ class KnowledgeAiMarkTest {
         val slots = findAiFillSlots(body)
         assertEquals(3, slots.size)
         assertEquals(listOf("RAG", "BM25", "向量检索"), slots.map { it.label })
+        assertEquals(listOf("slot@0", "slot@1", "slot@2"), slots.map { it.id })
+        assertEquals(listOf(0, 1, 2), slots.map { it.lineIndex })
+    }
+
+    @Test
+    fun slotsWithTheSameLabelAreDistinctByLine() {
+        val slots = findAiFillSlots("RAG：。。。\nRAG：。。。")
+        assertEquals(listOf("slot@0", "slot@1"), slots.map { it.id })
+    }
+
+    @Test
+    fun findSlotAtMatchesTheExactLine() {
+        val body = "RAG：。。。\n\nBM25：。。。"
+        assertEquals("RAG", findAiFillSlotAt(body, 0)?.label)
+        assertEquals("BM25", findAiFillSlotAt(body, 2)?.label)
+        assertNull(findAiFillSlotAt(body, 1))
+        assertNull(findAiFillSlotAt(body, 9))
+    }
+
+    @Test
+    fun chunkLineOffsetKeepsWholeDocumentIds() {
+        val slot = findAiFillSlots("BM25：。。。", lineOffset = 7).single()
+        assertEquals("slot@7", slot.id)
+        assertEquals(7, slot.lineIndex)
+    }
+
+    // ---- 单槽补全的上下文 ----
+
+    @Test
+    fun contextTakesTheParagraphAndTwoNeighbours() {
+        val body = "A段\n\nB段\n\nC段\n\n目标：。。。\n\nE段\n\nF段\n\nG段"
+        val context = aiFillContextAround(body, lineIndex = 6)
+        assertTrue(context.contains("B段"))
+        assertTrue(context.contains("C段"))
+        assertTrue(context.contains("目标：。。。"))
+        assertTrue(context.contains("E段"))
+        assertTrue(context.contains("F段"))
+        assertFalse(context.contains("A段"))
+        assertFalse(context.contains("G段"))
+    }
+
+    @Test
+    fun headingChainTakesTheDirectAncestors() {
+        val body = """
+            # 检索
+            正文
+            ## 向量
+            正文
+            ### HNSW
+            目标：。。。
+            ## 稀疏
+            正文
+            ### BM25
+            目标：。。。
+        """.trimIndent()
+        assertEquals(listOf("检索", "向量", "HNSW"), headingChainBefore(body, 5))
+        assertEquals(listOf("检索", "稀疏", "BM25"), headingChainBefore(body, 9))
+        assertTrue(headingChainBefore(body, 0).isEmpty())
     }
 
     // ---- 写回正文 ----
@@ -73,7 +152,8 @@ class KnowledgeAiMarkTest {
             RAG：。。。
             结尾不动。
         """.trimIndent()
-        val result = applyAiFills(body, mapOf("RAG" to "检索增强生成，先找证据再让模型回答"))
+        val slot = findAiFillSlots(body).single()
+        val result = applyAiFills(body, mapOf(slot.id to "检索增强生成，先找证据再让模型回答"))
         assertEquals(listOf("RAG"), result.applied)
         assertTrue(result.body.contains("RAG：{{检索增强生成，先找证据再让模型回答}}"))
         assertTrue(result.body.contains("先写一句自己的话。"))
@@ -81,13 +161,29 @@ class KnowledgeAiMarkTest {
     }
 
     @Test
-    fun applyFillsIsIdempotentAndSkipsUnknownLabels() {
+    fun applyFillsTargetsTheLineByItsId() {
+        val body = "RAG：。。。\nRAG：。。。"
+        val result = applyAiFills(body, mapOf("slot@1" to "只补第二行"))
+        assertEquals(listOf("RAG"), result.applied)
+        assertTrue(result.body.startsWith("RAG：。。。"))
+        assertTrue(result.body.endsWith("RAG：{{只补第二行}}"))
+    }
+
+    @Test
+    fun applyFillsNamesTheLineWhenTheLabelIsEmpty() {
+        val result = applyAiFills("。。。", mapOf("slot@0" to "一句补全"))
+        assertEquals(listOf("第 1 行"), result.applied)
+        assertEquals("{{一句补全}}", result.body)
+    }
+
+    @Test
+    fun applyFillsIsIdempotentAndSkipsUnknownIds() {
         val filled = "RAG：{{检索增强生成}}\nBM25：。。。"
-        assertTrue(applyAiFills(filled, mapOf("RAG" to "别再补了")).applied.isEmpty())
-        assertEquals(filled, applyAiFills(filled, mapOf("RAG" to "别再补了")).body)
+        assertTrue(applyAiFills(filled, mapOf("slot@0" to "别再补了")).applied.isEmpty())
+        assertEquals(filled, applyAiFills(filled, mapOf("slot@0" to "别再补了")).body)
 
         val untouched = "BM25：。。。"
-        val skipped = applyAiFills(untouched, mapOf("RAG" to "不是这行"))
+        val skipped = applyAiFills(untouched, mapOf("slot@9" to "不是这行"))
         assertTrue(skipped.applied.isEmpty())
         assertEquals(untouched, skipped.body)
     }
@@ -95,11 +191,28 @@ class KnowledgeAiMarkTest {
     @Test
     fun applyFillsTruncatesLongTextAndSkipsBlank() {
         val body = "RAG：。。。"
-        val long = applyAiFills(body, mapOf("RAG" to "字".repeat(MAX_AI_FILL_CHARS + 20)))
+        val long = applyAiFills(body, mapOf("slot@0" to "字".repeat(MAX_AI_FILL_CHARS + 20)))
         assertTrue(long.body.contains("{{" + "字".repeat(MAX_AI_FILL_CHARS) + "}}"))
         assertFalse(long.body.contains("字".repeat(MAX_AI_FILL_CHARS + 1)))
 
-        assertTrue(applyAiFills(body, mapOf("RAG" to "   ")).applied.isEmpty())
+        assertTrue(applyAiFills(body, mapOf("slot@0" to "   ")).applied.isEmpty())
+    }
+
+    @Test
+    fun alignFillsPrefersIdAndFallsBackToLabel() {
+        val slots = listOf(
+            AiFillSlot("RAG", 0, "RAG：。。。"),
+            AiFillSlot("BM25", 1, "BM25：。。。"),
+        )
+        assertEquals(
+            mapOf("slot@1" to "一句"),
+            alignAiFills(slots, listOf(FillSuggestion("别的标签", "一句", "slot@1"))),
+        )
+        assertEquals(
+            mapOf("slot@1" to "另一句"),
+            alignAiFills(slots, listOf(FillSuggestion("BM25", "另一句"))),
+        )
+        assertTrue(alignAiFills(slots, listOf(FillSuggestion("RRF", "对不上"))).isEmpty())
     }
 
     // ---- 删除 AI 内容 ----
@@ -152,6 +265,20 @@ class KnowledgeAiMarkTest {
         assertEquals(1, result.fills.size)
         assertEquals("向量检索", result.fills[0].label)
         assertEquals("把文本变成向量再找相似", result.fills[0].text)
+        // 旧格式没有 id，靠标签兜底对齐。
+        assertEquals("", result.fills[0].id)
+    }
+
+    @Test
+    fun parseExtractionResultReadsFillIds() {
+        val raw = """
+            {"fills":[{"id":"slot@3","text":"先找证据再回答"},
+                      {"id":"slot@8","label":"BM25","text":"按词频排序"}]}
+        """.trimIndent()
+        val result = parseExtractionResult(raw)
+        assertEquals(listOf("slot@3", "slot@8"), result.fills.map { it.id })
+        assertEquals(listOf("", "BM25"), result.fills.map { it.label })
+        assertEquals("先找证据再回答", result.fills[0].text)
     }
 
     @Test
@@ -165,23 +292,50 @@ class KnowledgeAiMarkTest {
     fun parseExtractionResultToleratesBrokenOutput() {
         assertTrue(parseExtractionResult("模型今天不想输出 JSON").candidates.isEmpty())
         assertTrue(parseExtractionResult("{坏对象").candidates.isEmpty())
+        // 既没有 id 也没有标签、或文本为空的 fills 都丢掉。
+        assertTrue(parseExtractionResult("""{"fills":[{"text":"没主"}]}""").fills.isEmpty())
+        assertTrue(parseExtractionResult("""{"fills":[{"id":"slot@1","text":"  "}]}""").fills.isEmpty())
     }
 
     @Test
     fun extractionPromptMentionsSlotsAndFillsFormat() {
-        val messages = buildKnowledgeExtractionMessages("检索笔记", "RAG：。。。", emptyList(), listOf("RAG"))
+        val slot = AiFillSlot("RAG", 0, "RAG：。。。")
+        val messages = buildKnowledgeExtractionMessages("检索笔记", "RAG：。。。", emptyList(), listOf(slot))
         assertEquals(2, messages.size)
         assertEquals(LlmRole.System, messages[0].role)
         assertTrue(messages[0].content.contains(AI_SLOT_MARKER))
-        assertTrue(messages[1].content.contains("RAG"))
-        assertTrue(messages[1].content.contains("fills"))
+        assertTrue(messages[1].content.contains("id=slot@0"))
+        assertTrue(messages[1].content.contains("原行：RAG：。。。"))
+        assertTrue(messages[1].content.contains("id 必须和列出的逐字一致"))
+        assertTrue(messages[1].content.contains("\"id\":\"slot@12\""))
         assertTrue(messages[1].content.contains("\"concepts\""))
+    }
+
+    @Test
+    fun singleSlotPromptCarriesContextAndLine() {
+        val messages = buildSingleSlotFillMessages(
+            title = "检索笔记",
+            headingChain = listOf("检索", "向量"),
+            context = "向量检索这段上下文",
+            lineText = "HNSW：。。。",
+            label = "HNSW",
+        )
+        assertEquals(2, messages.size)
+        assertTrue(messages[0].content.contains("只补这一处"))
+        assertTrue(messages[0].content.contains("不要 JSON"))
+        val user = messages[1].content
+        assertTrue(user.contains("检索笔记"))
+        assertTrue(user.contains("检索 > 向量"))
+        assertTrue(user.contains("向量检索这段上下文"))
+        assertTrue(user.contains("HNSW：。。。"))
+        assertTrue(user.contains("HNSW"))
     }
 
     @Test
     fun oldConceptsOnlyPromptStillWorks() {
         val messages = buildConceptExtractionMessages("标题", "正文", emptyList())
-        assertFalse(messages[1].content.contains("空位（整行是"))
+        assertFalse(messages[1].content.contains("用户留的空位（行尾"))
+        assertFalse(messages[1].content.contains("id=slot@"))
     }
 
     // ---- 渲染 ----

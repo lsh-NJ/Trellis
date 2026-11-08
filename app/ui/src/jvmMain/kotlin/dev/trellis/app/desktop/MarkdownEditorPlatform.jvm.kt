@@ -20,6 +20,7 @@ internal actual fun PlatformMarkdownEditor(
     revealToken: Int,
     onPageShortcut: ((String) -> Unit)?,
     onEditingFinished: (() -> Unit)?,
+    onRequestAiFill: (suspend (String, Int) -> String?)?,
 ) {
     if (useWebViewEditor()) {
         MarkdownWebEditor(
@@ -44,6 +45,7 @@ internal actual fun PlatformMarkdownEditor(
             reveal = reveal,
             revealToken = revealToken,
             onEditingFinished = onEditingFinished,
+            onRequestAiFill = onRequestAiFill,
         )
     }
 }

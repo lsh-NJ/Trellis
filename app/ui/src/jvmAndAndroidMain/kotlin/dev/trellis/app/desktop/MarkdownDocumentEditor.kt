@@ -33,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -85,6 +86,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 import dev.trellis.ui.LocalExtraColors
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
@@ -112,6 +115,8 @@ internal fun MarkdownDocumentEditor(
     reveal: TextRange? = null,
     revealToken: Int = 0,
     onEditingFinished: (() -> Unit)? = null,
+    /** 编辑器里的「AI 补全」：传入当前正文与槽位行号，返回补全后的整篇正文；null 表示不提供。 */
+    onRequestAiFill: (suspend (String, Int) -> String?)? = null,
 ) {
     val paragraphStyle = MaterialTheme.typography.bodyLarge
     val scheme = MaterialTheme.colorScheme
@@ -136,6 +141,23 @@ internal fun MarkdownDocumentEditor(
     var completion by remember(noteId) { mutableStateOf<ConceptCompletion?>(null) }
     var completionIndex by remember(noteId) { mutableStateOf(0) }
 
+    // 「AI 补全」条：光标所在行以 `。。。` 结尾时出现，点一下只补这一行。
+    // 行号是「按 \n 切分的原始行号」，和 KnowledgeScreen 里 findAiFillSlotAt 用的是同一套。
+    var aiFillDismissedLine by remember(noteId) { mutableStateOf<Int?>(null) }
+    var aiFillBusy by remember(noteId) { mutableStateOf(false) }
+    var aiFillError by remember(noteId) { mutableStateOf<String?>(null) }
+    var aiFillJob by remember(noteId) { mutableStateOf<Job?>(null) }
+    // 切走再切回同一篇笔记时，旧的补全协程不能把结果写回新一次的编辑状态。
+    val editorInstance = remember(noteId) { Any() }
+    val liveEditor = rememberUpdatedState(editorInstance)
+    val liveRequestAiFill = rememberUpdatedState(onRequestAiFill)
+    val aiFillPrompt = if (liveRequestAiFill.value == null) {
+        null
+    } else {
+        aiFillPromptLine(field.text, field.selection.min)
+    }
+    val aiFillLine = aiFillPrompt?.takeIf { it != aiFillDismissedLine }
+
     val projection = remember(field.text, field.selection, conceptNames) {
         projectDocument(field.text, field.selection, conceptNames)
     }
@@ -149,6 +171,14 @@ internal fun MarkdownDocumentEditor(
     fun closeCompletion() {
         completion = null
         completionIndex = 0
+    }
+
+    // AI 补全条出现时，斜杠菜单和 `[[` 补全让位：同一块地方只留一个浮层。
+    LaunchedEffect(aiFillLine) {
+        if (aiFillLine != null) {
+            closeSlash()
+            closeCompletion()
+        }
     }
 
     /** 按当前文本/光标刷新补全候选；斜杠菜单和补全不同时出现。 */
@@ -214,6 +244,12 @@ internal fun MarkdownDocumentEditor(
 
     fun apply(updated: TextFieldValue) {
         val textChanged = updated.text != field.text
+        // 用户还在等补全结果时又改了字：这次补全作废，别把旧结果盖到他刚打的字上。
+        if (textChanged && aiFillBusy) {
+            aiFillJob?.cancel()
+            aiFillJob = null
+            aiFillBusy = false
+        }
         field = updated
         refreshSlash(updated)
         refreshCompletion(updated)
@@ -273,7 +309,14 @@ internal fun MarkdownDocumentEditor(
     fun handleKey(event: KeyEvent): Boolean {
         if (event.type != KeyEventType.KeyDown) return false
         if (event.key == Key.Escape) {
-            if (completion != null) {
+            if (aiFillLine != null) {
+                // AI 补全条优先级最高：Esc 先关它（光标和空位都留着，可以再点）。
+                aiFillDismissedLine = aiFillLine
+                aiFillJob?.cancel()
+                aiFillJob = null
+                aiFillBusy = false
+                aiFillError = null
+            } else if (completion != null) {
                 closeCompletion()
             } else if (slashStart != null) {
                 closeSlash()
@@ -606,7 +649,170 @@ internal fun MarkdownDocumentEditor(
                 }
             },
     )
+    if (aiFillLine != null) {
+        AiFillPromptBar(
+            busy = aiFillBusy,
+            error = aiFillError,
+            onFill = {
+                val line = aiFillLine ?: return@AiFillPromptBar
+                val draft = field.text
+                val editor = editorInstance
+                val request = onRequestAiFill ?: return@AiFillPromptBar
+                aiFillError = null
+                aiFillBusy = true
+                aiFillJob?.cancel()
+                aiFillJob = scope.launch {
+                    val result = try {
+                        request(draft, line)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failed: Exception) {
+                        null
+                    }
+                    // 等模型的时候用户切走了、或切回来重进了这篇：结果已经落盘，别再写缓冲。
+                    if (liveEditor.value !== editor) return@launch
+                    aiFillJob = null
+                    aiFillBusy = false
+                    if (result == null) {
+                        aiFillError = "这次没补上"
+                        return@launch
+                    }
+                    // 等模型的时候用户改了字：以用户现在的文本为准，这次结果丢弃。
+                    if (field.text != draft) return@launch
+                    val caret = lineEndOffset(result, line)
+                    apply(TextFieldValue(result, TextRange(caret)))
+                    focus.requestFocusWhenReady()
+                }
+            },
+            onDismiss = {
+                aiFillDismissedLine = aiFillLine
+                aiFillJob?.cancel()
+                aiFillJob = null
+                aiFillBusy = false
+                aiFillError = null
+                scope.launch { focus.requestFocusWhenReady() }
+            },
+        )
     }
+    }
+}
+
+/**
+ * 光标这一行是不是「AI 补全」槽位：是就返回行号，否则 null。
+ *
+ * 规则：行尾（trimEnd 后）是 `。。。`，光标必须在三颗句号之后（不能停在标记中间），
+ * 且这一行不在代码块 / `:::ai` 块里。行号是按 `\n` 切分的原始行号，直接交给
+ * [KnowledgeScreen.fillSingleSlot] 用，和 [findAiFillSlotAt] 是同一套编号。
+ */
+internal fun aiFillPromptLine(text: String, cursor: Int): Int? {
+    if (text.isEmpty()) return null
+    val offset = cursor.coerceIn(0, text.length)
+    val lineIndex = text.take(offset).count { it == '\n' }
+    val lineStart = if (offset <= 0) 0 else text.lastIndexOf('\n', offset - 1) + 1
+    val lineEnd = text.indexOf('\n', lineStart).let { if (it < 0) text.length else it }
+    val trimmed = text.substring(lineStart, lineEnd).trimEnd()
+    if (!trimmed.endsWith(AI_SLOT_MARKER)) return null
+    // 光标可以在标记之后（比如行尾还有空格），但不能停在标记里面。
+    if (offset < lineStart + trimmed.length) return null
+    return if (findAiFillSlotAt(text, lineIndex) != null) lineIndex else null
+}
+
+/** 第 [lineIndex] 行的行尾偏移（不含换行符）；补全后把光标放到这一行末尾。 */
+private fun lineEndOffset(text: String, lineIndex: Int): Int {
+    if (lineIndex <= 0) {
+        return text.indexOf('\n').let { if (it < 0) text.length else it }
+    }
+    var start = 0
+    repeat(lineIndex) {
+        val next = text.indexOf('\n', start)
+        if (next < 0) return text.length
+        start = next + 1
+    }
+    return text.indexOf('\n', start).let { if (it < 0) text.length else it }
+}
+
+/** 输入框下方的快速补全条：只补光标那一行，不整篇整理。 */
+@Composable
+private fun AiFillPromptBar(
+    busy: Boolean,
+    error: String?,
+    onFill: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val scheme = MaterialTheme.colorScheme
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 10.dp)
+            .clip(ControlShape)
+            .background(scheme.surfaceVariant.copy(alpha = 0.5f))
+            .border(1.dp, scheme.outlineVariant.copy(alpha = 0.6f), ControlShape)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = when {
+                error != null -> error
+                busy -> "正在补全这一处…"
+                else -> "已识别 AI 补全空位"
+            },
+            style = LocalTrellisTokens.current.type.meta,
+            color = if (error != null) scheme.error else scheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        AiFillBarButton(
+            label = if (busy) "补全中…" else "AI 补全",
+            enabled = !busy,
+            primary = true,
+            onClick = onFill,
+        )
+        Spacer(Modifier.width(8.dp))
+        AiFillBarButton(label = "先不用", enabled = true, primary = false, onClick = onDismiss)
+    }
+}
+
+@Composable
+private fun AiFillBarButton(
+    label: String,
+    enabled: Boolean,
+    primary: Boolean,
+    onClick: () -> Unit,
+) {
+    val scheme = MaterialTheme.colorScheme
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val accent = scheme.primary
+    val fill = when {
+        !enabled -> Color.Transparent
+        primary && hovered -> accent.copy(alpha = 0.18f)
+        primary -> accent.copy(alpha = 0.12f)
+        hovered -> scheme.onSurfaceVariant.copy(alpha = 0.1f)
+        else -> Color.Transparent
+    }
+    Text(
+        text = label,
+        style = LocalTrellisTokens.current.type.meta,
+        color = when {
+            !enabled -> scheme.onSurfaceVariant.copy(alpha = 0.45f)
+            primary -> accent
+            else -> scheme.onSurfaceVariant
+        },
+        modifier = Modifier
+            .clip(ControlShape)
+            .background(fill)
+            .border(
+                1.dp,
+                if (primary) accent.copy(alpha = 0.35f) else scheme.outlineVariant,
+                ControlShape,
+            )
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                enabled = enabled,
+                onClick = onClick,
+            )
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+    )
 }
 
 /** 这些行的内容本身就是语法，回车只换行。 */

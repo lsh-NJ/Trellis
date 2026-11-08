@@ -22,10 +22,16 @@ internal data class ConceptCandidate(
     val aliases: List<String> = emptyList(),
 )
 
-/** 一个槽位（`标签：。。。`）的补全建议。 */
+/**
+ * 一个槽位（行尾 `。。。`）的补全建议。
+ *
+ * [id] 是新格式的槽位标识（`slot@行号`）；旧会话/旧模型只回 `label`，这时 [id] 留空，
+ * 回填时按标签兜底（见 [alignAiFills]）。
+ */
 internal data class FillSuggestion(
     val label: String,
     val text: String,
+    val id: String = "",
 )
 
 /**
@@ -150,7 +156,7 @@ internal fun buildKnowledgeExtractionMessages(
     title: String,
     body: String,
     existing: List<String>,
-    slots: List<String>,
+    slots: List<AiFillSlot>,
     headings: List<String> = emptyList(),
     chunkIndex: Int = 0,
     chunkCount: Int = 1,
@@ -158,7 +164,8 @@ internal fun buildKnowledgeExtractionMessages(
     val system = "你是个人知识库的整理助手。任务只有两件：①从笔记里挑出**作者确实讲过**、" +
         "值得长期回查的概念，每个给出规范名、正文里的原词（mention）、可选别名和一句话定义；" +
         "②把用户留的空位补上一句话。" +
-        "笔记里整行是「标签：$AI_SLOT_MARKER」的行是用户留的空位。" +
+        "笔记里某一行以三个全角句号 $AI_SLOT_MARKER 结尾，就是用户留的空位：" +
+        "三个句号前面可以有任意内容（标签、列表、命令、概念标注都行），也可以只有这三个句号。" +
         "系统只信任正文原文：它会把 mention 在正文里第一次出现的位置包成 " +
         "`[[mention => 规范名]]`（mention 与规范名相同时包成 `[[规范名]]`），" +
         "所以 mention 必须是正文里的原词，改写过的词会被丢掉。" +
@@ -184,8 +191,13 @@ internal fun buildKnowledgeExtractionMessages(
             append("已经标记过的概念（不要重复）：").append(existing.joinToString("、")).append("\n\n")
         }
         if (slots.isNotEmpty()) {
-            append("用户留的空位（整行是「标签：").append(AI_SLOT_MARKER).append("」）：")
-                .append(slots.joinToString("、")).append("\n\n")
+            append("用户留的空位（行尾 $AI_SLOT_MARKER 是空位；id 是系统给的行标识）：\n")
+            slots.forEach { slot ->
+                append("- id=").append(slot.id)
+                append("，标签=").append(slot.label.ifEmpty { "（无）" })
+                append("，原行：").append(slot.lineText.ifBlank { AI_SLOT_MARKER }).append('\n')
+            }
+            append('\n')
         }
         append("要求：\n")
         append("1. 概念必须有「正文依据」，满足任一条才抽：\n")
@@ -205,7 +217,8 @@ internal fun buildKnowledgeExtractionMessages(
         append("5. 数量不设上限：正文里确实讲过的概念都可以列，但每个都必须满足上面的依据；")
             .append("拿不准的就别抽。\n")
         append("6. definition 不超过 40 个字，一句能独立看懂的解释（不是复述名词）。\n")
-        append("7. fills 只补上面列出的空位：label 必须和空位标签逐字一致，text 是一句话（不超过 ")
+        append("7. fills 只补上面列出的空位：每条返回 {\"id\":\"slot@行号\",\"text\":\"补全内容\"}，")
+            .append("id 必须和列出的逐字一致（不要自己编 id）；text 是一句话（不超过 ")
             .append(MAX_AI_FILL_CHARS).append(" 字）；没有空位就输出空数组。\n")
         append("8. 顺手给两类「知识网络建议」（拿不准就输出空数组，不要硬凑）：\n")
         append("   categories：给本篇概念建议一个所属分类路径。路径最多 2 层、每层不超过 12 个字，")
@@ -220,7 +233,7 @@ internal fun buildKnowledgeExtractionMessages(
         append("```json\n")
         append("{\"concepts\":[{\"name\":\"规范名\",\"mention\":\"正文里的原词\",")
         append("\"aliases\":[\"别名\"],\"definition\":\"一句话定义\"}],")
-        append("\"fills\":[{\"label\":\"空位标签\",\"text\":\"补全的一句话\"}],")
+        append("\"fills\":[{\"id\":\"slot@12\",\"text\":\"补全的一句话\"}],")
         append("\"categories\":[{\"concept\":\"概念名\",\"categoryPath\":\"大类/小类\",\"reason\":\"一句话\"}],")
         append("\"relations\":[{\"from\":\"概念A\",\"to\":\"概念B\",\"kind\":\"PREREQUISITE\",")
         append("\"confidence\":4,\"reason\":\"一句话\",\"evidence\":\"正文原话\"}]}\n")
@@ -238,6 +251,39 @@ internal fun buildConceptExtractionMessages(
     body: String,
     existing: List<String>,
 ): List<LlmMessage> = buildKnowledgeExtractionMessages(title, body, existing, emptyList())
+
+/**
+ * 编辑器里的「AI 补全」：只补光标所在的那一行，只给这一段的上下文。
+ *
+ * 和全量整理的区别：不带概念抽取/建图任务、不返回 JSON，模型输出直接当补全文本用，
+ * 所以上下文越聚焦越好——整篇正文只在用户没写标签时才用（见 `KnowledgeScreen.fillSingleSlot`）。
+ */
+internal fun buildSingleSlotFillMessages(
+    title: String,
+    headingChain: List<String>,
+    context: String,
+    lineText: String,
+    label: String,
+): List<LlmMessage> {
+    val system = "你是个人知识库的写作助手。用户在笔记的某一行末尾留了 $AI_SLOT_MARKER 空位，" +
+        "你只补这一处：输出一句简体中文（不超过 $MAX_AI_FILL_CHARS 字），直接给句子本身。" +
+        "不要解释、不要加引号、不要 Markdown 强调、不要 JSON、不要重复原行。"
+    val user = buildString {
+        append("笔记标题：").append(title.ifBlank { "（无标题）" }).append("\n\n")
+        if (headingChain.isNotEmpty()) {
+            append("所在章节：").append(headingChain.joinToString(" > ")).append("\n\n")
+        }
+        append("上下文：\n").append(context.take(MAX_EXTRACT_BODY_CHARS)).append("\n\n")
+        append("要补全的这一行（行尾 ").append(AI_SLOT_MARKER).append(" 是空位）：\n")
+        append(lineText).append("\n\n")
+        if (label.isNotEmpty()) append("空位标签：").append(label).append("\n\n")
+        append("只输出补全的那一句话。")
+    }
+    return listOf(
+        LlmMessage(LlmRole.System, system),
+        LlmMessage(LlmRole.User, user),
+    )
+}
 
 /**
  * 解析模型输出。
@@ -301,18 +347,49 @@ private fun parseCandidatesFrom(element: JsonElement?): List<ConceptCandidate> {
     }.getOrElse { emptyList() }
 }
 
+/**
+ * 解析模型返回的 fills。
+ *
+ * 新格式是 `{"id":"slot@12","text":"…"}`；旧格式只有 `label`，这里一并收下
+ * （[FillSuggestion.id] 留空，回填时按标签兜底）。两者都没有或 text 为空就丢弃。
+ */
 private fun parseFillsFrom(element: JsonElement?): List<FillSuggestion> {
     val array = runCatching { element?.jsonArray }.getOrNull() ?: return emptyList()
     return runCatching {
         array.mapNotNull { item ->
             val obj = item.jsonObject
-            val label = normalizeConceptName((obj["label"] as? JsonPrimitive)?.content.orEmpty())
+            val id = (obj["id"] as? JsonPrimitive)?.content.orEmpty().trim()
+            val label = (obj["label"] as? JsonPrimitive)?.content.orEmpty()
+                .replace(Regex("\\s+"), " ").trim().take(AI_SLOT_LABEL_DISPLAY_MAX)
             val text = normalizeAiFillText((obj["text"] as? JsonPrimitive)?.content.orEmpty())
-            if (label.isEmpty() || text.isEmpty()) null else FillSuggestion(label, text)
+            when {
+                text.isEmpty() -> null
+                id.isEmpty() && label.isEmpty() -> null
+                else -> FillSuggestion(label = label, text = text, id = id)
+            }
         }
-            .distinctBy { conceptKey(it.label) }
+            .distinctBy { if (it.id.isNotEmpty()) "id:" + it.id else "label:" + conceptKey(it.label) }
             .take(MAX_AI_FILL_SLOTS)
     }.getOrElse { emptyList() }
+}
+
+/**
+ * 把模型返回的 fills 对到正文槽位上：新格式按 id，旧格式（只有标签）按标签兜底。
+ *
+ * 返回 id → 补全文本，交给 [applyAiFills] 落行。对不上的建议直接丢掉（不猜行号）。
+ */
+internal fun alignAiFills(slots: List<AiFillSlot>, fills: List<FillSuggestion>): Map<String, String> {
+    if (slots.isEmpty() || fills.isEmpty()) return emptyMap()
+    val byId = slots.associateBy { it.id }
+    val byLabel = slots.filter { it.label.isNotEmpty() }.groupBy { conceptKey(it.label) }
+    val aligned = LinkedHashMap<String, String>()
+    for (fill in fills) {
+        val slot = byId[fill.id]
+            ?: fill.label.takeIf { it.isNotEmpty() }?.let { byLabel[conceptKey(it)]?.firstOrNull() }
+            ?: continue
+        aligned.putIfAbsent(slot.id, fill.text)
+    }
+    return aligned
 }
 
 /**
@@ -403,7 +480,7 @@ internal fun applyConsolidatedCandidates(
 
 /**
  * 长笔记分段整理后的合并：概念按身份键去重（定义取信息更全的那份、别名取并集、mention 取首个非空），
- * 补全按标签去重（保留先出现的那份）。
+ * 补全按槽位 id 去重（旧格式没有 id 时按标签），保留先出现的那份。
  */
 internal fun mergeExtractionResults(results: List<ExtractionResult>): ExtractionResult {
     if (results.isEmpty()) return ExtractionResult()
@@ -430,7 +507,10 @@ internal fun mergeExtractionResults(results: List<ExtractionResult>): Extraction
     }
     val fills = LinkedHashMap<String, FillSuggestion>()
     for (result in results) {
-        for (fill in result.fills) fills.putIfAbsent(conceptKey(fill.label), fill)
+        for (fill in result.fills) {
+            val key = if (fill.id.isNotEmpty()) "id:" + fill.id else "label:" + conceptKey(fill.label)
+            fills.putIfAbsent(key, fill)
+        }
     }
     return ExtractionResult(candidates = candidates.values.toList(), fills = fills.values.toList())
 }
@@ -456,5 +536,5 @@ internal fun candidateAliases(candidates: List<ConceptCandidate>): Map<String, L
 /** 槽位补全也能当概念定义用：只填空定义，不覆盖用户改过的（见 [ConceptMetaStore.fillMissing]）。 */
 internal fun fillDefinitions(fills: List<FillSuggestion>): Map<String, String> =
     fills
-        .filter { it.text.isNotBlank() }
+        .filter { it.text.isNotBlank() && it.label.isNotBlank() }
         .associate { normalizeConceptName(it.label) to it.text.trim() }

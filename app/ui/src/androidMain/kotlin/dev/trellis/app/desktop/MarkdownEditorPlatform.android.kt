@@ -22,6 +22,7 @@ internal actual fun PlatformMarkdownEditor(
     revealToken: Int,
     @Suppress("UNUSED_PARAMETER") onPageShortcut: ((String) -> Unit)?,
     onEditingFinished: (() -> Unit)?,
+    onRequestAiFill: (suspend (String, Int) -> String?)?,
 ) {
     MarkdownDocumentEditor(
         noteId = noteId,
@@ -33,5 +34,6 @@ internal actual fun PlatformMarkdownEditor(
         reveal = reveal,
         revealToken = revealToken,
         onEditingFinished = onEditingFinished,
+        onRequestAiFill = onRequestAiFill,
     )
 }
