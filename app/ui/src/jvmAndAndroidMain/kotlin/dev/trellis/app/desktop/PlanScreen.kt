@@ -110,12 +110,16 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
         val windowWidthDp = with(LocalDensity.current) {
             LocalWindowInfo.current.containerSize.width.toDp().value
         }
-        // 抽屉是不是「盖在内容上」：只有窗口真的放不下 296 抽屉 + 一列可读的日卡时才覆盖，
-        // 否则把内容列让开——不然宽屏也会盖住右侧阶段栏和周末的日期格，拖不过去。
+        // 抽屉打开时内容永远让开 296dp：盖在日期格上会让「拖到某天」的落点被遮住（现场复现过）。
+        // 窄窗让不开（296 抽屉 + 232 列表 + 日卡会把中间列压成一列字），就在抽屉打开期间先把
+        // 左侧计划列表收起来，把宽度让给日卡；收起抽屉后列表原样回来。
         val drawerOverlays = windowWidthDp < 1280f
-        Row(Modifier.fillMaxSize().padding(end = if (drawerOverlays) 0.dp else panelWidth)) {
-            PlanList(runtime)
-            ListSidebarSplitter()
+        val hideListForDrawer = drawerOverlays && runtime.planRearrangeOpen
+        Row(Modifier.fillMaxSize().padding(end = panelWidth)) {
+            if (!hideListForDrawer) {
+                PlanList(runtime)
+                ListSidebarSplitter()
+            }
             LazyColumn(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -131,7 +135,8 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
                 if (runtime.planTitle == null) {
                     item { PlanEmpty(runtime) }
                 } else {
-                    // 阶段进度只在宽屏右栏常驻（见下方 PlanStageRail）：这里不再重复一条阶段条。
+                    // 阶段条（两行、完整显示）；右栏的阶段进度只在宽屏常驻。
+                    item { PlanStageStrip(runtime) }
                     item { PlanWeekTicker(runtime) }
                     if (runtime.planPendingSelected) {
                         item { PendingDetail(runtime) }
