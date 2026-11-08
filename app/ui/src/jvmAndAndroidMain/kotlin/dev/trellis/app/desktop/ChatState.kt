@@ -59,6 +59,13 @@ data class ChatToolTrace(
     val arguments: String,
     val result: String,
     val isError: Boolean,
+    /**
+     * 工具已经开始跑、结果还没回来。
+     *
+     * 只用于界面上的「运行中…」状态；持久化后仍为 true 说明上次没跑完
+     * （进程被杀/网络断），读回来时会被收尾成 false。
+     */
+    val running: Boolean = false,
 )
 
 data class ChatLine(

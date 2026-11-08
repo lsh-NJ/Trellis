@@ -77,7 +77,10 @@ class ResearchTools(
                 "dailyMinutes：可选，每天大概投入多少分钟（30–240）。**只有用户已经说清时长时才传**（如「每天两小时」→120）；传了会写进节奏，不传只给建议值、不写；" +
                 "scheduleFirstWeek：可选，是否顺带把本周排出来（true / false）。传 true 时按 dailyMinutes（没传则用建议值）铺本周；不传或 false 就不排。要不要排由你判断。"
 
-        override suspend fun call(arguments: JsonObject): ToolResult {
+        override suspend fun call(arguments: JsonObject): ToolResult =
+            call(arguments, onProgress = {})
+
+        override suspend fun call(arguments: JsonObject, onProgress: (String) -> Unit): ToolResult {
             val plan = service() ?: return ToolResult(
                 buildString {
                     append("计划库打不开，没写成。")
@@ -111,11 +114,25 @@ class ResearchTools(
                 "true", "1", "yes" -> true
                 else -> false
             }
+            onProgress(
+                if (research != null) {
+                    "联网查资料：" + goal.take(40)
+                } else {
+                    "没有联网调研，直接按目标拆阶段"
+                },
+            )
             val sources = research?.let { gateway ->
                 withTimeoutOrNull(RESEARCH_TIMEOUT_MS) {
                     runCatching { gateway.gather(goal) }.getOrNull()
                 }
             }
+            onProgress(
+                if (sources != null) {
+                    "查到 " + sources.hits.size + " 条资料，开始拆阶段"
+                } else {
+                    "资料没拿到，按目标拆阶段"
+                },
+            )
             val raw = withTimeoutOrNull(PLAN_TIMEOUT_MS) {
                 llm.complete(
                     listOf(
@@ -149,6 +166,7 @@ class ResearchTools(
                     "调研结果没解析成阶段表（模型可能没说 JSON）。这次没建计划；可以重试，或改用 create_learning_plan 手写。",
                     isError = true,
                 )
+            onProgress("拆出 " + resolved.stages.size + " 个阶段，建计划…")
             val created = plan.createShell(
                 env(null, "plan.research"),
                 title = resolved.title,
@@ -160,6 +178,7 @@ class ResearchTools(
 
             // 阶段区间先写进计划：每周的单元铺进去之前就要有阶段（有承诺周后阶段区间会被校验），
             // 所以这一步必须早于下面的第一周排期。写失败不影响计划本身（大纲文档里还有一份阶段表）。
+            onProgress("计划建好了，写阶段和里程碑…")
             val stageDrafts = stageDraftsFor(draft, thisWeek)
             val stagesWritten = stageDrafts.isNotEmpty() && runCatching {
                 plan.setStages(env(planId, "plan.stages"), planId, stageDrafts).ok
@@ -188,6 +207,7 @@ class ResearchTools(
                 }
             }
 
+            onProgress("写大纲文档…")
             planDocStore()?.let { store ->
                 runCatching { store.save(planId, buildOutline(goal, draft)) }
                     .onFailure { appendFailedLog("计划文档写入失败：" + it.message) }
@@ -203,6 +223,7 @@ class ResearchTools(
             }
             val scheduledMinutes = explicitDaily ?: resolved.dailyMinutes
             val firstWeek = if (scheduleFirstWeek) {
+                onProgress("排本周（" + thisWeek + "）…")
                 runCatching {
                     planOneWeek(
                         plan = plan,
@@ -219,6 +240,7 @@ class ResearchTools(
                 null
             }
             onChanged(planId)
+            onProgress("写完了，收尾")
 
             val totalWeeks = resolved.stages.sumOf { it.weeks }
             return ToolResult(

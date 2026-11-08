@@ -72,8 +72,9 @@ class HttpLlmClient(
         messages: List<LlmMessage>,
         onDelta: suspend (String) -> Unit,
         onReasoning: suspend (String) -> Unit,
+        jsonMode: Boolean,
     ): String {
-        val body = requestBody(messages, stream = true, jsonMode = false)
+        val body = requestBody(messages, stream = true, jsonMode = jsonMode)
         val full = StringBuilder()
 
         withContext(Dispatchers.IO) {

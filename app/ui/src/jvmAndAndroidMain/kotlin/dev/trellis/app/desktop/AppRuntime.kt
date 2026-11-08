@@ -2562,6 +2562,23 @@ class AppRuntime private constructor() {
             rig.pluginTools.beginRound()
             // 「第 N 步：tool_name」这条过程行对应的工具详情，会在 onTrace 里挂上去。
             var lastStepToolLineId: Long? = null
+            // 正在长的「思考：」行；同一跳的 reasoning 增量都并进这一条，别一段一行。
+            var thinkingLineId: Long? = null
+
+            fun appendThinking(piece: String) {
+                if (piece.isEmpty()) return
+                val id = thinkingLineId
+                val at = id?.let { lineId -> chat.indexOfFirst { it.id == lineId } } ?: -1
+                if (at < 0) {
+                    thinkingLineId = addChatLine(ChatRole.Step, "思考：" + piece).id
+                    return
+                }
+                // 思考可能很长，但过程行只需要交代「它在想什么」；封顶避免真的刷爆聊天记录。
+                val merged = chat[at].text + piece
+                chat[at] = chat[at].copy(
+                    text = if (merged.length > 4000) merged.take(4000) + "…" else merged,
+                )
+            }
             val agent = ManagerAgent(
                 llm = llm,
                 router = router,
@@ -2589,25 +2606,62 @@ class AppRuntime private constructor() {
                     }
                     // 过程行是「第 N 步：tool_name」；新的一步开始，清单上就该亮起来，
                     // 顺手把工具名记进去 —— 展开区要写「这一步在做什么」。
+                    // 同时把思考行断开：下一步的思考属于下一步，不能续在上一跳后面。
                     if (line.startsWith("第 ")) {
+                        thinkingLineId = null
                         markPlanRunning(Regex("：([a-z_]+)").find(line)?.groupValues?.get(1).orEmpty())
                     }
                 },
                 onThinking = { text ->
+                    // 没有增量回调时的整段兜底（假模型/默认 stream 实现会走这里）。
                     // 模型自己的 reasoning_content（DeepSeek 思考）：进过程行，和工具循环里的「思考」同一套渲染。
-                    // 截断到 1200 字：思考可能很长，但过程行只用来交代「它在想什么」，不需要全文。
+                    thinkingLineId = null
                     addChatLine(ChatRole.Step, "思考：" + text.take(1200))
                 },
+                onThinkingDelta = { piece -> appendThinking(piece) },
                 onTrace = { trace ->
                     when (trace) {
-                        is ToolTrace.Thinking -> addChatLine(ChatRole.Step, "思考：" + trace.text.take(1200))
+                        is ToolTrace.Thinking -> {
+                            // 整段思考（没有增量回调时的默认实现）：单独占一行，并断开增量行。
+                            thinkingLineId = null
+                            addChatLine(ChatRole.Step, "思考：" + trace.text.take(1200))
+                        }
+                        is ToolTrace.CallStarted -> {
+                            // 工具刚跑起来：先把行占住、亮出参数和「运行中」，
+                            // 别让 research_plan 那种十几秒的工具在界面上一直没动静。
+                            thinkingLineId = null
+                            val detail = ChatToolTrace(
+                                tool = trace.tool,
+                                description = trace.description,
+                                arguments = trace.arguments,
+                                result = "",
+                                isError = false,
+                                running = true,
+                            )
+                            val index = lastStepToolLineId
+                                ?.let { id -> chat.indexOfFirst { it.id == id } }
+                                ?: -1
+                            if (index >= 0) {
+                                chat[index] = chat[index].copy(tool = detail)
+                            } else {
+                                val added = addChatLine(
+                                    ChatRole.Step,
+                                    "第 " + trace.step + " 步：" + trace.tool,
+                                )
+                                val at = chat.indexOfFirst { it.id == added.id }
+                                if (at >= 0) chat[at] = chat[at].copy(tool = detail)
+                                lastStepToolLineId = added.id
+                            }
+                        }
                         is ToolTrace.Call -> {
+                            thinkingLineId = null
                             val detail = ChatToolTrace(
                                 tool = trace.tool,
                                 description = trace.description,
                                 arguments = trace.arguments,
                                 result = trace.result,
                                 isError = trace.isError,
+                                running = false,
                             )
                             val index = lastStepToolLineId?.let { id -> chat.indexOfFirst { it.id == id } } ?: -1
                             if (index >= 0) {
@@ -2668,6 +2722,19 @@ class AppRuntime private constructor() {
             settlePlanAfterRound(ok = false)
             addChatLine(ChatRole.Status, "—— 本轮出错，停在上面那行")
         } finally {
+            // 进程被杀/网络断时工具可能停在 running；收尾时统一落成「没有返回结果」，
+            // 否则下次打开聊天会看到永远转圈的一行。
+            chat.indices.forEach { i ->
+                val trace = chat[i].tool ?: return@forEach
+                if (trace.running) {
+                    chat[i] = chat[i].copy(
+                        tool = trace.copy(
+                            running = false,
+                            result = trace.result.ifBlank { "（本轮结束前没有返回结果）" },
+                        ),
+                    )
+                }
+            }
             persistChat()
             chatBusy = false
         }

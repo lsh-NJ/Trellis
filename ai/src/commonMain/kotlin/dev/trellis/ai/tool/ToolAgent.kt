@@ -90,6 +90,7 @@ class ToolAgent(
         request: String,
         onLog: (String) -> Unit = {},
         onTrace: (ToolTrace) -> Unit = {},
+        onThinkingDelta: ((String) -> Unit)? = null,
     ): ToolRun = run(
         messages = listOf(
             LlmMessage(LlmRole.System, system + "\n\n" + catalogue()),
@@ -97,6 +98,7 @@ class ToolAgent(
         ),
         onLog = onLog,
         onTrace = onTrace,
+        onThinkingDelta = onThinkingDelta,
     )
 
     /**
@@ -109,6 +111,8 @@ class ToolAgent(
         messages: List<LlmMessage>,
         onLog: (String) -> Unit = {},
         onTrace: (ToolTrace) -> Unit = {},
+        /** 思考增量；给了就边想边交给界面，不再在整步结束后补一条 Thinking。 */
+        onThinkingDelta: ((String) -> Unit)? = null,
     ): ToolRun {
         val conversation = messages.toMutableList()
         val transcript = mutableListOf<String>()
@@ -134,18 +138,32 @@ class ToolAgent(
                 note("保险丝断了（" + safetyLimit + " 步）")
                 return ToolRun(false, "它在 " + safetyLimit + " 步里没收敛，已经停下。", transcript)
             }
-            val stepReply = try {
-                llm.completeWithReasoning(conversation)
+            val streamed = StringBuilder()
+            val stepReasoning = StringBuilder()
+            val returned = try {
+                // 这一跳也走流式：思考要边想边显示，不能等整段 JSON 生成完才冒出来。
+                llm.stream(
+                    conversation,
+                    onDelta = { piece -> streamed.append(piece) },
+                    onReasoning = { piece ->
+                        stepReasoning.append(piece)
+                        if (piece.isNotEmpty()) onThinkingDelta?.invoke(piece)
+                    },
+                    // 工具循环解析的是严格 JSON；不跟对话页一样吃自由文本。
+                    jsonMode = true,
+                )
             } catch (t: Throwable) {
                 note("第 " + step + " 步：模型没回上来（" + (t.message ?: "未知错误") + "）")
                 return ToolRun(false, "模型没回上来：" + (t.message ?: "未知错误"), transcript)
             }
-            val reply = stepReply.content
+            val reply = returned.ifEmpty { streamed.toString() }
             conversation += LlmMessage(LlmRole.Assistant, reply)
-            // 模型的原生思考（DeepSeek reasoning_content）先于本步解析进过程行；
+            // 没有增量回调时保持老行为：这一步的完整思考在解析前作为一条 Thinking 发出。
             // 没开思考/没返回就不显示，不再由宿主从正文里猜。
-            stepReply.reasoning?.trim()?.takeIf { it.isNotEmpty() }?.let {
-                onTrace(ToolTrace.Thinking(it))
+            if (onThinkingDelta == null) {
+                stepReasoning.toString().trim().takeIf { it.isNotEmpty() }?.let {
+                    onTrace(ToolTrace.Thinking(it))
+                }
             }
 
             when (val parsed = parse(reply)) {
@@ -201,8 +219,18 @@ class ToolAgent(
                                 transcript,
                             )
                         }
+                        // 先占行：工具跑起来的那一刻界面就能看到「正在做什么」，
+                        // 而不是等十几秒（research_plan 的调研）结束后才出现。
+                        onTrace(
+                            ToolTrace.CallStarted(
+                                step = step,
+                                tool = parsed.name,
+                                description = tool.description,
+                                arguments = parsed.arguments.toString(),
+                            ),
+                        )
                         val result = try {
-                            tool.call(parsed.arguments)
+                            tool.call(parsed.arguments) { message -> note("　· " + message) }
                         } catch (t: Throwable) {
                             ToolResult("工具自己出错了：" + (t.message ?: "未知错误"), isError = true)
                         }

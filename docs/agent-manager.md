@@ -360,13 +360,13 @@ jlink 默认只带推断出来的模块，`java.net.http`、`java.sql` 必须手
 `TRELLIS_DIST_DIR=/tmp/trellis-dist ./gradlew :app:desktop:createDistributable`。
 | 2026-11-07 | 删除意图分类器（`Intent.kt`）、`TOOL_INTENTS`、`forcedIntent` 与歧义反问；改为全量工具 + 单一静态前缀 + `<task:work>`；插件收尾核对从「按意图」改成「碰过插件工具且声称做完」 | Lead（用户指令 m06296） |
 
-## 16. 过程行：逐步工具调用 + 思考 + 可展开详情（2026-11-09）
+## 17. 过程行：逐步工具调用 + 思考 + 可展开详情（2026-11-09，2026-11-10 补流式与运行中）
 
 以前过程行是一行「过程 · N 个动作」折叠成平铺小字：用户看不到它每一步调了什么工具、为什么调，也看不到参数与返回。现在分三层：
 
-- **摘要行**（默认收起）：`过程 · N 个动作 · 改动 M 处`，右侧前 4 个动作的人话预览。
-- **工具行**（展开后每条工具调用一行）：`· 查了学习计划  get_learning_plan（{…}）`——人话动作 + 工具名 + 参数预览（`compactArguments`，超过 48 字截断）。
-- **单条详情**（点这一行的 ▾）：工具 description（它是干什么的）、缩进 JSON 参数、结果原文（各自限制高度、内部滚动）。长 JSON 不再撑爆过程区。
-- **思考行**：就是模型的真实思考 `reasoning_content`（DeepSeek 流式 `delta.reasoning_content`），不是宿主猜的。工具循环里 `ToolAgent` 每轮用 `llm.completeWithReasoning(...)` 取一次，非空就发 `ToolTrace.Thinking`；聊天流里 `ManagerAgent` 边流边累积，流结束后经 `onThinking` 补一行。模型没给 reasoning 就不显示这一行（`thoughtBefore()` 那套「从回复文本里挑一句当思考」已删）。过程行里另有宿主的判断行（「判断 · 它要动手，切到工具模式」）。
+- **摘要行**（默认收起）：`过程 · N 个动作 · 改动 M 处`，右侧前 4 个动作的人话预览。**N 只数真正的工具调用**（`steps.count { it.tool != null }`）；「判断：」「思考：」和进度行都是解释，不算动作。没有工具时写「N 条过程」。
+- **工具行**（展开后每条工具调用一行）：`· 查了学习计划  get_learning_plan（{…}）`——人话动作 + 工具名 + 参数预览（`compactArguments`，超过 48 字截断）。工具**开始执行时**就先发 `ToolTrace.CallStarted` 占行、显示「运行中…」；跑完再由 `ToolTrace.Call` 把结果补进同一条详情。慢的复合工具（`research_plan`：联网查资料 → 拆阶段 → 建计划 → 写大纲 → 排本周）通过 `AgentTool.call(arguments, onProgress)` 把阶段以「　· …」过程行吐出来，不会十几秒只有一行静态名字。
+- **单条详情**（点这一行的 ▾）：工具 description（它是干什么的）、缩进 JSON 参数、结果原文（各自限制高度、内部滚动）。长 JSON 不再撑爆过程区。运行中时结果区显示「（还在跑…）」。
+- **思考行**：就是模型的真实思考 `reasoning_content`（DeepSeek 流式 `delta.reasoning_content`），不是宿主猜的。**DeepSeek 服务端默认不思考**，所以 `HttpLlmClient.requestBody()` 必须显式发 `thinking: {"type":"enabled"}`；`LlmConfig.thinking` 为 `null` 时只对 DeepSeek 地址自动开（其它 OpenAI 兼容服务不发这个字段，免得 400），也可以用 `TRELLIS_LLM_THINKING=false`/`llm.json` 的 `thinking` 关掉。`max_tokens` 默认 8192：思考 token 也算 completion，2048 会把正文/JSON 挤没。聊天流和工具循环都走 `llm.stream(..., onReasoning)`（工具循环传 `jsonMode = true`，流式也开 `response_format: json_object`，否则模型容易回成人话、浪费一次「让它重说」），`onThinkingDelta` 把增量并进同一个「思考：」行（每步开始/工具开始时断开）；SSE 分片里的 `content`/`reasoning_content` 是 JSON null 时必须当「没有」（kotlinx 的 `JsonNull.content` 就是字符串 `"null"`，否则开思考后正文会多出一串 `null`）；没有增量回调的假模型仍回退成整段 `ToolTrace.Thinking`。模型没给 reasoning 就不显示这一行（`thoughtBefore()` 那套「从回复文本里挑一句当思考」已删）。静态前缀里另有 `<thinking_language>` 明确要求 reasoning 也用中文（工具名/参数名/代码不翻译）—— 不写这一句，模型会拿英文思考；它只是语言偏好，不能保证每轮 100% 遵从。过程行里另有宿主的判断行（「判断 · 它要动手，切到工具模式」）。
 
-落点：`ChatLine.tool: ChatToolTrace?`（`tool/description/arguments/result/isError`）、`ai/.../tool/ToolTrace.kt`（`ToolAgent` 的 `onTrace` 回调：`Thinking`/`Call`）、`ManagerAgent.respond(onTrace, onThinking)`（工具路径透传 `onTrace`，聊天路径走 `onThinking`）、`AppRuntime.sendChat` 把 trace 挂到「第 N 步：tool」那一行并把随后的 `→ 结果` 行并入详情（不再单独占行）、`ChatStore` 序列化往返、`ChatScreen.ProcessDetails` 渲染 `ToolStepRow`/`ToolStepDetail`。旧会话没有 `tool` 字段，仍按纯文本平铺。
+落点：`ChatLine.tool: ChatToolTrace?`（`tool/description/arguments/result/isError/running`）、`ai/.../tool/ToolTrace.kt`（`Thinking`/`CallStarted`/`Call`）、`ManagerAgent.respond(onTrace, onThinking, onThinkingDelta)`（工具路径透传 `onTrace` 与 `onThinkingDelta`）、`AgentTool.call(arguments, onProgress)` 默认忽略进度、`AppRuntime.sendChat` 把 trace 挂到「第 N 步：tool」那一行、把 `→ 结果` 并进详情、结束/异常时把仍 `running` 的 trace 收尾、`ChatStore` 序列化往返（`running` 读回一律 false）、`ChatScreen.ProcessDetails` 渲染 `ToolStepRow`/`ToolStepDetail`。旧会话没有 `tool` 字段，仍按纯文本平铺。

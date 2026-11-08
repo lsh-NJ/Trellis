@@ -3,6 +3,7 @@ package dev.trellis.ai
 import java.io.File
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -20,12 +21,18 @@ object LlmConfigLoader {
     const val ENV_ENDPOINT = "TRELLIS_LLM_ENDPOINT"
     const val ENV_KEY = "TRELLIS_LLM_KEY"
     const val ENV_MODEL = "TRELLIS_LLM_MODEL"
+    const val ENV_THINKING = "TRELLIS_LLM_THINKING"
 
     /** DeepSeek 的 OpenAI 兼容地址：国内可直连、便宜、中文好。 */
     const val DEFAULT_ENDPOINT = "https://api.deepseek.com/v1/chat/completions"
     const val DEFAULT_MODEL = "deepseek-chat"
 
-    private data class FromFile(val endpoint: String?, val key: String?, val model: String?)
+    private data class FromFile(
+        val endpoint: String?,
+        val key: String?,
+        val model: String?,
+        val thinking: Boolean?,
+    )
 
     /**
      * 返回 null 表示**还没配 key**。
@@ -38,9 +45,10 @@ object LlmConfigLoader {
         val endpoint = System.getenv(ENV_ENDPOINT) ?: fromFile?.endpoint ?: DEFAULT_ENDPOINT
         val model = System.getenv(ENV_MODEL) ?: fromFile?.model ?: DEFAULT_MODEL
         val key = System.getenv(ENV_KEY) ?: fromFile?.key
+        val thinking = envThinking() ?: fromFile?.thinking
 
         if (key.isNullOrBlank()) return null
-        return LlmConfig(endpoint, key, model)
+        return LlmConfig(endpoint, key, model, thinking)
     }
 
     /**
@@ -57,6 +65,7 @@ object LlmConfigLoader {
             endpoint = fromFile.endpoint?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT_ENDPOINT,
             apiKey = key,
             model = fromFile.model?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT_MODEL,
+            thinking = fromFile.thinking,
         )
     }
 
@@ -79,6 +88,7 @@ object LlmConfigLoader {
             put("endpoint", config.endpoint)
             put("apiKey", config.apiKey)
             put("model", config.model)
+            config.thinking?.let { put("thinking", it) }
         }
         file.writeText(root.toString(), Charsets.UTF_8)
         runCatching {
@@ -95,12 +105,22 @@ object LlmConfigLoader {
         "还没有配置模型 API key。两种方式任选一种：\n" +
             "1. 设置环境变量 " + ENV_KEY + "\n" +
             "   （可选：" + ENV_MODEL + " 默认 " + DEFAULT_MODEL +
-            "，" + ENV_ENDPOINT + " 默认 " + DEFAULT_ENDPOINT + "）\n" +
+            "，" + ENV_ENDPOINT + " 默认 " + DEFAULT_ENDPOINT +
+            "，" + ENV_THINKING + " 默认自动）\n" +
             "2. 新建文件 " + File(home, "llm.json").absolutePath + "\n" +
             "   内容：{\"endpoint\":\"" + DEFAULT_ENDPOINT + "\",\"apiKey\":\"sk-...\",\"model\":\"" +
             DEFAULT_MODEL + "\"}"
 
     private fun defaultHome(): File = File(System.getProperty("user.home"), ".trellis")
+
+    /** 环境变量里的思考开关；没写/认不出就是 null（交给地址判断自动决定）。 */
+    private fun envThinking(): Boolean? = when (
+        System.getenv(ENV_THINKING)?.trim()?.lowercase()
+    ) {
+        "true", "1", "yes", "on" -> true
+        "false", "0", "no", "off" -> false
+        else -> null
+    }
 
     private fun readFile(file: File): FromFile? {
         if (!file.isFile) return null
@@ -114,6 +134,7 @@ object LlmConfigLoader {
                 endpoint = root["endpoint"]?.jsonPrimitive?.content,
                 key = root["apiKey"]?.jsonPrimitive?.content,
                 model = root["model"]?.jsonPrimitive?.content,
+                thinking = root["thinking"]?.jsonPrimitive?.booleanOrNull,
             )
         }.getOrNull()
     }

@@ -79,6 +79,11 @@ class ManagerAgent(
         onTrace: (dev.trellis.ai.tool.ToolTrace) -> Unit = {},
         /** 聊天这步模型的原生思考（DeepSeek `reasoning_content`）；没有就不调。 */
         onThinking: (String) -> Unit = {},
+        /**
+         * 思考过程的**增量**（流式分片）。给了这个就不再把整段交给 [onThinking]：
+         * 界面可以拿它边想边刷新同一行，而不是等模型想完才突然出现一大段。
+         */
+        onThinkingDelta: ((String) -> Unit)? = null,
     ): ManagerResult {
         val messages = router.prompt.messages(state, request, history)
 
@@ -92,7 +97,10 @@ class ManagerAgent(
                     streamed.append(delta)
                     onDelta(delta)
                 },
-                onReasoning = { piece -> reasoning.append(piece) },
+                onReasoning = { piece ->
+                    reasoning.append(piece)
+                    if (piece.isNotEmpty()) onThinkingDelta?.invoke(piece)
+                },
             )
         } catch (cancel: kotlinx.coroutines.CancellationException) {
             throw cancel
@@ -103,7 +111,10 @@ class ManagerAgent(
         }
 
         // 模型自己的思考过程原样交给界面；不裁剪、不加工，没有就不显示。
-        reasoning.toString().trim().takeIf { it.isNotEmpty() }?.let(onThinking)
+        // 有增量回调时，界面已经边想边画了，这里不再重复发一遍整段。
+        if (onThinkingDelta == null) {
+            reasoning.toString().trim().takeIf { it.isNotEmpty() }?.let(onThinking)
+        }
 
         // ② 它想动手：把同一份上下文交给工具循环真去干。
         // 这不是「它在瞎说」——静态前缀里列了全套工具，它照着协议点名工具是正常行为。
@@ -117,7 +128,7 @@ class ManagerAgent(
                 tools = router.tools,
                 maxSteps = maxSteps,
                 beforeFinishing = beforeFinishing,
-            ).run(messages, onLog, onTrace)
+            ).run(messages, onLog, onTrace, onThinkingDelta)
         } catch (cancel: kotlinx.coroutines.CancellationException) {
             throw cancel
         } catch (t: Throwable) {

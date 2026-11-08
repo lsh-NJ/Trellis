@@ -563,6 +563,7 @@ class KnowledgeGraphAiTest {
             messages: List<LlmMessage>,
             onDelta: suspend (String) -> Unit,
             onReasoning: suspend (String) -> Unit,
+            jsonMode: Boolean,
         ): String = complete(messages).also { onDelta(it) }
     }
 
