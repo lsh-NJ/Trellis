@@ -320,3 +320,17 @@
 
 回归测试：`PlanWeekToolsTest.runningTheWeekTwiceDoesNotDuplicateItems` 断言第二次 `placed=0`、
 note 含「已经排过了」、单元与 occurrence 数不增。
+
+## 17 2026-11-08：放弃的计划可以删除（软删除）
+
+- **入口**：计划设置弹窗。当前计划是「已放弃」时，危险区不再显示「放弃这个计划」，改成
+  「删除这个计划」+ 二次确认；进行中 / 正常结束的计划看不到这个按钮。
+- **语义**：软删除。后端 `process.deleted_at` 写时间戳、事件 `plan.deleted`，`plans()` 与
+  `activePlanId()` 过滤掉它，左栏和计划页都不再出现；数据行与事件保留（事件溯源触发器禁止物理删），
+  用于追溯。以后要恢复只需清掉 `deleted_at`。
+- **失败处理**：只有 `abandoned_at` 非空的计划能删，否则返回 `E_STATE`，页面顶部用 `planNotice`
+  显示原因（不会被 `refreshPlan()` 清掉）。
+- **删后状态**：清空 `planFocusId` 并 `refreshPlan()`，自动落到下一个未删计划；没有就回空态。
+- **测试**：`LearningPlanAbandonTest.onlyAnAbandonedPlanCanBeDeletedFromTheList` /
+  `aNormallyEndedPlanCannotBeDeletedEither`；`PlanDeleteRuntimeTest`（删除后列表消失、
+  焦点清空、进行中的计划走同一入口被拒）。

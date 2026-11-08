@@ -107,4 +107,43 @@ class LearningPlanAbandonTest {
         assertFalse(rejected.ok)
         assertEquals(ErrorCode.E_STATE, rejected.error?.code)
     }
+
+    @Test
+    fun onlyAnAbandonedPlanCanBeDeletedFromTheList() {
+        val svc = service()
+
+        // 进行中的计划不能删：误删代价太大，必须先放弃。
+        val active = seed(svc, "进行中的计划")
+        val rejected = svc.deletePlan(env(active), active)
+        assertFalse(rejected.ok, "进行中的计划不能直接删除")
+        assertEquals(ErrorCode.E_STATE, rejected.error?.code)
+        assertEquals(active, svc.activePlanId(), "被拒绝后计划仍在使用中")
+
+        // 放弃之后才允许删；删完列表与「当前计划」都看不到它。
+        val abandoned = svc.abandonPlan(env(active), active, "换方向了")
+        assertTrue(abandoned.ok, abandoned.error?.message)
+        val deleted = svc.deletePlan(env(active), active)
+        assertTrue(deleted.ok, deleted.error?.message)
+        assertTrue(svc.plans().none { it.id == active }, "删除后不应再出现在计划列表里")
+        assertEquals(null, svc.activePlanId(), "删除后不应再被当成当前计划")
+        assertTrue(svc.exportJsonl(active).contains("plan.deleted"), "删除要写事件，留痕可追溯")
+
+        // 重复删除报错，不再写事件。
+        val again = svc.deletePlan(env(active), active)
+        assertFalse(again.ok, "重复删除应被拒绝")
+        assertEquals(ErrorCode.E_STATE, again.error?.code)
+        assertEquals(1, svc.exportJsonl(active).split("plan.deleted").size - 1, "重复删除不应再写一条事件")
+    }
+
+    @Test
+    fun aNormallyEndedPlanCannotBeDeletedEither() {
+        val svc = service()
+        val ended = seed(svc, "正常结束的计划")
+        val end = svc.endPlan(env(ended), ended, "学完了")
+        assertTrue(end.ok, end.error?.message)
+        val rejected = svc.deletePlan(env(ended), ended)
+        assertFalse(rejected.ok, "正常结束不等于放弃，要删也先放弃")
+        assertEquals(ErrorCode.E_STATE, rejected.error?.code)
+        assertEquals(1, svc.plans().count { it.id == ended })
+    }
 }

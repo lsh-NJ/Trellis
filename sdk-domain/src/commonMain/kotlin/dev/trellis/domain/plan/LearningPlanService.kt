@@ -143,6 +143,15 @@ interface LearningPlanService {
     fun abandonPlan(env: CommandEnvelope, planId: String, reason: String = ""): CommandResult<Unit>
 
     /**
+     * 从计划列表里删除一个「已放弃」的计划（软删除）。
+     *
+     * 只删可见性：`process.deleted_at` 写时间戳，[plans] / [activePlanId] 不再返回它，
+     * 计划页也打不开；底层事件与计划数据保留在库里用于追溯（事件溯源不物理删）。
+     * 只允许 [abandonPlan] 过的计划；进行中/暂停/正常结束的计划返回 E_STATE。
+     */
+    fun deletePlan(env: CommandEnvelope, planId: String): CommandResult<Unit>
+
+    /**
      * 幂等替换当前版本的阶段列表。
      *
      * 校验：ISO 周格式、weekStart <= weekEnd、区间落在计划已承诺的周范围内

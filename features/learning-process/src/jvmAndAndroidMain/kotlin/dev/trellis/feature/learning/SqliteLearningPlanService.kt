@@ -361,7 +361,9 @@ internal class SqliteLearningPlanService(
     }
 
     internal fun effectivePlanForToday(planId: String?): String? = planId ?: connection.prepareStatement(
-        "SELECT id FROM plan WHERE status = 'active' ORDER BY created_at LIMIT 1",
+        // 软删的计划不再算「当前计划」。
+        "SELECT p.id FROM plan p JOIN process pr ON pr.id = p.process_id " +
+            "WHERE p.status = 'active' AND pr.deleted_at IS NULL ORDER BY p.created_at LIMIT 1",
     ).use { ps ->
         ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
     }
@@ -384,9 +386,11 @@ internal class SqliteLearningPlanService(
     override fun activePlanId(): String? = effectivePlanForToday(null)
 
     override fun plans(): List<LearningPlanInfo> = connection.prepareStatement(
-        // 放弃过的计划状态字段仍是 ended（避免改 CHECK 约束），读的时候按 abandoned_at 映射成 abandoned。
+        // 放弃过的计划状态字段仍是 ended（避免改 CHECK 约束），读的时候按 abandoned_at 映射成 abandoned；
+        // 删掉（软删）的计划不再返回。
         "SELECT p.id, pr.title, CASE WHEN pr.abandoned_at IS NOT NULL THEN 'abandoned' ELSE p.status END " +
-            "FROM plan p JOIN process pr ON pr.id = p.process_id ORDER BY p.created_at",
+            "FROM plan p JOIN process pr ON pr.id = p.process_id " +
+            "WHERE pr.deleted_at IS NULL ORDER BY p.created_at",
     ).use { ps ->
         ps.executeQuery().use { rs ->
             buildList {
@@ -516,6 +520,8 @@ internal class SqliteLearningPlanService(
 
     override fun abandonPlan(env: CommandEnvelope, planId: String, reason: String) =
         cmdAbandonPlan(env, planId, reason)
+
+    override fun deletePlan(env: CommandEnvelope, planId: String) = cmdDeletePlan(env, planId)
 
     override fun setStages(env: CommandEnvelope, planId: String, stages: List<StageDraft>) =
         cmdSetStages(env, planId, stages)
