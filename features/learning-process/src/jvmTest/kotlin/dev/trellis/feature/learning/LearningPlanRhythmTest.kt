@@ -240,8 +240,8 @@ class LearningPlanRhythmTest {
     @Test
     fun theWeeklyPickIsCappedAtSevenUnits() {
         val svc = service()
-        // 池里 10 个 30 分钟的单元：周预算 60×7×80% = 336 分钟，按耗时能放 11 个，
-        // 但一周最多 7 个（再多也做不完）。
+        // 池里 9 个 30 分钟的单元：周参考量 60×7 = 420 分钟，按耗时放得下不少，
+        // 但引擎一周最多取 7 个（再多也做不完；这是步子上限，不是时间硬规则）。
         val planId = seed(
             svc,
             units = List(12) { unit("U${it + 1}", minutes = 30) },

@@ -87,7 +87,7 @@ interface LearningPlanService {
 
     /**
      * 计划当前欠的节点：本周过了日子还没做的排期 + 过去周没完成、也没被以后收走的单元，
-     * 外加本周从今天到周日的剩余容量。
+     * 外加本周从今天到周日的剩余参考分钟（只做参考，不限制补做）。
      *
      * 只读事实；重排怎么做由上层协商后发命令，查询本身不写库、不猜方案。
      */
@@ -115,7 +115,8 @@ interface LearningPlanService {
 
     /**
      * 改「这个计划每天投入多少分钟」。这是计划的属性，不是全局设置：
-     * 写进 `process.weekly_capacity_minutes`（= daily × 7），影响之后铺天的容量。
+     * 写进 `process.weekly_capacity_minutes`（= daily × 7），影响之后铺天的参考投入
+     * （只做参考，不是硬上限：2026-11-08 用户定的）。
      */
     fun setPlanDailyMinutes(env: CommandEnvelope, planId: String, dailyMinutes: Int): CommandResult<Unit>
 

@@ -110,7 +110,7 @@ class PlanAdjustRuntimeTest {
 
             // ② 点「+45 分钟」：剩下那项补进今天，并把加时记下来。
             runtime.planCatchUpToday(45)
-            assertEquals(0, runtime.planOverdue?.thisWeek?.size, "容量够时应把剩下的逾期项补进今天")
+            assertEquals(0, runtime.planOverdue?.thisWeek?.size, "时间只做参考，剩下的逾期项都补进今天")
             assertEquals(45, StudyPrefsStore(home).load().catchUpMinutes, "用户答复的加时要落盘")
         } finally {
             runtime.shutdown()

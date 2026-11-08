@@ -339,10 +339,11 @@ internal fun SqliteLearningPlanService.cmdAcceptDraft(
 }
 
 /**
- * 这个计划「每天投入多少分钟」：周容量 / 7。
+ * 这个计划「每天投入多少分钟」：周容量 / 7。只作参考（2026-11-08 用户定的：
+ * 时间只对 AGENT 起参考作用，排程不硬卡这个数）。
  *
  * @return null 表示用户没设过投入时间——这时保持老规矩「一天只排一个单元」，
- * 不去猜容量，免得把没设置的计划塞成一天两三个。
+ * 不去猜参考值，免得把没设置的计划乱摊。
  */
 internal fun SqliteLearningPlanService.planDailyMinutes(planId: String): Int? =
     connection.prepareStatement(
@@ -360,11 +361,14 @@ internal fun SqliteLearningPlanService.planDailyMinutes(planId: String): Int? =
     }
 
 /**
- * 把某周承诺铺成日任务：从今天开始，按「每天投入分钟数」往一天里塞，塞满换下一天。
+ * 把某周承诺铺成日任务：从今天开始，按「每天投入分钟数」当参考值摊到每天；
+ * 整周都到参考值后摊到当前分钟数最少的那天（不拒绝、不堆周日）。
+ *
+ * 时间只做参考（2026-11-08 用户定的：每天投入 × 7 只对 AGENT 起参考作用，不硬性限制）。
  *
  * 幂等靠「单元级」判断而不是「这张承诺有没有任何行」：结转 / 顺延 / 拆分都会在同一张
  * 承诺下留下行，以前那种「有一条就整周不铺」的判重会把整周剩下的单元吞掉。
- * 已经排过的单元跳过；当天已经被占用的分钟数（典型来源：上周结转过来的两步）算进预算。
+ * 已经排过的单元跳过；当天已经被占用的分钟数（典型来源：上周结转过来的两步）算进分配。
  */
 internal fun SqliteLearningPlanService.materializeWeek(planId: String, versionId: String, week: String): Int {
     val commitmentId = connection.prepareStatement(
@@ -416,37 +420,41 @@ internal fun SqliteLearningPlanService.materializeWeek(planId: String, versionId
         }
     }
     val today = today()
-    var day = if (today in weekStart..weekStart.plusDays(6)) today else weekStart
-    val dailyBudget = planDailyMinutes(planId)
-    // 当天已被这张承诺占用的分钟数（结转行最常落在这天），从预算里先扣掉。
-    var usedToday = connection.prepareStatement(
-        "SELECT COALESCE(SUM(estimate_minutes), 0) FROM occurrence WHERE commitment_id = ? AND day = ? " +
-            "AND status IN ('planned','done')",
+    val firstDay = if (today in weekStart..weekStart.plusDays(6)) today else weekStart
+    val dailyReference = planDailyMinutes(planId)
+    // 这一周每天已经排了多少分钟：结转/顺延过来的行也算进去，好把新单元摊到最空的那天。
+    val minutesByDay = LinkedHashMap<String, Int>()
+    var cursor = firstDay
+    while (!cursor.isAfter(weekEnd)) {
+        minutesByDay[cursor.toString()] = 0
+        cursor = cursor.plusDays(1)
+    }
+    connection.prepareStatement(
+        "SELECT day, COALESCE(SUM(estimate_minutes), 0) FROM occurrence WHERE commitment_id = ? " +
+            "AND status IN ('planned','done') GROUP BY day",
     ).use { ps ->
         ps.setString(1, commitmentId)
-        ps.setString(2, day.toString())
-        ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        ps.executeQuery().use { rs ->
+            while (rs.next()) {
+                val key = rs.getString(1)
+                if (key in minutesByDay) minutesByDay[key] = rs.getInt(2)
+            }
+        }
     }
     var created = 0
-    fun nextDay() {
-        if (day < weekStart.plusDays(6)) day = day.plusDays(1)
-        usedToday = 0
-    }
     units.forEach { (unitId, minutes, _) ->
         if (unitId in placed || unitId in movedAway) return@forEach
-        // 设了「每天投入」就按容量打包：当天再放会超预算就换下一天；单个单元本身超预算就独占一天。
-        // 没设过投入时间时保持老规矩：一天只排一个。
-        if (dailyBudget == null) {
-            if (usedToday > 0) nextDay()
-        } else if (usedToday > 0 && usedToday + minutes > dailyBudget) {
-            nextDay()
-        }
-        val dayText = day.toString()
+        // 时间只做参考（2026-11-08 用户定的：每天投入 × 7 只对 AGENT 起参考作用，不硬卡）：
+        // 先按参考值从今天往后一天天装；整周都到参考值后摊到当前分钟数最少的那天——
+        // 不拒绝、也不把剩下的全堆在周日（现场出现过周日一天 20 件约 700 分钟）。
+        val target = minutesByDay.entries.firstOrNull { (_, used) ->
+            if (dailyReference == null) used == 0 else used + minutes <= dailyReference
+        }?.key ?: minutesByDay.entries.minByOrNull { it.value }?.key ?: firstDay.toString()
         val id = insertOccurrence(
             commitmentId = commitmentId,
             unitId = unitId,
             todoId = null,
-            day = dayText,
+            day = target,
             minutes = minutes,
             mode = "full",
         )
@@ -457,15 +465,14 @@ internal fun SqliteLearningPlanService.materializeWeek(planId: String, versionId
             planId = planId,
             payload = eventJson(
                 "week" to JsonPrimitive(week),
-                "day" to JsonPrimitive(dayText),
+                "day" to JsonPrimitive(target),
                 "unitId" to JsonPrimitive(unitId),
             ),
             actor = dev.trellis.domain.plan.Actor.SYSTEM,
             commandId = null,
         )
         created++
-        usedToday += minutes
-        if (dailyBudget != null && usedToday >= dailyBudget) nextDay()
+        minutesByDay[target] = (minutesByDay[target] ?: 0) + minutes
     }
     return created
 }

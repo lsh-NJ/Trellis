@@ -548,7 +548,7 @@ fun PlanPage(runtime: AppRuntime) {
             containerColor = MaterialTheme.colorScheme.background,
         ) {
             Column(Modifier.fillMaxWidth().padding(horizontal = Gap.xl).padding(bottom = Gap.xxl)) {
-                SheetHeading("每天投入", "排程按这个数把单元铺到天：×7 就是这周的容量")
+                SheetHeading("每天投入", "时间只做参考：排程会按这个数把单元尽量摊到每天，不强制卡满")
                 Spacer(Modifier.height(Gap.l))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(runtime.planDailyDraft.toString() + " 分钟", style = MaterialTheme.typography.headlineSmall)

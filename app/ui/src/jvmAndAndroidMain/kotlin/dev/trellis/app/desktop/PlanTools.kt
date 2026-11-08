@@ -173,9 +173,10 @@ internal fun courseUnitsFromParts(parts: List<BilibiliPart>): List<CourseUnit> =
 }
 
 /**
- * 从 [start] 开始按 [budgetMinutes] 分钟预算顺序取一周的单元（最多 7 个）。
+ * 从 [start] 开始按 [budgetMinutes] 分钟参考值顺序取一周的单元。
  *
- * 第一个单元一定取（哪怕它本身超预算），否则预算小的用户会永远排不出东西。
+ * 参考值不是上限（2026-11-08 用户定的：时间只对 AGENT 起参考作用）：跨过参考值的那一条也带上，
+ * 不因为差几分钟把单元推到下周；第一个单元一定取（哪怕它本身超参考），否则参考值小的用户会永远排不出东西。
  */
 private fun takeWeekBatch(units: List<UnitDraft>, start: Int, budgetMinutes: Int): List<Int> {
     val picked = mutableListOf<Int>()
@@ -183,7 +184,8 @@ private fun takeWeekBatch(units: List<UnitDraft>, start: Int, budgetMinutes: Int
     var index = start
     while (index < units.size) {
         val minutes = units[index].estimateMinutes
-        if (picked.isNotEmpty() && used + minutes > budgetMinutes) break
+        // 已经攒够参考值就收手；还没到就继续，跨过参考值的那一条算在这一周。
+        if (picked.isNotEmpty() && used >= budgetMinutes) break
         picked += index
         used += minutes
         index++
@@ -193,7 +195,10 @@ private fun takeWeekBatch(units: List<UnitDraft>, start: Int, budgetMinutes: Int
 
 /**
  * source 模式（bvid 全量导入）的排周：**全局周表**——从本周起一周接一周地排，
- * 每周按 dailyMinutes×7×0.8 的预算、最多 7 个单元，直到所有单元都排完。
+ * 每周按 dailyMinutes×7 当参考值（跨过参考值的那一条也归本周），直到所有单元都排完。
+ *
+ * 时间只是参考（2026-11-08 用户定的）：参考值小不会让单元漏排，多出来的周会整体往后延；
+ * 有截止日期时只排到截止周，剩下的才留在「待安排」池。
  *
  * 之前这里只排本周+下周、其余留在池里，结果是「计划永远只活在前两周」，
  * 看不到整体路线。现在把整条路线一次排完：未来周只是「已承诺、还没铺到天」，
@@ -209,7 +214,7 @@ private fun autoCommitments(
     lastWeek: String? = null,
 ): List<CommitmentDraft> {
     val firstMonday = isoWeekStart(thisWeek) ?: return emptyList()
-    val budgetMinutes = (dailyMinutes * 7 * 0.8).toInt()
+    val budgetMinutes = dailyMinutes * 7
     val weeks = mutableListOf<CommitmentDraft>()
     var start = 0
     var index = 0
@@ -291,7 +296,7 @@ class PlanTools(
         "2. 用户只有目标、没有指定课程/BV/链接时，**先 research_plan 调研出路径**（见 how_to_research_plan），不要一上来搜 B 站。",
         "   用户明确指定了课程/视频/BV 号，或要求「用某门课速通」时，才把 bvid 直接交给 create_learning_plan(bvid=...)，",
         "   可选 fromPart/toPart 只导入第几集到第几集。宿主会自己拉分集、按分集标题生成全部单元，",
-        "   并把**从本周起的全局周表**一次排好（每周按每天分钟数估算，最多 14 个；整门课不会只排前两周）。**总路线要全**：不要替用户挑「前面几集」，也不要逐条抄分集标题。",
+        "   并把**从本周起的全局周表**一次排好（每周按每天分钟数**参考**估算，整门课不会只排前两周；排不完就往后延周，时间只做参考）。**总路线要全**：不要替用户挑「前面几集」，也不要逐条抄分集标题。",
         "   走 add_tasks 那条路才从目录里挑 6-12 集；排计划不要挑。",
         "3. 用了 bvid 就不要再写 units / weeks：单元和全局周表都由宿主自动做。手写会和分集对不上，工具会直接报错让你删掉。",
         "4. dailyMinutes 只是**建议**：用户主动说了就用用户的值；没说就用设置页「每天预计投入」（默认 60）。",
@@ -300,7 +305,7 @@ class PlanTools(
         "6. 来源不是 B 站（自己的书 / 网课章节 / 其它资料）才手写 units + weeks：单元时间按真实时长估（10–45 分钟）；",
         "   weeks 从本周起、周与周连续、每周 1–14 个；把能覆盖到目标的周表一次给全（**不设周数上限**）。",
         "7. 用户给了考试/截止日期（「还有两周考试」「月底前学完」）：先按今天换算成具体日期，再把 deadline 传给 create_learning_plan / research_plan，",
-        "   宿主会按截止周倒排全局周表；最后 1–2 周留复习/模考。排不下就少排、其余留在待安排，不要为此擅自抬高每天投入。",
+        "   宿主会按截止周倒排全局周表；最后 1–2 周留复习/模考。排不下就整体延期、其余留在待安排，不要为此擅自抬高每天投入。",
         "8. 手写 units + weeks 时第一周必须是**本周**（今天所在的那一周）：计划从今天开始排，不要从下周开始。",
         "9. 写完说清「全局排了多少周、本周 X 个、待安排还剩几个」；不要去改用户别的数据。",
         "</how_to_create_learning_plan>",
@@ -312,7 +317,7 @@ class PlanTools(
         override val name: String = "create_learning_plan"
         override val description: String =
             "在「计划」页建一份学习计划。排 B 站课程时优先传 bvid：宿主会直接拉分集，" +
-                "把整门课**全量**变成单元（总路线要全），并按**从本周起的全局周表**把整门课排到未来各周（每周按每天分钟数估算，最多 14 个）；" +
+                "把整门课**全量**变成单元（总路线要全），并按**从本周起的全局周表**把整门课排到未来各周（每周按每天分钟数**参考**估算；时间只做参考，排不完就往后延周）；" +
                 "传了 bvid 就不要手写 units/weeks。非 B 站来源才手写 units + weeks（第一周必须是本周、周与周连续、每周 1–14 个，" +
                 "周数按整个计划周期给全，不设上限）。dailyMinutes 是建议值（15–240；用户没主动说就别单独问）；传 deadline 时宿主按截止周倒排、排不下留待安排。" +
                 "会写用户数据；长期学习计划用这个，一次性任务用 add_tasks。"
@@ -555,9 +560,9 @@ class PlanTools(
                 }
                 append("。全局周表共 ${commitments.size} 周（$weekLines）")
                 deadline.lastWeek?.let { append("，按截止日 $deadlineText 排到 $it") }
-                if (placed < units.size) append("；按每天 $dailyMinutes 分钟的节奏，截止日前排不下的 ${units.size - placed} 个留在「待安排」池（之后再说）")
+                if (placed < units.size) append("；按每天 $dailyMinutes 分钟（参考值）排，截止日前没排进任何一周的 ${units.size - placed} 个留在「待安排」池（之后再说）")
                 written.notes.forEach { append("；").append(it) }
-                append("。总路线一次排完，之后每周到点会自动铺到天；每天按 $dailyMinutes 分钟排（只是建议，想改随时说）。")
+                append("。总路线一次排完，之后每周到点会自动铺到天；每天按 $dailyMinutes 分钟（参考值）排，内容多会往后延周（想改随时说）。")
                 append("去「计划」页能看到全局周卡片和每天安排。")
             },
         )
@@ -593,7 +598,8 @@ class PlanTools(
             env(null, "plan.create"),
             title = title,
             goal = title,
-            // 后端按「周容量」存；用户说的是每天多少分钟，×7 折成周。
+            // 后端按「周容量」存；用户说的是每天多少分钟，×7 折成周。这个数只做参考，
+            // 不是排程硬上限（2026-11-08 用户定的：时间只对 AGENT 起参考作用）。
             weeklyCapacityMinutes = dailyMinutes * 7,
         )
         val createdValue = created.value

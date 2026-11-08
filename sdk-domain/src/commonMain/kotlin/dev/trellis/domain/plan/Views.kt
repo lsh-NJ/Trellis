@@ -221,7 +221,7 @@ data class BacklogUnit(
 )
 
 /**
- * 计划当前欠的节点：本周隔日逾期 + 隔周欠账 + 本周还剩多少容量。
+ * 计划当前欠的节点：本周隔日逾期 + 隔周欠账 + 本周还剩多少参考分钟。
  *
  * 只做事实投影，不给建议：先读到这里的数据，重排方案由上层（聊天协商）决定后发命令。
  */
@@ -300,7 +300,7 @@ data class PlanStateView(
     val reviewableWeek: String? = null,
     val carryPending: Int,
     val title: String = "",
-    /** 计划里「每天投入多少分钟」：由 `process.weekly_capacity_minutes / 7` 反推；没设就是 null。 */
+    /** 计划里「每天投入多少分钟」：由 `process.weekly_capacity_minutes / 7` 反推；没设就是 null。只作排程参考，不是硬上限。 */
     val dailyMinutes: Int? = null,
 )
 

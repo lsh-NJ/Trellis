@@ -242,9 +242,9 @@ ChatScreen ──> AppRuntime.sendChat()
 - `UiStyleTools`：`list_ui_options`、`set_ui`、`set_plugin_card`、`list_themes`、`set_theme`
 - `ScreenTools`：`describe_screen`、`take_screenshot`、`open_tab`、`click`、`type_text`、`press_key`
 - `WorkflowTools`：`set_plan`（2–12 步）、`step_done`、`ask_choices`（2–5 个竖向选项，调完即停）
-- `PlanTools`：`create_learning_plan`（B 站课程优先 `bvid` 全量导入；**全局周表**从本周起按每天分钟预算一直排到单元用完，不设周数上限；`deadline` 可选，按截止周倒排、排不下留待安排池；手写 `units + weeks` 同样支持多周。dailyMinutes 只是建议，**不要为它单独问用户/弹选项**）
+- `PlanTools`：`create_learning_plan`（B 站课程优先 `bvid` 全量导入；**全局周表**从本周起按每天分钟数×7 的**参考量**一直排到单元用完，不设周数上限；`deadline` 可选，按截止周倒排、排不下留待安排池；手写 `units + weeks` 同样支持多周。dailyMinutes 只是参考，**不要为它单独问用户/弹选项**；2026-11-08 起时间只做参考、不是硬上限，排不完往后延周）
 - `ResearchTools`：`research_plan`（目标式说法 → 调研 → 出**阶段表** → 建空壳计划 + 大纲文档 + 目标/里程碑 + 每日时长建议；`dailyMinutes` 显式传了才写进节奏、`scheduleFirstWeek=true` 才同轮排第一周（问不问时长、排不排本周归模型决定，回执只报事实）；每阶段必须有「交付物」「过关标准」，不许用「掌握/熟悉/跑通」当交付物，文案不带来源标签（如「（Zpedu）」）或内部工具名；`deadline` 可选。与 `create_learning_plan` 的分工：只有目标走 research_plan，明确材料才走 bvid/手写）
-- `PlanWeekTools`：`plan_week`（读计划文档 + 上周完成 → 排这一周 → `appendUnits` + `placeUnit` 铺到天 → 写周文档；每周自动跑或用户说「排本周」时调用）。**排布口径**：按**每天** `dailyMinutes` 算预算（不是一周预算），先扣本周已有安排；与本周已有条目去重（含互相包含）；超出本周剩余容量的条目**留在待安排池**、不硬塞某一天（周文档会写「本周还剩 N 条排在待安排池」）；**默认一周只排一次**：该周已铺过天时直接退回（不调模型、不追加单元、不改文档）；模型传 `replan=true` 时才继续，去重后只按剩余容量补空位
+- `PlanWeekTools`：`plan_week`（读计划文档 + 上周完成 → 排这一周 → `appendUnits` + `placeUnit` 铺到天 → 写周文档；每周自动跑或用户说「排本周」时调用）。**排布口径（2026-11-08 用户定的）**：时间只做参考、不是硬上限——条目**全部**追加、全部铺天，不再因超出参考分钟数拒排或丢进待安排池；`assignDays` 先按每天参考值往后摊，整周都到参考值后回环挑**当前分钟数最少**的那天（不堆周日）；与本周已有条目去重（含互相包含）；**默认一周只排一次**：该周已铺过天时直接退回（不调模型、不追加单元、不改文档）；模型传 `replan=true` 时才继续，去重后把新条目按参考值摊开
 - `PlanDocTools`：`read_plan_doc`、`write_plan_doc`（`confirmed` 才覆盖）、`sync_plan_week`（把文档里该周条目追加进待安排池，确认式）
 - `MemoryTools`：`remember_memory`、`recall_memory`（跨会话目标/偏好/事件；`<how_to_remember>` 提示词块）
 - `PlanAdminTools`：`get_learning_plan`、`plan_next_week`、`complete_plan_node`、`move_plan_node`、`review_last_week`、`set_plan_pace`（写操作要 `confirmed=true`；系统节奏 `advanceRhythm` 不经过模型）

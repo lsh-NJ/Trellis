@@ -211,11 +211,13 @@ class PlanWeekToolsTest {
     }
 
     /**
-     * 一周只剩最后一天时，排不下的条目不硬塞：现场出现过周日一天 20 件、约 700 分钟。
-     * 这里今天=周日（2026-11-08），本周只剩 60 分钟，模型给 85 分钟 → 只排得下第一件。
+     * 时间只做参考（2026-11-08 用户定的：周上限 = 每天投入 × 7 只对 AGENT 起参考作用）：
+     * 一周只剩最后一天、模型给的分钟数超过「每天投入」时也照样全排，不再因为「剩余容量」拒之周外，
+     * 回执里只说明这是参考值。
+     * 这里今天=周日（2026-11-08），本周只剩参考 60 分钟，模型给 30+40+15=85 分钟。
      */
     @Test
-    fun itemsBeyondTheWeekRemainingCapacityAreNotPiledOnTheLastDay() = runTest {
+    fun itemsBeyondTheDailyReferenceAreStillScheduled() = runTest {
         val sunday = LocalDate.parse("2026-11-08")
         val h = newHarness(today = sunday)
         val result = planOneWeek(
@@ -229,12 +231,12 @@ class PlanWeekToolsTest {
         )
 
         assertEquals(null, result.error)
-        // 贪心装箱：30 分钟的先放，40 分钟的超了 60 的预算跳过，15 分钟的复盘补进来 → 2 条。
-        assertEquals(2, result.placed, "只剩 60 分钟，30+15 两条装得下、40 分钟那条不行；实际：" + result.note)
-        assertTrue(result.note.contains("剩余容量"), "要说清为什么有一条没排：" + result.note)
+        // 以前 40 分钟那条会因为超出 60 被跳过；现在三条全排，回执说清只是参考。
+        assertEquals(3, result.placed, "时间只做参考，三条都要排上；实际：" + result.note)
+        assertTrue(result.note.contains("时间只做参考"), "回执要说清只是参考：" + result.note)
         val week = h.service.week(h.planId, thisWeek)
         val placedMinutes = week.days.flatMap { it.items }.sumOf { it.minutes }
-        assertTrue(placedMinutes <= 60, "周日不该再堆超过 60 分钟，实际 $placedMinutes")
+        assertEquals(85, placedMinutes, "三条都要排到周日，不再按参考值截断")
     }
 
     /** 非法周号（格式错、不对应真实周、已经过去）一律在写任何东西之前拒绝，也不叫模型。 */
@@ -279,7 +281,7 @@ class PlanWeekToolsTest {
         assertEquals(0, h.service.week(h.planId, thisWeek).days.sumOf { it.items.size }, "追加失败就不该铺天")
     }
 
-    /** 每天预算按「一天」算，不是整周预算一天用掉：120 分/天时 6×40 分要铺到两天，且每天不超过 120 分。 */
+    /** 每天参考值按「一天」算，不是整周参考量一天用掉：120 分/天时 6×40 分要铺到两天，且每天不超过 120 分。 */
     @Test
     fun itemsAreSpreadAcrossTheWeekByTheDailyBudget() = runTest {
         val sixItems = """
@@ -336,7 +338,7 @@ class PlanWeekToolsTest {
 
     /**
      * 模型判断要重排时可以传 replan=true：不会被「已经排过了」挡住，
-     * 去重只管重复条目，新条目按剩余容量继续铺。
+     * 去重只管重复条目，新条目按参考值继续摊开。
      */
     @Test
     fun replanTrueKeepsGoingInsteadOfStoppingAtAlreadyScheduled() = runTest {

@@ -599,7 +599,7 @@ private fun PlanSettingsDialog(runtime: AppRuntime) {
                     }
                 }
                 Text(
-                    "排程按这个数往一天里塞节点；已经排好的天不会自动重排，只影响之后铺的天数。",
+                    "时间只做参考：排程会尽量按这个数往一天里摊开，不会因为超出就不排；已经排好的天不会自动重排。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -784,7 +784,7 @@ private fun PendingDetail(runtime: AppRuntime) {
                 )
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "还没排到某一天，排的时候按每天投入分钟数往里塞",
+                    "还没排到某一天；排的时候按每天投入参考一下，不强制卡满",
                     style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -795,10 +795,10 @@ private fun PendingDetail(runtime: AppRuntime) {
                     append("合计 ").append(totalMinutes).append(" 分钟")
                     val daily = runtime.planDailyMinutes
                     if (daily != null && daily > 0) {
-                        append(" · 按每天 ").append(daily).append(" 分钟算，约 ")
+                        append(" · 参考每天 ").append(daily).append(" 分钟，约 ")
                         append((totalMinutes + daily - 1) / daily).append(" 天")
                     } else {
-                        append(" · 还没定每天投入多少分钟，排程会问你要")
+                        append(" · 还没设每天投入参考值，排程会先问你一句")
                     }
                 },
                 style = tokens.type.meta,

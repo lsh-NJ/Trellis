@@ -122,7 +122,7 @@ class LearningPlanOverdueTest {
         val view = svc.overdue(planId, "2026-11-02")
         assertEquals(emptyList(), view.thisWeek, "周一早上还没有「过了日子」的排期")
 
-        // U10（路线第 10 个）是 W44 错过、又被 W46 的预算挤回池里的那一个；
+        // U10（路线第 10 个）是 W44 错过、W46 也没排进来而留在池里的那一个；
         // U2 虽然也错过，但已经被 W46 收走，不算欠账。
         assertEquals(1, view.backlog.size, "池子里有 8 个，但其中只有 U10 属于「过去周错过且没被收走」")
         val back = view.backlog.first()

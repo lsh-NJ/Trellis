@@ -23,7 +23,8 @@ import kotlinx.serialization.json.jsonPrimitive
 /**
  * 每周的「局部计划」：在计划对应的会话里跑一轮，把大纲落成这一周的具体单元。
  *
- * 输入：计划文档（大纲/上周文档）+ 上周完成情况 + 每天投入。
+ * 输入：计划文档（大纲/上周文档）+ 上周完成情况 + 每天投入（**只做参考**：条目按天尽量摊开，
+ * 不会因为超出参考分钟数被拒绝或丢进待安排池）。
  * 产出顺序是固定的：**先写本周文档，再把条目追加成单元、铺到这一周每天**。
  * 先文档后落库的原因：周文档是这一周「应该做什么」的账本，落库失败时它还在，
  * 重试有据可查；反过来先落库再写文档，文档写失败用户会看到「计划页有、文档没有」。
@@ -42,9 +43,9 @@ class PlanWeekTools(
     val guidance: String = listOf(
         "<how_to_plan_week>",
         "1. 周计划：用户说「排本周」「排下周」「这周学什么」，或每周开始要排计划时，先调 `plan_week`（可带 week=YYYY-Www / dailyMinutes）。",
-        "2. 它读计划文档与上周完成情况，产出这一周的具体条目（学习/实践/复习 + 分钟），宿主**先写本周文档、再**把条目追加成单元、铺到每天；两步都会在回执里说清（周文档已写 / 已排 N 条）。",
+        "2. 它读计划文档与上周完成情况，产出这一周的具体条目（学习/实践/复习 + 分钟），宿主**先写本周文档、再**把条目追加成单元、铺到每天；两步都会在回执里说清（周文档已写 / 已排 N 条）。每天投入只是参考：宿主会把条目按天尽量摊开，不会因为超出参考分钟数而漏排。",
         "3. 先读再排：如果计划文档里没有这一阶段的内容，先用 read_plan_doc 看清楚，必要时用 write_plan_doc 补；不要凭空编。",
-        "4. 计划里已经有这一周的条目时，`plan_week` 默认直接返回「已经排过了」；确认要重排就传 replan=true（去重/剩余容量逻辑会跳过重复、只补空位）。要不要重排由你判断。",
+        "4. 计划里已经有这一周的条目时，`plan_week` 默认直接返回「已经排过了」；确认要重排就传 replan=true（去重逻辑会跳过重复、只补空位；时间只做参考，不会漏排）。要不要重排由你判断。",
         "5. 排完跟用户说清「这周重点 + 每天大概多久 + 有没有实践」，不要只报数字。",
         "</how_to_plan_week>",
     ).joinToString("\n")
@@ -56,13 +57,13 @@ class PlanWeekTools(
 
         override val description: String =
             "排某一周的具体计划：读大纲与上周完成情况，产出本周条目（学习/实践/复习），" +
-                "**先把本周文档写进计划文档，再**把条目追加成单元、按预算铺到每天。" +
-                "这一周已经排过时默认直接拒绝；要重排就传 replan=true。"
+                "**先把本周文档写进计划文档，再**把条目追加成单元、按每天参考分钟数尽量摊开到每天；" +
+                "时间只做参考，不会因为超出参考而少排。这一周已经排过时默认直接拒绝；要重排就传 replan=true。"
 
         override val parameters: String =
             "week：可选，ISO 周（如 2026-W45）；省略=本周；" +
                 "dailyMinutes：可选，这一周每天大概投入多少分钟（30–240）；省略=设置里的每天预计投入或 90；" +
-                "replan：可选，true 表示这一周已经排过也继续重排（默认 false：已排过直接返回「已经排过了」；重排会去重、按剩余容量只补空位）。要不要重排由你判断。"
+                "replan：可选，true 表示这一周已经排过也继续重排（默认 false：已排过直接返回「已经排过了」；重排会去重、只补空位）。要不要重排由你判断。"
 
         override suspend fun call(arguments: JsonObject): ToolResult {
             val plan = service() ?: return ToolResult("计划库打不开，没排成。", isError = true)
@@ -183,7 +184,7 @@ internal suspend fun planOneWeek(
      * 这一周已经排过时要不要继续。
      *
      * 默认 false：直接退回（数据安全，排两次会重复追加）。
-     * true 时继续往下走，后面的去重与剩余容量计算会跳过已有条目、只补空位。
+     * true 时继续往下走，后面的去重会跳过已有条目、只补空位。
      */
     replan: Boolean = false,
 ): WeekPlanResult {
@@ -259,52 +260,28 @@ internal suspend fun planOneWeek(
     val focus = parsed.focus.ifBlank { stageFocus.trim() }
 
     // 先纯函数算好每天放哪几条：文档里写的天和实际 placeUnit 的天必须是同一份安排。
-    // 每天已有安排要算进预算，否则补排会把新条目继续堆到已经满的那一天。
+    // 每天已有安排要算进去，补排时从已排分钟继续装。
+    // 时间只做参考（2026-11-08 用户定的：周上限 = 每天投入 × 7 只对 AGENT 起参考作用，
+    // 不必须严格按时间来安排任务）：条目全部排进来，某天到参考值就摊到别的天，
+    // 不再因为「剩余容量」把条目拒之周外或丢进待安排池。
     val start = if (week == thisWeek) maxOf(today, weekStart) else weekStart
-    // 本周剩余容量：从今天到周日，每天 dailyMinutes 减去已排分钟。排不下的条目不硬塞
-    // 到某一天（现场出现过周日一天 20 件 700 分钟），留在待安排池等下一周或手拖。
-    val remainingCapacity = buildList {
-        var cursor = start
-        while (!cursor.isAfter(weekEnd)) {
-            add(maxOf(0, dailyMinutes - (existingMinutesByDay[cursor] ?: 0)))
-            cursor = cursor.plusDays(1)
-        }
-    }.sum()
-    // 排不下的条目不硬塞到某一天（现场出现过周日一天 20 件、700 分钟）：
-    // 它们仍然进计划库（留在待安排池），只是这一周不铺到天，等下一周再排或手拖。
-    val placeableIndices = buildList {
-        var reserved = 0
-        deduped.forEachIndexed { index, item ->
-            // 容量为 0 时不能再「先铺第一条」：现场出现过回复「剩余容量只够 0 分钟」却仍加了 1 条，
-            // 当天从 60 分钟变成 90 分钟。放不下就留在待安排池。
-            if (reserved + item.minutes <= remainingCapacity) {
-                add(index)
-                reserved += item.minutes
-            }
-        }
-    }
-    val placeable = placeableIndices.map { deduped[it] }
-    val overflow = deduped.size - placeable.size
-    if (placeable.isEmpty() && dropped > 0) {
+    if (deduped.isEmpty()) {
         return WeekPlanResult(
             week = week,
             items = emptyList(),
-            note = "这一周的条目已经在计划里了，没有重复排；要调整就直接拖节点。",
+            note = "这一周的条目都已经在计划里了，没有重复排；要调整就直接拖节点。",
         )
     }
-    if (placeable.isEmpty()) {
-        return WeekPlanResult(
-            week = week,
-            items = emptyList(),
-            note = "这一周没有剩余容量了（每天投入 " + dailyMinutes + " 分钟，到周日只剩约 " +
-                remainingCapacity + " 分钟），这些条目不硬塞；等下周再排，或在计划页拖到具体某天。",
-        )
-    }
-    val dayOfItem = assignDays(placeable, start, weekEnd, dailyMinutes, existingMinutesByDay)
+    val dayOfItem = assignDays(deduped, start, weekEnd, dailyMinutes, existingMinutesByDay)
     val plannedByDay = linkedMapOf<String, MutableList<PlannedItem>>()
     dayOfItem.forEachIndexed { index, day ->
-        plannedByDay.getOrPut(day.toString()) { mutableListOf() } += placeable[index]
+        plannedByDay.getOrPut(day.toString()) { mutableListOf() } += deduped[index]
     }
+    val totalMinutes = deduped.sumOf { it.minutes }
+    // 「参考量」：这段时间按每天参考分钟数加起来大概多少——只用来在回执里说明，
+    // 不是上限（超出也照排，只是告诉用户内容比参考多）。
+    val referenceMinutes =
+        (java.time.temporal.ChronoUnit.DAYS.between(start, weekEnd) + 1).toInt() * dailyMinutes
 
     // ---- 导师检查：这周要学的东西，有没有「得先会」的前置知识 ----
     // 用户要的：导师先看一遍这一周的安排——比如周三要学微积分、周四要写 Python，
@@ -316,7 +293,7 @@ internal suspend fun planOneWeek(
         weekEnd = weekEnd,
         stageFocus = focus,
         outline = outline,
-        schedule = placeable.mapIndexed { index, item -> ScheduleItem(item, dayOfItem[index]) },
+        schedule = deduped.mapIndexed { index, item -> ScheduleItem(item, dayOfItem[index]) },
         existingTitles = (existingTitles + acceptedTitles).toSet(),
     )
     val prerequisites = tutorCheck.items
@@ -325,7 +302,7 @@ internal suspend fun planOneWeek(
     var docWritten = false
     if (planDocStore != null) {
         val saved = runCatching {
-            planDocStore.saveWeek(planId, week, weekDoc(week, focus, placeable, plannedByDay, overflow, prerequisites))
+            planDocStore.saveWeek(planId, week, weekDoc(week, focus, deduped, plannedByDay, prerequisites))
         }
         if (saved.isFailure) {
             val reason = saved.exceptionOrNull()?.message?.takeIf { it.isNotBlank() } ?: "未知原因"
@@ -334,7 +311,7 @@ internal suspend fun planOneWeek(
         docWritten = true
     }
 
-    // ---- 第二步：追加单元。全部追加（排不下的进待安排池），失败时周文档已经写了，必须保留并说清。 ----
+    // ---- 第二步：追加单元。全部追加（时间只做参考，不再有「排不下留在池里」），失败时周文档已经写了，必须保留并说清。 ----
     val drafts = deduped.map { item ->
         UnitDraft(
             chapter = item.chapter.ifBlank { "本周" },
@@ -353,11 +330,11 @@ internal suspend fun planOneWeek(
                 "；这一周的条目还没进计划库，修好后重试即可（文档不会丢）。",
         )
 
-    // ---- 第三步：按先算好的安排逐日 placeUnit（只铺放得下的那些）。 ----
+    // ---- 第三步：按先算好的安排逐日 placeUnit（全部条目都有安排）。 ----
     var placedCount = 0
-    placeableIndices.forEachIndexed { placeIndex, itemIndex ->
-        val day = dayOfItem[placeIndex].toString()
-        val placed = plan.placeUnit(commandEnv(planId, "plan.week"), planId, week, unitIds[itemIndex], day)
+    deduped.indices.forEach { index ->
+        val day = dayOfItem[index].toString()
+        val placed = plan.placeUnit(commandEnv(planId, "plan.week"), planId, week, unitIds[index], day)
         if (placed.ok) placedCount++
     }
     // ---- 第四步：把导师补的前置知识也追加进计划库，并按算好的「依赖条目之前」铺到天 ----
@@ -399,13 +376,12 @@ internal suspend fun planOneWeek(
             else -> append("导师这次没给出前置检查结果（不影响这周的排布）。")
         }
         if (dropped > 0) append("去掉了 ").append(dropped).append(" 条本周已经有的重复条目。")
-        if (overflow > 0) {
-            append("本周剩余容量只够 ").append(remainingCapacity).append(" 分钟，先铺了 ")
-                .append(placedCount).append(" 条；其余 ").append(overflow)
-                .append(" 条留在待安排池，等下周再排，或在计划页拖到某天。")
+        if (totalMinutes > referenceMinutes) {
+            append("本周合计约 ").append(totalMinutes).append(" 分钟（参考每天 ").append(dailyMinutes)
+                .append(" 分钟）；时间只做参考，超出也照排，觉得多可以整体延期。")
         }
-        if (placedCount < placeable.size) {
-            append("有 ").append(placeable.size - placedCount)
+        if (placedCount < deduped.size) {
+            append("有 ").append(deduped.size - placedCount)
                 .append(" 条没铺上（可能那天已有同单元），可以在计划页拖一下。")
         }
         if (planDocStore == null) {
@@ -462,11 +438,13 @@ private fun parseWeekItems(raw: String): ParsedWeek? {
 }
 
 /**
- * 把这一周的条目按「每天」预算分到每天（纯函数）。
+ * 把这一周的条目按「每天参考值」尽量摊到每天（纯函数）。
  *
- * **每天**的预算是 [dailyMinutes]，不是一周预算——一周预算 daily×7 当一天用，
- * 120 分/天时一天能装 672 分，整周条目全堆周一（现场测试的 P0-1 就是这个）。
- * [existingMinutesByDay] 是这一天已经排好的分钟数：补排时从这里继续装，别把已经满的天塞爆。
+ * [dailyMinutes] 是**参考值不是上限**（2026-11-08 用户定的：周时间上限 = 每天投入 × 7 只对 AGENT
+ * 起参考作用，不必须严格按时间来安排任务）。先按顺序往后填，当天到参考值就换下一天；
+ * 整周都到参考值后回环摊到**当前分钟数最少**的那天——不把剩余条目堆在最后一天（现场出现过
+ * 周日一天 20 件约 700 分钟），也不因为「装不下」把条目拒之周外。
+ * [existingMinutesByDay] 是这一天已经排好的分钟数：补排时从这里继续装，别重复占满同一天。
  * 先算好再落文档/落库，保证周文档里写的天和实际 placeUnit 的天一致。
  */
 private fun assignDays(
@@ -484,16 +462,24 @@ private fun assignDays(
         }
     }
     if (days.isEmpty()) return items.map { start }
+    val usedByDay = days.associateWith { existingMinutesByDay[it] ?: 0 }.toMutableMap()
     val result = MutableList(items.size) { days.first() }
-    var dayIndex = 0
-    var used = existingMinutesByDay[days[0]] ?: 0
+    var cursor = 0
     items.forEachIndexed { index, item ->
-        while (dayIndex < days.lastIndex && used > 0 && used + item.minutes > dailyMinutes) {
-            dayIndex += 1
-            used = existingMinutesByDay[days[dayIndex]] ?: 0
+        // 从当前游标往后找第一处「还空着 / 装得下这条」的天；空着的天永远收（和旧行为一致）。
+        var target = -1
+        for (i in cursor..days.lastIndex) {
+            val used = usedByDay.getValue(days[i])
+            if (used == 0 || used + item.minutes <= dailyMinutes) {
+                target = i
+                break
+            }
         }
-        used += item.minutes
-        result[index] = days[dayIndex]
+        // 整周都已到参考值：不拒绝、也不堆最后一天——挑当前分钟数最少的那天继续放。
+        if (target < 0) target = days.indices.minByOrNull { usedByDay.getValue(days[it]) } ?: 0
+        usedByDay[days[target]] = usedByDay.getValue(days[target]) + item.minutes
+        result[index] = days[target]
+        cursor = target
     }
     return result
 }
@@ -519,7 +505,7 @@ private fun normalizeTitle(raw: String): String =
 private fun weekSystemPrompt(week: String, dailyMinutes: Int): String = buildString {
     appendLine("你是学习规划师，正在给 " + week + " 这一周排具体内容。只输出一个 JSON 对象，不要 markdown、不要解释：")
     appendLine("{\"focus\":\"这周重点（≤20 字）\",\"items\":[{\"title\":\"条目标题（≤20 字）\",\"chapter\":\"章节或主题\",\"kind\":\"study|practice|review\",\"minutes\":30}]}")
-    appendLine("约束：条目 3–14 个；每条 10–45 分钟；本周每天投入约 " + dailyMinutes + " 分钟。")
+    appendLine("参考：本周每天投入约 " + dailyMinutes + " 分钟（只是参考，内容多可以多排、整体延期也行，不必卡死）；条目 3–14 个；每条 10–45 分钟。")
     appendLine("内容规则：看视频/看书算 study；动手写代码、做项目、做题算 practice；复盘/重做错题/回顾算 review。")
     appendLine("交付物整理规则：整理 README/文档/提交历史/仓库结构这类收尾工作算 practice，只在阶段收尾周出现一次，不要每周都排。")
     appendLine("前几周通识偏 study，专业技术路线要给 practice（写出能被运行/看到的东西）；复习安排在阶段收尾。")
@@ -545,12 +531,10 @@ private fun weekDoc(
     focus: String,
     items: List<PlannedItem>,
     placed: Map<String, List<PlannedItem>>,
-    overflow: Int = 0,
     prerequisites: List<PrereqTarget> = emptyList(),
 ): String = buildString {
     appendLine("# " + week + " 本周计划")
     if (focus.isNotBlank()) appendLine("> 本周重点：" + focus)
-    if (overflow > 0) appendLine("> 本周还剩 " + overflow + " 条排在待安排池（本周容量放不下，下一周优先补）。")
     appendLine()
     placed.forEach { (day, list) ->
         appendLine("## " + day + "（" + weekdayCn(LocalDate.parse(day)) + "）")

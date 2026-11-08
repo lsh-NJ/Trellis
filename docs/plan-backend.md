@@ -79,9 +79,10 @@
   （`PlanCommands.cmdCreateProcess` 校验 30–3000）。页面通过 `PlanStateView.dailyMinutes`
   读回来（`PlanQueries.buildPlanState` 里 `/7`，不足 15 按 15 算）。
 - `materializeWeek(planId, versionId, week)` 铺天时的规则：
-  - **设过投入时间**：`planDailyMinutes(planId)` 拿到每天预算；按顺序往当天塞，
-    `usedToday` 累加，「再放就超预算」就换下一天；单个单元本身超预算则独占一天。
-  - **没设过**：保持老规矩「一天只排一个单元」——不猜容量，免得把没设置的计划塞成一天两三个。
+  - **设过投入时间**：`planDailyMinutes(planId)` 拿到每天参考分钟数；按顺序往当天塞，
+    「再放就超参考值」就换下一天；整周都到参考值后摊到当前分钟数最少的那天（不堆周日）。
+    **2026-11-08 晚起只做参考，不再拒绝**：见 §14。
+  - **没设过**：保持老规矩「一天只排一个单元」——不猜参考值，免得把没设置的计划塞成一天两三个。
 - 测试：`LearningPlanServiceTest.daysArePackedUpToTheDailyBudget`
   （20+25 同一天、30 顺到第二天、35 顺到第三天）。
 - 拖拽重排：`LearningPlanPlaceUnitTest` 6 个用例（池单元排到某天、往下一周承诺追加、重复排拒绝、
@@ -141,8 +142,9 @@
   不再让整周不铺；当天已被结转占用的分钟数算进每日预算。
 - `changeCommitment` 修掉「只复制单元、不复制其它周承诺」的缺陷：改某一周时，其它周承诺原样复制到新版本
   （以前改一次本周会把下周从活跃版本里弄丢）。
-- 选量规则（唯一实现，`PlanAdvance.kt`）：周容量 = `dailyMinutes×7×80%`；按路线顺序、尽量不切章节；
-  最近一段过去的周完成率 < 60% 再缩 15%；每周 ≤7 个；池空不建空承诺。
+- 选量规则（唯一实现，`PlanAdvance.kt`）：周参考量 = `dailyMinutes×7`（2026-11-08 晚起只做参考，见 §14；
+  跨过参考值的那条也带上、池子够时每周至少 3 条）；按路线顺序、尽量不切章节；
+  最近一段过去的周完成率 < 60% 再缩 15%；每周 ≤7 个（引擎步子上限，不是时间规则）；池空不建空承诺。
 - 触发：`AppRuntime.refreshPlan()` 对所有未结束计划调一次（`origin=scheduler`），
   应用启动/进计划页/跨天时天然覆盖；失败只跳过那一份节奏。
 - 测试：`LearningPlanRhythmTest`（4 周滚动、结转 + 铺天共存、周日预铺不重复、改承诺保留其它周、

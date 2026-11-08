@@ -197,8 +197,8 @@ class PlanToolsTest {
         val planId = service.activePlanId()
         assertTrue(planId != null, "计划库里应该有一个活跃计划")
         val map = service.map(planId!!)
-        // 40 个 20 分钟单元、每天 60 分钟（周预算约 336 分钟）→ 每周 16 个：16+16+8，共 3 周。
-        assertEquals((0L..2L).map { weekOffset(it) }, map.weeks.map { it.week }, "全局周表要从本周起排满")
+        // 40 个 20 分钟单元、每天 60 分钟（周参考量 60×7=420 分钟）→ 每周 21 个：21+19，共 2 周。
+        assertEquals((0L..1L).map { weekOffset(it) }, map.weeks.map { it.week }, "全局周表要从本周起排满")
 
         val committed = map.weeks.flatMap { week -> week.units.map { it.title } }
         val pool = service.pool(planId).map { it.title }
@@ -454,7 +454,7 @@ class PlanToolsTest {
     fun theWeekTheModelPlansIntoComesFromTheInjectedClock() = runTest {
         val service = LearningPlanStore.inMemory()
         val clock = DebugTrellisClock().also { it.setSimulatedDate(LocalDate.parse("2026-11-02")) }
-        // 8 个 20 分钟的单元：周预算约 336 分钟，一个周就装得下。
+        // 8 个 20 分钟的单元：周参考量 60×7=420 分钟，一个周就装得下。
         val parts = (1..8).map { i -> Triple(i, "课时$i", 20 * 60) }
         val tool = PlanTools(
             service = { service },
@@ -472,12 +472,12 @@ class PlanToolsTest {
 
         assertTrue(!result.isError, result.content)
         val planId = service.activePlanId()!!
-        // 2026-11-02 是周一，属于 W45；8 个单元按分钟预算都排得进这一周。
+        // 2026-11-02 是周一，属于 W45；8 个单元按分钟参考量都排得进这一周。
         assertEquals(listOf("2026-W45"), service.map(planId).weeks.map { it.week })
         assertEquals(8, service.week(planId, "2026-W45").commitment.units.size)
     }
 
-    /** 有截止日期：只排到那一周，排不下的留在待安排，不擅自抬高每天投入。 */
+    /** 有截止日期：只排到那一周，排不下的留在待安排（时间只做参考，但截止日仍然算数）。 */
     @Test
     fun aDeadlineStopsTheGlobalWeekTableAndLeavesTheRestInThePool() = runTest {
         val service = LearningPlanStore.inMemory()
@@ -500,8 +500,8 @@ class PlanToolsTest {
         val map = service.map(planId)
         assertEquals((0L..1L).map { weekOffset(it) }, map.weeks.map { it.week }, "有截止日期就只排到那一周")
         val committed = map.weeks.sumOf { it.units.size }
-        assertEquals(16, committed, "每天 30 分钟、两周最多排 16 个（每周 8 个）")
-        assertEquals(24, service.pool(planId).size, "排不下的要留在待安排池")
+        assertEquals(22, committed, "每天 30 分钟参考、两周排 22 个（每周 11 个）")
+        assertEquals(18, service.pool(planId).size, "排不下的要留在待安排池")
         assertTrue(result.content.contains("待安排"), "回复要说明剩下的去哪了：" + result.content)
         assertTrue(result.content.contains(deadline), "回复要提到截止日：" + result.content)
     }
