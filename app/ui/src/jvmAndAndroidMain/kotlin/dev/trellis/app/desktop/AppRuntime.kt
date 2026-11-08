@@ -46,6 +46,7 @@ import dev.trellis.domain.plan.ReviewView
 import dev.trellis.domain.plan.RhythmResult
 import dev.trellis.domain.plan.StageView
 import dev.trellis.domain.plan.UnitDraft
+import dev.trellis.domain.plan.UnitProgress
 import dev.trellis.domain.plan.WeekDay
 import dev.trellis.feature.learning.LearningPlanStore
 import dev.trellis.feature.learning.PlanDocStore
@@ -2878,9 +2879,10 @@ class AppRuntime private constructor() {
         before: List<StageView>,
         after: List<StageView>,
         poolEmpty: Boolean,
+        unitProgress: UnitProgress,
         unitTitle: String,
     ) {
-        val event = detectAutonomyEvent(before, after, poolEmpty) ?: return
+        val event = detectAutonomyEvent(before, after, poolEmpty, unitProgress) ?: return
         pendingAutonomy = PendingAutonomy(
             planId = planId,
             planTitle = planTitle,
@@ -3709,7 +3711,8 @@ class AppRuntime private constructor() {
         private set
 
     /**
-     * 已经学完的计划：阶段全完成且待安排池为空（与自主检查的 [AutonomyEventKind.PlanDone] 同一口径）。
+     * 已经学完的计划：有阶段时阶段全完成，没有阶段时所有单元都做完；两种情况都要求待安排池为空
+     * （与自主检查的 [AutonomyEventKind.PlanDone] 同一口径）。
      *
      * 计划页据此把它们收进「已完成」分组；用户仍可打开、继续操作，只读约束只针对 AGENT。
      */
@@ -3994,11 +3997,17 @@ class AppRuntime private constructor() {
         }
     }.getOrDefault(emptyList())
 
-    /** 计划是否已经学完（阶段全完成 + 待安排池为空）；读失败按未完成处理。 */
+    /** 计划是否已经学完（有阶段：阶段全完成；无阶段：所有单元都做完；两种情况都要待安排池为空）；读失败按未完成处理。 */
     private fun planIsComplete(service: LearningPlanService, planId: String): Boolean {
         val stages = runCatching { service.stages(planId) }.getOrDefault(emptyList())
         val poolEmpty = runCatching { service.pool(planId) }.getOrDefault(emptyList()).isEmpty()
-        return isPlanComplete(stages, poolEmpty)
+        // 没有阶段的计划（三天速通这类）没有阶段 done/total 可看，退回「所有单元都做过」。
+        val unitProgress = if (stages.isEmpty()) {
+            runCatching { service.unitProgress(planId) }.getOrDefault(UnitProgress())
+        } else {
+            UnitProgress()
+        }
+        return isPlanComplete(stages, poolEmpty, unitProgress)
     }
 
     /**
@@ -4345,12 +4354,18 @@ class AppRuntime private constructor() {
         if (result != null && result.ok) {
             val afterStages = runCatching { service.stages(planId) }.getOrDefault(emptyList())
             val poolEmpty = runCatching { service.pool(planId).isEmpty() }.getOrDefault(false)
+            // 没有阶段的计划没有阶段 done/total 可看，用「所有单元是否都做过」判完成。
+            val afterUnitProgress = if (afterStages.isEmpty()) {
+                runCatching { service.unitProgress(planId) }.getOrDefault(UnitProgress())
+            } else {
+                UnitProgress()
+            }
             val planTitle = runCatching { service.planState(planId)?.title }.getOrNull().orEmpty()
             // 阶段/计划完成时，练习该不该推由自主检查轮判断（用户确认过的边界：
             // 「通识课完成阶段后才由 AGENT 决定推不推」）；单节点完成或没配模型时，
             // 仍走原来的模板兜底，行为不变。
             val modelReady = llmOverride != null || LlmConfigLoader.load(home)?.apiKey?.isNotBlank() == true
-            val event = detectAutonomyEvent(beforeStages, afterStages, poolEmpty)
+            val event = detectAutonomyEvent(beforeStages, afterStages, poolEmpty, afterUnitProgress)
             if ((event == null || !modelReady) && occurrence != null) {
                 maybeProposePractice(planId, occurrence)
             }
@@ -4361,6 +4376,7 @@ class AppRuntime private constructor() {
                     before = beforeStages,
                     after = afterStages,
                     poolEmpty = poolEmpty,
+                    unitProgress = afterUnitProgress,
                     unitTitle = occurrence?.title.orEmpty(),
                 )
             }
@@ -4394,12 +4410,18 @@ class AppRuntime private constructor() {
         if (result != null && result.ok) {
             val afterStages = runCatching { service.stages(node.planId) }.getOrDefault(emptyList())
             val poolEmpty = runCatching { service.pool(node.planId).isEmpty() }.getOrDefault(false)
+            val afterUnitProgress = if (afterStages.isEmpty()) {
+                runCatching { service.unitProgress(node.planId) }.getOrDefault(UnitProgress())
+            } else {
+                UnitProgress()
+            }
             queueAutonomy(
                 planId = node.planId,
                 planTitle = node.planTitle.ifBlank { "这个计划" },
                 before = beforeStages,
                 after = afterStages,
                 poolEmpty = poolEmpty,
+                unitProgress = afterUnitProgress,
                 unitTitle = node.title,
             )
         }

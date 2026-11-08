@@ -236,8 +236,10 @@
 
 ### 计划完成之后：旧计划不动，拓展 = 新开计划（2026-11-08 晚补的口径）
 
-- **完成态是算出来的**：所有阶段 `total>0 && done>=total`，且待安排池为空（`isPlanComplete(stages, poolEmpty)`，
-  与 `PlanDone` 同一口径）。不改 `process.status`，也**不自动 `endPlan`**。
+- **完成态是算出来的**：有阶段时所有阶段 `total>0 && done>=total`；没有阶段时所有单元都至少有过一次
+  `done`（`unitProgress.total>0 && done>=total`，给「三天速通」这类不建阶段的计划）；两种情况都要求
+  待安排池为空（`isPlanComplete(stages, poolEmpty, unitProgress)`，与 `PlanDone` 同一口径）。
+  不改 `process.status`，也**不自动 `endPlan`**。
 - **计划页**：完成态的计划从进行中/分类列表移到左侧「已完成」分组（可折叠、默认收起、标题带数量）。
   **用户侧不冻结**：仍可打开、查看、勾选/撤销、拖拽。
 - **AGENT 侧只读**：`plan_week`、`write_plan_doc`、`sync_plan_week`、`plan_next_week`、`complete_plan_node`、

@@ -17,6 +17,7 @@ import dev.trellis.domain.plan.PoolUnit
 import dev.trellis.domain.plan.ResourceDraft
 import dev.trellis.domain.plan.StageDraft
 import dev.trellis.domain.plan.StageView
+import dev.trellis.domain.plan.UnitProgress
 import dev.trellis.domain.plan.UndoInfo
 import dev.trellis.domain.plan.UndoView
 import dev.trellis.domain.plan.ok
@@ -400,6 +401,8 @@ internal class SqliteLearningPlanService(
     }
 
     override fun stages(planId: String): List<StageView> = buildStages(planId)
+
+    override fun unitProgress(planId: String): UnitProgress = buildUnitProgress(planId)
 
     override fun goals(includeArchived: Boolean): List<GoalView> = buildGoals(includeArchived)
 

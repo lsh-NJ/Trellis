@@ -99,7 +99,12 @@ class AutonomyRuntimeTest {
     }
 
     /** 建一个「本周只有一个阶段、一个节点」的计划，把节点排到今天，方便一次勾完触发阶段完成。 */
-    private suspend fun seededPlan(runtime: AppRuntime, home: File, today: LocalDate): String {
+    private suspend fun seededPlan(
+        runtime: AppRuntime,
+        home: File,
+        today: LocalDate,
+        withStage: Boolean = true,
+    ): String {
         val store: LearningPlanService = LearningPlanStore.open(
             File(home, "plans/plan.db").toPath(),
             { runtime.clock.nowMs() },
@@ -120,11 +125,13 @@ class AutonomyRuntimeTest {
             listOf(CommitmentDraft(week, listOf(0))),
         ).unwrap()
         store.acceptDraft(env(created.planId), draft.versionId, week).unwrap()
-        store.setStages(
-            env(created.planId),
-            created.planId,
-            listOf(StageDraft("第一阶段", week, week)),
-        ).unwrap()
+        if (withStage) {
+            store.setStages(
+                env(created.planId),
+                created.planId,
+                listOf(StageDraft("第一阶段", week, week)),
+            ).unwrap()
+        }
         return created.planId
     }
 
@@ -184,6 +191,62 @@ class AutonomyRuntimeTest {
             val prompt = next.captured.joinToString("\n") { it.content }
             assertTrue(prompt.contains("create_learning_plan"), "普通轮应当拿回全量工具")
             assertFalse(prompt.contains("自主检查触发"), "隐藏请求不能漏进下一轮上下文")
+        } finally {
+            runtime.shutdown()
+        }
+    }
+
+    /**
+     * 没有阶段的计划（「三天速通」这类）：没有阶段 done/total 可看，要按「所有单元都做过」判完成，
+     * 否则勾完最后一个节点也不会触发自主轮、不会进「已完成」分组。
+     */
+    @Test
+    fun finishingTheLastUnitOfAStageLessPlanRunsAHiddenTurn() = runBlocking {
+        val home = tempHome()
+        File(home, "llm.json").writeText(
+            """{"endpoint":"http://localhost/invalid","apiKey":"sk-test","model":"fake"}""",
+        )
+        val runtime = AppRuntime.create(home)
+        try {
+            val today = LocalDate.now()
+            runtime.applySimulatedToday(today)
+            val planId = seededPlan(runtime, home, today, withStage = false)
+            runtime.refreshPlan()
+
+            val occurrence = assertNotNull(
+                runtime.planDayView?.occurrences?.firstOrNull(),
+                "今天应当有一个排好的节点",
+            )
+            val answerText = "三天速通做完了。下一步可以补一条更完整的路线。"
+            runtime.llmOverride = StreamingFake(answerText)
+
+            runtime.completePlanOccurrence(occurrence.id)
+
+            withTimeout(10_000) {
+                while (runtime.chat.none { it.role == ChatRole.Assistant && it.text == answerText }) {
+                    delay(20)
+                }
+            }
+            delay(100)
+
+            assertFalse(runtime.chatBusy, "自主轮结束后输入要放开")
+            assertTrue(
+                runtime.chat.none { it.role == ChatRole.User },
+                "隐藏请求不能落成用户气泡",
+            )
+            assertTrue(
+                runtime.chat.any { it.role == ChatRole.Assistant && it.text == answerText },
+                "无阶段计划学完后，管家也应当自己开口",
+            )
+            assertEquals(
+                true,
+                runtime.chatSessions.firstOrNull { it.id == StewardRuntime.STEWARD_SESSION_ID }?.unread,
+                "用户不在对话页时要标未读",
+            )
+            assertTrue(
+                runtime.completedPlanIds.contains(planId),
+                "无阶段计划做完所有单元后，也要进入已完成集合",
+            )
         } finally {
             runtime.shutdown()
         }
