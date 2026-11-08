@@ -40,6 +40,8 @@ class PlanDocTools(
         "3. 用户同意把某周条目落进计划时调 sync_plan_week（会追加到计划单元的待安排池，不可撤销）；",
         "   之后用拖拽重排 / placeUnit / 计划管理员工具把单元排到具体天，不要重复追加。",
         "4. 文档只写用户的目标、验收和条目；不要写「已完成」「落后」这类状态 —— 那些以计划库为准。",
+        "5. 已完成的计划（所有阶段都做完、待安排池也空了）对 AGENT 只读：read_plan_doc 还能看，",
+        "   但 write_plan_doc / sync_plan_week 会被拒绝；旧计划保持完成状态，拓展要新开一份计划。",
         "</how_to_plan_doc>",
     ).joinToString("\n")
 
@@ -64,7 +66,16 @@ class PlanDocTools(
         origin = origin,
     )
 
-    private suspend fun withActivePlan(block: suspend (LearningPlanService, String) -> ToolResult): ToolResult {
+    /**
+     * 所有工具都对着「当前唯一活跃计划」。
+     *
+     * [writable]=true 时先挡住已完成计划（写文档 / 同步单元都算改这份计划）；
+     * 只读的 read_plan_doc 传 false：旧计划完成后文档仍然要能看。
+     */
+    private suspend fun withActivePlan(
+        writable: Boolean = true,
+        block: suspend (LearningPlanService, String) -> ToolResult,
+    ): ToolResult {
         val svc = service() ?: return ToolResult(
             "计划库打不开，这次没动任何东西。先调 get_diagnostics 看清楚环境再决定怎么办。",
             isError = true,
@@ -74,6 +85,7 @@ class PlanDocTools(
                 "现在没有活跃的学习计划，没有可写的计划文档。先在「计划」页建一份计划。",
                 isError = true,
             )
+        if (writable) completedPlanGuard(svc, planId)?.let { return it }
         return block(svc, planId)
     }
 
@@ -85,7 +97,7 @@ class PlanDocTools(
             "读当前学习计划的计划文档（Markdown：目标与验收、按周条目、待安排）。改文档前先读一次。"
         override val parameters: String = "不需要参数。"
 
-        override suspend fun call(arguments: JsonObject): ToolResult = withActivePlan { _, planId ->
+        override suspend fun call(arguments: JsonObject): ToolResult = withActivePlan(writable = false) { _, planId ->
             val store = store() ?: return@withActivePlan ToolResult("计划文档存储没准备好。", isError = true)
             val markdown = store.read(planId)
             if (markdown.isNullOrBlank()) {

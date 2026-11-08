@@ -3,6 +3,7 @@ package dev.trellis.app.desktop
 import dev.trellis.domain.plan.StageView
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -126,5 +127,76 @@ class AutonomyTriggerTest {
         val after = listOf(stage("s1", 2, 2))
 
         assertNull(detectAutonomyEvent(before, after, poolEmpty = false))
+    }
+
+    // ---- isPlanComplete：完成态的唯一定义（阶段全完成 + 待安排池空） ----
+
+    @Test
+    fun emptyStagesAreNotComplete() {
+        assertFalse(isPlanComplete(emptyList(), poolEmpty = true))
+    }
+
+    @Test
+    fun aStageWithNoUnitsMeansNotComplete() {
+        // total = 0 的阶段只是空壳，不算「做完」
+        assertFalse(isPlanComplete(listOf(stage("s1", 0, 0)), poolEmpty = true))
+        assertFalse(isPlanComplete(listOf(stage("s1", 2, 2), stage("s2", 0, 0)), poolEmpty = true))
+    }
+
+    @Test
+    fun anUnfinishedStageMeansNotComplete() {
+        assertFalse(isPlanComplete(listOf(stage("s1", 1, 2)), poolEmpty = true))
+        assertFalse(isPlanComplete(listOf(stage("s1", 2, 2), stage("s2", 1, 3)), poolEmpty = true))
+    }
+
+    @Test
+    fun aNonEmptyPoolMeansNotComplete() {
+        val stages = listOf(stage("s1", 2, 2), stage("s2", 1, 1))
+
+        assertFalse(isPlanComplete(stages, poolEmpty = false))
+    }
+
+    @Test
+    fun allStagesDoneWithEmptyPoolIsComplete() {
+        val stages = listOf(stage("s1", 2, 2), stage("s2", 3, 3), stage("s3", 1, 1))
+
+        assertTrue(isPlanComplete(stages, poolEmpty = true))
+    }
+
+    @Test
+    fun aSingleStageOneOfOneIsComplete() {
+        assertTrue(isPlanComplete(listOf(stage("s1", 1, 1)), poolEmpty = true))
+    }
+
+    @Test
+    fun doneBeyondTotalStillCountsAsComplete() {
+        // 判定用 done >= total，余量不会把完成态判回去
+        assertTrue(isPlanComplete(listOf(stage("s1", 4, 3)), poolEmpty = true))
+    }
+
+    @Test
+    fun planDoneEventAgreesWithIsPlanComplete() {
+        val before = listOf(stage("s1", 1, 2), stage("s2", 1, 1))
+        val after = listOf(stage("s1", 2, 2), stage("s2", 1, 1))
+
+        assertTrue(isPlanComplete(after, poolEmpty = true))
+        val event = detectAutonomyEvent(before, after, poolEmpty = true)
+        assertEquals(AutonomyEventKind.PlanDone, event?.kind)
+        assertEquals(true, event?.planDone)
+    }
+
+    @Test
+    fun nonCompletePlanNeverFiresPlanDone() {
+        // 阶段都做完了但待安排池还有东西：isPlanComplete 为 false，事件只能是 StageDone
+        val before = listOf(stage("s1", 1, 2), stage("s2", 1, 1))
+        val after = listOf(stage("s1", 2, 2), stage("s2", 1, 1))
+
+        assertFalse(isPlanComplete(after, poolEmpty = false))
+        val event = detectAutonomyEvent(before, after, poolEmpty = false)
+        assertEquals(AutonomyEventKind.StageDone, event?.kind)
+        assertEquals(false, event?.planDone)
+
+        // 反过来：事件是 PlanDone 时 isPlanComplete 必为 true
+        assertTrue(isPlanComplete(after, poolEmpty = true))
     }
 }

@@ -1470,7 +1470,8 @@ class AppRuntime private constructor() {
         if (!shouldRunWeeklyPlan(settings.weeklyPlan, today, zoned.hour, checkpoints.weeklyPlanWeek)) return
         val service = learningPlan() ?: return
         val plans = runCatching { service.plans() }.getOrElse { return }
-        plans.filter { it.status != "ended" }.forEach { plan ->
+        // 已完成的计划不再自动排周：拓展只能是新开一份计划，不往学完的计划里塞新周。
+        plans.filter { it.status != "ended" && !planIsComplete(service, it.id) }.forEach { plan ->
             val bound = runCatching { planSessionStore.sessionFor(plan.id) }.getOrNull()
             val usable = bound != null && chatSessions.any { it.id == bound }
             if (usable) {
@@ -2947,7 +2948,10 @@ class AppRuntime private constructor() {
             AutonomyEventKind.StageDone -> {
                 append("事件：阶段「").append(pending.event.stage?.name ?: "这一阶段").append("」已经完成。\n")
             }
-            AutonomyEventKind.PlanDone -> append("事件：整份计划已经完成。\n")
+            AutonomyEventKind.PlanDone -> append(
+                "事件：整份计划已经完成。这份计划保持完成状态，不再往里面追加单元、不再排周、不再改节奏；" +
+                    "如果用户要继续，只能是新开一份计划（create_learning_plan / research_plan，可挂到同一目标）。\n",
+            )
         }
         if (pending.evidence.isNotEmpty()) {
             append("完成瞬间的数据：\n")
@@ -2958,6 +2962,7 @@ class AppRuntime private constructor() {
         append("任何计划/任务的修改都只能写成建议 + 选项，用户点了选项后的下一轮普通对话才会真的执行。")
         append("如果是通识课且有匹配练习，可以挑一道推练习卡；")
         append("如果计划已完成，读记忆目标、学习数据和知识网络，调研下一步，给「下一步方案 + 2–3 个选项」；")
+        append("方案必须是新计划的方案——旧计划已完成，不要建议在原计划上继续加；")
         append("如果只是阶段完成、后面还有安排，就看下一阶段要不要调整，只有确实值得说才开口；")
         append("如果没有值得说的事，直接调用 rest，不要为了说话而说话。")
     }
@@ -3697,6 +3702,14 @@ class AppRuntime private constructor() {
         private set
 
     /**
+     * 已经学完的计划：阶段全完成且待安排池为空（与自主检查的 [AutonomyEventKind.PlanDone] 同一口径）。
+     *
+     * 计划页据此把它们收进「已完成」分组；用户仍可打开、继续操作，只读约束只针对 AGENT。
+     */
+    internal var completedPlanIds by mutableStateOf<Set<String>>(emptySet())
+        private set
+
+    /**
      * 「今天可以把这一周总结先做了」的那一周（后端 `planState.reviewableWeek`）。
      *
      * 只在今天是本周最后一天、且本周还没复盘时给值；null = 现在不是总结的时机。
@@ -3974,6 +3987,13 @@ class AppRuntime private constructor() {
         }
     }.getOrDefault(emptyList())
 
+    /** 计划是否已经学完（阶段全完成 + 待安排池为空）；读失败按未完成处理。 */
+    private fun planIsComplete(service: LearningPlanService, planId: String): Boolean {
+        val stages = runCatching { service.stages(planId) }.getOrDefault(emptyList())
+        val poolEmpty = runCatching { service.pool(planId) }.getOrDefault(emptyList()).isEmpty()
+        return isPlanComplete(stages, poolEmpty)
+    }
+
     /**
      * 进计划页、切周切天、写完一条之后都走这里：一次取齐整页要显示的 view model。
      *
@@ -3986,6 +4006,9 @@ class AppRuntime private constructor() {
         refreshGoals()
         runCatching {
             planAll = service.plans()
+            // 完成态每次刷新现算：计划页的「已完成」分组、每周自动排周都要用；
+            // 计划完成后 status 仍是 active，不能拿 status 当完成态。
+            completedPlanIds = planAll.filter { planIsComplete(service, it.id) }.map { it.id }.toSet()
             // 先让计划自己往前滚（结算旧周 / 补下周承诺 / 铺天），再取待办与页面数据：
             // 否则今天新铺出来的节点要等下一次刷新才出现在待办板上。
             val rhythmReports = advancePlanRhythm(service)

@@ -138,7 +138,7 @@ class AutonomyRuntimeTest {
         try {
             val today = LocalDate.now()
             runtime.applySimulatedToday(today)
-            seededPlan(runtime, home, today)
+            val planId = seededPlan(runtime, home, today)
             runtime.refreshPlan()
 
             val occurrence = assertNotNull(
@@ -170,6 +170,10 @@ class AutonomyRuntimeTest {
                 true,
                 runtime.chatSessions.firstOrNull { it.id == StewardRuntime.STEWARD_SESSION_ID }?.unread,
                 "用户不在对话页时，这条自主消息要标未读",
+            )
+            assertTrue(
+                runtime.completedPlanIds.contains(planId),
+                "计划完成后应进入已完成集合，供计划页归入「已完成」分组",
             )
 
             // 用户接着点了选项：这是普通轮，既要拿回全量工具，也不能把隐藏请求当成

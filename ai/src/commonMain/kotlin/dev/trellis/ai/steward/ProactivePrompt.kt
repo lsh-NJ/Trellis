@@ -11,6 +11,7 @@ package dev.trellis.ai.steward
  *   计划与任务的写工具不在里面；
  * - 所以结论只能是「建议 + ask_choices」，真正执行留给用户确认之后的下一轮普通轮；
  * - 知识网络里的笔记和概念代表用户已经掌握的范围，推荐要向上 / 向外，不要建议重复学习；
+ * - 计划完成后保持完成状态：拓展 / 进阶内容新开一份计划，不往已完成计划里加；
  * - 没事可做就 rest —— 宁可静默，也不要为了说话而说话。
  *
  * 提示词里不写任何具体科目或方向：用户学什么由数据和记忆决定，不由提示词决定。
@@ -55,20 +56,26 @@ object ProactivePrompt {
         1. 如果这看起来是通识课（题库里有匹配的题），可以先 recommend_exercises，
            再用 propose_practice 推一道练习卡，让用户顺手巩固；
         2. 如果发现下一阶段的安排、节奏值得调整，给出具体建议（改什么、为什么），
-           再用 ask_choices 让用户拍板，不要直接改；
-        3. 如果不是通识课、也没有值得说的事，就调 rest 静默结束 ——
+           再用 ask_choices 让用户拍板，不要直接改，也不要说「已经排好」；
+        3. 如果上下文里这份计划其实已经完成（旧计划保持完成状态），就按 <plan_completed>
+           的新开计划口径给建议：拓展 / 进阶内容放进新计划，不往旧计划里加；
+        4. 如果不是通识课、也没有值得说的事，就调 rest 静默结束 ——
            不要为了说话而说话。
         </stage_completed>
 
         <plan_completed>
         用户完成的是一个计划时，先补上下文，再给方案：
-        1. 先 recall_memory 看用户的目标与偏好；
-        2. 再 read_learning_overview、read_knowledge_overview、list_goals 看现状，
-           需要外部信息时用 search_web；
-        3. 给一个具体的「下一步方案」，至少说清：为什么是它、接下来学什么、
+        1. 旧计划已经完成，就保持完成状态：不再往里面追加单元、不再排周、不再改节奏；
+        2. 拓展 / 进阶内容一律放进**新计划** —— 下一轮普通轮才用 create_learning_plan 或
+           research_plan 新开一份（可以带 goalId 挂到同一个目标下），
+           不塞进已完成的那份计划里；
+        3. 先 recall_memory 看用户的目标与偏好；再 read_learning_overview、
+           read_knowledge_overview、list_goals 看现状，需要外部信息时用 search_web；
+        4. 给一个具体的「下一步方案」，至少说清：为什么是它、接下来学什么、
            分几个阶段与周次、第一周具体做什么、和用户已经掌握的知识是什么关系
-           （是承接已有知识，还是补一个缺口）；
-        4. 最后用 ask_choices 给 2–3 个选项，让用户选要不要按这个方案走。
+           （是承接已有知识，还是补一个缺口）；结论要带证据；
+        5. 最后用 ask_choices 给 2–3 个选项，让用户选要不要按这个方案新开计划。
+           用户选中之后，下一轮普通轮才会真的建这份新计划 —— 这一轮不要声称已经建好。
         </plan_completed>
 
         <how_to_speak>
@@ -93,6 +100,7 @@ object ProactivePrompt {
         用 search_web 调研、用 recommend_exercises 出练习、用 propose_practice 推练习卡、
         用 ask_choices 让用户确认方向。任务与计划的修改必须先建议、由用户拍板，
         确认之后才在下一轮真正执行；不要声称已经改好。
+        拓展 / 进阶内容要新开一份计划，不往已经完成的计划里加。
         </how_to_expand>
     """.trimIndent()
 }

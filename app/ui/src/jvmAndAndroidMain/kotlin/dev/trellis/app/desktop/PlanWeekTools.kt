@@ -70,6 +70,8 @@ class PlanWeekTools(
                 "现在还没有进行中的计划。先用 research_plan 或 create_learning_plan 建一份。",
                 isError = true,
             )
+            // 已完成的计划对 AGENT 只读：在调模型、落文档、追加单元之前就挡住。
+            completedPlanGuard(plan, planId)?.let { return it }
             val week = arguments["week"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
                 ?: isoWeekOf(clock.today())
             // 每天投入只有一个真相源：计划自己的 process.daily 优先（用户在计划设置/choice bar 里选的），
@@ -721,4 +723,31 @@ private fun parseTutorPrereqs(raw: String): List<PrereqCandidate>? {
             before = obj["before"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty(),
         )
     }
+}
+
+// ---------------------------------------------------------------------------
+// 「已完成计划对 AGENT 只读」的统一守卫（plan_week / 计划文档写 / 计划管理员写共用）
+// ---------------------------------------------------------------------------
+
+/**
+ * 已完成计划的写操作拒绝文案。标题为空时退回「未命名」，保证回执里总有一个可指认的名字。
+ */
+internal fun completedPlanMessage(title: String): String {
+    val name = title.trim().ifBlank { "未命名" }
+    return "计划「$name」已完成，不再追加；拓展请用 create_learning_plan / research_plan 新开一份" +
+        "（可带 goalId 挂到同一目标）。"
+}
+
+/**
+ * 读计划的阶段与待安排池，用 [isPlanComplete] 判定它是不是「已完成」，是就返回拒绝结果。
+ *
+ * 约定：**读不到阶段/池子时不拦**（放行）——计划库刚打开、某条查询失败的瞬间不该让写工具全体罢工；
+ * 完成态只是「别往旧计划里加东西」的保护，不是安全边界。调用方应在任何写之前调用它。
+ */
+internal fun completedPlanGuard(svc: LearningPlanService, planId: String): ToolResult? {
+    val stages = runCatching { svc.stages(planId) }.getOrNull() ?: return null
+    val poolEmpty = runCatching { svc.pool(planId).isEmpty() }.getOrNull() ?: return null
+    if (!isPlanComplete(stages, poolEmpty)) return null
+    val title = runCatching { svc.planState(planId).title }.getOrNull().orEmpty()
+    return ToolResult(completedPlanMessage(title), isError = true)
 }
