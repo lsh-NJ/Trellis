@@ -9,6 +9,7 @@ import dev.trellis.domain.plan.Actor
 import dev.trellis.domain.plan.CommandEnvelope
 import dev.trellis.domain.plan.LearningPlanService
 import dev.trellis.domain.plan.UnitDraft
+import dev.trellis.domain.plan.UnitProgress
 import dev.trellis.feature.learning.PlanDocStore
 import java.time.LocalDate
 import java.util.UUID
@@ -732,7 +733,13 @@ internal fun completedPlanMessage(title: String): String {
 internal fun completedPlanGuard(svc: LearningPlanService, planId: String): ToolResult? {
     val stages = runCatching { svc.stages(planId) }.getOrNull() ?: return null
     val poolEmpty = runCatching { svc.pool(planId).isEmpty() }.getOrNull() ?: return null
-    if (!isPlanComplete(stages, poolEmpty)) return null
+    // 没有阶段的计划按「全部单元做完」判完成；有阶段的计划不需要这条查询。
+    val unitProgress = if (stages.isEmpty()) {
+        runCatching { svc.unitProgress(planId) }.getOrNull() ?: return null
+    } else {
+        UnitProgress()
+    }
+    if (!isPlanComplete(stages, poolEmpty, unitProgress)) return null
     val title = runCatching { svc.planState(planId).title }.getOrNull().orEmpty()
     return ToolResult(completedPlanMessage(title), isError = true)
 }

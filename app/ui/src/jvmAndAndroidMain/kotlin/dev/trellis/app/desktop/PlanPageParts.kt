@@ -780,7 +780,8 @@ internal fun PlanStageRail(runtime: AppRuntime, modifier: Modifier = Modifier) {
     Column(
         modifier = modifier
             .width(196.dp)
-            .padding(start = tokens.space.m, top = 2.dp),
+            // flush 页把页面外层 20dp 内边距去掉了，右栏自己补回来，否则文字/进度条贴窗口右缘被裁。
+            .padding(start = tokens.space.m, top = 2.dp, end = 20.dp),
         verticalArrangement = Arrangement.spacedBy(tokens.space.m),
     ) {
         Text(

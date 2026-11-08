@@ -249,8 +249,11 @@
 
 计划「完成」没有独立的状态字段，也没有一条「结束计划」的系统命令。它是**算出来的**：
 
-- **定义**：所有阶段都 `total>0 && done>=total`，且待安排池为空。纯函数 `isPlanComplete(stages, poolEmpty)`
-  是唯一定义，`AutonomyTrigger.detectAutonomyEvent` 里的 `PlanDone` 与它同一口径。
+- **定义**：有阶段时所有阶段都 `total>0 && done>=total`；没有阶段时所有单元都至少有过一次 `done`
+  （`unitProgress.total>0 && done>=total`，服务契约 `LearningPlanService.unitProgress`）；两种情况都要求
+  待安排池为空。纯函数 `isPlanComplete(stages, poolEmpty, unitProgress)` 是唯一定义，
+  `AutonomyTrigger.detectAutonomyEvent` 里的 `PlanDone` 与它同一口径。没有阶段的计划（如「三天速通」）
+  不会再被判成永远未完成。
 - **落地**：计划页把完成态的计划移进左侧「已完成」分组（可折叠、默认收起、带数量）；
   **用户侧不冻结**，仍可打开、查看、勾选/撤销、拖拽。不写 `process.status`，也不自动 `endPlan`。
 - **AGENT 侧只读**：`plan_week`、`write_plan_doc`、`sync_plan_week`、`plan_next_week`、`complete_plan_node`、

@@ -43,6 +43,17 @@ interface LearningPlanService {
      */
     fun stages(planId: String): List<StageView>
 
+    /**
+     * 当前版本里有多少单元、其中多少个已经有 `done` occurrence。
+     *
+     * 给「没有阶段」的计划判完成用：`stages` 为空时，完成态由
+     * 「所有单元都至少做过一次 + 待安排池为空」决定，而不是「阶段」。
+     * 有阶段的计划仍以 [StageView.done] / [StageView.total] 为准。
+     *
+     * 默认返回 0/0：不实现学习计划的适配器不必关心这件事。
+     */
+    fun unitProgress(planId: String): UnitProgress = UnitProgress(0, 0)
+
     // ---------------- 目标 / 项目 ----------------
 
     /** 所有目标；默认不含已归档。计划页顶部的「目标：X · 里程碑 M/N」用。 */

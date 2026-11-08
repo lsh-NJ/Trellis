@@ -25,6 +25,7 @@ import dev.trellis.domain.plan.StageView
 import dev.trellis.domain.plan.SuggestionView
 import dev.trellis.domain.plan.TodoItem
 import dev.trellis.domain.plan.TodoView
+import dev.trellis.domain.plan.UnitProgress
 import dev.trellis.domain.plan.UnitResourceView
 import dev.trellis.domain.plan.WeekDay
 import dev.trellis.domain.plan.WeekDayItem
@@ -554,6 +555,31 @@ internal fun SqliteLearningPlanService.buildStages(planId: String): List<StageVi
                         ),
                     )
                 }
+            }
+        }
+    }
+}
+
+/**
+ * 当前生效版本的单元完成度：total = 全部单元数，done = 其中至少有一次 occurrence 是 done 的单元数。
+ *
+ * 只给「没有阶段」的计划判完成用（有阶段的计划看 [buildStages] 的 done/total）。
+ * 一个单元只要在任意一周被勾完就算 done，避免跨周移动的单元被某周的状态卡住。
+ */
+internal fun SqliteLearningPlanService.buildUnitProgress(planId: String): UnitProgress {
+    val version = currentVersion(planId) ?: return UnitProgress()
+    return connection.prepareStatement(
+        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN EXISTS (" +
+            "SELECT 1 FROM occurrence o WHERE o.unit_id = u.id AND o.status = 'done'" +
+            ") THEN 1 ELSE 0 END), 0) " +
+            "FROM plan_unit u WHERE u.plan_version_id = ?",
+    ).use { ps ->
+        ps.setString(1, version)
+        ps.executeQuery().use { rs ->
+            if (!rs.next()) {
+                UnitProgress()
+            } else {
+                UnitProgress(total = rs.getInt(1), done = rs.getInt(2))
             }
         }
     }

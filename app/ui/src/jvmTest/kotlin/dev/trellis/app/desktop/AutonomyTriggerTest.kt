@@ -1,6 +1,7 @@
 package dev.trellis.app.desktop
 
 import dev.trellis.domain.plan.StageView
+import dev.trellis.domain.plan.UnitProgress
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -198,5 +199,68 @@ class AutonomyTriggerTest {
 
         // 反过来：事件是 PlanDone 时 isPlanComplete 必为 true
         assertTrue(isPlanComplete(after, poolEmpty = true))
+    }
+
+    // ---- 没有阶段的计划（三天速通这类）：按「所有单元都做过」判完成 ----
+
+    @Test
+    fun aStageLessPlanIsCompleteWhenEveryUnitIsDone() {
+        assertTrue(
+            isPlanComplete(
+                emptyList(),
+                poolEmpty = true,
+                unitProgress = UnitProgress(total = 3, done = 3),
+            ),
+        )
+    }
+
+    @Test
+    fun aStageLessPlanWithAnUnfinishedUnitIsNotComplete() {
+        assertFalse(
+            isPlanComplete(
+                emptyList(),
+                poolEmpty = true,
+                unitProgress = UnitProgress(total = 3, done = 2),
+            ),
+        )
+        // 池子里还有待安排单元，同样不算完成
+        assertFalse(
+            isPlanComplete(
+                emptyList(),
+                poolEmpty = false,
+                unitProgress = UnitProgress(total = 3, done = 3),
+            ),
+        )
+    }
+
+    @Test
+    fun anEmptyStageLessPlanIsNotComplete() {
+        assertFalse(isPlanComplete(emptyList(), poolEmpty = true, unitProgress = UnitProgress()))
+    }
+
+    @Test
+    fun finishingTheLastUnitOfAStageLessPlanIsAPlanDoneEvent() {
+        val event = detectAutonomyEvent(
+            before = emptyList(),
+            after = emptyList(),
+            poolEmpty = true,
+            unitProgress = UnitProgress(total = 2, done = 2),
+        )
+
+        assertEquals(AutonomyEventKind.PlanDone, event?.kind)
+        assertTrue(event!!.planDone)
+        assertNull(event.stage)
+    }
+
+    @Test
+    fun aStageLessPlanWithUnitsLeftDoesNotFire() {
+        assertNull(
+            detectAutonomyEvent(
+                before = emptyList(),
+                after = emptyList(),
+                poolEmpty = true,
+                unitProgress = UnitProgress(total = 2, done = 1),
+            ),
+        )
     }
 }
