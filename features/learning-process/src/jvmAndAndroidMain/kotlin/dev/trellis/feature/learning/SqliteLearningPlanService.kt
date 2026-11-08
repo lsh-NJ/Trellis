@@ -593,7 +593,8 @@ internal class SqliteLearningPlanService(
 
     internal fun goalRow(goalId: String): GoalRow? =
         connection.prepareStatement(
-            "SELECT id,title,kind,intent,success,deadline,status,parent_id FROM goal WHERE id = ?",
+            // 软删除的目标按「找不到」处理：关联、改标题、加里程碑这些命令都会自然拒绝。
+            "SELECT id,title,kind,intent,success,deadline,status,parent_id FROM goal WHERE id = ? AND deleted_at IS NULL",
         ).use { ps ->
             ps.setString(1, goalId)
             ps.executeQuery().use { rs ->

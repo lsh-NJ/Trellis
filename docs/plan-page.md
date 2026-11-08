@@ -334,3 +334,41 @@ note 含「已经排过了」、单元与 occurrence 数不增。
 - **测试**：`LearningPlanAbandonTest.onlyAnAbandonedPlanCanBeDeletedFromTheList` /
   `aNormallyEndedPlanCannotBeDeletedEither`；`PlanDeleteRuntimeTest`（删除后列表消失、
   焦点清空、进行中的计划走同一入口被拒）。
+
+---
+
+## 18 2026-11-08：删除计划连带目标 + 周刻度固定格高
+
+### 18.1 删除已放弃计划时，目标不再留下
+
+用户反馈「删除学习计划，学习目标没有删除」。原因：`deletePlan` 只软删了计划
+（`process.deleted_at`），`process.goal_id` 指向的目标原样留在目标页。
+
+现在的级联规则（在同一个 `deletePlan` 里完成，不新增公开命令）：
+
+- 目标下**没有别的未删计划**（`process.goal_id = ? AND id <> 当前 AND deleted_at IS NULL`
+  计数为 0）→ 目标跟着软删：`goal.deleted_at` + `updated_at`，事件 `goal.deleted`
+  带 `goalId / planId / milestones / soft=true`；里程碑数据保留，只是随父目标从目标页消失。
+- 目标还挂着别的计划（包括已放弃但未删除的）→ 只解绑：`UPDATE process SET goal_id = NULL`，
+  事件 `plan.goal_unlinked`（payload `goalId`、`reason`）。共用目标不能因为删一个计划被删掉。
+- 读侧：`goals()` / `goal()` / `goalRow()` 过滤 `deleted_at`，`plansOfGoal()` 过滤
+  `pr.deleted_at IS NULL`；`AppRuntime.deleteAbandonedPlan()` 成功后补一次 `refreshGoals()`，
+  目标页立刻跟手。
+
+### 18.2 周刻度：固定格高，选中只换底色
+
+之前选中格竖线 22dp、普通格 14dp，`LazyRow` 顶部对齐 → 看起来只有**下边界**被往下推，
+上边界与相邻刻度不齐。现在 `PlanWeekTick` / `PlanPendingTick` 统一：
+
+- 格子固定 `74×70dp`、内容垂直居中；竖线放在固定 `22dp` 轨道里，选中只变高变粗；
+- 选中只改底色（`accentSoft` 0.35）、字重与颜色，**格子几何完全不变**；
+- 一排刻度的上下边界始终对齐。
+
+### 18.3 测试
+
+- `LearningPlanAbandonTest.deletingTheOnlyPlanOfAGoalAlsoHidesTheGoal`（唯一计划 → 目标消失、
+  `goal.deleted` 事件、里程碑保留）
+- `LearningPlanAbandonTest.deletingAPlanLeavesAGoalThatIsStillUsedByAnotherPlan`
+  （共用目标 → 只解绑、`plan.goal_unlinked`、目标仍可见）
+- `PlanDeleteRuntimeTest.anAbandonedPlanDisappearsFromTheListAfterDeleting` 追加
+  「删除后 `runtime.goals` 里也不再有这个目标」的断言。

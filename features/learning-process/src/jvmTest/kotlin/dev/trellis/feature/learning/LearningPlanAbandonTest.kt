@@ -12,6 +12,8 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -133,6 +135,49 @@ class LearningPlanAbandonTest {
         assertFalse(again.ok, "重复删除应被拒绝")
         assertEquals(ErrorCode.E_STATE, again.error?.code)
         assertEquals(1, svc.exportJsonl(active).split("plan.deleted").size - 1, "重复删除不应再写一条事件")
+    }
+
+    @Test
+    fun deletingTheOnlyPlanOfAGoalAlsoHidesTheGoal() {
+        val svc = service()
+        val planId = seed(svc, "带目标的计划")
+        val goal = svc.createGoal(env(planId), "成为 RAG 工程师", intent = "转行", success = "能独立做出 RAG 应用")
+        assertTrue(goal.ok, goal.error?.message)
+        val goalId = goal.value!!.goalId
+        assertTrue(svc.linkPlanToGoal(env(planId), planId, goalId).ok)
+        assertTrue(svc.addMilestone(env(planId), goalId, "第一阶段").ok)
+        assertEquals(goalId, svc.goal(goalId)?.id)
+
+        assertTrue(svc.abandonPlan(env(planId), planId, "换方向了").ok)
+        assertTrue(svc.deletePlan(env(planId), planId).ok)
+
+        // 计划删掉、且目标下没有别的未删计划：目标跟着软删，目标页不该留一个孤立目标。
+        assertNull(svc.goal(goalId), "唯一计划被删后，目标也该从目标页消失")
+        assertTrue(svc.goals(includeArchived = true).none { it.id == goalId })
+        val events = svc.exportJsonl(planId)
+        assertTrue(events.contains("goal.deleted"), "级联删除要写事件，留痕可追溯")
+        assertTrue(events.contains("\"milestones\""), "事件里要带上随目标隐藏的里程碑数量")
+    }
+
+    @Test
+    fun deletingAPlanLeavesAGoalThatIsStillUsedByAnotherPlan() {
+        val svc = service()
+        val first = seed(svc, "计划 A")
+        val second = seed(svc, "计划 B")
+        val goal = svc.createGoal(env(first), "共用的目标")
+        assertTrue(goal.ok, goal.error?.message)
+        val goalId = goal.value!!.goalId
+        assertTrue(svc.linkPlanToGoal(env(first), first, goalId).ok)
+        assertTrue(svc.linkPlanToGoal(env(second), second, goalId).ok)
+
+        assertTrue(svc.abandonPlan(env(first), first, "换方向了").ok)
+        assertTrue(svc.deletePlan(env(first), first).ok)
+
+        val after = svc.goal(goalId)
+        assertNotNull(after, "还有别的计划用这个目标，目标不能跟着删")
+        assertEquals(1, after!!.plans.size, "被删的计划不该再挂在目标下面")
+        assertEquals(second, after.plans.single().id)
+        assertTrue(svc.exportJsonl(first).contains("plan.goal_unlinked"), "只解绑也要留事件")
     }
 
     @Test

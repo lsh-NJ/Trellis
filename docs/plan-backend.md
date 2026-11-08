@@ -198,3 +198,21 @@
 - 测试：`LearningPlanAbandonTest.onlyAnAbandonedPlanCanBeDeletedFromTheList`
   （进行中拒绝 → 放弃后可删 → `plans()`/`activePlanId()` 不再返回 → 事件只写一次）、
   `aNormallyEndedPlanCannotBeDeletedEither`；运行时 `PlanDeleteRuntimeTest`。
+
+---
+
+## 13 2026-11-08：删除计划时级联软删目标
+
+- **迁移**：`PlanDatabase.migrate()` 增加
+  `ensureColumn("goal", "deleted_at", "ALTER TABLE goal ADD COLUMN deleted_at TEXT NULL")`；
+  新库的 `goal` 建表语句自带该列。
+- **命令**：`cmdDeletePlan` 在写完 `process.deleted_at` 与 `plan.deleted` 之后，读该计划的
+  `process.goal_id`：
+  - 若目标下没有其它 `deleted_at IS NULL` 的 process → `UPDATE goal SET deleted_at=?, updated_at=?`
+    + 事件 `goal.deleted`（`goalId/planId/milestones/soft=true`）；
+  - 否则 `UPDATE process SET goal_id=NULL` + 事件 `plan.goal_unlinked`（`goalId/reason`）。
+- **读侧**：`buildGoals` / `buildGoal` / `goalRow` 均过滤 `goal.deleted_at IS NULL`；
+  `plansOfGoal` 过滤 `pr.deleted_at IS NULL`。软删目标对 `linkPlanToGoal` / 改标题 / 加里程碑
+  等命令表现为「找不到这个目标」，不会把新数据挂到已删目标上。
+- **为什么软删**：与计划的删除语义保持一致（事件溯源表不可物理删），恢复只需清 `deleted_at`。
+- **测试**：见 `docs/plan-page.md` §18.3。
