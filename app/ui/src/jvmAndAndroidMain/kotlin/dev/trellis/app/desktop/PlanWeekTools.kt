@@ -47,6 +47,7 @@ class PlanWeekTools(
         "3. 先读再排：如果计划文档里没有这一阶段的内容，先用 read_plan_doc 看清楚，必要时用 write_plan_doc 补；不要凭空编。",
         "4. 计划里已经有这一周的条目时，`plan_week` 默认直接返回「已经排过了」；确认要重排就传 replan=true（去重逻辑会跳过重复、只补空位；时间只做参考，不会漏排）。要不要重排由你判断。",
         "5. 排完跟用户说清「这周重点 + 每天大概多久 + 有没有实践」，不要只报数字。",
+        "6. 已完成的计划（所有阶段都做完、待安排池也空了）不能再 plan_week，宿主会直接拒绝：那份计划保持完成状态、不再追加内容；要拓展就新开一份计划（create_learning_plan / research_plan，可带 goalId 挂到同一目标）。",
         "</how_to_plan_week>",
     ).joinToString("\n")
 

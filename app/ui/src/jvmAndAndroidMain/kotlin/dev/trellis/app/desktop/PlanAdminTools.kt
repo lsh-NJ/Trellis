@@ -52,6 +52,9 @@ class PlanAdminTools(
         "5. 新建计划走 create_learning_plan（「找资源 → 排成学习计划」那条路）；这里只维护已有的。",
         "6. 计划库打不开时先调 get_diagnostics 看具体原因（缺 JDK 模块/文件坏/权限），再决定怎么办；",
         "   不要把「打不开」原样丢给用户让他自己修。",
+        "7. 已完成的计划（所有阶段都做完、待安排池也空了）对 AGENT 只读：get_learning_plan 仍可读，",
+        "   但 plan_next_week / complete_plan_node / move_plan_node / set_plan_pace 都会被拒绝，",
+        "   旧计划保持完成状态、不再追加或改动；要拓展就新开一份计划（create_learning_plan / research_plan，可带 goalId）。",
         "</how_to_manage_learning_plan>",
     ).joinToString("\n")
 
