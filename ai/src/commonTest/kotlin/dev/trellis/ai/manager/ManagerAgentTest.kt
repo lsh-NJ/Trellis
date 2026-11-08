@@ -24,6 +24,7 @@ class ManagerAgentTest {
         private val streamReply: String = "好的",
         private val completions: MutableList<String> = mutableListOf(),
         private val failWith: String? = null,
+        private val reasoning: String? = null,
     ) : LlmClient {
         override suspend fun complete(messages: List<LlmMessage>): String {
             if (failWith != null) throw IllegalStateException(failWith)
@@ -33,8 +34,10 @@ class ManagerAgentTest {
         override suspend fun stream(
             messages: List<LlmMessage>,
             onDelta: suspend (String) -> Unit,
+            onReasoning: suspend (String) -> Unit,
         ): String {
             if (failWith != null) throw IllegalStateException(failWith)
+            reasoning?.chunked(3)?.forEach { onReasoning(it) }
             streamReply.chunked(3).forEach { onDelta(it) }
             return streamReply
         }
@@ -68,6 +71,32 @@ class ManagerAgentTest {
         assertEquals("我是这里的管理员", deltas.joinToString(""))
         assertTrue(result.ok)
         assertTrue(result.transcript.isEmpty(), "纯聊天不该进工具循环")
+    }
+
+    @Test
+    fun theModelsOwnReasoningIsReportedSeparatelyFromTheAnswer() = kotlinx.coroutines.test.runTest {
+        val agent = ManagerAgent(
+            ScriptedLlm(
+                streamReply = "你好！",
+                reasoning = "用户只是打个招呼，回一句就行，不用调工具。",
+            ),
+            prompt(),
+            tools = emptyList(),
+        )
+        val thoughts = mutableListOf<String>()
+
+        val result = agent.respond(state = "", request = "你好", onThinking = { thoughts += it })
+
+        // 思考是模型自己给的 reasoning_content，不是从正文里猜的；正文不该把它带出来。
+        assertEquals(listOf("用户只是打个招呼，回一句就行，不用调工具。"), thoughts)
+        assertEquals("你好！", result.text)
+        assertFalse(result.text.contains("打个招呼"))
+
+        // 没有思考内容的回复不调 onThinking，界面上也就不该多一行。
+        val quiet = ManagerAgent(ScriptedLlm(streamReply = "好的"), prompt(), tools = emptyList())
+        val none = mutableListOf<String>()
+        quiet.respond(state = "", request = "你好", onThinking = { none += it })
+        assertTrue(none.isEmpty(), none.toString())
     }
 
     @Test

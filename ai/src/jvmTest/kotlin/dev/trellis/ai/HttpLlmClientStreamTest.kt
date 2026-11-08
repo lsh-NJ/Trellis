@@ -45,7 +45,7 @@ class HttpLlmClientStreamTest {
 
             val error = runCatching {
                 withTimeout(20_000) {
-                    client.stream(listOf(LlmMessage(LlmRole.User, "hi"))) { deltas += it }
+                    client.stream(listOf(LlmMessage(LlmRole.User, "hi")), onDelta = { deltas += it })
                 }
             }.exceptionOrNull()
 
@@ -89,7 +89,7 @@ class HttpLlmClientStreamTest {
             )
             val job = launch {
                 runCatching {
-                    client.stream(listOf(LlmMessage(LlmRole.User, "hi"))) {}
+                    client.stream(listOf(LlmMessage(LlmRole.User, "hi")), onDelta = {})
                 }
             }
             // 等它真的进到读循环（收到第一个分片），再按「停止」。

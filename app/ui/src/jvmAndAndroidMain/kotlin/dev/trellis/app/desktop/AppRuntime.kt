@@ -2593,9 +2593,14 @@ class AppRuntime private constructor() {
                         markPlanRunning(Regex("：([a-z_]+)").find(line)?.groupValues?.get(1).orEmpty())
                     }
                 },
+                onThinking = { text ->
+                    // 模型自己的 reasoning_content（DeepSeek 思考）：进过程行，和工具循环里的「思考」同一套渲染。
+                    // 截断到 1200 字：思考可能很长，但过程行只用来交代「它在想什么」，不需要全文。
+                    addChatLine(ChatRole.Step, "思考：" + text.take(1200))
+                },
                 onTrace = { trace ->
                     when (trace) {
-                        is ToolTrace.Thinking -> addChatLine(ChatRole.Step, "思考：" + trace.text)
+                        is ToolTrace.Thinking -> addChatLine(ChatRole.Step, "思考：" + trace.text.take(1200))
                         is ToolTrace.Call -> {
                             val detail = ChatToolTrace(
                                 tool = trace.tool,

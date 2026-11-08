@@ -389,10 +389,17 @@ note 含「已经排过了」、单元与 occurrence 数不增。
 - 回归：`PlanPageRuntimeTest.PlanStageRailVisibilityTest` 仍钉右栏显隐的窗口宽度断点；
   `:app:ui:compileKotlinJvm` 通过。
 
-## 20 2026-11-09：先定节奏，再排本周（research_plan 不再抢先排第一周）
+## 20 2026-11-09：节奏与本周安排都交给 AGENT（research_plan 只按参数做事）
 
-问题：`research_plan` 建完空壳计划后立刻用建议时长排了第一周，紧接着又用 `ask_choices` 问用户每天投入——用户选完只影响之后补承诺/铺天，第一周已排的不动，既冗余又看不出「先排后问」。
+问题：`research_plan` 建完空壳计划后自己用建议时长排了第一周，紧接着又用 `ask_choices` 问用户每天投入——用户选完只影响之后补承诺/铺天，第一周已排的不动，既冗余又看不出「先排后问」；工具回执还写着「下一步：必须 ask_choices…」这种替模型做决定的指令。
 
-现在：`research_plan` 只建壳/大纲/阶段/里程碑；**用户这句话里已经给了时长才传 `dailyMinutes`**（工具写进节奏并同轮排好，不再问），否则回执明确说「节奏还没定」，由 AGENT `ask_choices`（60/90/120/先按建议）→ `set_plan_pace` → `plan_week` 在同一轮把本周排出来。`<task:work>` 提示词同步改。
+现在：宿主不替 AGENT 决定行为，`research_plan` 只按模型传的参数做事：
 
-测试：`ResearchToolsTest` 默认路径断言第一周为空、不写周文档、回执含 ask_choices/plan_week；新增 `whenDailyMinutesIsGivenTheFirstWeekIsScheduledAtOnce` 钉住传时长时同轮排好。
+- 显式传 `dailyMinutes` 才写进节奏（`set_plan_daily_minutes`）；不传只给建议值，不写。
+- 传 `scheduleFirstWeek=true` 才在同一轮把本周排出来；没传时长就用建议值铺周（建议值仍不写节奏）。
+- 不传 / `false` 就只建壳、大纲、阶段、里程碑。
+- 回执只报事实（建了什么、排没排、每天投入是建议值还是已写入），去掉「必须 / 下一步」这类指令式文案。
+
+问不问时长、排不排本周全由 AGENT 判断，`<task:work>` 提示词同步改成中性描述。
+
+测试：`ResearchToolsTest` 默认路径断言第一周为空、不写周文档、回执不含「必须」/`ask_choices`；`explicitDailyMinutesAndScheduleFirstWeekWriteThePaceAndScheduleTheWeek` 钉住写节奏 + 同轮排周；`dailyMinutesAloneWritesThePaceWithoutSchedulingTheWeek` 与 `scheduleFirstWeekWithoutDailyMinutesUsesTheSuggestionButDoesNotWriteIt` 分别钉住两个参数互不牵连。

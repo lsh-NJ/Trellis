@@ -41,6 +41,7 @@ class ChatManagerTest {
         override suspend fun stream(
             messages: List<LlmMessage>,
             onDelta: suspend (String) -> Unit,
+            onReasoning: suspend (String) -> Unit,
         ): String {
             full.chunked(2).forEach { onDelta(it) }
             return full
@@ -54,6 +55,7 @@ class ChatManagerTest {
         override suspend fun stream(
             messages: List<LlmMessage>,
             onDelta: suspend (String) -> Unit,
+            onReasoning: suspend (String) -> Unit,
         ): String = awaitCancellation()
     }
 

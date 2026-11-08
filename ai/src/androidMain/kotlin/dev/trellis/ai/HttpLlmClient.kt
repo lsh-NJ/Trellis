@@ -11,10 +11,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -32,7 +34,7 @@ import kotlinx.serialization.json.putJsonObject
  * ### 为什么把实现整份拷过来，而不是抽一个公共的 JSON 层
  *
  * 桌面版把请求体拼装、SSE 切分、错误文案都写在类内部（`requestBody` /
- * `extractDelta` / `extractContent`）。抽公共层意味着改动桌面端已经在跑的代码；
+ * `extractDelta` / `extractReply`）。抽公共层意味着改动桌面端已经在跑的代码；
  * 而这份实现只在安卓上跑，拷一份的代价是 300 行，收益是**桌面端零风险**。
  * 两边的分歧由 `HttpLlmClientProtocolTest` 之外的“同一份 JSON 形状”约束：
  * 字段名、`response_format`、图片数组的格式都逐字对齐。
@@ -54,16 +56,23 @@ class HttpLlmClient(
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    override suspend fun complete(messages: List<LlmMessage>): String {
+    override suspend fun complete(messages: List<LlmMessage>): String =
+        completeWithReasoning(messages).content
+
+    override suspend fun completeWithReasoning(messages: List<LlmMessage>): LlmReply {
         val body = requestBody(messages, stream = false, jsonMode = true)
         val (status, text) = withContext(Dispatchers.IO) { post(body, stream = false) }
         if (status !in 200..299) {
             throw LlmException("模型接口返回 " + status + "：" + text.take(500))
         }
-        return extractContent(text)
+        return extractReply(text)
     }
 
-    override suspend fun stream(messages: List<LlmMessage>, onDelta: suspend (String) -> Unit): String {
+    override suspend fun stream(
+        messages: List<LlmMessage>,
+        onDelta: suspend (String) -> Unit,
+        onReasoning: suspend (String) -> Unit,
+    ): String {
         val body = requestBody(messages, stream = true, jsonMode = false)
         val full = StringBuilder()
 
@@ -96,9 +105,12 @@ class HttpLlmClient(
                             if (data.isEmpty()) continue
                             if (data == "[DONE]") break
                             val delta = runCatching { extractDelta(data) }.getOrNull() ?: continue
-                            if (delta.isEmpty()) continue
-                            full.append(delta)
-                            onDelta(delta)
+                            // 思考内容单独走 onReasoning；空白分片不送。
+                            delta.reasoning?.takeIf { it.isNotBlank() }?.let { onReasoning(it) }
+                            val chunk = delta.content
+                            if (chunk.isNullOrEmpty()) continue
+                            full.append(chunk)
+                            onDelta(chunk)
                         }
                     }
                 } catch (e: IOException) {
@@ -194,7 +206,8 @@ class HttpLlmClient(
         }
     }.toString()
 
-    private fun extractContent(raw: String): String {
+    /** 从 `choices[0].message` 取正文与思考（DeepSeek 的 `reasoning_content`）。 */
+    private fun extractReply(raw: String): LlmReply {
         val root = json.parseToJsonElement(raw).jsonObject
         val choices = root["choices"] as? JsonArray
         if (choices.isNullOrEmpty()) {
@@ -205,27 +218,32 @@ class HttpLlmClient(
         val contentElement = message["content"]
             ?: throw LlmException("模型返回里没有 content：" + raw.take(300))
         // 视觉模型有时把 content 回成 [{type:"text", text:"..."}]，这里摊平。
-        val content = when (contentElement) {
-            is JsonArray -> contentElement.mapNotNull { part ->
-                (part as? JsonObject)?.get("text")?.jsonPrimitive?.content
-            }.joinToString("")
-            else -> contentElement.jsonPrimitive.content
-        }
-        return content
+        val content = flattenText(contentElement) ?: ""
+        val reasoning = message["reasoning_content"]?.jsonPrimitive?.contentOrNull
+            ?.takeIf { it.isNotBlank() }
+        return LlmReply(content = content, reasoning = reasoning)
     }
 
-    /** SSE 分片：`choices[0].delta.content`。首包/尾包可能没有 content，返回 null 让调用方跳过。 */
-    private fun extractDelta(raw: String): String? {
+    /** SSE 分片：正文 `choices[0].delta.content` 与思考 `delta.reasoning_content`。 */
+    private data class SseDelta(val content: String?, val reasoning: String?)
+
+    private fun extractDelta(raw: String): SseDelta? {
         val root = json.parseToJsonElement(raw).jsonObject
         val choices = root["choices"] as? JsonArray ?: return null
         val first = choices.firstOrNull()?.jsonObject ?: return null
         val delta = first["delta"] as? JsonObject ?: return null
-        val content = delta["content"] ?: return null
-        return when (content) {
-            is JsonArray -> content.mapNotNull { part ->
-                (part as? JsonObject)?.get("text")?.jsonPrimitive?.content
-            }.joinToString("").ifEmpty { null }
-            else -> content.jsonPrimitive.content
-        }
+        return SseDelta(
+            content = flattenText(delta["content"]),
+            reasoning = flattenText(delta["reasoning_content"]),
+        )
+    }
+
+    /** content 可能是字符串，也可能是 `[{type:"text", text:"..."}]` 数组；空数组算没有。 */
+    private fun flattenText(element: JsonElement?): String? = when (element) {
+        null -> null
+        is JsonArray -> element.mapNotNull { part ->
+            (part as? JsonObject)?.get("text")?.jsonPrimitive?.content
+        }.joinToString("").ifEmpty { null }
+        else -> element.jsonPrimitive.content
     }
 }

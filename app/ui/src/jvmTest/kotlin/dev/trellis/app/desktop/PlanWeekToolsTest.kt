@@ -20,6 +20,7 @@ import java.time.temporal.IsoFields
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
@@ -54,7 +55,7 @@ class PlanWeekToolsTest {
         override fun simulatedDate(): LocalDate? = null
     }
 
-    private class FakeLlm(private val reply: String) : LlmClient {
+    private class FakeLlm(var reply: String) : LlmClient {
         val seen = mutableListOf<List<LlmMessage>>()
 
         override suspend fun complete(messages: List<LlmMessage>): String {
@@ -329,5 +330,34 @@ class PlanWeekToolsTest {
         assertTrue(second.note.contains("已经排过了"), second.note)
         assertEquals(unitsAfterFirst, h.service.week(h.planId, thisWeek).commitment.units.size, "不该追加重复单元")
         assertEquals(occurrencesAfterFirst, h.service.week(h.planId, thisWeek).days.sumOf { it.items.size }, "不该重复铺天")
+    }
+
+    /**
+     * 模型判断要重排时可以传 replan=true：不会被「已经排过了」挡住，
+     * 去重只管重复条目，新条目按剩余容量继续铺。
+     */
+    @Test
+    fun replanTrueKeepsGoingInsteadOfStoppingAtAlreadyScheduled() = runTest {
+        val h = newHarness()
+        val first = planOneWeek(h.service, h.docStore, h.llm, h.clock, h.planId, thisWeek, 60)
+        assertEquals(null, first.error, first.error)
+        assertTrue(first.placed > 0)
+        val unitsAfterFirst = h.service.week(h.planId, thisWeek).commitment.units.size
+
+        // 第二次模型多给了一条新条目：replan 时该条要被排进来，老条目去重。
+        h.llm.reply = """
+            {"focus":"进程与调度","items":[
+                {"title":"进程概念","kind":"study","minutes":30},
+                {"title":"调度算法","kind":"practice","minutes":40},
+                {"title":"本周复盘","kind":"review","minutes":15},
+                {"title":"调度算法的边界情况","kind":"practice","minutes":30}
+            ]}
+        """.trimIndent()
+        val second = planOneWeek(h.service, h.docStore, h.llm, h.clock, h.planId, thisWeek, 60, replan = true)
+
+        assertEquals(null, second.error, second.error)
+        assertFalse(second.note.contains("已经排过了"), "replan=true 不该被「已经排过了」挡住：" + second.note)
+        assertEquals(1, second.placed, "只该补排新进来的那一条：" + second.note)
+        assertEquals(unitsAfterFirst + 1, h.service.week(h.planId, thisWeek).commitment.units.size, "老条目去重、新条目进库")
     }
 }

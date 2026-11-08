@@ -44,7 +44,7 @@ class PlanWeekTools(
         "1. 周计划：用户说「排本周」「排下周」「这周学什么」，或每周开始要排计划时，先调 `plan_week`（可带 week=YYYY-Www / dailyMinutes）。",
         "2. 它读计划文档与上周完成情况，产出这一周的具体条目（学习/实践/复习 + 分钟），宿主**先写本周文档、再**把条目追加成单元、铺到每天；两步都会在回执里说清（周文档已写 / 已排 N 条）。",
         "3. 先读再排：如果计划文档里没有这一阶段的内容，先用 read_plan_doc 看清楚，必要时用 write_plan_doc 补；不要凭空编。",
-        "4. 计划里已经有这一周的条目时不要重复排；要调整就用 move_plan_node / placeUnit 那套重排工具。",
+        "4. 计划里已经有这一周的条目时，`plan_week` 默认直接返回「已经排过了」；确认要重排就传 replan=true（去重/剩余容量逻辑会跳过重复、只补空位）。要不要重排由你判断。",
         "5. 排完跟用户说清「这周重点 + 每天大概多久 + 有没有实践」，不要只报数字。",
         "</how_to_plan_week>",
     ).joinToString("\n")
@@ -56,11 +56,13 @@ class PlanWeekTools(
 
         override val description: String =
             "排某一周的具体计划：读大纲与上周完成情况，产出本周条目（学习/实践/复习），" +
-                "**先把本周文档写进计划文档，再**把条目追加成单元、按预算铺到每天。"
+                "**先把本周文档写进计划文档，再**把条目追加成单元、按预算铺到每天。" +
+                "这一周已经排过时默认直接拒绝；要重排就传 replan=true。"
 
         override val parameters: String =
             "week：可选，ISO 周（如 2026-W45）；省略=本周；" +
-                "dailyMinutes：可选，这一周每天大概投入多少分钟（30–240）；省略=设置里的每天预计投入或 90。"
+                "dailyMinutes：可选，这一周每天大概投入多少分钟（30–240）；省略=设置里的每天预计投入或 90；" +
+                "replan：可选，true 表示这一周已经排过也继续重排（默认 false：已排过直接返回「已经排过了」；重排会去重、按剩余容量只补空位）。要不要重排由你判断。"
 
         override suspend fun call(arguments: JsonObject): ToolResult {
             val plan = service() ?: return ToolResult("计划库打不开，没排成。", isError = true)
@@ -80,6 +82,13 @@ class PlanWeekTools(
                 ?: 90)
                 .coerceIn(30, 240)
 
+            val replan = when (
+                arguments["replan"]?.jsonPrimitive?.contentOrNull?.trim()?.lowercase()
+            ) {
+                "true", "1", "yes" -> true
+                else -> false
+            }
+
             val result = planOneWeek(
                 plan = plan,
                 planDocStore = planDocStore(),
@@ -88,6 +97,7 @@ class PlanWeekTools(
                 planId = planId,
                 week = week,
                 dailyMinutes = daily,
+                replan = replan,
             )
             if (result.docWritten || result.appended) onChanged()
             result.error?.let { return ToolResult(it, isError = true) }
@@ -154,6 +164,13 @@ internal suspend fun planOneWeek(
     /** 本周所属阶段的焦点（research_plan 排第一周时从阶段表带过来；模型自己的 focus 优先）。 */
     stageFocus: String = "",
     today: LocalDate = clock.today(),
+    /**
+     * 这一周已经排过时要不要继续。
+     *
+     * 默认 false：直接退回（数据安全，排两次会重复追加）。
+     * true 时继续往下走，后面的去重与剩余容量计算会跳过已有条目、只补空位。
+     */
+    replan: Boolean = false,
 ): WeekPlanResult {
     val thisWeek = isoWeekOf(today)
     if (!WEEK_PATTERN.matches(week)) {
@@ -171,10 +188,11 @@ internal suspend fun planOneWeek(
 
     // 一周只排一次：已经铺到天的周再跑 plan_week 就变成「追加」——四周模拟里同一周被连排两次，
     // 单元从 9 涨到 24、待安排池从 2 涨到 15，当天分钟数也从 60 加到 130。
-    // 已经排过的周直接退回，调整交给计划页拖拽或 PlanAdminTools。
+    // 默认直接退回，调整交给计划页拖拽或 PlanAdminTools；模型明确 replan=true 时才继续，
+    // 后面的去重/容量逻辑保证只补空位、不重复追加。
     val plannedAlready = runCatching { plan.week(planId, week) }
         .getOrNull()?.days?.flatMap { day -> day.items }.orEmpty()
-    if (plannedAlready.isNotEmpty()) {
+    if (plannedAlready.isNotEmpty() && !replan) {
         return WeekPlanResult(
             week = week,
             note = "这一周已经排过了（" + plannedAlready.size + " 条）；要调整就直接在计划页拖节点，或告诉我把哪几条改到哪天。",

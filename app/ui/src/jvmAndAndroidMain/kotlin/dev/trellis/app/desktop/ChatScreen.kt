@@ -1104,7 +1104,10 @@ private fun ProcessDetails(steps: List<ChatLine>) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(
                         alpha = if (isResult) 0.75f else 1f,
                     ),
-                    modifier = Modifier.padding(start = if (isResult) 8.dp else 0.dp),
+                    modifier = Modifier
+                        .padding(start = if (isResult) 8.dp else 0.dp)
+                        // 思考可能是一整段话：占满剩余宽度、自动换行，不截行数。
+                        .fillMaxWidth(),
                 )
             }
         }
