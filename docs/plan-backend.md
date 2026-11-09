@@ -279,3 +279,25 @@
   和 `update_plan`（op 数组：insert/update/schedule_week/write_doc，match + set 四段式；
   `confirmed=true` 才写，`dryRun` 只校验）。旧工具类保留，由 `PlanEditTools` 的 `legacy` map 内部复用；
   不再单独出现在工具清单里。
+
+## 17 2026-11-09：早间智能重排（`PlanRearranger` + `update_plan.rearrange`）
+
+- **纯算法**：`buildRearrangePlan(overdue, backlog, scheduled, startDay, dailyMinutes, extraMinutes)`
+  在 `PlanRearranger.kt`。输入是「本周已过期还没做的 occurrence」「更早周欠下的单元」和「今天到未来 9 周
+  已有 `planned` 天条」；输出 `RearrangePlan(assignments, moves, overflowCount)`。
+  规则：逾期+欠账按路线顺序混排成 carry；逐日 `carry + 当天原安排`，容量=每天分钟（首日 + extra）；
+  首项必放，装不下的尾部整块 carry 到下一天；跨周自然顺延；保留原顺序，不把后阶段提前。
+- **预览**：`read_plan` 的 `include` 可带 `overdue`，另有 `rearrangeExtraMinutes`（0–240）；
+  只读，不落库。输出逾期列表 + 「从哪天 → 哪天」的预览。
+- **写**：`update_plan` 的 op `{"op":"rearrange","extraMinutes":30,"fromDay":"2026-11-11"}`；
+  `dryRun=true` 只返回预览；`confirmed=true` 才执行。每个 `RearrangeMove`：
+  occurrence 走 `moveOccurrence(env, occurrenceId, toDay, "AI 早间重排")`，单元走
+  `placeUnit(env, planId, isoWeekOf(toDay), unitId, toDay)`；失败逐条收集。
+  成功后重写受影响周的周文档（`PlanDocStore.saveWeek`）与总文档 `## 进度`
+  （最近重排日期、多投分钟、移动/溢出数、接下来三天）。
+- **细调**：同一次 `update_plan` 可在 `rearrange` 后追加
+  `{"op":"update","target":"units","match":{"occurrenceId":"occ_x"},"set":{"day":"2026-11-13"}}`
+  覆盖个别项；也可之后单独调。
+- **触发**：不经过 AGENT 的「排周」；由 `AppRuntime.maybeRunMorningRearrange()` 在早上第一次打开应用、
+  有逾期时跑隐藏轮（只读 + ask_choices），用户确认后的普通轮执行 `rearrange`。
+  只读轮工具集与提示词见 `MorningRearrangePrompt`。

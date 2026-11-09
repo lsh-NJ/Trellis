@@ -20,6 +20,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -232,6 +233,72 @@ class PlanEditToolsTest {
             deploy.resources.any { it.url == "https://example.com/deploy" },
             "排周后要把阶段资源挂到匹配的节点上，实际：" + deploy.resources,
         )
+    }
+
+    @Test
+    fun rearrangePreviewsThenMovesOverdueToTheFrontAndKeepsEveryItem() = runTest {
+        val h = harness()
+        val view = h.service.week(h.planId, week)!!
+        val first = view.days.flatMap { it.items }.first()
+        val overdue = h.service.moveOccurrence(env(), first.occurrenceId, "2026-11-02", "test overdue")
+        assertTrue(overdue.ok, "造逾期失败：" + overdue.error?.message)
+
+        val appended = h.service.appendUnits(env(), h.planId, listOf(UnitDraft("第 3 章", "今天的任务", 90)))
+        assertTrue(appended.ok, "加单元失败：" + appended.error?.message)
+        val todayUnitId = appended.value.orEmpty().single()
+        val placed = h.service.placeUnit(env(), h.planId, week, todayUnitId, today.toString())
+        assertTrue(placed.ok, "排今天失败：" + placed.error?.message)
+
+        val read = h.tools.all.first { it.name == "read_plan" }.call(
+            buildJsonObject {
+                put("include", buildJsonArray { add(JsonPrimitive("summary")); add(JsonPrimitive("week")); add(JsonPrimitive("overdue")) })
+                put("rearrangeExtraMinutes", 0)
+            },
+        )
+        assertTrue(read.content.contains("重排预览"), read.content)
+        assertTrue(read.content.contains("→"), read.content)
+
+        val dryRun = h.tools.all.first { it.name == "update_plan" }.call(
+            buildJsonObject {
+                put("dryRun", true)
+                put(
+                    "ops",
+                    buildJsonArray {
+                        addJsonObject {
+                            put("op", "rearrange")
+                            put("extraMinutes", 0)
+                        }
+                    },
+                )
+            },
+        )
+        assertTrue(dryRun.content.contains("（dryRun）"), dryRun.content)
+        // moveOccurrence 会生成新的 occurrence，不能再用旧 occurrenceId 查；按标题找。
+        val stillOverdue = h.service.week(h.planId, week)!!.days
+            .first { day -> day.items.any { it.title == first.title } }
+        assertTrue(stillOverdue.items.first { it.title == first.title }.status == "planned")
+        assertTrue(stillOverdue.day == "2026-11-02", "dryRun 不能改库，实际：" + stillOverdue.day)
+
+        val applied = h.tools.all.first { it.name == "update_plan" }.call(
+            buildJsonObject {
+                put("confirmed", true)
+                put(
+                    "ops",
+                    buildJsonArray {
+                        addJsonObject {
+                            put("op", "rearrange")
+                            put("extraMinutes", 0)
+                        }
+                    },
+                )
+            },
+        )
+        assertTrue(!applied.isError, applied.content)
+        val after = h.service.week(h.planId, week)!!
+        val todayTitles = after.days.first { it.day == today.toString() }.items.map { it.title }
+        assertTrue(todayTitles.contains(first.title), "逾期项应先补到今天：" + applied.content)
+        val tomorrowTitles = after.days.first { it.day == today.plusDays(1).toString() }.items.map { it.title }
+        assertTrue(tomorrowTitles.contains("今天的任务"), "今天原有任务应整体后移：" + applied.content)
     }
 
     @Test

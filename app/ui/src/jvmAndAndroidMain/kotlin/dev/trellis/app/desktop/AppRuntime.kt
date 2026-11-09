@@ -22,6 +22,7 @@ import dev.trellis.ai.tool.AgentTool
 import dev.trellis.ai.tool.DeepSeekMarkup
 import dev.trellis.ai.manager.ManagerPrompt
 import dev.trellis.ai.manager.ManagerRouter
+import dev.trellis.ai.steward.MorningRearrangePrompt
 import dev.trellis.ai.steward.ProactivePrompt
 import dev.trellis.ai.steward.StewardPrompt
 import dev.trellis.ai.steward.StewardRitual
@@ -1143,6 +1144,10 @@ class AppRuntime private constructor() {
     private var autonomyPlanId: String? = null
     private var autonomyPlanTitle: String = ""
     private var autonomyRested: Boolean = false
+    /** 早间重排的内存去重（checkpoints 会被其它写入盖掉，不能只靠它）。 */
+    private var lastMorningRearrangeDay: String? = null
+    /** 早间重排建议已发出，等用户下一条消息确认；确认轮临时给写权限。 */
+    private var awaitingMorningConfirmation: Boolean = false
 
     /** 从界面发起一轮对话：job 挂在 runtime 上，切页不会把它掐断。 */
     fun ask(request: String) {
@@ -1509,6 +1514,9 @@ class AppRuntime private constructor() {
                 // 周日 18:00 后 / 周一：给每条计划排本周（在它自己的会话里，没绑定就管家代跑）。
                 runCatching { maybeRunWeeklyPlanWeek() }
                     .onFailure { appendAppLog("自动排周计划失败：$it") }
+                // 每天早上第一次打开应用：有逾期就让管家先重新算一遍今天的安排。
+                runCatching { maybeRunMorningRearrange() }
+                    .onFailure { appendAppLog("早间自动重排失败：$it") }
             }
             .onFailure { appendAppLog("管家仪式失败：$it") }
     }
@@ -2423,6 +2431,7 @@ class AppRuntime private constructor() {
         llm: LlmClient,
         researchGateway: ResearchGateway?,
         autonomy: Boolean = false,
+        morningRearrange: Boolean = false,
     ): ChatRig {
             val catalog = CapabilityCatalog.of(kernel.extensions, RENDERED_MOUNT_POINTS)
             val installer = KernelPluginInstaller(pluginsDir, kernel)
@@ -2549,6 +2558,18 @@ class AppRuntime private constructor() {
             // 常驻扩容说明：普通会话和普通管家对话都能主动读现状/提建议；
             // 真正写计划仍然要用户拍板，见 ProactivePrompt 的边界。
             val expandGuidance = ProactivePrompt.guidance
+            if (morningRearrange) {
+                // 早间重排轮：只读当前计划（含重排预览）+ ask_choices，程序层不装写工具。
+                val morningTools = allTools.filter { it.name == "read_plan" || it.name == "ask_choices" }
+                val promptGuidance = buildString {
+                    append(MorningRearrangePrompt.guidance)
+                    if (memorySection.isNotBlank()) {
+                        append("\n\n")
+                        append(memorySection)
+                    }
+                }
+                return ChatRig(catalog, tools, morningTools, promptGuidance)
+            }
             if (autonomy) {
                 // 自主检查轮只读：白名单之外的工具（建计划/排周/勾节点/挪节点/改节奏/写文档…）
                 // 一律不进这一轮，程序层保证「只建议、不直接改」，不靠提示词自觉。
@@ -2608,6 +2629,7 @@ class AppRuntime private constructor() {
         request: String,
         hidden: Boolean,
         autonomy: Boolean,
+        morningRearrange: Boolean = false,
     ): TurnOutcome {
         val text = request.trim()
         if (text.isEmpty() || chatBusy) return TurnOutcome(false, "")
@@ -2646,7 +2668,7 @@ class AppRuntime private constructor() {
         }
 
         try {
-            val rig = buildChatRig(llm, researchGateway, autonomy)
+            val rig = buildChatRig(llm, researchGateway, autonomy, morningRearrange)
 
 
             // 一份提示词 + 全量工具：不再按意图裁工具、也不再换任务模块。
@@ -2655,18 +2677,24 @@ class AppRuntime private constructor() {
             // 静态前缀换成管家自己的（克制、只基于事实、一次只给一条建议）。
             val stewardSession = currentChatId
                 ?.let { id -> chatSessions.firstOrNull { it.id == id }?.kind } == SessionKind.Steward
+            // 早间重排建议后的第一条用户消息 = 用户确认；这一轮临时按「可写的计划执行者」跑。
+            val confirmedRearrange = !hidden && stewardSession && awaitingMorningConfirmation
+            if (confirmedRearrange) awaitingMorningConfirmation = false
             if (stewardSession && !hidden && ::stewardRuntime.isInitialized) {
                 // 用户回管家的话原样记一条：下次仪式能读到「上次他怎么说」，
                 // 不用再靠模型从上下文里猜。自主检查不是用户发言，不记。
                 runCatching { stewardRuntime.rememberUserReply(clock.today(), text) }
             }
-            val router = if (stewardSession) {
+            val router = if (stewardSession && !confirmedRearrange) {
                 val base = buildString {
                     append(StewardPrompt.systemPrompt())
                     append("\n\n")
                     // 自主检查轮叠加「只读 + 只建议」的覆盖层：和普通管家对话共用同一段会话，
                     // 但这一轮的边界不一样，不能让模型把「晨间总结」的人格直接拿来用。
-                    if (autonomy) {
+                    if (morningRearrange) {
+                        append(MorningRearrangePrompt.systemPrompt())
+                        append("\n\n")
+                    } else if (autonomy) {
                         append(ProactivePrompt.systemPrompt())
                         append("\n\n")
                     }
@@ -2681,7 +2709,14 @@ class AppRuntime private constructor() {
                     tools = rig.allTools,
                 )
             } else {
-                ManagerRouter(rig.catalog, rig.allTools, rig.promptGuidance)
+                val effectiveGuidance = if (confirmedRearrange) {
+                    rig.promptGuidance + "\n\n" +
+                        "用户已点选你上一条早间重排建议；本轮可以用 update_plan。" +
+                        "先用 read_plan 读最新预览，再用 rearrange 落库，完成后简述哪些项挪到了哪天。"
+                } else {
+                    rig.promptGuidance
+                }
+                ManagerRouter(rig.catalog, rig.allTools, effectiveGuidance)
             }
             // 插件工具自己记账：这一轮碰过插件工具、又只看了看没动手，才在收尾时拦。
             // 不再按意图判断（意图分类器已删），也不再无条件要求「必须试过、装上了」。
@@ -2962,6 +2997,108 @@ class AppRuntime private constructor() {
             autonomyPlanId = null
             autonomyPlanTitle = ""
             autonomyRested = false
+        }
+    }
+
+    // ---- 早间自动重排 ----
+
+    /**
+     * 每天早上第一次打开应用（或第一个 ticker）时，若有逾期，让管家算一遍今天怎么补。
+     *
+     * 只做「提建议」：真正的重排要用户点选项后的普通轮才写。同一天只跑一次。
+     */
+    private suspend fun maybeRunMorningRearrange() {
+        if (!::stewardStore.isInitialized || !::clock.isInitialized) return
+        if (chatBusy) return
+        val service = learningPlan() ?: return
+        val today = clock.today()
+        if (lastMorningRearrangeDay == today.toString()) return
+        val checkpoints = stewardStore.checkpoints()
+        if (checkpoints.lastRearrangeDay == today.toString()) {
+            lastMorningRearrangeDay = today.toString()
+            return
+        }
+        val planId = planFocusId ?: runCatching { service.activePlanId() }.getOrNull() ?: return
+        val state = runCatching { service.planState(planId) }.getOrNull() ?: return
+        if (planIsComplete(service, planId)) return
+        val overdue = runCatching { service.overdue(planId, today.toString()) }.getOrNull() ?: return
+        val overdueCount = overdue.thisWeek.size + overdue.backlog.size
+        if (overdueCount == 0) return
+        val config = LlmConfigLoader.load(home)
+        if (llmOverride == null && (config == null || config.apiKey.isBlank())) {
+            appendAppLog("早间自动重排：没有配置模型，跳过")
+            return
+        }
+        // 先记日期再启动：同一天失败也不反复刷模型（ticker 每 60s 一次）。
+        lastMorningRearrangeDay = today.toString()
+        appendAppLog("早间重排：plan=$planId overdue=$overdueCount")
+        runCatching { stewardStore.saveCheckpoints(checkpoints.copy(lastRearrangeDay = today.toString())) }
+            .onFailure { appendAppLog("记录早间重排日期失败：$it") }
+        chatScope.launch {
+            try {
+                runMorningRearrangeTurn(planId, state.title, overdue)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                appendAppLog("早间自动重排失败：" + (error.message ?: error::class.simpleName))
+            }
+        }
+    }
+
+    private suspend fun runMorningRearrangeTurn(
+        planId: String,
+        planTitle: String,
+        overdue: OverdueView,
+    ) {
+        ensureStewardSession()
+        openChat(StewardRuntime.STEWARD_SESSION_ID)
+        if (currentChatId != StewardRuntime.STEWARD_SESSION_ID) return
+        val outcome = runTurn(
+            morningRearrangeBrief(planId, planTitle, overdue),
+            hidden = true,
+            autonomy = false,
+            morningRearrange = true,
+        )
+        if (!outcome.ok) return
+        // 这一轮可能只挂出 ask_choices、没有正文——也算「建议已发出」。
+        val offeredChoices = chatAsk != null
+        if (offeredChoices) awaitingMorningConfirmation = true
+        if (outcome.text.isBlank() && !offeredChoices) return
+        val notice = outcome.text.ifBlank { "早间重排建议已挂出，打开对话选一下。" }
+        if (currentTab != TAB_CHAT) {
+            val saved = chatStore.read(StewardRuntime.STEWARD_SESSION_ID)
+            if (saved != null && !saved.unread) {
+                chatStore.save(saved.copy(unread = true))
+                loadChatSessions()
+            }
+        }
+        if (!windowFocused) notifyWithTarget("管家", notice.take(80), NotifyTarget.Chat)
+    }
+
+    private fun morningRearrangeBrief(planId: String, planTitle: String, overdue: OverdueView): String = buildString {
+        append("（早间自动重排，不是用户发来的对话；用户刚打开应用）\n")
+        append("今天是 ").append(overdue.today).append("，当前计划：").append(planTitle).append("。\n")
+        append("逾期：本周 ").append(overdue.thisWeek.size).append(" 项、更早欠账 ")
+            .append(overdue.backlog.size).append(" 项；每天参考 ").append(overdue.dailyMinutes).append(" 分钟。\n")
+        overviewNote(planId)?.let { append(it).append("\n") }
+        append("先用 read_plan（include 带 summary、week、overdue）看现状，再用 rearrangeExtraMinutes ")
+        append("（0 / 15 / 30 / 45）读重排预览；挑一个方案，说清今天多投多少、补的内容排到哪天、")
+        append("原来的哪些任务会被整体后移、有几项顺延到下周，然后用 ask_choices 给 2–3 个选项。\n")
+        append("本轮只读，不要声称已经排好；用户点选项后的下一轮才会真的改。")
+        append("如果没有逾期或不需要移动，直接结束，不要发消息。")
+    }
+
+    /** 计划概况的几句话，给早间 brief 补足上下文。 */
+    private fun overviewNote(planId: String): String? {
+        val service = runCatching { learningPlan() }.getOrNull() ?: return null
+        val stages = runCatching { service.stages(planId) }.getOrDefault(emptyList())
+        if (stages.isEmpty()) return "这份计划还没有阶段，按整份计划处理。"
+        val current = stages.firstOrNull { st: StageView ->
+            val week = isoWeekOf(clock.today())
+            week >= st.weekStart && week <= st.weekEnd
+        } ?: stages.firstOrNull { it.done < it.total }
+        return current?.let {
+            "当前阶段：" + it.name + "（" + it.weekStart + "–" + it.weekEnd + "，完成 " + it.done + "/" + it.total + "）。"
         }
     }
 

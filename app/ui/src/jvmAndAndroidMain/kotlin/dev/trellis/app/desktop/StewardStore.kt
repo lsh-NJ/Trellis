@@ -75,6 +75,8 @@ internal data class StewardCheckpoints(
     val autoAdoptCount: Int = 0,
     /** 上一次自动排周计划的 ISO 周（`2026-W45`）；同一周不重复跑。 */
     val weeklyPlanWeek: String? = null,
+    /** 上一次早间自动重排的日期；同一天只跑一次。 */
+    val lastRearrangeDay: String? = null,
 )
 
 /**
