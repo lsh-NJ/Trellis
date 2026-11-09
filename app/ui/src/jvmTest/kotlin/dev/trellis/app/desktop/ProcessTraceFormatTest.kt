@@ -3,7 +3,6 @@ package dev.trellis.app.desktop
 import androidx.compose.ui.unit.dp
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -69,17 +68,6 @@ class ProcessTraceFormatTest {
         assertEquals(440.dp, processPanelMaxHeight(800.dp))
         assertEquals(220.dp, processPanelMaxHeight(200.dp))
         assertEquals(560.dp, processPanelMaxHeight(1400.dp))
-    }
-
-    @Test
-    fun processAreaStaysFoldedUnlessThisRoundIsStillRunningOrTheUserOpenedIt() {
-        // 默认收着：历史轮次、跑完的轮次、刚打开会话时都只剩回合头一行。
-        assertFalse(processOpenFor(running = false, choice = null))
-        // 这一轮还在跑的时候自动铺开，跑完自动收回。
-        assertTrue(processOpenFor(running = true, choice = null))
-        // 用户手动点过折角，就以用户为准，运行状态不再覆盖它。
-        assertTrue(processOpenFor(running = false, choice = true))
-        assertFalse(processOpenFor(running = true, choice = false))
     }
 
     @Test

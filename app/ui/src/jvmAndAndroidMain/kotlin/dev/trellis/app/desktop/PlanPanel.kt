@@ -410,13 +410,6 @@ private fun PlanFooter(
             when {
                 running -> {
                     ChromeTextLink("中止并停止本轮", onClick = onStop)
-                    Spacer(Modifier.weight(1f))
-                    Text(
-                        "预计剩余 " + if (status == PlanStatus.Running) "几秒" else "",
-                        style = tokens.type.meta,
-                        fontFamily = FontFamily.Monospace,
-                        color = extra.warning,
-                    )
                 }
                 diffCount > 0 -> {
                     ChromeTextLink("撤销这次改动", onClick = onUndo, enabled = undoable)

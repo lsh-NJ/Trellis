@@ -102,8 +102,8 @@ import kotlinx.coroutines.launch
  * 现在的信息分五层：
  * - L1 你的输入：右侧青柠气泡；
  * - L2 结论：15.5px / 行高 1.78 / 最宽 34em，全页唯一需要完整读的文本；
- * - L3 过程：默认收着，只留回合头一行；回合头整行就是把手（点一下整组收起/展开），状态字后面一个 ▾/▴ 折角说明能收；
- *   这一轮还在跑时自动铺开、跑完自动收回，手动点过就以用户为准；
+ * - L3 过程：默认折叠，只留回合头一行；回合头整行就是把手（点一下展开/收起），状态字后面一个 ▾/▴ 折角说明能开；
+ *   运行中也不自动铺开，用户点过折角才展开并一直保持到再点；
  *   展开后每条过程只占一行（思考 / 判断 / 结果 / 工具名），不做预览摘要，点开某一行的正文才出现；
  * - L4 过程窗口：整块最多半屏多一点、超出在块内滚，同一时刻只展开一条（手风琴）；
  *   宿主纠正模型的返工记录（格式不对等）不在列表里占行，收进工具详情；
@@ -830,11 +830,9 @@ private fun RoundView(
         runtime.pluginCardStyles,
     ) { runtime.diffForRound(key) }
 
-    // 整组的开合：默认收着，只留回合头一行。这一轮还在跑的时候自动铺开（思考/工具正在流进来），
-    // 跑完自动收回；用户手动点过就以用户为准，不再被运行状态覆盖。
+    // 整组的开合：**默认折叠**，只留回合头一行（运行中也不自动铺开，点折角才展开）。
     // 失败的原因由下面的 FailureBlock 说清楚，过程行不该替它抢版面。
-    var processChoice by remember(key) { mutableStateOf<Boolean?>(null) }
-    val processOpen = processOpenFor(running, processChoice)
+    var processOpen by remember(key) { mutableStateOf(false) }
     var diffOpen by remember(key) { mutableStateOf(false) }
     var note by remember(key) { mutableStateOf<String?>(null) }
     // 只有最后一轮常驻「撤销 / 看差异 / 复制」；旧轮次鼠标移上去才露出来，
@@ -877,7 +875,7 @@ private fun RoundView(
                     if (steps.isNotEmpty()) {
                         Modifier
                             .pointerHoverIcon(PointerIcon.Hand)
-                            .clickable { processChoice = !processOpen }
+                            .clickable { processOpen = !processOpen }
                     } else {
                         Modifier
                     },
@@ -914,8 +912,8 @@ private fun RoundView(
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                 )
             }
-            // 折角紧跟状态字：它就是这一行的收起/展开把手，放行尾会远到看不见。
-            // 收着时是「▾」，点一下整组铺开变「▴」（运行中的轮次会自动铺开）。
+            // 折角紧跟状态字：它就是这一行的折叠把手，放行尾会远到看不见。
+            // 收着时是「▾」，点一下整组铺开变「▴」。
             if (steps.isNotEmpty()) {
                 Spacer(Modifier.width(8.dp))
                 Text(
@@ -1126,13 +1124,6 @@ internal fun processRowView(text: String): ProcessRowView? {
  */
 internal fun processPanelMaxHeight(viewport: Dp): Dp =
     (viewport * 0.55f).coerceIn(220.dp, 560.dp)
-
-/**
- * 过程区默认收着（历史轮次、跑完的轮次、刚打开会话时都只剩回合头一行）。
- * 这一轮还在跑的时候自动铺开，让思考/工具一边流一边看得见；跑完自动收回。
- * 用户手动点过折角就以用户为准（[choice] 非空），不再被运行状态覆盖。
- */
-internal fun processOpenFor(running: Boolean, choice: Boolean?): Boolean = choice ?: running
 
 /**
  * 整组折叠的把手不再是单独一行「过程」：
