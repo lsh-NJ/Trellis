@@ -1376,11 +1376,14 @@ class AppRuntime private constructor() {
             }
         selectPlan(planId)
         val rig = buildChatRig(llm, researchGateway)
+        // 把 planId 写进提示词：宿主不能替模型记住「这一轮排的是哪份计划」，
+        // 而 plan_week 不传 planId 时会落到计划页选中项上（这里刚 selectPlan(planId)），
+        // 显式写出来更稳——否则旧计划（已完成、status 仍是 active）可能被排到。
         val request = if (asSteward) {
-            "【代排】计划「$planTitle」这一周开始了。请用 plan_week 排本周：先读计划文档和上周完成情况，" +
+            "【代排】计划「$planTitle」（planId=$planId）这一周开始了。请用 plan_week(planId=\"$planId\") 排本周：先读计划文档和上周完成情况，" +
                 "排完用一句话说明本周重点。"
         } else {
-            "【周计划】这一周开始了。请用 plan_week 排本周：先读计划文档和上周完成情况，" +
+            "【周计划】计划「$planTitle」（planId=$planId）这一周开始了。请用 plan_week(planId=\"$planId\") 排本周：先读计划文档和上周完成情况，" +
                 "排完用一句话说明本周重点。"
         }
         val router = if (asSteward) {
@@ -2489,6 +2492,9 @@ class AppRuntime private constructor() {
                 clock = clock,
                 llm = llm,
                 onChanged = { refreshPlan() },
+                // 周自动排周轮次会先 selectPlan(planId)，AGENT 随后调 plan_week 时按选中计划排；
+                // 不传 planId 也落到用户正看着的那份计划上，而不是最早创建的那份。
+                selectedPlanId = { planFocusId },
             )
             val diagnosticsTools = DiagnosticsTools { diagnosticsReport() }
             // 计划域收成一读一写两个入口：旧的建/排/读/写工具仍作为内部实现被 op 调用，
@@ -4038,7 +4044,7 @@ class AppRuntime private constructor() {
             completedPlanIds = planAll.filter { planIsComplete(service, it.id) }.map { it.id }.toSet()
             // 先让计划自己往前滚（结算旧周 / 补下周承诺 / 铺天），再取待办与页面数据：
             // 否则今天新铺出来的节点要等下一次刷新才出现在待办板上。
-            val rhythmReports = advancePlanRhythm(service)
+            val rhythmReports = advancePlanRhythm(service, completedPlanIds)
             todoPlanNodes = collectTodoPlanNodes(service)
             todayDonePlanNodes = collectTodayDonePlanNodes(service)
             planCategories = planCategoryStore.load()
@@ -4141,6 +4147,13 @@ class AppRuntime private constructor() {
                 planReview = runCatching { service.review(planId, week) }.getOrNull()
                     ?.takeIf { review -> review.state == "ready" }
             } else {
+                // 选中的计划还没有任何一周（空壳：research_plan 刚建完、还没排周）：
+                // 周/天状态必须全部清空，否则页面会沿用上一份计划的天数据——
+                // 表现成「头部写 0 周、周一却还挂着 6 件」，点开又说「这一天还没有排内容」。
+                planDays = emptyList()
+                planSelectedWeek = null
+                planSelectedDay = null
+                planDayView = null
                 planReview = null
             }
             // 首页右栏的完成情况：大数字对「所有未结束计划」，本周数字对后端「当前周」。
@@ -4175,9 +4188,14 @@ class AppRuntime private constructor() {
      *
      * @return planId → 这次的推进结果（失败的为 null），页面挑当前聚焦的那个显示。
      */
-    private fun advancePlanRhythm(service: LearningPlanService): Map<String, RhythmResult> {
+    private fun advancePlanRhythm(
+        service: LearningPlanService,
+        completed: Set<String> = emptySet(),
+    ): Map<String, RhythmResult> {
         val reports = mutableMapOf<String, RhythmResult>()
-        planAll.filter { it.status != "ended" }.forEach { info ->
+        // 已完成的计划不再跑节奏（结算/补承诺/复盘都是给「还在推进」的计划准备的）：
+        // 学完的计划只需要被读，不需要宿主继续替它调度。
+        planAll.filter { it.status != "ended" && it.id !in completed }.forEach { info ->
             val command = CommandEnvelope(
                 commandId = "cmd_" + java.util.UUID.randomUUID().toString().replace("-", ""),
                 actor = Actor.SYSTEM,

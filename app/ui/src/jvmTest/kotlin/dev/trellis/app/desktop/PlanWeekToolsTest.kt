@@ -441,4 +441,61 @@ class PlanWeekToolsTest {
         assertEquals(3, result.placed)
     }
 
+    /**
+     * plan_week 要排「计划页选中 / 显式指定的那份」：以前一律取 activePlanId()（最早创建的计划），
+     * 新建的计划永远排不到；学完的旧计划（status 仍是 active）还会把新计划的周排到旧计划上。
+     */
+    @Test
+    fun planWeekTargetsTheSelectedOrExplicitPlanInsteadOfTheOldestOne() = runTest {
+        val h = newHarness()
+        val second = h.service.createShell(env(), "第二份计划", "另一条线")
+        assertTrue(second.ok, "建第二份计划失败：" + second.error?.message)
+        val secondId = second.value!!.planId
+
+        val tool = PlanWeekTools(
+            { h.service }, { h.docStore }, { 60 * 7 }, h.clock, h.llm, {},
+            selectedPlanId = { secondId },
+        ).all.single { it.name == "plan_week" }
+
+        // 不传 planId：落到 selectedPlanId() 上，而不是最早创建的 h.planId。
+        val bySelection = tool.call(buildJsonObject { put("week", thisWeek) })
+        assertFalse(bySelection.isError, bySelection.content)
+        assertTrue(
+            h.service.week(secondId, thisWeek).commitment.units.isNotEmpty(),
+            "要排选中的第二份计划：" + bySelection.content,
+        )
+        assertTrue(h.service.week(h.planId, thisWeek).commitment.units.isEmpty(), "不能排最早创建的那份")
+
+        // 显式传 planId：排到第一份。
+        val explicit = tool.call(buildJsonObject { put("week", thisWeek); put("planId", h.planId) })
+        assertFalse(explicit.isError, explicit.content)
+        assertTrue(h.service.week(h.planId, thisWeek).commitment.units.isNotEmpty(), explicit.content)
+
+        // 不存在的 planId：报错并列出可选计划（错误要能指导修改）。
+        val unknown = tool.call(buildJsonObject { put("planId", "pln_nope") })
+        assertTrue(unknown.isError)
+        assertTrue(unknown.content.contains(h.planId) && unknown.content.contains(secondId), unknown.content)
+    }
+
+    /** 一次可以排连续几周（不局限于本周）：weeks=2 时本周与下周都要有内容、周文档也各写一份。 */
+    @Test
+    fun planWeekCanScheduleSeveralConsecutiveWeeksAtOnce() = runTest {
+        val h = newHarness()
+        val tool = PlanWeekTools(
+            { h.service }, { h.docStore }, { 60 * 7 }, h.clock, h.llm, {},
+            selectedPlanId = { h.planId },
+        ).all.single { it.name == "plan_week" }
+
+        val result = tool.call(buildJsonObject { put("week", thisWeek); put("weeks", 2) })
+
+        assertFalse(result.isError, result.content)
+        val nextWeek = "2026-W46"
+        assertTrue(h.service.week(h.planId, thisWeek).commitment.units.isNotEmpty(), result.content)
+        assertTrue(
+            h.service.week(h.planId, nextWeek).commitment.units.isNotEmpty(),
+            "weeks=2 时下周也要排出来：" + result.content,
+        )
+        assertNotNull(weekDocAt(h, nextWeek), "下周也要写周文档")
+        assertTrue(result.content.contains(thisWeek) && result.content.contains(nextWeek), result.content)
+    }
 }

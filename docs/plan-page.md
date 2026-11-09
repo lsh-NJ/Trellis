@@ -402,13 +402,13 @@ note 含「已经排过了」、单元与 occurrence 数不增。
 现在：宿主不替 AGENT 决定行为，`research_plan` 只按模型传的参数做事：
 
 - 显式传 `dailyMinutes` 才写进节奏（`set_plan_daily_minutes`）；不传只给建议值，不写。
-- 传 `scheduleFirstWeek=true` 才在同一轮把本周排出来；没传时长就用建议值铺周（建议值仍不写节奏）。
-- 不传 / `false` 就只建壳、大纲、阶段、里程碑。
+- ~~传 `scheduleFirstWeek=true` 才在同一轮把本周排出来~~（已废弃，见 §22：2026-11-09 起默认就排本周，只有显式 `scheduleFirstWeek=false` 才留空壳）。
+- 当时不传 / `false` 就只建壳、大纲、阶段、里程碑（2026-11-09 起只有显式 `false` 才这样，见 §22）。
 - 回执只报事实（建了什么、排没排、每天投入是建议值还是已写入），去掉「必须 / 下一步」这类指令式文案。
 
 问不问时长、排不排本周全由 AGENT 判断，`<task:work>` 提示词同步改成中性描述。
 
-测试：`ResearchToolsTest` 默认路径断言第一周为空、不写周文档、回执不含「必须」/`ask_choices`；`explicitDailyMinutesAndScheduleFirstWeekWriteThePaceAndScheduleTheWeek` 钉住写节奏 + 同轮排周；`dailyMinutesAloneWritesThePaceWithoutSchedulingTheWeek` 与 `scheduleFirstWeekWithoutDailyMinutesUsesTheSuggestionButDoesNotWriteIt` 分别钉住两个参数互不牵连。
+测试（§22 之后的口径）：`ResearchToolsTest` 默认路径断言本周已排、周文档已写；`explicitDailyMinutesAndScheduleFirstWeekWriteThePaceAndScheduleTheWeek` 钉住写节奏 + 排周；`dailyMinutesAloneStillSchedulesThisWeekWithThatPace` 与 `scheduleFirstWeekWithoutDailyMinutesUsesTheSuggestionButDoesNotWriteIt` 分别钉住「只给时长也会排本周」「建议值不写节奏」；`scheduleFirstWeekFalseLeavesTheWeekEmpty` 钉住显式留空壳。
 
 ---
 
@@ -424,3 +424,32 @@ note 含「已经排过了」、单元与 occurrence 数不增。
 - **文案统一成「参考」**：计划设置弹窗、待安排合计（「参考每天 D 分钟，约 K 天」）、移动端「每天投入」「×7 只是参考投入」、`set_plan_pace` 回执与工具描述。
 - **只读事实保留**：逾期投影的 `remainingMinutes` 与管家上下文「本周还剩约 N 分钟可投入」仍是参考信息，不改语义。
 - **测试**：`PlanWeekToolsTest.itemsBeyondTheDailyReferenceAreStillScheduled`（85 > 参考 60 也全排）、`PlanToolsTest.aDeadlineStopsTheGlobalWeekTableAndLeavesTheRestInThePool`（30×7=210/周、两周 22 个、池 18）、`LearningPlanRhythmTest.theWeeklyPickIsCappedAtSevenUnits`（7 条上限不变）。
+
+---
+
+## 22 2026-11-09：空壳计划不再沿用上一份计划的天数据；`plan_week` 不限本周
+
+三条现场 bug（用户截图）与修法：
+
+1. **空壳计划显示上一份计划的「周一 6 件」**。`AppRuntime.refreshPlan()` 选周的 fallback 是
+   `planSelectedWeek ?: state.week ?: selectableWeeks.firstOrNull()`；空壳计划 `map.weeks` 为空 →
+   `week == null`，而 `else` 分支只清了 `planReview`，`planDays / planSelectedWeek / planSelectedDay / planDayView`
+   全部留着上一份计划的值——头部写「0 周」、天里还挂着别人的条目，点开又说「这一天还没有排内容」。
+   **修法**：`else` 分支把这些字段全部清空；回归测试 `PlanPageRuntimeTest.switchingToAShellPlanClearsThePreviousPlansDays`。
+2. **`plan_week` 排错计划**。它取 `plan.activePlanId()`，而后端实现是
+   `SELECT … WHERE p.status='active' … ORDER BY p.created_at LIMIT 1`（**最早**创建的 active 计划）；
+   「计划完成」是派生态（`isPlanComplete` 不改 status），旧的学完计划永远占着 activePlanId。
+   于是新建计划的排周会落到旧计划上，被「已完成只读」拒绝（截图②）；
+   周自动排周轮次里 `runWeeklyPlanRound` 已经 `selectPlan(planId)`，`plan_week` 却不看选中态（截图③）。
+   **修法**：`plan_week` 增加可选 `planId`；不传时默认用「计划页当前选中的计划」（`PlanWeekTools(selectedPlanId = { planFocusId })`），
+   最后才退回 `activePlanId()`；周自动轮的提示词里显式写 `plan_week(planId="pln_…")`。
+3. **已完成计划不再跑节奏**：`advancePlanRhythm` 跳过 `completedPlanIds`（结算/补承诺/复盘都只为还在推进的计划准备）；
+   自动排周名单原本就有 `!planIsComplete(...)` 过滤，保持。
+
+顺带把安排工具从「只能排本周」放开：
+
+- `plan_week` 的 `week` 可以指任何一周（本周 / 下周 / 某个 ISO 周），新增 `weeks=1..6` 一次排连续几周（逐周串行，前一周没排成就不再往后排）。
+- **建计划至少排本周**：`research_plan` 建完空壳默认就排本周（`scheduleFirstWeek` 默认 true，显式 false 才留空壳）；
+  `create_learning_plan` 本来就把全局周表铺到本周的天上。空壳只是排周失败时的短暂中间态，而且修好 1 之后不会再有假数据。
+- 回归：`PlanWeekToolsTest.planWeekTargetsTheSelectedOrExplicitPlanInsteadOfTheOldestOne`（选中 / 显式 planId / 不存在的 planId 报错列候选）、
+  `planWeekCanScheduleSeveralConsecutiveWeeksAtOnce`（weeks=2 两周都排、两份周文档）。
