@@ -256,8 +256,26 @@
   不会再被判成永远未完成。
 - **落地**：计划页把完成态的计划移进左侧「已完成」分组（可折叠、默认收起、带数量）；
   **用户侧不冻结**，仍可打开、查看、勾选/撤销、拖拽。不写 `process.status`，也不自动 `endPlan`。
-- **AGENT 侧只读**：`plan_week`、`write_plan_doc`、`sync_plan_week`、`plan_next_week`、`complete_plan_node`、
-  `move_plan_node`、`set_plan_pace` 对完成态计划一律拒绝（读工具不受影响）；每周自动排周计划也跳过。
-- **拓展 = 新开计划**：`create_learning_plan` / `research_plan` 新建一份（可带 `goalId` 挂到同一目标），
-  不在旧计划上追加阶段/单元/周次。
+- **AGENT 侧只读**：计划域只有 `read_plan` / `update_plan`；`update_plan` 的写 op 对完成态计划一律拒绝，
+  `read_plan` 不受影响；每周自动排周计划也跳过。
+- **拓展 = 新开计划**：`update_plan` 的 `insert plan`（`mode=units` 或 `research`）新建一份
+  （可带 `goalId` 挂到同一目标），不在旧计划上追加阶段/单元/周次。
 - `endPlan` 仍然存在，但只由用户/显式命令调用，完成态不会自动触发它。
+
+
+## 16 2026-11-09：计划总文档的「## 阶段」与资源；计划域收成一读一写
+
+- **总文档阶段**：`PlanDocStore` 现在解析 `## 阶段` 下的两种写法——新格式
+  `### 阶段 N · 名称（2026-W46 – 2026-W47，约 2 周）`（字段：聚焦 / 交付物 / 过关标准 / 资源），
+  以及旧格式 `- 阶段 1 · 名称（约 2 周）：聚焦`。产出 `PlanDocStage(name, weekStart?, weekEnd?, weeks?,
+  focus, deliverable, acceptance, resources)`，`stageForWeek(planId, week)` 按周区间找阶段。
+  资源行是 `- [名称](url) — 备注`，无链接也收标题。
+- **同源**：`update_plan` 的 `insert stages` / `update stages` 会同时写 `plan_stage` 和总文档
+  `## 阶段`；文档是给人看的副本，库是给排周/计划页用的权威。`research_plan` 的调研阶段表以后也走这条渲染。
+- **资源挂节点**：`schedule_week` 排完一周后，`attachStageResources` 用阶段资源标题和本周单元标题
+  做匹配（完全相同 > 包含 > 两个以上词重叠，最多 2 条），命中才 `setUnitResources(source=plan_doc)`，
+  不会把整个阶段硬塞给每个节点；也可以 `update units` 手动 `set.resources` 指定。
+- **一读一写**：AGENT 侧计划域只注册 `read_plan`（概要/阶段/某周节点/资源/总文档，include + week 参数）
+  和 `update_plan`（op 数组：insert/update/schedule_week/write_doc，match + set 四段式；
+  `confirmed=true` 才写，`dryRun` 只校验）。旧工具类保留，由 `PlanEditTools` 的 `legacy` map 内部复用；
+  不再单独出现在工具清单里。

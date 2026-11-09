@@ -248,6 +248,7 @@ ChatScreen ──> AppRuntime.sendChat()
 - `PlanDocTools`：`read_plan_doc`、`write_plan_doc`（`confirmed` 才覆盖）、`sync_plan_week`（把文档里该周条目追加进待安排池，确认式）；**已完成计划只读**：`write_plan_doc`/`sync_plan_week` 拒绝，`read_plan_doc` 照常
 - `MemoryTools`：`remember_memory`、`recall_memory`（跨会话目标/偏好/事件；`<how_to_remember>` 提示词块）
 - `PlanAdminTools`：`get_learning_plan`、`plan_next_week`、`complete_plan_node`、`move_plan_node`、`review_last_week`、`set_plan_pace`（写操作要 `confirmed=true`；系统节奏 `advanceRhythm` 不经过模型）；**已完成计划只读**：`plan_next_week`/`complete_plan_node`/`move_plan_node`/`set_plan_pace` 拒绝，`get_learning_plan`/`review_last_week` 照常
+- `PlanEditTools`（**2026-11-09 起 AGENT 侧计划域唯一入口**）：`read_plan` + `update_plan` 两个工具；`update_plan` 用 op 数组（insert plan/stages/units、update plan/stages/units、schedule_week、write_doc），match/set 四段式，`confirmed=true` 才写、`dryRun` 只校验；旧计划工具（`PlanTools`/`ResearchTools`/`PlanWeekTools`/`PlanDocTools`/`PlanAdminTools`）保留类，由 `PlanEditTools.legacy` 内部复用、不再单独注册。总文档 `## 阶段` 与 `plan_stage` 同源（`PlanDocStore` 解析 `### 阶段 …` 与旧 bullet 两种格式，带资源），`schedule_week` 后按标题把阶段资源挂到匹配节点（`setUnitResources(source=plan_doc)`，最多 2 条）
 - `BilibiliTools`：`search_bilibili`、`list_bilibili_parts`（WBI 签名在 `BilibiliClient.kt`，只读元数据；时长 `约 N 分钟` 直接当节点预估）
 - `TaskTools`：`add_tasks`（2–12 条，把分集/章节变成用户能勾的待办）
 - `DiagnosticsTools`：`get_diagnostics`（计划库/活动库状态与错误、JDK 模块自检、app.log 最近日志、LLM 是否配置；**工具报环境类错误时先查它**，别让用户自己修）。静态守则里有 `<when_a_tool_fails>` 钉住这条纪律。

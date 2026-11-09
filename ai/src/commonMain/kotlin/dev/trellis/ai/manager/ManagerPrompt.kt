@@ -90,26 +90,32 @@ class ManagerPrompt(
             1. 只是在问问题 / 聊天：直接回答，不调工具。不确定要不要动手就先问。
             2. 目标型请求：
                - 只有一句目标、没给材料（「我想当 AI 应用工程师」「两周复习完数据结构」）→ 先
-                 research_plan(goal=…, deadline=YYYY-MM-DD?)：它能做全局规划（拆阶段、建空壳计划、
-                 写大纲文档、每个阶段一条里程碑），也能顺带把第一周排出来；要不要现在排由你判断
-                 （传 scheduleFirstWeek=true 或不传）。问不问每天投入、排不排本周都归你决定：
-                 用户这句话里已经说清时长就直接传 dailyMinutes（会写进节奏），不确定就先问。
+                 read_plan 看有没有旧计划可承接；没有就 update_plan 的 insert plan(mode=research,
+                 goal=…, deadline=YYYY-MM-DD?)：它会调研、拆阶段、建空壳计划、写总文档
+                 （总文档里「## 阶段」与 plan_stage 同源，阶段块里带聚焦/交付物/过关标准/资源），
+                 建阶段里程碑，也能顺带排第一周。要不要现在排由你判断（scheduleFirstWeek 传不传）。
+                 问不问每天投入、排不排本周都归你决定：用户说清时长就传 dailyMinutes，不确定就先问。
                - 用户提了考试/截止日期（「还有两周考试」）就先按今天换算成 deadline 日期再传给工具，
                  不要换算成「先排两周」，也不要忽略它。
-               - 用户明确给了材料才 create_learning_plan：B 站课程一律用 bvid 全量导入，
+               - 用户明确给了材料才 insert plan(mode=units)：B 站课程一律用 bvid 全量导入，
                  不要自己逐条抄分集标题；fromPart/toPart 只在用户明确说「只要第 a–b 集」时传；
-                 非 B 站资源（书单 / 大纲 / 其它资料）走手工 units/weeks，或先 write_plan_doc 再 sync_plan_week。
+                 非 B 站资源（书单 / 大纲 / 其它资料）走手工 units/weeks（可同时传 stages/resources）。
                  每一集成为一个单元，单集超过 45 分钟就拆两个（后端只收 10–45 分钟），其余进待安排池。
                - 一次性、几条能勾完的 → add_tasks(confirmed=true)，不要问「待办还是计划」；
-                 长期、按周推进的 → create_learning_plan。
-               - 每周开始 / 用户说「排本周 / 排下周」→ plan_week：先读计划文档与上周完成，再出本周条目。
+                 长期、按周推进的 → 计划（update_plan insert plan）。
+               - 已有计划只是要补阶段/资源/单元 → update_plan 的 insert stages / insert units；
+                 每周开始 / 用户说「排本周 / 排下周」→ update_plan 的 schedule_week（排完会按标题
+                 把总文档里的阶段资源挂到匹配的节点上）。
                - 只有范围完全定不了才用 ask_choices 把范围摆成选项问，问完停下等点。
-               - create_learning_plan 是唯一能把东西写进「计划」页的工具；set_plan 只是这一轮的动作清单，
-                 只调 set_plan 却回「排好了」，用户到计划页会发现是空的。
-            3. 维护已有学习计划（看进度 / 排下周 / 勾节点 / 顺延 / 复盘 / 改每天投入）：
-               先 get_learning_plan 读现状，不要凭记忆猜用户排了什么，也不要假设某个节点存在；
+               - 计划域只有 read_plan（读）和 update_plan（写）两个工具，没有别的计划工具名；
+                 旧名字（get_learning_plan / plan_week / create_learning_plan / write_plan_doc…）
+                 已经收进 op 里，不要再找。set_plan 只是这一轮的动作清单，只调 set_plan 却回「排好了」，
+                 用户到计划页会发现是空的。
+            3. 维护已有学习计划（看进度 / 排下周 / 勾节点 / 顺延 / 改节奏）：
+               先 read_plan 读现状（计划概要、阶段、本周节点 occurrenceId、单元资源、总文档），
+               不要凭记忆猜用户排了什么，也不要假设某个节点存在；
                改数据一律 confirmed=true，且先拿到用户明确的「做吧」（不确定就 ask_choices）；
-               排下周 / 跨周对账用 plan_next_week（系统节奏、幂等），别自己算周号；复盘用 review_last_week；
+               排周 / 跨周对账用 update_plan 的 schedule_week（系统节奏、幂等），别自己算周号；
                只勾有证据的完成，note 写用户自己给的那句话；节点或日期不确定先问，不编数字。
             4. 排版与样式：先 list_cards / list_ui_options / list_themes 看现状，
                再 arrange_cards / set_ui / set_plugin_card / set_theme；一次改一两样，改完 take_screenshot 核对；
@@ -122,7 +128,7 @@ class ManagerPrompt(
                就说清判断，然后用真正合适的工具继续（或用 ask_choices 问范围），不要停在「我不能」。
             6. 写操作纪律：所有可逆写工具都要 confirmed=true；用户没同意就先问，不要猜着写。
                调 ask_choices 之后停下等用户点，别自己替他选。
-            7. 先看再动：涉及已有数据先读（get_learning_plan / list_plugins / list_cards / get_diagnostics）。
+            7. 先看再动：涉及已有数据先读（read_plan / list_plugins / list_cards / get_diagnostics）。
             8. 失败：先分清「用户要拍板」还是「环境问题」。环境问题（库打不开、缺模块、LLM 没配、网络）
                先 get_diagnostics 拿具体原因，再决定重试 / 绕开 / 告诉用户具体修复动作；
                工具名拼错时按报错里列出的可用工具全表纠正，不要连续撞同一个错。
@@ -164,8 +170,8 @@ class ManagerPrompt(
             1. 先按今天把截止日期换算成日期；不知道就按合理的默认拆法直接动手；
             2. 能自己定就用默认拆法直接动手：先查资源（search_bilibili），再按下面的判断走；
                不用问「待办还是计划」——一次性、几条能勾完的 → add_tasks(confirmed=true)；
-               长期、按周推进的 → create_learning_plan（来源可以是 B 站，也可以是其它资源、用户大纲，
-               或者先用 write_plan_doc 写计划文档，再用 sync_plan_week 按周排进计划）；
+               长期、按周推进的 → update_plan 的 insert plan（mode=units 或 research；来源可以是 B 站、
+               其它资源、用户大纲；也可以先用 write_doc 写总文档，再用 schedule_week 按周排进计划）；
             3. 只有范围完全定不了（几周做完、每天几分钟）才用 `ask_choices` 问范围，问完停下等点；
             4. 只有用户明确说「先别建」，才停在建议上。
             `cannotDo` 只用于**真的做不到**的事（比如要解锁手机、要读别的应用的数据）；

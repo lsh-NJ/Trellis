@@ -190,6 +190,95 @@ class PlanDocStoreTest {
     }
 
     @Test
+    fun parseReadsStagesWithWeekRangesAndResources() {
+        val doc = store.parse(
+            """
+            # 目标与验收
+            - 目标A：做一个能讲的项目
+            ## 阶段
+            ### 阶段 1 · 基础语法（2026-W45 – 2026-W46，约 2 周）
+            - 聚焦：类型系统与函数式写法
+            - 交付物：一个类型安全的 CLI 小工具
+            - 过关标准：能讲清每个类型别名的取舍
+            - 资源：
+              - [TypeScript 官方手册](https://www.typescriptlang.org/docs/) — 前 4 章
+              - [类型体操](https://github.com/type-challenges/type-challenges)
+            ### 阶段 2 · 工程化（2026-W47 – 2026-W48）
+            - 聚焦：构建与测试
+            ## 2026-W45
+            - 条目一
+            """.trimIndent(),
+        )
+
+        assertEquals(listOf("目标A：做一个能讲的项目"), doc.targets)
+        assertEquals(listOf("2026-W45"), doc.weeks.keys.toList())
+        assertEquals(2, doc.stages.size)
+        val first = doc.stages.first()
+        assertEquals("基础语法", first.name)
+        assertEquals("2026-W45", first.weekStart)
+        assertEquals("2026-W46", first.weekEnd)
+        assertEquals(2, first.weeks)
+        assertEquals("类型系统与函数式写法", first.focus)
+        assertEquals("一个类型安全的 CLI 小工具", first.deliverable)
+        assertEquals("能讲清每个类型别名的取舍", first.acceptance)
+        assertEquals(
+            listOf(
+                DocResource("TypeScript 官方手册", "https://www.typescriptlang.org/docs/", "前 4 章"),
+                DocResource("类型体操", "https://github.com/type-challenges/type-challenges", ""),
+            ),
+            first.resources,
+        )
+        assertEquals("工程化", doc.stages[1].name)
+        assertEquals("2026-W47", doc.stages[1].weekStart)
+        assertEquals(emptyList(), doc.stages[1].resources)
+    }
+
+    @Test
+    fun parseReadsTheLegacyBulletStageFormat() {
+        val doc = store.parse(
+            """
+            ## 阶段
+            - 阶段 1 · 基础语法（约 2 周）：类型系统
+              - 交付物：一个类型安全的 CLI 小工具
+              - 过关标准：能讲清取舍
+              - 资源：[官方手册](https://www.typescriptlang.org/docs/) — 第 1 章
+            """.trimIndent(),
+        )
+
+        assertEquals(1, doc.stages.size)
+        val stage = doc.stages.single()
+        assertEquals("基础语法", stage.name)
+        assertEquals(2, stage.weeks)
+        assertNull(stage.weekStart)
+        assertEquals("类型系统", stage.focus)
+        assertEquals("一个类型安全的 CLI 小工具", stage.deliverable)
+        assertEquals("能讲清取舍", stage.acceptance)
+        assertEquals(
+            listOf(DocResource("官方手册", "https://www.typescriptlang.org/docs/", "第 1 章")),
+            stage.resources,
+        )
+    }
+
+    @Test
+    fun stageForWeekMatchesTheWeekRangeAndSkipsStagesWithoutOne() {
+        store.save(
+            "pln_stage_week",
+            """
+            ## 阶段
+            ### 阶段 1 · 基础语法（2026-W45 – 2026-W46）
+            - 聚焦：类型
+            ### 阶段 2 · 工程化（约 2 周）
+            - 聚焦：构建
+            """.trimIndent(),
+        )
+
+        assertEquals("基础语法", store.stageForWeek("pln_stage_week", "2026-W45")?.name)
+        assertEquals("基础语法", store.stageForWeek("pln_stage_week", "2026-W46")?.name)
+        assertNull(store.stageForWeek("pln_stage_week", "2026-W47"))
+        assertNull(store.stageForWeek("pln_missing", "2026-W45"))
+    }
+
+    @Test
     fun saveFailsWithAPlainMessageWhenTheDirectoryCannotBeCreated() {
         val blocked = File(home, "blocked")
         blocked.writeText("这里是个文件，不是目录")

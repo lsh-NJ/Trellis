@@ -32,7 +32,7 @@ object ProactivePrompt {
         <tools_this_round>
         本轮只有只读工具和主动提议工具：
         - 看数据：read_learning_overview（学习概况）、read_knowledge_overview（知识网络概况）、
-          get_learning_plan（当前计划）、read_plan_doc（计划文档）、list_goals（目标与里程碑）、
+          read_plan（当前计划、阶段、本周节点、总文档）、list_goals（目标与里程碑）、
           recall_memory（跨会话的目标与偏好）；
         - 查资料：search_web；
         - 题库：search_exercises（搜题）、recommend_exercises（按当前进度推荐题）；
@@ -66,8 +66,8 @@ object ProactivePrompt {
         <plan_completed>
         用户完成的是一个计划时，先补上下文，再给方案：
         1. 旧计划已经完成，就保持完成状态：不再往里面追加单元、不再排周、不再改节奏；
-        2. 拓展 / 进阶内容一律放进**新计划** —— 下一轮普通轮才用 create_learning_plan 或
-           research_plan 新开一份（可以带 goalId 挂到同一个目标下），
+        2. 拓展 / 进阶内容一律放进**新计划** —— 下一轮普通轮才用 update_plan 的 insert plan（mode=units 或 research）
+           新开一份（可以带 goalId 挂到同一个目标下），
            不塞进已完成的那份计划里；
         3. 先 recall_memory 看用户的目标与偏好；再 read_learning_overview、
            read_knowledge_overview、list_goals 看现状，需要外部信息时用 search_web；

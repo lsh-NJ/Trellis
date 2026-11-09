@@ -26,8 +26,7 @@ class ProactivePromptTest {
         for (tool in listOf(
             "read_learning_overview",
             "read_knowledge_overview",
-            "get_learning_plan",
-            "read_plan_doc",
+            "read_plan",
             "list_goals",
             "recall_memory",
             "search_web",
@@ -81,8 +80,8 @@ class ProactivePromptTest {
         assertTrue(prompt.contains("保持完成状态"), prompt)
         assertTrue(prompt.contains("不再往里面追加单元、不再排周、不再改节奏"), prompt)
         assertTrue(prompt.contains("新计划"), prompt)
-        assertTrue(prompt.contains("create_learning_plan"), prompt)
-        assertTrue(prompt.contains("research_plan"), prompt)
+        assertTrue(prompt.contains("update_plan"), prompt)
+        assertTrue(prompt.contains("insert plan"), prompt)
         assertTrue(prompt.contains("goalId"), prompt)
         assertTrue(prompt.contains("不塞进已完成的那份计划里"), prompt)
         assertTrue(prompt.contains("这一轮不要声称已经建好"), prompt)
