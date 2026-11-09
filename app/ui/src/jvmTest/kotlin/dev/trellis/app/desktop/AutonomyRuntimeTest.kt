@@ -189,7 +189,7 @@ class AutonomyRuntimeTest {
             runtime.llmOverride = next
             runtime.sendChat("按这个走")
             val prompt = next.captured.joinToString("\n") { it.content }
-            assertTrue(prompt.contains("create_learning_plan"), "普通轮应当拿回全量工具")
+            assertTrue(prompt.contains("update_plan") && prompt.contains("read_plan"), "普通轮应当拿回全量计划工具")
             assertFalse(prompt.contains("自主检查触发"), "隐藏请求不能漏进下一轮上下文")
         } finally {
             runtime.shutdown()

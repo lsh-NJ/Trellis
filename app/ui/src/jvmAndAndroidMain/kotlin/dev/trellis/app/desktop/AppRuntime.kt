@@ -2491,6 +2491,19 @@ class AppRuntime private constructor() {
                 onChanged = { refreshPlan() },
             )
             val diagnosticsTools = DiagnosticsTools { diagnosticsReport() }
+            // 计划域收成一读一写两个入口：旧的建/排/读/写工具仍作为内部实现被 op 调用，
+            // 但不再单独注册给模型 —— 模型只需要知道「读计划」和「改计划」两件事。
+            val legacyPlanTools = (planTools.all + planAdminTools.all + planDocTools.all +
+                researchTools.all + planWeekTools.all).associateBy { it.name }
+            val planEditTools = PlanEditTools(
+                service = { runCatching { learningPlan() }.getOrNull() },
+                docStore = { if (::planDocStore.isInitialized) planDocStore else null },
+                clock = clock,
+                selectedPlanId = { planFocusId },
+                legacy = legacyPlanTools,
+                onChanged = { refreshPlan() },
+                dbError = { planDbError },
+            )
             // 跨会话记忆也是手：用户说出长期目标/偏好时写进管家日志，要回忆过去时再检索。
             // 和管家仪式共用同一份 append-only 记忆 —— 目标不该只有晨/夜仪式才有机会落盘。
             val memoryTools = MemoryTools(stewardStore, clock)
@@ -2522,8 +2535,8 @@ class AppRuntime private constructor() {
                 screenTools.guidance
             }
             val allTools = tools.all + screenToolList + layoutTools.all + styleTools.all +
-                workflowTools.all + bilibiliTools.all + taskTools.all + planTools.all +
-                planAdminTools.all + planDocTools.all + researchTools.all + planWeekTools.all +
+                workflowTools.all + bilibiliTools.all + taskTools.all +
+                planEditTools.all +
                 diagnosticsTools.all + memoryTools.all +
                 goalTools.all
             val memorySection = memoryBlock()
@@ -2534,8 +2547,7 @@ class AppRuntime private constructor() {
                 // 自主检查轮只读：白名单之外的工具（建计划/排周/勾节点/挪节点/改节奏/写文档…）
                 // 一律不进这一轮，程序层保证「只建议、不直接改」，不靠提示词自觉。
                 val readOnlyNames = setOf(
-                    "get_learning_plan",
-                    "read_plan_doc",
+                    "read_plan",
                     "list_goals",
                     "recall_memory",
                     "ask_choices",
@@ -2555,9 +2567,8 @@ class AppRuntime private constructor() {
             val guidance = tools.guidance + "\n\n" + screenGuidance +
                 "\n\n" + layoutTools.guidance + "\n\n" + styleTools.guidance +
                 "\n\n" + workflowTools.guidance + "\n\n" + bilibiliTools.guidance +
-                "\n\n" + taskTools.guidance + "\n\n" + researchTools.guidance + "\n\n" + planWeekTools.guidance +
-                "\n\n" + planTools.guidance +
-                "\n\n" + planAdminTools.guidance + "\n\n" + planDocTools.guidance +
+                "\n\n" + taskTools.guidance +
+                "\n\n" + planEditTools.guidance +
                 "\n\n" + diagnosticsTools.guidance + "\n\n" + memoryTools.guidance +
                 "\n\n" + goalTools.guidance + "\n\n" + expandGuidance
             // 跨会话记忆块只随记忆内容变化，接在 guidance 最末尾：两条路径（普通 / 管家）

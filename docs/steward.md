@@ -207,7 +207,7 @@
 ### 只读 + 只提议（这一轮的工具边界）
 
 - 这一轮工具集**只含只读工具 + 提议/收尾工具**：
-  `read_learning_overview`、`read_knowledge_overview`、`get_learning_plan`、`read_plan_doc`、
+  `read_learning_overview`、`read_knowledge_overview`、`read_plan`、
   `list_goals`、`recall_memory`、`search_web`、`search_exercises`、`recommend_exercises`，
   以及 `propose_practice`、`ask_choices`、`rest`。
 - **写工具本轮不可用**：建计划、调研建计划、排周、改/勾/挪节点、改节奏、建/改目标与里程碑、写计划文档、
@@ -242,11 +242,11 @@
   不改 `process.status`，也**不自动 `endPlan`**。
 - **计划页**：完成态的计划从进行中/分类列表移到左侧「已完成」分组（可折叠、默认收起、标题带数量）。
   **用户侧不冻结**：仍可打开、查看、勾选/撤销、拖拽。
-- **AGENT 侧只读**：`plan_week`、`write_plan_doc`、`sync_plan_week`、`plan_next_week`、`complete_plan_node`、
-  `move_plan_node`、`set_plan_pace` 对已完成计划一律拒绝，提示「已完成，拓展请新开一份」；
-  `get_learning_plan`、`read_plan_doc`、`review_last_week` 等只读工具照常。
+- **AGENT 侧只读**：计划域现在只有 `read_plan` / `update_plan` 两个工具；`update_plan` 里的写 op
+  （insert plan/stages/units、update plan/stages/units、schedule_week、write_doc）对已完成计划一律拒绝，
+  提示「已完成，拓展请新开一份」；`read_plan` 照常。
 - **每周自动排周计划跳过已完成计划**（同一完成态判定）。
-- **拓展 = 新开一份计划**：用 `create_learning_plan` / `research_plan` 新建（可带 `goalId` 挂到同一目标），
+- **拓展 = 新开一份计划**：用 `update_plan` 的 `insert plan`（`mode=units` 或 `research`）新建（可带 `goalId` 挂到同一目标），
   新内容进新计划；不在旧计划上追加阶段/单元/周次。自主轮里也只给「新计划」建议。
 
 ### 与既有机制的边界（本轮都不改）
