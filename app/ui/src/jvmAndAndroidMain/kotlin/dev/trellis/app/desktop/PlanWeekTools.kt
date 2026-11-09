@@ -39,16 +39,25 @@ class PlanWeekTools(
     private val clock: TrellisClock = SystemTrellisClock(),
     private val llm: LlmClient,
     private val onChanged: () -> Unit = {},
+    /**
+     * 计划页现在选中/正在看的那份计划。
+     *
+     * 没传 planId 时用它兜底：周自动排周轮次会先 selectPlan(planId) 再让 AGENT 调 plan_week，
+     * 这里必须跟着选中态走；以前一律取 activePlanId()（最早创建的 active 计划），
+     * 新建的计划永远排不到，还会被已经完成、但 status 仍是 active 的旧计划挡下来。
+     */
+    private val selectedPlanId: () -> String? = { null },
 ) {
 
     val guidance: String = listOf(
         "<how_to_plan_week>",
-        "1. 周计划：用户说「排本周」「排下周」「这周学什么」，或每周开始要排计划时，先调 `plan_week`（可带 week=YYYY-Www / dailyMinutes）。",
+        "1. 周计划：用户说「排本周」「排下周」「这周学什么」，或每周开始要排计划时，先调 `plan_week`（可带 week=YYYY-Www / weeks=N / planId / dailyMinutes）。**不限于本周**：week 可以指任何一周（本周、下周、某个月的某一周）；想一次把连续几周都排出来就传 weeks=2..6。默认排计划页当前选中的那份计划，要排别的计划就显式传 planId。",
         "2. 它读计划文档与上周完成情况，产出这一周的具体条目（学习/实践/复习 + 分钟），宿主**先写本周文档、再**把条目追加成单元、铺到每天；两步都会在回执里说清（周文档已写 / 已排 N 条）。每天投入只是参考：宿主会把条目按天尽量摊开，不会因为超出参考分钟数而漏排。",
         "3. 先读再排：如果计划文档里没有这一阶段的内容，先用 read_plan_doc 看清楚，必要时用 write_plan_doc 补；不要凭空编。",
         "4. 计划里已经有这一周的条目时，`plan_week` 默认直接返回「已经排过了」；确认要重排就传 replan=true（去重逻辑会跳过重复、只补空位；时间只做参考，不会漏排）。要不要重排由你判断。",
         "5. 排完跟用户说清「这周重点 + 每天大概多久 + 有没有实践」，不要只报数字。",
         "6. 已完成的计划（所有阶段都做完、待安排池也空了）不能再 plan_week，宿主会直接拒绝：那份计划保持完成状态、不再追加内容；要拓展就新开一份计划（create_learning_plan / research_plan，可带 goalId 挂到同一目标）。",
+        "7. 刚建好的计划至少要把本周排出来：create_learning_plan 会把全局周表铺到本周的天上，research_plan 建完空壳后也会自己排本周（成功与否都在回执里写清）；用户说「先排一周」而你发现计划还没有本周内容时，直接调 plan_week。",
         "</how_to_plan_week>",
     ).joinToString("\n")
 
@@ -58,25 +67,48 @@ class PlanWeekTools(
         override val name: String = "plan_week"
 
         override val description: String =
-            "排某一周的具体计划：读大纲与上周完成情况，产出本周条目（学习/实践/复习），" +
-                "**先把本周文档写进计划文档，再**把条目追加成单元、按每天参考分钟数尽量摊开到每天；" +
-                "时间只做参考，不会因为超出参考而少排。这一周已经排过时默认直接拒绝；要重排就传 replan=true。"
+            "排某一周（不限于本周）的具体计划：读大纲与上周完成情况，产出这一周条目（学习/实践/复习），" +
+                "**先把这一周文档写进计划文档，再**把条目追加成单元、按每天参考分钟数尽量摊开到每天；" +
+                "时间只做参考，不会因为超出参考而少排。一次可以排连续几周（weeks=N）。" +
+                "默认排计划页当前选中的计划（可显式传 planId）。这一周已经排过时默认直接拒绝；要重排就传 replan=true。"
 
         override val parameters: String =
-            "week：可选，ISO 周（如 2026-W45）；省略=本周；" +
+            "week：可选，ISO 周（如 2026-W45），可指本周 / 下周 / 任何一周；省略=本周；" +
+                "weeks：可选，从 week 起连续排几周（1–6，默认 1）；" +
+                "planId：可选，要排哪份计划（如 pln_xxx）；省略=计划页当前选中的计划；" +
                 "dailyMinutes：可选，这一周每天大概投入多少分钟（30–240）；省略=设置里的每天预计投入或 90；" +
                 "replan：可选，true 表示这一周已经排过也继续重排（默认 false：已排过直接返回「已经排过了」；重排会去重、只补空位）。要不要重排由你判断。"
 
         override suspend fun call(arguments: JsonObject): ToolResult {
             val plan = service() ?: return ToolResult("计划库打不开，没排成。", isError = true)
-            val planId = plan.activePlanId() ?: return ToolResult(
-                "现在还没有进行中的计划。先用 research_plan 或 create_learning_plan 建一份。",
-                isError = true,
-            )
+            val plans = runCatching { plan.plans() }.getOrElse {
+                return ToolResult("计划列表读不出来：" + (it.message ?: "未知原因"), isError = true)
+            }
+            fun planChoices(): String = plans.joinToString("、") { p -> p.id + "（" + p.title + "）" }
+                .ifBlank { "（还没有计划）" }
+            val explicitPlanId = arguments["planId"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+            val planId = when {
+                explicitPlanId != null -> explicitPlanId.takeIf { id -> plans.any { it.id == id } }
+                    ?: return ToolResult(
+                        "没有 id 为「" + explicitPlanId + "」的计划。当前计划：" + planChoices(),
+                        isError = true,
+                    )
+                else -> selectedPlanId()?.takeIf { id -> plans.any { it.id == id } }
+                    ?: plan.activePlanId()
+                    ?: return ToolResult(
+                        "现在还没有进行中的计划。先用 research_plan 或 create_learning_plan 建一份。当前计划：" + planChoices(),
+                        isError = true,
+                    )
+            }
             // 已完成的计划对 AGENT 只读：在调模型、落文档、追加单元之前就挡住。
             completedPlanGuard(plan, planId)?.let { return it }
             val week = arguments["week"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
                 ?: isoWeekOf(clock.today())
+            val firstWeekStart = isoWeekStart(week) ?: return ToolResult(
+                "week 要写 ISO 周号，比如 " + isoWeekOf(clock.today()) + "（收到的是「" + week + "」）。",
+                isError = true,
+            )
+            val weekCount = (arguments["weeks"]?.jsonPrimitive?.intOrNull ?: 1).coerceIn(1, 6)
             // 每天投入只有一个真相源：计划自己的 process.daily 优先（用户在计划设置/choice bar 里选的），
             // 没设过才退回全局 study.json 的每日预计投入。以前直接读 studyPrefs（固定 60），
             // 用户选了 120 分钟也会被排成 60，页面上却写「按每天 120 分钟铺开」。
@@ -94,33 +126,51 @@ class PlanWeekTools(
                 else -> false
             }
 
-            val result = planOneWeek(
-                plan = plan,
-                planDocStore = planDocStore(),
-                llm = llm,
-                clock = clock,
-                planId = planId,
-                week = week,
-                dailyMinutes = daily,
-                replan = replan,
-            )
-            if (result.docWritten || result.appended) onChanged()
-            result.error?.let { return ToolResult(it, isError = true) }
+            val results = mutableListOf<WeekPlanResult>()
+            for (index in 0 until weekCount) {
+                val targetWeek = isoWeekOf(firstWeekStart.plusWeeks(index.toLong()))
+                val result = planOneWeek(
+                    plan = plan,
+                    planDocStore = planDocStore(),
+                    llm = llm,
+                    clock = clock,
+                    planId = planId,
+                    week = targetWeek,
+                    dailyMinutes = daily,
+                    replan = replan,
+                )
+                results += result
+                if (result.docWritten || result.appended) onChanged()
+                // 这一周没排成就不再往后排：后面的周建立在前面的进度上，硬排只会排歪。
+                if (result.error != null) break
+            }
+            results.firstOrNull { it.error != null }?.let { return ToolResult(it.error!!, isError = true) }
 
-            val items = result.items
             // 没有新条目（已经排过 / 全是重复）时别回「排好了：0 条」这种自相矛盾的句子。
-            if (items.isEmpty() && result.placed == 0) {
-                return ToolResult(result.week + " " + result.note.ifBlank { "这一周没有需要新排的条目。" })
+            if (results.all { it.items.isEmpty() && it.placed == 0 }) {
+                return ToolResult(
+                    results.joinToString("；") { result ->
+                        result.week + " " + result.note.ifBlank { "这一周没有需要新排的条目。" }
+                    },
+                )
             }
             return ToolResult(
                 buildString {
-                    append(result.week).append(" 排好了：").append(result.placed).append(" 条，按每天 ").append(daily).append(" 分钟铺开")
-                    append("（学习 ").append(items.count { it.kind == "study" })
-                    append(" · 实践 ").append(items.count { it.kind == "practice" })
-                    append(" · 复习 ").append(items.count { it.kind == "review" }).append("）。")
-                    if (result.docWritten) append("本周文档也写好了（计划文档里能看到每天的安排）。")
-                    if (result.note.isNotBlank()) append(result.note)
-                },
+                    results.forEach { result ->
+                        val items = result.items
+                        if (items.isEmpty() && result.placed == 0) {
+                            append(result.week).append(" ").append(result.note.ifBlank { "这一周没有需要新排的条目。" }).append("；")
+                            return@forEach
+                        }
+                        append(result.week).append(" 排好了：").append(result.placed).append(" 条，按每天 ").append(daily).append(" 分钟铺开")
+                        append("（学习 ").append(items.count { it.kind == "study" })
+                        append(" · 实践 ").append(items.count { it.kind == "practice" })
+                        append(" · 复习 ").append(items.count { it.kind == "review" }).append("）。")
+                        if (result.docWritten) append("本周文档也写好了（计划文档里能看到每天的安排）。")
+                        if (result.note.isNotBlank()) append(result.note)
+                        if (results.size > 1) append("；")
+                    }
+                }.trimEnd('；'),
             )
         }
     }

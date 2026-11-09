@@ -203,11 +203,11 @@ class ResearchToolsTest {
         assertTrue(doc.contains("# 目标与验收"), doc)
         assertTrue(doc.contains("基础与工具"), doc)
 
-        // 模型没要求排本周：只建壳，节奏和本周安排都留给 AGENT 下一轮自己决定。
+        // 建完计划默认就把本周排到天（2026-11-09 用户定的：创建计划至少安排本周的内容）。
         val week = harness.service.week(planId, thisWeek)
-        assertTrue(week.commitment.units.isEmpty(), "没传 scheduleFirstWeek 时不该排第一周：" + week.commitment.summary)
-        assertTrue(week.days.none { it.items.isNotEmpty() }, "没传 scheduleFirstWeek 时不该铺到天")
-        assertNull(harness.docStore.readWeek(planId, thisWeek), "没传 scheduleFirstWeek 时不该写周文档")
+        assertTrue(week.commitment.units.isNotEmpty(), "建完计划本周要有内容：" + week.commitment.summary)
+        assertTrue(week.days.any { it.items.isNotEmpty() }, "建完计划本周要铺到天")
+        assertNotNull(harness.docStore.readWeek(planId, thisWeek), "建完计划要写本周文档")
         assertNull(harness.service.planState(planId).dailyMinutes, "模型没传 dailyMinutes 时不写节奏")
         // 回执只报事实：不指挥模型下一步做什么（「必须」这种指令式文案不能出现）。
         assertFalse(result.content.contains("必须"), result.content)
@@ -243,18 +243,18 @@ class ResearchToolsTest {
     }
 
     @Test
-    fun dailyMinutesAloneWritesThePaceWithoutSchedulingTheWeek() = runTest {
+    fun dailyMinutesAloneStillSchedulesThisWeekWithThatPace() = runTest {
         val harness = harness(shellJson())
         val result = call(harness, dailyMinutes = 120)
         assertFalse(result.isError, result.content)
         val planId = assertNotNull(harness.service.activePlanId())
 
-        // 只说了时长：写进节奏，本周排不排仍由模型决定（这次没要求排）。
+        // 说了时长：写进节奏，并且默认就把本周排出来（建计划至少要有本周内容）。
         assertEquals(120, harness.service.planState(planId).dailyMinutes)
-        assertTrue(harness.service.week(planId, thisWeek).commitment.units.isEmpty())
-        assertNull(harness.docStore.readWeek(planId, thisWeek))
+        assertTrue(harness.service.week(planId, thisWeek).commitment.units.isNotEmpty())
+        assertNotNull(harness.docStore.readWeek(planId, thisWeek))
         assertTrue(result.content.contains("每天投入已按你说的 120 分钟写进节奏"), result.content)
-        assertTrue(result.content.contains("这次没有排"), result.content)
+        assertTrue(result.content.contains("第一周（" + thisWeek + "）排好了"), result.content)
     }
 
     @Test
@@ -282,7 +282,7 @@ class ResearchToolsTest {
 
         assertTrue(harness.service.week(planId, thisWeek).commitment.units.isEmpty())
         assertNull(harness.docStore.readWeek(planId, thisWeek))
-        assertTrue(result.content.contains("这次没有排"), result.content)
+        assertTrue(result.content.contains("先没排"), result.content)
     }
 
     @Test

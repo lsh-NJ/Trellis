@@ -123,6 +123,27 @@ class PlanPageRuntimeTest {
             harness.runtime.shutdown()
         }
     }
+
+    /**
+     * 切到「还没有任何一周」的空壳计划：上一份计划的周/天状态必须清掉。
+     * 现场 bug：头部写「0 周」，周一却还挂着上一份计划的「6 件」，点开又说「这一天还没有排内容」。
+     */
+    @Test
+    fun switchingToAShellPlanClearsThePreviousPlansDays() = runTest {
+        val monday = LocalDate.now().with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+        val h = harness(tempHome(), monday)
+        h.runtime.selectPlan(h.planId)
+        assertTrue(h.runtime.planDays.isNotEmpty(), "预置计划本周有内容，先让页面有残留状态")
+
+        val shell = h.store.createShell(env(), "空壳计划", "只有目标和大纲").unwrap()
+        h.runtime.refreshPlan(focus = shell.planId)
+
+        assertEquals(shell.planId, h.runtime.planFocusId)
+        assertTrue(h.runtime.planDays.isEmpty(), "空壳计划不该沿用上一份计划的天数据")
+        assertEquals(null, h.runtime.planSelectedWeek)
+        assertEquals(null, h.runtime.planSelectedDay)
+        assertEquals(null, h.runtime.planDayView)
+    }
 }
 
 /**
