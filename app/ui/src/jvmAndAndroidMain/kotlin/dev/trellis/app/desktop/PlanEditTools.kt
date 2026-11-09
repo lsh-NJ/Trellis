@@ -10,9 +10,11 @@ import dev.trellis.domain.plan.ResourceDraft
 import dev.trellis.domain.plan.StageDraft
 import dev.trellis.domain.plan.UnitDraft
 import dev.trellis.domain.plan.WeekDayItem
+import dev.trellis.domain.plan.WeekView
 import dev.trellis.feature.learning.DocResource
 import dev.trellis.feature.learning.PlanDocStage
 import dev.trellis.feature.learning.PlanDocStore
+import java.time.LocalDate
 import java.util.UUID
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -57,9 +59,15 @@ internal class PlanEditTools(
         "   不确定就先 ask_choices。没 confirmed 时工具会拒绝，并告诉你去问用户。",
         "4. op 是「四段式」：动词（insert/update/delete/schedule_week）+ 目标（plan/stages/units）+",
         "   match（按标题或 id 定位）+ set（要改的字段）。一次可以给多个 op，按顺序执行。",
-        "5. 资源按节点挂：阶段资源写在总文档阶段块里，schedule_week 排完会按标题把阶段资源就近挂到单元；",
-        "   也可以 update units set {resources:[{title,url}]} 手动指定。",
+        "5. 资源优先（项目聚合资源）：每个阶段/节点尽量带资源——课内学习（课程/考试/课本）每阶段至少 1 条，",
+        "   实践类（设计/项目）也给参考资料；优先整门课/分集视频，其次教材、官方文档。资源写在总文档阶段块里，",
+        "   schedule_week 排完会按标题就近挂到单元；也可以 update units set {resources:[{title,url}]} 手动指定。",
+        "   找不到就留空并说明缺什么，**不要编造链接**。",
         "6. 总文档的 `## 阶段` 与计划的 plan_stage 同源：用 update_plan 改阶段会同时改库和文档。",
+        "7. 早间重排：先 read_plan（include 带 overdue）看逾期与本周剩余容量，再用 update_plan 的",
+        "   {op:\"rearrange\", extraMinutes, dryRun:true} 预览「逾期插到最前、今天原有整块后移、",
+        "   排不下自然溢出下周」的方案；可调 extraMinutes 重算，应用后可再追加",
+        "   update units match.occurrenceId set.day 微调个别项。rearrange 会重写受影响周的周文档与总文档「## 进度」。",
         "</how_to_edit_plan>",
     ).joinToString("\n")
 
@@ -71,11 +79,12 @@ internal class PlanEditTools(
         override val name: String = "read_plan"
         override val description: String =
             "读一份学习计划：概要（状态、每天投入、待安排）、阶段、某一周的节点（带 occurrenceId）、" +
-                "单元资源、以及总文档。所有「计划现在是什么样」的问题都先读它；不要凭记忆猜。"
+                "单元资源、逾期/欠账、以及总文档。所有「计划现在是什么样」的问题都先读它；不要凭记忆猜。"
         override val parameters: String = """
             planId: 可选，不传就用当前选中的计划
-            include: 可选，要读的块：summary / stages / week / resources / doc（默认 summary+stages+doc）
+            include: 可选，要读的块：summary / stages / week / resources / doc / overdue（默认 summary+stages+doc）
             week: 可选，ISO 周（如 2026-W46）；传了才读那一周
+            rearrangeExtraMinutes: 可选，0-240；传了就输出「今天多投这些分钟」的重排预览（不改数据）
         """.trimIndent()
 
         override suspend fun call(arguments: JsonObject): ToolResult = runCatching {
@@ -153,6 +162,11 @@ internal class PlanEditTools(
                         }
                     }
                 }
+                if ("overdue" in include || arguments.int("rearrangeExtraMinutes") != null) {
+                    appendLine()
+                    appendLine("逾期与重排：")
+                    append(buildOverdueText(svc, planId, arguments.int("rearrangeExtraMinutes")))
+                }
                 if ("doc" in include) {
                     val doc = docStore()?.read(planId)
                     appendLine()
@@ -184,7 +198,9 @@ internal class PlanEditTools(
               {"op":"update","target":"plan","set":{"dailyMinutes":90}}
               {"op":"update","target":"stages","match":{"name":"..."},"set":{"name","weekStart","weekEnd","focus"}}
               {"op":"update","target":"units","match":{"title":"..."},"week":"可选","set":{"day":"2026-11-09","status":"done","resources":[{"title","url","kind","locator"}]}}
+              {"op":"update","target":"units","match":{"occurrenceId":"occ_..."},"set":{"day":"2026-11-11"}}
               {"op":"schedule_week","week":"2026-W46","dailyMinutes":90,"replan":false}
+              {"op":"rearrange","extraMinutes":30,"fromDay":"2026-11-10"}  // 逾期插最前、今天原有整块后移
               {"op":"write_doc","markdown":"# 目标与验收..."}
         """.trimIndent()
 
@@ -250,8 +266,9 @@ internal class PlanEditTools(
                 else -> OpResult("update 的 target 只能是 plan / stages / units。", isError = true)
             }
             "schedule_week" -> scheduleWeek(svc, op, dryRun, planId)
+            "rearrange" -> rearrange(svc, op, dryRun, planId)
             "write_doc" -> writeDoc(op, dryRun, planId)
-            else -> OpResult("不认识的 op：$verb。可用 insert / update / schedule_week / write_doc。", isError = true)
+            else -> OpResult("不认识的 op：$verb。可用 insert / update / schedule_week / rearrange / write_doc。", isError = true)
         }
     }
 
@@ -451,7 +468,10 @@ internal class PlanEditTools(
         planId: String?,
     ): OpResult {
         val id = requirePlanId(planId) ?: return OpResult("没有选中计划，update units 需要 planId。", isError = true)
-        val match = op.obj("match") ?: return OpResult("update units 需要 match（title 或 id）。", isError = true)
+        val match = op.obj("match") ?: return OpResult("update units 需要 match（title / id / occurrenceId）。", isError = true)
+        match.str("occurrenceId")?.let { occurrenceId ->
+            return updateOccurrence(svc, op, dryRun, id, occurrenceId)
+        }
         val week = op.str("week") ?: isoWeekOf(clock.today())
         val unitIds = resolveUnitIds(svc, id, week, match)
         if (unitIds.isEmpty()) return OpResult("在 $week 找不到匹配的单元。", isError = true)
@@ -611,6 +631,319 @@ internal class PlanEditTools(
 
     private fun tokens(value: String): Set<String> =
         value.split(Regex("[·\\s/]+")).filter { it.isNotBlank() }.toSet()
+
+    // ---------------------------------------------------------------- 早间重排
+
+    private data class RearrangeContext(
+        val today: LocalDate,
+        val dailyMinutes: Int,
+        val extraMinutes: Int,
+        val overdue: List<RearrangeItem>,
+        val backlog: List<RearrangeItem>,
+        val plan: RearrangePlan,
+    )
+
+    /**
+     * 把计划当前状态翻译成重排输入：逾期 + 更早欠账 + 今天及以后已经排到天的 occurrence。
+     * 顺序口径：更早欠账和本周逾期一起按路线顺序排；已排条目按日期/当天顺序排在后面。
+     */
+    private fun computeRearrange(
+        svc: LearningPlanService,
+        planId: String,
+        extraMinutes: Int,
+        today: LocalDate,
+    ): RearrangeContext? {
+        val overdueView = runCatching { svc.overdue(planId, today.toString()) }.getOrNull() ?: return null
+        val daily = runCatching { svc.planState(planId).dailyMinutes }.getOrNull() ?: overdueView.dailyMinutes
+        val overdue = overdueView.thisWeek
+            .sortedWith(compareBy({ it.sortOrder }, { it.day }, { it.title }))
+            .mapIndexed { index, item ->
+                RearrangeItem(
+                    key = item.occurrenceId,
+                    title = item.title,
+                    kind = RearrangeItemKind.Occurrence,
+                    day = item.day,
+                    minutes = item.minutes,
+                    order = item.sortOrder * 10 + index,
+                )
+            }
+        val backlog = overdueView.backlog
+            .sortedBy { it.sortOrder }
+            .mapIndexed { index, item ->
+                RearrangeItem(
+                    key = item.unitId,
+                    title = item.title,
+                    kind = RearrangeItemKind.Unit,
+                    day = null,
+                    minutes = item.estimateMinutes,
+                    order = item.sortOrder * 10 + index,
+                )
+            }
+        val scheduled = linkedMapOf<LocalDate, MutableList<RearrangeItem>>()
+        var weekStart = today.minusDays((today.dayOfWeek.value - 1).toLong())
+        repeat(9) { weekOffset ->
+            val week = isoWeekOf(weekStart)
+            runCatching { svc.week(planId, week) }.getOrNull()?.days?.forEachIndexed { dayIndex, day ->
+                val date = runCatching { LocalDate.parse(day.day) }.getOrNull() ?: return@forEachIndexed
+                if (date.isBefore(today)) return@forEachIndexed
+                day.items.filter { it.status == "planned" }.forEachIndexed { itemIndex, item ->
+                    scheduled.getOrPut(date) { mutableListOf() } += RearrangeItem(
+                        key = item.occurrenceId,
+                        title = item.title,
+                        kind = RearrangeItemKind.Occurrence,
+                        day = day.day,
+                        minutes = item.minutes,
+                        order = 100_000 + weekOffset * 1_000 + dayIndex * 100 + itemIndex,
+                    )
+                }
+            }
+            weekStart = weekStart.plusWeeks(1)
+        }
+        val plan = buildRearrangePlan(
+            overdue = overdue,
+            backlog = backlog,
+            scheduled = scheduled.mapValues { it.value.toList() },
+            startDay = today,
+            dailyMinutes = daily,
+            extraMinutes = extraMinutes,
+        )
+        return RearrangeContext(today, daily, extraMinutes, overdue, backlog, plan)
+    }
+
+    private fun buildOverdueText(
+        svc: LearningPlanService,
+        planId: String,
+        extraMinutes: Int?,
+    ): String {
+        val today = clock.today()
+        val ctx = computeRearrange(svc, planId, extraMinutes ?: 0, today)
+            ?: return "（读不到逾期数据；计划库可能没打开或计划还没排期。）"
+        if (ctx.overdue.isEmpty() && ctx.backlog.isEmpty()) return "没有逾期项，不需要重排。"
+        val text = StringBuilder()
+        text.appendLine("逾期 ${ctx.overdue.size} 项、更早欠账 ${ctx.backlog.size} 项；每天参考 ${ctx.dailyMinutes} 分钟，今天 ${ctx.today}。")
+        if (ctx.overdue.isNotEmpty()) {
+            text.appendLine("本周逾期（越靠前越该先补）：")
+            ctx.overdue.forEach {
+                text.appendLine("  - [${it.key}] ${it.day}「${it.title}」${it.minutes} 分钟")
+            }
+        }
+        if (ctx.backlog.isNotEmpty()) {
+            text.appendLine("更早欠账（已回到待安排池）：")
+            ctx.backlog.forEach {
+                text.appendLine("  - [${it.key}]「${it.title}」约 ${it.minutes} 分钟")
+            }
+        }
+        if (extraMinutes == null) {
+            text.appendLine("需要方案就带 rearrangeExtraMinutes 再读一次（0-240，表示今天多投的分钟）。")
+        } else {
+            text.appendLine(renderRearrangePreview(ctx))
+        }
+        return text.toString()
+    }
+
+    private fun renderRearrangePreview(ctx: RearrangeContext): String {
+        val moves = ctx.plan.moves
+        if (moves.isEmpty()) {
+            return "重排预览（今天多投 ${ctx.extraMinutes} 分钟）：没有需要移动的条目，现有安排装得下。"
+        }
+        val text = StringBuilder()
+        text.appendLine("重排预览（今天多投 ${ctx.extraMinutes} 分钟，只预览、不改数据）：")
+        moves.forEach { move ->
+            val from = move.fromDay ?: "待安排"
+            val minutes = ctx.plan.assignments.firstOrNull { it.item.key == move.key && it.item.kind == move.kind }
+                ?.item?.minutes ?: 0
+            text.appendLine("  - $from → ${move.toDay}「${move.title}」（${kindLabel(move.kind)}，约 $minutes 分钟）")
+        }
+        text.appendLine("共移动 ${moves.size} 项；其中 ${ctx.plan.overflowCount} 项溢出到下周。")
+        return text.toString()
+    }
+
+    private fun kindLabel(kind: RearrangeItemKind): String = when (kind) {
+        RearrangeItemKind.Occurrence -> "已排任务"
+        RearrangeItemKind.Unit -> "待安排"
+    }
+
+    private suspend fun rearrange(
+        svc: LearningPlanService,
+        op: JsonObject,
+        dryRun: Boolean,
+        planId: String?,
+    ): OpResult {
+        val id = requirePlanId(planId) ?: return OpResult("没有选中计划，rearrange 需要 planId。", isError = true)
+        val extra = (op.int("extraMinutes") ?: 0).coerceIn(0, 240)
+        val today = op.str("fromDay")?.let { runCatching { LocalDate.parse(it) }.getOrNull() } ?: clock.today()
+        val ctx = computeRearrange(svc, id, extra, today)
+            ?: return OpResult("读不到逾期数据，这次没有动任何东西。", isError = true)
+        if (ctx.overdue.isEmpty() && ctx.backlog.isEmpty()) {
+            return OpResult("没有逾期项，不需要重排。", planId = id)
+        }
+        if (ctx.plan.moves.isEmpty()) {
+            return OpResult("重排检查：今天加 ${extra} 分钟后现有安排装得下，不需要移动。", planId = id)
+        }
+        val preview = renderRearrangePreview(ctx)
+        if (dryRun) return OpResult("（dryRun）\n$preview", planId = id)
+        val failures = mutableListOf<String>()
+        ctx.plan.moves.forEach { move ->
+            val result = when (move.kind) {
+                RearrangeItemKind.Occurrence -> runCatching {
+                    svc.moveOccurrence(env(id, "tool.plan.edit.rearrange"), move.key, move.toDay, "AI 早间重排")
+                }.getOrNull()
+                RearrangeItemKind.Unit -> runCatching {
+                    svc.placeUnit(
+                        env(id, "tool.plan.edit.rearrange"),
+                        id,
+                        isoWeekOf(LocalDate.parse(move.toDay)),
+                        move.key,
+                        move.toDay,
+                    )
+                }.getOrNull()
+            }
+            if (result == null || !result.ok) {
+                failures += "「${move.title}」→ ${move.toDay}：" + (result?.error?.message ?: "写入失败")
+            }
+        }
+        rewriteRearrangedWeeks(svc, id, ctx)
+        rewriteProgressDoc(id, ctx)
+        return if (failures.isEmpty()) {
+            OpResult("已重排：\n$preview", planId = id)
+        } else {
+            OpResult(
+                "重排只做了一部分，下面这些没动成功：\n" + failures.joinToString("\n") +
+                    "\n已经成功的移动：\n" + preview,
+                isError = true,
+            )
+        }
+    }
+
+    private suspend fun updateOccurrence(
+        svc: LearningPlanService,
+        op: JsonObject,
+        dryRun: Boolean,
+        planId: String,
+        occurrenceId: String,
+    ): OpResult {
+        val hit = findOccurrence(svc, planId, occurrenceId)
+            ?: return OpResult("找不到 occurrence「$occurrenceId」；先用 read_plan 读本周节点拿到有效 id。", isError = true)
+        val set = op.obj("set") ?: return OpResult("update units 缺 set。", isError = true)
+        val done = mutableListOf<String>()
+        val resources = set.arr("resources")
+        if (resources.isNotEmpty()) {
+            val unit = runCatching { svc.week(planId, hit.week) }.getOrNull()?.commitment?.units
+                ?.firstOrNull { it.title == hit.title }
+            if (unit == null) {
+                return OpResult("「${hit.title}」在 ${hit.week} 找不到对应单元，没法挂资源。", isError = true)
+            }
+            val drafts = resources.mapNotNull { r ->
+                val title = r.str("title") ?: return@mapNotNull null
+                ResourceDraft(
+                    kind = r.str("kind") ?: inferKind(r.str("url").orEmpty()),
+                    title = title,
+                    url = r.str("url").orEmpty(),
+                    locator = r.str("locator").orEmpty(),
+                    source = "agent",
+                )
+            }
+            if (dryRun) {
+                done += "（dryRun）会挂 ${drafts.size} 条资源到「${hit.title}」"
+            } else {
+                val result = runCatching { svc.setUnitResources(env(planId, "tool.plan.edit.resources"), planId, unit.id, drafts) }
+                    .getOrElse { return OpResult("挂资源失败：${it.message ?: it}", isError = true) }
+                if (!result.ok) return OpResult("挂资源失败：${result.error?.message ?: "未知错误"}", isError = true)
+                done += "已挂 ${drafts.size} 条资源"
+            }
+        }
+        set.str("day")?.let { day ->
+            if (dryRun) {
+                done += "（dryRun）会把「${hit.title}」从 ${hit.day} 挪到 $day"
+            } else {
+                val result = runCatching { svc.moveOccurrence(env(planId, "tool.plan.edit.move"), occurrenceId, day, "AI 重排微调") }
+                    .getOrElse { return OpResult("挪动失败：${it.message ?: it}", isError = true) }
+                if (!result.ok) return OpResult("挪动失败：${result.error?.message ?: "未知错误"}", isError = true)
+                done += "已挪到 $day"
+            }
+        }
+        if (set.str("status") != null) {
+            if (set.str("status") != "done") return OpResult("set.status 目前只支持 done。", isError = true)
+            if (dryRun) {
+                done += "（dryRun）会把「${hit.title}」标完成"
+            } else {
+                val result = dispatch(
+                    "complete_plan_node",
+                    buildJsonObject {
+                        put("occurrenceId", occurrenceId)
+                        put("confirmed", true)
+                    },
+                )
+                if (result.isError) return OpResult(result.content, isError = true)
+                done += "已标完成：" + result.content
+            }
+        }
+        if (done.isEmpty()) return OpResult("这次 update 没有可执行的字段（支持 day / status / resources）。", isError = true)
+        return OpResult(done.joinToString("；"), planId = planId)
+    }
+
+    private data class OccurrenceHit(
+        val occurrenceId: String,
+        val title: String,
+        val week: String,
+        val day: String,
+    )
+
+    private fun findOccurrence(svc: LearningPlanService, planId: String, occurrenceId: String): OccurrenceHit? {
+        val today = clock.today()
+        var weekStart = today.minusDays((today.dayOfWeek.value - 1).toLong()).minusWeeks(8)
+        repeat(17) {
+            val week = isoWeekOf(weekStart)
+            val view = runCatching { svc.week(planId, week) }.getOrNull()
+            view?.days?.forEach { day ->
+                day.items.firstOrNull { it.occurrenceId == occurrenceId }?.let {
+                    return OccurrenceHit(it.occurrenceId, it.title, week, day.day)
+                }
+            }
+            weekStart = weekStart.plusWeeks(1)
+        }
+        return null
+    }
+
+    private fun rewriteRearrangedWeeks(svc: LearningPlanService, planId: String, ctx: RearrangeContext) {
+        val store = docStore() ?: return
+        val weeks = linkedSetOf(isoWeekOf(ctx.today))
+        ctx.plan.moves.forEach { move ->
+            weeks += isoWeekOf(LocalDate.parse(move.toDay))
+            move.fromDay?.let { from -> weeks += isoWeekOf(LocalDate.parse(from)) }
+        }
+        weeks.forEach { week ->
+            val view = runCatching { svc.week(planId, week) }.getOrNull() ?: return@forEach
+            store.saveWeek(planId, week, renderWeekDoc(view))
+        }
+    }
+
+    private fun renderWeekDoc(view: WeekView): String = buildString {
+        appendLine("# ${view.week} 本周计划")
+        view.days.forEach { day ->
+            if (day.items.isEmpty()) return@forEach
+            appendLine()
+            appendLine("## ${day.label} ${day.day}")
+            day.items.forEach { item ->
+                appendLine("- ${item.title}（约 ${item.minutes} 分钟）")
+            }
+        }
+    }
+
+    private fun rewriteProgressDoc(planId: String, ctx: RearrangeContext) {
+        val store = docStore() ?: return
+        val doc = store.read(planId) ?: return
+        val block = buildString {
+            appendLine("## 进度")
+            appendLine("- 最近重排：${ctx.today}（今天多投 ${ctx.extraMinutes} 分钟）")
+            appendLine("- 移动 ${ctx.plan.moves.size} 项；其中 ${ctx.plan.overflowCount} 项排到下周。")
+            val next = ctx.plan.assignments.groupBy { it.day }.toSortedMap().entries.take(3)
+            next.forEach { (day, items) ->
+                appendLine("- $day：" + items.joinToString("、") { it.item.title })
+            }
+        }
+        store.save(planId, replaceSection(doc, "## 进度", block))
+    }
 
     // ---------------------------------------------------------------- 文档阶段块
 
