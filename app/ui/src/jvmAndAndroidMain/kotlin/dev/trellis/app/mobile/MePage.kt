@@ -34,8 +34,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import dev.trellis.activity.ActivitySettings
 import dev.trellis.app.desktop.AppRuntime
+import dev.trellis.app.desktop.DataWipe
 import dev.trellis.app.desktop.HostPlatform
 import dev.trellis.app.desktop.StewardRuntime
+import dev.trellis.app.desktop.WipeResult
+import dev.trellis.app.desktop.WipeScope
 import dev.trellis.app.desktop.TAB_CHAT
 import dev.trellis.app.desktop.parseSimulatedDate
 import java.io.File
@@ -46,7 +49,8 @@ import kotlinx.coroutines.launch
  *
  * 桌面的设置页有「导航位置」这类选项；手机上导航固定在底部，摆出来只会让人困惑，
  * 所以这里**不出现**。其余真正影响结果的开关一个不少：外观、主题包、每日投入、
- * 模型 API、管家时间、笔记联动、活动数据源、插件、活动、诊断、时间调试。
+ * 模型 API、管家（含自动采纳与每周排周）、笔记联动、活动数据源、调试模式、
+ * 时间调试、清除数据、插件、活动、诊断。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -226,7 +230,11 @@ fun MePage(runtime: AppRuntime, onOpen: (PhoneSubPage) -> Unit) {
             }
         }
 
-        item { DevTimeCard(runtime) }
+        item { DebugModeCard(runtime) }
+
+        if (runtime.devModeEnabled) item { DevTimeCard(runtime) }
+
+        if (runtime.devModeEnabled) item { DevDataCard(runtime) }
 
         item {
             CardBox(padding = 0.dp) {
@@ -336,6 +344,73 @@ private fun StewardCard(runtime: AppRuntime) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+
+        Spacer(Modifier.height(Gap.m))
+        Text("自动采纳", style = MaterialTheme.typography.labelMedium)
+        Spacer(Modifier.height(Gap.xs))
+        Segmented(
+            items = listOf("关", "开"),
+            selected = if (settings.autoAdopt) 1 else 0,
+            onSelect = { runtime.updateStewardSettings(settings.copy(autoAdopt = it == 1)) },
+        )
+        Spacer(Modifier.height(Gap.xs))
+        Text(
+            if (!settings.autoAdopt) {
+                "关闭：所有建议都要你点「一键采纳」。"
+            } else if (settings.autoAdoptDailyLimit <= 0) {
+                "只在应用不在前台时执行；不限条数，挪动逾期和补排欠账都会自动做。今天已自动采纳 " +
+                    runtime.stewardAutoAdoptedToday + " 条。"
+            } else {
+                "只在应用不在前台时执行；每天最多 " + settings.autoAdoptDailyLimit +
+                    " 条，今天已自动采纳 " + runtime.stewardAutoAdoptedToday + " 条。"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(Gap.s))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("每天上限", style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
+            PhoneButton("−", {
+                runtime.updateStewardSettings(
+                    settings.copy(autoAdoptDailyLimit = (settings.autoAdoptDailyLimit - 1).coerceIn(0, 10)),
+                )
+            }, filled = false)
+            Text(
+                if (settings.autoAdoptDailyLimit <= 0) "不限" else settings.autoAdoptDailyLimit.toString() + " 条",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(horizontal = Gap.m),
+            )
+            PhoneButton("+", {
+                runtime.updateStewardSettings(
+                    settings.copy(autoAdoptDailyLimit = (settings.autoAdoptDailyLimit + 1).coerceIn(0, 10)),
+                )
+            }, filled = false)
+        }
+        Spacer(Modifier.height(Gap.xs))
+        Text(
+            "0 = 不限条数；范围 0–10。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Spacer(Modifier.height(Gap.m))
+        Text("每周自动排周计划", style = MaterialTheme.typography.labelMedium)
+        Spacer(Modifier.height(Gap.xs))
+        Segmented(
+            items = listOf("关", "开"),
+            selected = if (settings.weeklyPlan) 1 else 0,
+            onSelect = { runtime.updateStewardSettings(settings.copy(weeklyPlan = it == 1)) },
+        )
+        Spacer(Modifier.height(Gap.xs))
+        Text(
+            if (settings.weeklyPlan) {
+                "周日 18:00 后、周一早上，在每条计划自己的会话里跑一次「排本周」；没有绑定会话就由管家代排。"
+            } else {
+                "关闭：不会自动排周计划；要用时在会话里说「排本周」，或点计划页的每周计划。"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -343,10 +418,57 @@ private fun stewardChipIndex(enabled: Boolean, time: String, options: List<Strin
     if (!enabled) options.size else options.indexOf(time).let { if (it < 0) options.size else it }
 
 /**
+ * 调试模式开关（桌面在设置页，手机在「我的」）。
+ *
+ * 打开后才显示下面的「时间调试」卡；状态与桌面共用 `<home>/dev.json`。
+ * 环境变量 `TRELLIS_DEV=1` 是启动级强制，界面上只显示状态、不给关掉的选项。
+ */
+@Composable
+private fun DebugModeCard(runtime: AppRuntime) {
+    var message by remember { mutableStateOf<String?>(null) }
+    CardBox {
+        SectionLabel(
+            "调试模式",
+            action = "说明" to {
+                message = "开启后出现「时间调试」与「清除数据」。两者都会改真实数据：时间调试会按模拟日期真的结算/补周" +
+                    "（主数据目录也会生效，卡片里会提示先备份），清除数据前会二次确认。"
+            },
+        )
+        Spacer(Modifier.height(Gap.xs))
+        Text(
+            when {
+                runtime.devModeForcedByEnv -> "已开（环境变量 TRELLIS_DEV=1）"
+                runtime.devModeEnabled -> "已开"
+                else -> "已关"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = if (runtime.devModeEnabled) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (!runtime.devModeForcedByEnv) {
+            Spacer(Modifier.height(Gap.m))
+            Segmented(
+                items = listOf("关", "开"),
+                selected = if (runtime.devModeEnabled) 1 else 0,
+                onSelect = { message = runtime.setDebugMode(it == 1) },
+            )
+        }
+        message?.let {
+            Spacer(Modifier.height(Gap.xs))
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
  * 时间调试：把「应用内今天」往后拨，用来验证跨天、周结算、逾期与复盘。
  *
- * 门槛在 AppRuntime 里：默认数据目录不允许拨（会真的写 missed / 结算事件）。
- * 界面只负责拨日期和说明后果。
+ * 门槛在 AppRuntime 里：主数据目录也能拨（2026-11-09 起），但会写真实数据和结算事件，
+ * 所以卡片里必须红字提示先备份。界面只负责拨日期和说明后果。
  */
 @Composable
 private fun DevTimeCard(runtime: AppRuntime) {
@@ -358,7 +480,9 @@ private fun DevTimeCard(runtime: AppRuntime) {
     CardBox {
         SectionLabel(
             "时间调试",
-            action = "说明" to { note = "模拟日期会真的写 missed / 结算事件；请用演示数据目录" },
+            action = "说明" to {
+                note = "模拟日期会真的写 missed / 结算事件；主数据目录也能拨，但建议先备份"
+            },
         )
         Spacer(Modifier.height(Gap.xs))
         Text(
@@ -400,17 +524,139 @@ private fun DevTimeCard(runtime: AppRuntime) {
         if (!runtime.devClockAllowed) {
             Spacer(Modifier.height(Gap.xs))
             Text(
-                runtime.devClockRejectedReason ?: "当前数据目录不允许改模拟时间",
+                runtime.devClockRejectedReason ?: "模拟时间没启用：先关掉再打开调试模式试试",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.error,
             )
         }
+        if (runtime.devClockAllowed && runtime.devClockOnRealHome) {
+            Spacer(Modifier.height(Gap.xs))
+            Text(
+                "当前是主数据目录（" + runtime.home.absolutePath + "）：拨日期会真的写 missed / 结算事件，建议先备份",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        Spacer(Modifier.height(Gap.xs))
+        Text(
+            "提醒：模拟日期下活动页、计时器仍是真实数据；拨动后计划会立刻按新日期结算/补周",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         note?.let {
             Spacer(Modifier.height(Gap.xs))
             Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
         }
     }
 }
+
+/**
+ * 开发者 · 清除数据（桌面在设置页底部，手机在「我的」调试模式之后）。
+ *
+ * 删什么、留什么全在 [DataWipe] 里定；这里只负责二次确认、把「将删除」摊开，
+ * 以及把 WipeResult 说清楚。「全部清空」必须手输「清除」两个字。
+ */
+@Composable
+private fun DevDataCard(runtime: AppRuntime) {
+    var pending by remember { mutableStateOf<WipeScope?>(null) }
+    var typed by remember { mutableStateOf("") }
+    var note by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    fun wipe(target: WipeScope) {
+        val result = runtime.clearData(target)
+        note = wipeSummary(result)
+        pending = null
+        typed = ""
+        // clearData 会把内存视图复位；再刷一次让上层页面立即读到空状态。
+        scope.launch { runtime.refresh() }
+    }
+
+    CardBox {
+        SectionLabel("清除数据（开发者）")
+        Spacer(Modifier.height(Gap.xs))
+        Text(
+            note ?: ("只影响 " + runtime.home.absolutePath),
+            style = MaterialTheme.typography.labelSmall,
+            color = if (note != null) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(Gap.s))
+        Text(
+            "不可恢复。清完之后计划页会变成一个空库；建议先备份整个数据目录。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(Gap.m))
+        Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {
+            PhoneButton("学习计划", { pending = WipeScope.Plans }, modifier = Modifier.weight(1f), filled = false)
+            PhoneButton("会话", { pending = WipeScope.Chats }, modifier = Modifier.weight(1f), filled = false)
+            PhoneButton("知识库", { pending = WipeScope.Knowledge }, modifier = Modifier.weight(1f), filled = false)
+        }
+        Spacer(Modifier.height(Gap.s))
+        Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {
+            PhoneButton("活动记录", { pending = WipeScope.Activity }, modifier = Modifier.weight(1f), filled = false)
+            PhoneButton("练习记录", { pending = WipeScope.Practice }, modifier = Modifier.weight(1f), filled = false)
+            PhoneButton("全部清空", { pending = WipeScope.All }, modifier = Modifier.weight(1f), filled = false, danger = true)
+        }
+        Spacer(Modifier.height(Gap.xs))
+        Text(
+            "保留：llm.json、ui.json、study.json、dev.json、steward/settings.json、activity 下的分类与同步设置。" +
+                "全部清空后建议重启应用。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        val target = pending
+        if (target != null) {
+            Spacer(Modifier.height(Gap.m))
+            Text(
+                if (target == WipeScope.All) "将删除数据目录下除配置外的全部内容：计划、会话、知识库、活动记录、练习记录、插件。"
+                else target.title + "会删除：",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Spacer(Modifier.height(Gap.xs))
+            Text(
+                DataWipe.targets(runtime.home, target).joinToString("\n") { it.homeRelative(runtime.home) },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (target == WipeScope.All) {
+                Spacer(Modifier.height(Gap.xs))
+                Text(
+                    "保留 " + DataWipe.preservedPaths(runtime.home, target).joinToString("、"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(Gap.s))
+                PhoneField(value = typed, onValueChange = { typed = it }, placeholder = "输入「清除」确认")
+            }
+            Spacer(Modifier.height(Gap.s))
+            Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {
+                PhoneButton(
+                    "确认清除",
+                    { wipe(target) },
+                    modifier = Modifier.weight(1f),
+                    enabled = target != WipeScope.All || typed.trim() == "清除",
+                    danger = true,
+                )
+                PhoneButton("取消", { pending = null; typed = "" }, modifier = Modifier.weight(1f), filled = false)
+            }
+        }
+    }
+}
+
+/** 清除结果说清楚：成功报条数，失败把文件名列出来（与桌面一致）。 */
+private fun wipeSummary(result: WipeResult): String =
+    if (result.ok) {
+        "已删除 " + result.deleted.size + " 项"
+    } else {
+        "删了 " + result.deleted.size + " 项，失败 " + result.failed.size + " 项：" + result.failed.joinToString("、")
+    }
+
+/** 相对数据目录的路径；不在 home 下就退回文件名。 */
+private fun File.homeRelative(home: File): String =
+    runCatching { relativeTo(home).path }.getOrNull().orEmpty().ifBlank { name }
 
 @Composable
 private fun EntryRow(label: String, value: String, onClick: () -> Unit) {

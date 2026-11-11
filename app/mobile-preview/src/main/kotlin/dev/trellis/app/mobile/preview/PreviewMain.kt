@@ -16,6 +16,8 @@ import dev.trellis.domain.TaskStatus
 import dev.trellis.domain.plan.Actor
 import dev.trellis.domain.plan.CommandEnvelope
 import dev.trellis.domain.plan.CommitmentDraft
+import dev.trellis.domain.plan.ResourceDraft
+import dev.trellis.domain.plan.StageDraft
 import dev.trellis.domain.plan.UnitDraft
 import dev.trellis.feature.learning.LearningPlanStore
 import java.io.File
@@ -96,6 +98,9 @@ internal val pages = listOf(
     // 插件页：安装 / 卸载 / 能力授权三块都在这一页，折叠在「我的」下面，
     // 不给它单独一张图就等于没验过。
     Shot("09-plugins", 4, subPage = PhoneSubPage.Plugins),
+    // 第二轮新增的桌面页复用：目标页要看到「里程碑 N/M」，练习页至少验证空态与页头。
+    Shot("10-goals", 1, subPage = PhoneSubPage.Goals),
+    Shot("11-practice", 2, subPage = PhoneSubPage.Practice),
 )
 
 internal data class Shot(
@@ -221,6 +226,44 @@ private fun seedLearningPlan(home: File) {
         // 铺到天。不铺的话「今天」是空的，计划页只剩一条周条 ——
         // 日历条、单元卡片、单位动作这些排版全都看不到。
         service.scheduleWeek(env(planId), week)
+
+        // 阶段：手机计划页的「阶段进度」要看到真实的两段，不然截图里永远不出现。
+        // 阶段周区间必须落在计划已承诺的周内（本演示只承诺了本周），所以两段都放本周。
+        service.setStages(
+            env(planId),
+            planId,
+            listOf(
+                StageDraft("打基础", week, week, focus = "分层、物理层与以太网", sortOrder = 0),
+                StageDraft("传输层攻坚", week, week, focus = "TCP 与拥塞控制", sortOrder = 1),
+            ),
+        )
+        // 目标 + 里程碑：目标页和计划页「目标」入口的演示数据。
+        val goal = service.createGoal(
+            env(),
+            "期末把网络原理补起来",
+            intent = "六周过一遍，考试不慌",
+            success = "能自己讲清三次握手与拥塞控制",
+        ).value
+        if (goal != null) {
+            service.linkPlanToGoal(env(planId), planId, goal.goalId)
+            service.addMilestone(env(), goal.goalId, "手画三次握手与四次挥手")
+        }
+
+        // 资料：挂到今天第一条排期上，这样「资料 N」在截图里就能展开看到。
+        // 只用真实存在的链接，不编造。
+        val todayUnitId = service.today(planId, LocalDate.now().toString()).occurrences
+            .firstOrNull { it.unitId != null }?.unitId
+        if (todayUnitId != null) {
+            service.setUnitResources(
+                env(planId),
+                planId,
+                todayUnitId,
+                listOf(
+                    ResourceDraft("web", "TCP 协议规范（RFC 793）", url = "https://www.rfc-editor.org/rfc/rfc793"),
+                    ResourceDraft("doc", "课程讲义 第 4 节", locator = "讲义 第 4 节"),
+                ),
+            )
+        }
 
         // 今天第二个勾掉：截图里才有「已完成 1」，也让人看到「剩下的还能处理」。
         val today = LocalDate.now().toString()

@@ -19,6 +19,10 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.trellis.app.desktop.AppFonts
+import dev.trellis.app.desktop.ChromeStyle
+import dev.trellis.app.desktop.LocalTrellisTokens
+import dev.trellis.app.desktop.TrellisTokens
+import dev.trellis.app.desktop.UiPrefs
 import dev.trellis.ui.ExtraColors
 import dev.trellis.ui.LocalExtraColors
 
@@ -170,6 +174,16 @@ fun PhoneTheme(appearance: String, fontScale: Float = 1f, content: @Composable (
         // 读的是 LocalExtraColors。以前这里没提供，它们拿到的是浅色默认值 ——
         // 暗色下靛蓝字压在近黑底上只有 1.6:1，等于没写。
         LocalExtraColors provides phoneExtraColors(dark),
+        // 桌面页（目标 / 练习 / 计划文档）复用进来时读的是 LocalTrellisTokens；
+        // 以前这里没提供，它们拿到 fallback 的桌面浅色 token —— 深色手机上会出现
+        // 「底是暗的、字是紫的」。这里按手机方案造一份：圆角/控件量级跟手机对齐，
+        // 颜色与 ExtraColors 同源。
+        LocalTrellisTokens provides TrellisTokens.of(
+            UiPrefs(),
+            ChromeStyle(cardRadius = 12, controlRadius = 10, labelFamily = "mono", displayFamily = "condensed"),
+            scheme,
+            phoneExtraColors(dark),
+        ),
         LocalDensity provides density,
     ) {
         MaterialTheme(

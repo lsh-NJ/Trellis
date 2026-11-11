@@ -71,16 +71,20 @@ import dev.trellis.app.desktop.GraphSize
 import dev.trellis.app.desktop.KnowledgeGraph
 import dev.trellis.app.desktop.KnowledgeGraphStore
 import dev.trellis.app.desktop.LayoutOptions
+import dev.trellis.app.desktop.TaxonomyResult
 import dev.trellis.app.desktop.buildKnowledgeGraph
-import dev.trellis.app.desktop.cacheWithoutCategorySuggestions
 import dev.trellis.app.desktop.assignConcept
+import dev.trellis.app.desktop.cacheWithoutCategorySuggestions
 import dev.trellis.app.desktop.categoryPathOf
 import dev.trellis.app.desktop.categorySuggestionFingerprint
 import dev.trellis.app.desktop.collectPendingSuggestions
 import dev.trellis.app.desktop.confirmCategorySuggestions
+import dev.trellis.app.desktop.createCategory
+import dev.trellis.app.desktop.deleteCategory
 import dev.trellis.app.desktop.globalCategoryBatches
 import dev.trellis.app.desktop.ignoreCategorySuggestion
 import dev.trellis.app.desktop.layoutKnowledgeGraph
+import dev.trellis.app.desktop.moveCategory
 import dev.trellis.app.desktop.noteBodyHash
 import dev.trellis.app.desktop.renameCategory
 import dev.trellis.app.desktop.runGlobalCategorySuggestions
@@ -112,13 +116,18 @@ fun KnowledgeGraphPage(runtime: AppRuntime, startMode: Int = 0, onOpenNote: (Str
     var organizing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
 
-    // 节点详情里的二级面板：0 概览 / 1 改归属 / 2 改定义 / 3 重命名。
+    // 节点详情里的二级面板：0 概览 / 1 改归属 / 2 改定义 / 3 重命名 /
+    // 4 新建子分类 / 5 新建上级分类 / 6 移动到分类 / 7 删除分类。
     // 不复用第二个 ModalBottomSheet —— 两个 sheet 叠起来时，返回手势先关掉下面那个，
     // 看起来像「点了一下什么都没发生」。
     var nodePanel by remember { mutableIntStateOf(0) }
     var definitionDraft by remember { mutableStateOf("") }
     var aliasDraft by remember { mutableStateOf("") }
     var renameDraft by remember { mutableStateOf("") }
+    // 新建分类（根 / 子 / 上级）共用一份输入；每次打开面板时清空。
+    var newCategoryDraft by remember { mutableStateOf("") }
+    // 页头的「新建分类」是独立 sheet：此时没有选中节点，不能借用节点详情。
+    var rootCreateOpen by remember { mutableStateOf(false) }
 
     val user = remember(refreshToken) { graphStore.loadUser() }
     val cache = remember(refreshToken) { graphStore.loadCache() }
@@ -154,7 +163,11 @@ fun KnowledgeGraphPage(runtime: AppRuntime, startMode: Int = 0, onOpenNote: (Str
                     Segmented(items = listOf("结构", "总览"), selected = mode, onSelect = { mode = it })
                     Spacer(Modifier.height(Gap.s))
                     Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {
+                        PhoneButton("新建分类", { newCategoryDraft = ""; rootCreateOpen = true }, filled = false)
                         PhoneButton("AI 建议", { suggestionsOpen = true }, filled = false)
+                    }
+                    Spacer(Modifier.height(Gap.s))
+                    Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {
                         PhoneButton("诊断", { diagnosticsOpen = true }, filled = false)
                         PhoneButton("刷新", { refreshToken++ }, filled = false)
                     }
@@ -217,7 +230,7 @@ fun KnowledgeGraphPage(runtime: AppRuntime, startMode: Int = 0, onOpenNote: (Str
     if (selected != null) {
         val isCategory = selected.kind == GraphNodeKind.CATEGORY
         // 存一次就用的写回助手：报错进 message，成功就重算图并关面板。
-        fun applyUser(result: dev.trellis.app.desktop.TaxonomyResult) {
+        fun applyUser(result: TaxonomyResult) {
             if (result.error != null) {
                 message = result.error
                 return
@@ -227,6 +240,19 @@ fun KnowledgeGraphPage(runtime: AppRuntime, startMode: Int = 0, onOpenNote: (Str
             message = result.changes.firstOrNull()
             nodePanel = 0
             selectedKey = null
+        }
+
+        // 当前分类 + 它的后代：移动目标里不能出现它们（会成环）。
+        fun categorySubtreeKeys(rootKey: String): Set<String> {
+            val seen = mutableSetOf<String>()
+            fun walk(key: String) {
+                if (!seen.add(key)) return
+                graph.childrenOf(key)
+                    .filter { it.kind == GraphNodeKind.CATEGORY }
+                    .forEach { walk(it.key) }
+            }
+            walk(rootKey)
+            return seen
         }
 
         ModalBottomSheet(
@@ -354,6 +380,126 @@ fun KnowledgeGraphPage(runtime: AppRuntime, startMode: Int = 0, onOpenNote: (Str
                         }
                     }
 
+                    4 -> {
+                        PanelHeading(
+                            "新建子分类",
+                            "挂在「" + selected.name + "」下面；分类只影响网络结构，不改任何笔记。",
+                        )
+                        Spacer(Modifier.height(Gap.m))
+                        PhoneField(
+                            value = newCategoryDraft,
+                            onValueChange = { newCategoryDraft = it },
+                            placeholder = "子分类名（同一层不能重名）",
+                            singleLine = true,
+                            minLines = 1,
+                        )
+                        Spacer(Modifier.height(Gap.m))
+                        Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {
+                            PhoneButton("创建", {
+                                applyUser(
+                                    createCategory(
+                                        user,
+                                        newCategoryDraft.trim(),
+                                        selected.key,
+                                        runtime.clock.nowMs(),
+                                    ),
+                                )
+                            }, modifier = Modifier.weight(1f))
+                            PhoneButton("返回", { nodePanel = 0 }, modifier = Modifier.weight(1f), filled = false)
+                        }
+                    }
+
+                    5 -> {
+                        PanelHeading(
+                            "新建上级分类",
+                            "新建一个分类，把「" + selected.name + "」和它的整棵子树挪到它下面。",
+                        )
+                        Spacer(Modifier.height(Gap.m))
+                        PhoneField(
+                            value = newCategoryDraft,
+                            onValueChange = { newCategoryDraft = it },
+                            placeholder = "上级分类名（同一层不能重名）",
+                            singleLine = true,
+                            minLines = 1,
+                        )
+                        Spacer(Modifier.height(Gap.m))
+                        Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {
+                            PhoneButton("创建", {
+                                val before = user.categories.map { it.id }.toSet()
+                                val created = createCategory(
+                                    user,
+                                    newCategoryDraft.trim(),
+                                    null,
+                                    runtime.clock.nowMs(),
+                                )
+                                if (created.error != null) {
+                                    message = created.error
+                                } else {
+                                    // 新分类的 id 就是「建之前不存在、现在存在」的那一个。
+                                    val newId = created.user.categories
+                                        .map { it.id }
+                                        .firstOrNull { it !in before }
+                                    if (newId == null) {
+                                        applyUser(created)
+                                    } else {
+                                        val moved = moveCategory(created.user, selected.key, newId)
+                                        if (moved.error != null) message = moved.error else applyUser(moved)
+                                    }
+                                }
+                            }, modifier = Modifier.weight(1f))
+                            PhoneButton("返回", { nodePanel = 0 }, modifier = Modifier.weight(1f), filled = false)
+                        }
+                    }
+
+                    6 -> {
+                        PanelHeading(
+                            "移动到分类",
+                            "换一个父分类；不能移到自己或自己的子分类下面。",
+                        )
+                        Spacer(Modifier.height(Gap.m))
+                        NodeChoice(
+                            label = "顶层（成为根分类）",
+                            hint = "不放进任何分类",
+                            selected = selected.parentKey == null,
+                            onClick = { applyUser(moveCategory(user, selected.key, null)) },
+                        )
+                        val blocked = categorySubtreeKeys(selected.key)
+                        user.categories
+                            .filter { it.id !in blocked }
+                            .sortedBy { categoryPathOf(user, it.id).joinToString("/") }
+                            .forEach { category ->
+                                val path = categoryPathOf(user, category.id).joinToString(" / ")
+                                NodeChoice(
+                                    label = path.ifBlank { category.name },
+                                    hint = null,
+                                    selected = selected.parentKey == category.id,
+                                    onClick = { applyUser(moveCategory(user, selected.key, category.id)) },
+                                )
+                            }
+                        Spacer(Modifier.height(Gap.m))
+                        PhoneButton("返回", { nodePanel = 0 }, modifier = Modifier.fillMaxWidth(), filled = false)
+                    }
+
+                    7 -> {
+                        PanelHeading(
+                            "删除分类",
+                            "「" + selected.name + "」会消失：子分类往上移一层，分类下的概念回到「未分类」。",
+                        )
+                        Spacer(Modifier.height(Gap.m))
+                        Text(
+                            "笔记正文不会被改；这个操作不影响任何笔记内容，只改网络结构。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(Gap.m))
+                        Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {
+                            PhoneButton("删除", {
+                                applyUser(deleteCategory(user, selected.key, runtime.clock.nowMs()))
+                            }, modifier = Modifier.weight(1f), danger = true)
+                            PhoneButton("返回", { nodePanel = 0 }, modifier = Modifier.weight(1f), filled = false)
+                        }
+                    }
+
                     else -> {
                         Text(
                             if (isCategory) "分类" else "概念",
@@ -425,6 +571,28 @@ fun KnowledgeGraphPage(runtime: AppRuntime, startMode: Int = 0, onOpenNote: (Str
                                 nodePanel = 2
                             }, modifier = Modifier.weight(1f), filled = false)
                         }
+                        if (isCategory) {
+                            Spacer(Modifier.height(Gap.s))
+                            Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {
+                                PhoneButton("新建子分类", {
+                                    newCategoryDraft = ""
+                                    nodePanel = 4
+                                }, modifier = Modifier.weight(1f), filled = false)
+                                PhoneButton("新建上级", {
+                                    newCategoryDraft = ""
+                                    nodePanel = 5
+                                }, modifier = Modifier.weight(1f), filled = false)
+                            }
+                            Spacer(Modifier.height(Gap.s))
+                            Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {
+                                PhoneButton("移动到分类", {
+                                    nodePanel = 6
+                                }, modifier = Modifier.weight(1f), filled = false)
+                                PhoneButton("删除分类", {
+                                    nodePanel = 7
+                                }, modifier = Modifier.weight(1f), filled = false, danger = true)
+                            }
+                        }
                         Spacer(Modifier.height(Gap.s))
                         Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {
                             PhoneButton("在笔记里找", {
@@ -438,6 +606,55 @@ fun KnowledgeGraphPage(runtime: AppRuntime, startMode: Int = 0, onOpenNote: (Str
                             PhoneButton("关闭", { selectedKey = null }, modifier = Modifier.weight(1f), filled = false)
                         }
                     }
+                }
+            }
+        }
+    }
+
+    // 根分类的新建：此时没有选中节点，所以单独一个 sheet（不能挂在节点详情里）。
+    if (rootCreateOpen) {
+        val rootSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { rootCreateOpen = false },
+            sheetState = rootSheetState,
+            containerColor = MaterialTheme.colorScheme.background,
+        ) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = Gap.xl).padding(bottom = Gap.xxl)) {
+                SheetHeading(
+                    "新建分类",
+                    "顶层分类会出现在树的根部；建好之后也可以再移动到别的分类下面。",
+                )
+                Spacer(Modifier.height(Gap.m))
+                PhoneField(
+                    value = newCategoryDraft,
+                    onValueChange = { newCategoryDraft = it },
+                    placeholder = "分类名（同一层不能重名）",
+                    singleLine = true,
+                    minLines = 1,
+                )
+                Spacer(Modifier.height(Gap.m))
+                Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {
+                    PhoneButton("创建", {
+                        val result = createCategory(
+                            user,
+                            newCategoryDraft.trim(),
+                            null,
+                            runtime.clock.nowMs(),
+                        )
+                        if (result.error != null) {
+                            message = result.error
+                        } else {
+                            graphStore.saveUser(result.user.copy(updatedAt = runtime.clock.nowMs()))
+                            refreshToken++
+                            message = result.changes.firstOrNull()
+                            newCategoryDraft = ""
+                            rootCreateOpen = false
+                        }
+                    }, modifier = Modifier.weight(1f))
+                    PhoneButton("取消", {
+                        newCategoryDraft = ""
+                        rootCreateOpen = false
+                    }, modifier = Modifier.weight(1f), filled = false)
                 }
             }
         }

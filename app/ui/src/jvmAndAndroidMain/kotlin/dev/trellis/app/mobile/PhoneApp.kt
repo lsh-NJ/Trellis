@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -42,6 +43,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.trellis.app.desktop.AppRuntime
 import dev.trellis.app.desktop.FocusMode
+import dev.trellis.app.desktop.GoalScreen
+import dev.trellis.app.desktop.PlanDocPage
+import dev.trellis.app.desktop.PracticeScreen
+import dev.trellis.app.desktop.TAB_GOALS
+import dev.trellis.app.desktop.TAB_PRACTICE
+import dev.trellis.kernel.audit.Actor
+import dev.trellis.kernel.capability.Capabilities
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.delay
@@ -55,8 +63,14 @@ enum class PhoneTab(val label: String) {
     Me("我的"),
 }
 
-/** 从「我的」进的二级页。知识网络是「知识」页里的一个分段，不算二级页。 */
-enum class PhoneSubPage { Plugins, Activity, Diagnostics }
+/**
+ * 二级页。知识网络是「知识」页里的一个分段，不算二级页。
+ *
+ * 前三个从「我的」手点进来；后三个是**运行时驱动的**（目标/练习/计划文档）：
+ * 入口在桌面别处（计划页「目标 · N」「计划文档」、对话页的练习提议卡），
+ * 手机靠下面的导航 LaunchedEffect 把 currentTab / planDocBrowseId 翻译成 sub。
+ */
+enum class PhoneSubPage { Plugins, Activity, Diagnostics, Goals, Practice, PlanDoc }
 
 /**
  * 手机端根界面。
@@ -101,21 +115,108 @@ fun PhoneApp(
     PhoneTheme(runtime.uiPrefs.appearance, runtime.uiPrefs.fontScale) {
         var tab by remember { mutableIntStateOf(startTab.coerceIn(0, PhoneTab.entries.size - 1)) }
         var sub by remember { mutableStateOf(startSubPage) }
+        // 这个二级页是不是运行时顶起来的（目标 / 练习 / 计划文档）。
+        // 预览器可以用 startSubPage 直接停在某一页，那种不算「运行时驱动」，
+        // 不能被下面「运行时已经关了 → 收掉 sub」的分支误清。
+        var subFromRuntime by remember { mutableStateOf(false) }
+
+        // 二级页的「返回」有两层：桌面二级页自己的返回键只复位运行时
+        // （closeGoalScreen / closePractice / closePlanDocs），不会碰手机本地的 sub。
+        // 从底部页签或系统返回离开时要反过来：先替它们把运行时复位，再收 sub；
+        // 否则下面的导航 LaunchedEffect 看到 currentTab 还停在 TAB_GOALS / TAB_PRACTICE，
+        // 下一帧又把人拽回那一页 —— 表现是「点返回没反应」。
+        fun closeSubPage() {
+            when (sub) {
+                PhoneSubPage.Goals -> runtime.closeGoalScreen()
+                PhoneSubPage.Practice -> runtime.closePractice()
+                PhoneSubPage.PlanDoc -> runtime.closePlanDocs()
+                else -> Unit
+            }
+            sub = null
+            subFromRuntime = false
+        }
 
         // 通知点开：落到对应页签。用 token 而不是拿 tab 本身做 key ——
         // 「点同一条通知两次」也要重新跳一次，否则第二次什么都不会发生。
         LaunchedEffect(openTabToken) {
             if (openTabToken > 0 && openTab != null) {
-                sub = null
+                closeSubPage()
                 tab = openTab.coerceIn(0, PhoneTab.entries.size - 1)
             }
         }
 
-        // 「去知识里看」这类跨页跳转：计划页点「打开来源笔记」写的是 AppRuntime 的
-        // pendingKnowledgeReveal，桌面上靠 currentTab 切页；手机上页签是自己的状态，
-        // 得在这里把「知识」顶上来，否则字段被写进去、人还停在计划页，看起来像没反应。
-        LaunchedEffect(runtime.pendingKnowledgeReveal) {
-            if (runtime.pendingKnowledgeReveal != null) tab = PhoneTab.Knowledge.ordinal
+        // 跨页跳转统一在这里消费。
+        //
+        // 桌面靠 currentTab 一个字段切页；手机页签是局部状态，所以要把「运行时想去哪」
+        // 翻译成 tab/sub。优先级：知识定位 > 计划文档 > 练习 > 目标 > 活动归因
+        // （正常不会同时挂起；真撞上时只取一个，剩下的下一帧继续消费）。
+        //
+        // pendingActivityDay 是普通 var，不是 Compose 状态，不会触发重组；这里跟 tick
+        // 一起轮询（根组合每秒 refresh 一次 tick），最多晚一秒切页，代价只有一次空判。
+        LaunchedEffect(
+            runtime.pendingKnowledgeReveal,
+            runtime.currentTab,
+            runtime.pendingActivityDay,
+            runtime.planDocBrowseId,
+            runtime.tick,
+        ) {
+            // 用布尔快照而不是可空 id：Kotlin 会在后续 when 分支里把 docPlanId
+            // 智能转成非空，导致「运行时已关」分支的判空被编译器当成恒假。
+            val planDocOpen = runtime.planDocBrowseId != null
+            when {
+                // 「去知识里看」：计划页点「打开来源笔记」写 pendingKnowledgeReveal。
+                // 先把可能占着整页的运行时二级页复位（否则知识页会被 sub 挡住，
+                // 而且 currentTab 不改的话下一帧又会被下面几条分支拽回去）。
+                runtime.pendingKnowledgeReveal != null -> {
+                    if (runtime.currentTab == TAB_GOALS) runtime.closeGoalScreen()
+                    if (runtime.currentTab == TAB_PRACTICE) runtime.closePractice()
+                    if (planDocOpen) runtime.closePlanDocs()
+                    tab = PhoneTab.Knowledge.ordinal
+                    sub = null
+                    subFromRuntime = false
+                }
+                // 计划文档：桌面是在知识库里让出整页（desktop/KnowledgeScreen.kt:77-80），
+                // 手机照样落到「知识」页签，由二级页自带页头/返回。
+                planDocOpen -> {
+                    tab = PhoneTab.Knowledge.ordinal
+                    sub = PhoneSubPage.PlanDoc
+                    subFromRuntime = true
+                }
+                // 练习：对话页接受提议后运行时把 currentTab 拨到 TAB_PRACTICE。
+                runtime.currentTab == TAB_PRACTICE -> {
+                    tab = PhoneTab.Chat.ordinal
+                    sub = PhoneSubPage.Practice
+                    subFromRuntime = true
+                }
+                // 目标：计划页「目标 · N」或 AI 工具把 currentTab 拨到 TAB_GOALS。
+                runtime.currentTab == TAB_GOALS -> {
+                    tab = PhoneTab.Plan.ordinal
+                    sub = PhoneSubPage.Goals
+                    subFromRuntime = true
+                }
+                // 活动归因详情：计划页自动完成卡点「学习 · 网页标题」写 pendingActivityDay。
+                // 日期不在这里清 —— ActivityScreen 首次组合时拿它当初始日期再自行清空。
+                runtime.pendingActivityDay != null -> {
+                    tab = PhoneTab.Me.ordinal
+                    sub = PhoneSubPage.Activity
+                }
+                // 反过来：桌面页自己的返回键只复位了运行时，没碰 sub。看到运行时
+                // 已经不在那一页，就把二级页收掉。closePlanDocs 只清 id、不改
+                // currentTab，所以计划文档看 id、目标/练习看 currentTab。
+                // 只对「运行时顶起来的」生效：预览器的 startSubPage 不能被误清。
+                subFromRuntime && sub == PhoneSubPage.Goals && runtime.currentTab != TAB_GOALS -> {
+                    sub = null
+                    subFromRuntime = false
+                }
+                subFromRuntime && sub == PhoneSubPage.Practice && runtime.currentTab != TAB_PRACTICE -> {
+                    sub = null
+                    subFromRuntime = false
+                }
+                subFromRuntime && sub == PhoneSubPage.PlanDoc && !planDocOpen -> {
+                    sub = null
+                    subFromRuntime = false
+                }
+            }
         }
 
         // 数据每秒刷新一次：插件也能改数据，而「变更通知」这件事领域层还没做。
@@ -141,7 +242,7 @@ fun PhoneApp(
 
         if (backHandler != null) {
             backHandler(sub != null || tab != PhoneTab.Today.ordinal) {
-                if (sub != null) sub = null else tab = PhoneTab.Today.ordinal
+                if (sub != null) closeSubPage() else tab = PhoneTab.Today.ordinal
             }
         }
 
@@ -155,7 +256,7 @@ fun PhoneApp(
                     PhoneBottomBar(
                         current = tab,
                         hasUnreadChat = runtime.hasUnreadChat,
-                        onSelect = { tab = it; sub = null },
+                        onSelect = { next -> closeSubPage(); tab = next },
                     )
                 },
             ) { inner ->
@@ -169,14 +270,22 @@ fun PhoneApp(
                             .fillMaxHeight()
                             .align(Alignment.TopCenter),
                     ) {
+                        // 审批条：和桌面 AppScreen 顶部那条同一个职责 —— 规则要动手时
+                        // 它是唯一出口。放在页签内容之前、不进页面的 LazyColumn，
+                        // 所以切页签、进二级页都还在原地，且不占位（没有待审批直接返回）。
+                        ApprovalCard(runtime)
+
                         val current = sub
                         if (current != null) {
-                            SubPageHost(
-                                runtime = runtime,
-                                page = current,
-                                onBack = { sub = null },
-                                onPickPluginArchive = onPickPluginArchive,
-                            )
+                            // 二级页拿剩余高度（审批条出现时不会被顶出屏幕）。
+                            Box(Modifier.weight(1f).fillMaxWidth()) {
+                                SubPageHost(
+                                    runtime = runtime,
+                                    page = current,
+                                    onBack = { closeSubPage() },
+                                    onPickPluginArchive = onPickPluginArchive,
+                                )
+                            }
                         } else {
                             when (PhoneTab.entries[tab]) {
                                 PhoneTab.Today -> TodayPage(runtime)
@@ -222,6 +331,26 @@ private fun SubPageHost(
         PhoneSubPage.Diagnostics -> WrappedPage("诊断", onBack) {
             dev.trellis.app.desktop.DiagnosticsScreen(runtime)
         }
+        // 目标 / 练习 / 计划文档直接复用桌面二级页：
+        // 它们都自带 ChromeSecondaryHeader（标题 + 返回箭号，返回键已经接好运行时），
+        // 再包一层 WrappedPage 会叠出两个页头，所以这里只交给页面自己。
+        // 三页本来就是单列滚动（练习内容再限宽 760dp），手机宽度直接适用。
+        //
+        // 但桌面页假设外面已经给了页边距（桌面由 AppScreen 的 flush 布局提供），
+        // 直接铺到 390dp 上时正文会贴左边缘、标题贴着状态栏。这里补一层手机边距；
+        // 页头在边距内，和正文对齐。
+        PhoneSubPage.Goals -> ReusedDesktopPage { GoalScreen(runtime) }
+        PhoneSubPage.Practice -> ReusedDesktopPage { PracticeScreen(runtime) }
+        PhoneSubPage.PlanDoc -> {
+            val planId = runtime.planDocBrowseId
+            if (planId == null) {
+                // 运行时已经把计划文档关掉了：这一帧先空着，导航 LaunchedEffect
+                // 下一帧会把 sub 收掉。不要在这里直接渲染会拿 null 的页面。
+                LaunchedEffect(Unit) { onBack() }
+            } else {
+                ReusedDesktopPage { PlanDocPage(runtime, planId, onClose = onBack) }
+            }
+        }
     }
 }
 
@@ -231,6 +360,14 @@ private fun SubPageHost(
  * 这两页是「一列数据 + 几个筛选」，桌面版本来就是单列，直接整页嵌进来不会走形 ——
  * 所以先不重写（重写就是复制一份取数逻辑，那才是真正的隐患）。
  */
+/** 复用桌面二级页时的手机边距：桌面由外层提供，手机得自己补。 */
+@Composable
+private fun ReusedDesktopPage(content: @Composable () -> Unit) {
+    Box(Modifier.fillMaxSize().padding(horizontal = Gap.l, vertical = Gap.s)) {
+        content()
+    }
+}
+
 @Composable
 private fun WrappedPage(title: String, onBack: () -> Unit, content: @Composable () -> Unit) {
     Column(Modifier.fillMaxSize()) {
@@ -391,4 +528,77 @@ private fun TimerBar(runtime: AppRuntime) {
             }
         }
     }
+}
+
+/**
+ * 移动端审批卡。
+ *
+ * 为什么不直接用桌面的 `AskDialogs`：它依赖 LocalTrellisTokens 与桌面 Chrome 组件，
+ * 手机没有那套主题注入；而且桌面那条长在窗口最上方、可以整窗铺开，手机上页签内容
+ * 是单列滚动的，必须按手机版式自己写一张。
+ *
+ * 数据只有一份：`runtime.pendingApproval`。回答后 runtime 会把它清空，卡片自己消失，
+ * 所以不设「正在提交」之类的本地中间态 —— 那个状态只会和真相不一致。
+ */
+@Composable
+private fun ApprovalCard(runtime: AppRuntime) {
+    val request = runtime.pendingApproval ?: return
+    val shape = RoundedCornerShape(12.dp)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Gap.l, vertical = Gap.s)
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.errorContainer)
+            .border(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.45f), shape)
+            .padding(Gap.l),
+    ) {
+        Text(
+            "需要你确认",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onErrorContainer,
+        )
+        Spacer(Modifier.height(Gap.s))
+        Text(
+            request.summary,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onErrorContainer,
+        )
+        Spacer(Modifier.height(Gap.s))
+        Text(
+            "发起者 " + approvalActorLabel(request.actor) +
+                " · 插件 " + request.pluginId.value +
+                " · 能力 " + Capabilities.describe(request.capability) +
+                " · 动作 " + request.action,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.78f),
+        )
+        Spacer(Modifier.height(Gap.xs))
+        Text(
+            "规则是后台触发的，它正卡在这里等你点头；不理它，它就一直不动。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.78f),
+        )
+        Spacer(Modifier.height(Gap.m))
+        Row(horizontalArrangement = Arrangement.spacedBy(Gap.s)) {
+            PhoneButton(
+                "拒绝",
+                { runtime.answerApproval(false) },
+                modifier = Modifier.weight(1f),
+                filled = false,
+            )
+            PhoneButton(
+                "允许",
+                { runtime.answerApproval(true) },
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+/** 审批卡上的「是谁要动手」：和桌面 AskDialogs 的 actorLabel 同口径。 */
+private fun approvalActorLabel(actor: Actor): String = when (actor) {
+    Actor.USER -> "你"
+    Actor.AGENT -> "智能体"
+    Actor.SYSTEM -> "系统"
 }
