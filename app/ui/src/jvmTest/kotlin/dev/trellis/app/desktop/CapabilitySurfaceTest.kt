@@ -53,7 +53,14 @@ class CapabilitySurfaceTest {
         assertTrue("renameTask" in actions, "少了 renameTask：" + actions)
         assertTrue("rescheduleTask" in actions, "少了 rescheduleTask：" + actions)
         assertTrue("deleteTask" in actions, "少了 deleteTask：" + actions)
-        assertEquals(6, actions.size, "动作数变了：" + actions)
+        // 知识库宿主动作：插件卡片「一键打开/新建笔记」靠它，不注册模型就用不上。
+        assertTrue("openKnowledgeNote" in actions, "少了 openKnowledgeNote：" + actions)
+        // 通用宿主动作：切页 / 写笔记 / 发通知 / 开计时器，插件可以自由组合。
+        assertTrue("openPage" in actions, "少了 openPage：" + actions)
+        assertTrue("writeKnowledgeNote" in actions, "少了 writeKnowledgeNote：" + actions)
+        assertTrue("notify" in actions, "少了 notify：" + actions)
+        assertTrue("startFocusTimer" in actions, "少了 startFocusTimer：" + actions)
+        assertEquals(11, actions.size, "动作数变了：" + actions)
 
         // 数据字段：首页显示不出来的三个才算新能力
         val fields = catalog.dataFields.map { it.path }

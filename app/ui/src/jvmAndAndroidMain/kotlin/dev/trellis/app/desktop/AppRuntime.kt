@@ -709,6 +709,28 @@ class AppRuntime private constructor() {
     }
 
     /**
+     * 宿主动作 `startFocusTimer` 用：从一张插件卡片开一个**不属于任何任务/计划节点**的
+     * 通用计时。
+     *
+     * 计时小窗的字段是 `private set`（只有这里能改），所以给动作留这一个入口：先把小窗
+     * 摆成「等人点开始」的状态，动作随后调 [startTimer] 真正跑起来。顺带 `endNodeSession`
+     * 收掉上一次节点计时——否则这一段会被记到上一个计划节点头上。
+     */
+    internal fun prepareTimer(label: String, minutes: Int) {
+        endNodeSession()
+        timerNodeTarget = null
+        timerTaskId = null
+        timerTaskTitle = label
+        timerVisible = true
+        timerMode = FocusMode.Countdown
+        chooseTimerMinutes(minutes)
+        timerTotalSeconds = 0
+        timerElapsedSeconds = 0
+        timerRunning = false
+        timerFinished = false
+    }
+
+    /**
      * 把节点计时的 session 开起来。
      *
      * 失败只提示、不拦住计时：记不上账是账本的问题，不该让秒表停下来。
@@ -1209,6 +1231,14 @@ class AppRuntime private constructor() {
     var chatAsk by mutableStateOf<ChatAsk?>(null)
         private set
 
+    /**
+     * 上一轮是不是用 `ask_choices` 停下来问过用户。
+     *
+     * 插件流程要求「先给设计、用户点头后再实装」；deploy 新插件时靠这个值判断
+     * 用户到底有没有被问过（见 PluginTools 的 designConfirmedByUser）。
+     */
+    private var askedChoicesLastRound: Boolean = false
+
     /** 模型提了个问题：问题和 2–5 个选项一起挂到这一轮的回复下面，等用户点。 */
     fun offerChoices(question: String, options: List<String>) {
         val clean = options.map { it.trim() }.filter { it.isNotEmpty() }.take(6)
@@ -1217,6 +1247,7 @@ class AppRuntime private constructor() {
             question = question.trim().ifBlank { "选一个" },
             options = clean.map { ChatChoice(it, it) },
         )
+        askedChoicesLastRound = true
     }
 
     /** 点了某个选项：问题卡收起，把选项里的原话当成用户发的，接着跑下一轮。 */
@@ -2618,6 +2649,15 @@ class AppRuntime private constructor() {
     }
 
     /**
+     * 用户这句话是不是明确说「直接做、别问」。
+     *
+     * 插件流程默认要先给设计再实装；用户自己说不用问，就不该再拿确认卡挡他一次。
+     */
+    private fun userSaidJustDoIt(text: String): Boolean =
+        listOf("直接做", "直接装", "直接开始", "别问了", "不用问", "不用确认", "不用给我看")
+            .any { it in text }
+
+    /**
      * 一轮对话 / 一次自主检查的唯一实现。
      *
      * 两条路径共用流式、工具循环、过程行与收尾逻辑，只在三处分叉：
@@ -2667,6 +2707,10 @@ class AppRuntime private constructor() {
             if (index >= 0) chat[index] = answer.copy(text = displayText)
         }
 
+        // 新插件必须先给设计、等用户确认：上一轮靠 ask_choices 停过，用户刚答过这一问。
+        // 用户自己说「直接做 / 别问了」时也放行 —— 那是用户明确表示不用等。
+        val designConfirmed = askedChoicesLastRound || userSaidJustDoIt(text)
+        askedChoicesLastRound = false
         try {
             val rig = buildChatRig(llm, researchGateway, autonomy, morningRearrange)
 
@@ -2720,7 +2764,7 @@ class AppRuntime private constructor() {
             }
             // 插件工具自己记账：这一轮碰过插件工具、又只看了看没动手，才在收尾时拦。
             // 不再按意图判断（意图分类器已删），也不再无条件要求「必须试过、装上了」。
-            rig.pluginTools.beginRound()
+            rig.pluginTools.beginRound(designConfirmed)
             // 「第 N 步：tool_name」这条过程行对应的工具详情，会在 onTrace 里挂上去。
             var lastStepToolLineId: Long? = null
             // 正在长的「思考：」行；同一跳的 reasoning 增量都并进这一条，别一段一行。
@@ -6058,6 +6102,10 @@ class AppRuntime private constructor() {
                             listOf(
                                 PlanCorePlugin(),
                                 PlanUiPlugin(runtime),
+                                // 知识库的宿主动作（打开/新建笔记），给脚本/DSL 插件按钮用。
+                                KnowledgeNotePlugin(runtime),
+                                // 通用宿主动作（切页 / 写笔记 / 发通知 / 开计时器），供插件自由组合。
+                                HostPlugin(runtime),
                                 // 默认主题包也是插件：可在插件页停用，停用后回落默认配色。
                                 BentoThemePlugin(),
                                 // 第二个内置主题（「书桌」）。两套并列是 2026-11-06 评审的
