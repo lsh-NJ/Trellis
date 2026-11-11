@@ -1,8 +1,13 @@
 package dev.trellis.ai
 
+import com.sun.net.httpserver.HttpServer
+import java.net.InetSocketAddress
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonNull
 
 /**
@@ -83,6 +88,43 @@ class HttpLlmClientTest {
         assertTrue(body(listOf(LlmMessage(LlmRole.User, "hi")), jsonMode = true).contains("response_format"))
         // 流式对话是自由文本，不能开 JSON mode
         assertTrue(!body(listOf(LlmMessage(LlmRole.User, "hi")), stream = true).contains("response_format"))
+    }
+
+    /**
+     * 「只要一句人话」的调用不能带上 JSON mode。
+     *
+     * 真实事故：编辑器里的 AI 补全调用 `complete`（默认 JSON mode），模型按要求把
+     * 那句补全包成了 `{"content": "..."}`，于是整段 JSON 差点被填进 `{{…}}`。
+     */
+    @Test
+    fun completeTextAsksForPlainTextWithoutJsonMode() = runBlocking {
+        val captured = AtomicReference("")
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/v1/chat/completions") { exchange ->
+            captured.set(exchange.requestBody.readBytes().toString(Charsets.UTF_8))
+            val reply = """{"choices":[{"message":{"content":"一句人话"}}]}"""
+            val bytes = reply.toByteArray()
+            exchange.responseHeaders.add("Content-Type", "application/json")
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            val client = HttpLlmClient(
+                LlmConfig(
+                    endpoint = "http://127.0.0.1:" + server.address.port + "/v1/chat/completions",
+                    apiKey = "k",
+                    model = "m",
+                ),
+            )
+            val text = client.completeText(listOf(LlmMessage(LlmRole.User, "补一句")))
+            assertEquals("一句人话", text)
+            val request = captured.get()
+            assertTrue(!request.contains("response_format"), "completeText 不能开 JSON mode：" + request)
+            assertTrue(request.contains("补一句"), request)
+        } finally {
+            server.stop(0)
+        }
     }
 
     @Test

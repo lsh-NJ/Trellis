@@ -101,8 +101,14 @@ class HttpLlmClient(
     override suspend fun complete(messages: List<LlmMessage>): String =
         completeWithReasoning(messages).content
 
-    override suspend fun completeWithReasoning(messages: List<LlmMessage>): LlmReply {
-        val request = requestFor(messages, stream = false, jsonMode = true)
+    override suspend fun completeText(messages: List<LlmMessage>): String =
+        completeReply(messages, jsonMode = false).content
+
+    override suspend fun completeWithReasoning(messages: List<LlmMessage>): LlmReply =
+        completeReply(messages, jsonMode = true)
+
+    private suspend fun completeReply(messages: List<LlmMessage>, jsonMode: Boolean): LlmReply {
+        val request = requestFor(messages, stream = false, jsonMode = jsonMode)
         val (status, body) = withContext(Dispatchers.IO) { readResponse(request, completeIdleSeconds) }
         if (status !in 200..299) {
             // 把响应体带上 —— 认证失败、模型名写错、额度用尽，全在里面。

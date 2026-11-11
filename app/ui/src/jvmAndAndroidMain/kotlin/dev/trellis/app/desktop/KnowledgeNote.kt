@@ -4,6 +4,9 @@ import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * 一篇知识库笔记。文件是真相，索引只是投影（见 `docs/knowledge-base-draft.md` §3）。
@@ -649,9 +652,21 @@ internal fun removeAiInline(body: String, content: String): String? {
     return body.removeRange(index, index + target.length)
 }
 
+/**
+ * 模型偶尔会按 JSON mode 回 `{"content": "..."}`（接口被别处共用的老毛病）：
+ * 能认出来就只取里面那段字符串，别把 JSON 塞进正文。
+ */
+private fun aiFillSentenceFrom(raw: String): String {
+    val trimmed = raw.trim()
+    if (!trimmed.startsWith("{")) return raw
+    val parsed = runCatching { Json.parseToJsonElement(trimmed) }.getOrNull() as? JsonObject ?: return raw
+    val first = parsed.values.firstOrNull { it is JsonPrimitive && it.isString } as? JsonPrimitive ?: return raw
+    return first.content
+}
+
 /** 把模型输出整理成能塞进 `{{…}}` 的一行字：不加换行、不套娃、不超长。 */
 internal fun normalizeAiFillText(raw: String): String =
-    raw.replace("\r\n", " ")
+    aiFillSentenceFrom(raw).replace("\r\n", " ")
         .replace('\n', ' ')
         .replace('\r', ' ')
         .trim()

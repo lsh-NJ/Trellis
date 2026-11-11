@@ -47,6 +47,15 @@ interface LlmClient {
     suspend fun complete(messages: List<LlmMessage>): String
 
     /**
+     * 同 [complete]，但**不开 JSON mode**：模型直接给一段人话。
+     *
+     * [complete] 默认带 `response_format: json_object`（给插件生成/工具循环用），
+     * 所以「只要一句话」的调用（编辑器里的 AI 补全）必须走这里 —— 否则模型会把
+     * 那句人话包成 `{"content": "..."}` 回来。默认实现退回 [complete]，假模型不用改。
+     */
+    suspend fun completeText(messages: List<LlmMessage>): String = complete(messages)
+
+    /**
      * 同 [complete]，但把模型的推理过程（`reasoning_content`）一起带回来。
      *
      * 默认实现退化成「没有推理过程」，老实现一个字都不用改。
