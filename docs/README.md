@@ -23,7 +23,9 @@
 | [`conversation-redesign.md`](conversation-redesign.md) | 会话页五层信息、三态、三动作、撤销语义 | 实现记录（2026-10-24） | 改会话页 UI / 理解「过程与结论分离」 |
 | [`roadmap.md`](roadmap.md) | 已知缺口与优先级（能力面、视觉、插件市场、端） | 活文档 | 动手前先查有没有人记过这个坑 |
 | [`eval-prompts.md`](eval-prompts.md) | 验收题库（送检用，与提示词里的示例互为镜像） | 活文档（测试配套） | 调提示词后自测、验收 AI 能力 |
+| [`plugin-host-actions.md`](plugin-host-actions.md) | **插件可用的宿主动作**：脚本/DSL 怎么用 `action` + `args` 点名宿主动作、capability 门、动作目录（`openKnowledgeNote` / `openPage` / `writeKnowledgeNote` / `notify` / `startFocusTimer` / 任务类）、**缺口协议**（先组合通用动作，一整类需求反复出现才新增动作） | 活文档 | 写需要动宿主数据的插件 / 判断某交互该组合还是该新增能力 |
 | [`examples/bento-style.md`](examples/bento-style.md) | 样片「Bento / BENTO SHIFT」怎么拆成三层落进 Trellis | 实现记录 | 做主题/看板类插件、理解「样式/数据/外壳」边界 |
+| [`examples/reading-log.md`](examples/reading-log.md) | 示例「读书记录」：书目行（书名 + 进度「当前 ｜ 总页数」+ 打开笔记）+ 两个浮窗入口（加一本书 / 记一页）；点书名打开或新建读书笔记；沿用 1.0 store 键、文案纪律与端到端验收点 | 实现记录 | 写有状态 + 浮窗输入的脚本插件、看 `openKnowledgeNote` 真实用法 |
 | [`plugin-hotplug-path.md`](plugin-hotplug-path.md) | 跨平台 + 插件运行时热插拔的成熟路径调研结论（TL;DR、候选矩阵、推荐路径、落地计划、风险） | **结论冻结**（v1.0，2026-10-22） | 讨论 Android/iOS、热更新、插件市场前 |
 | [`research/plugin-hotplug/01-sandbox-runtimes.md`](research/plugin-hotplug/01-sandbox-runtimes.md) | JS/Wasm 沙箱运行时调研（Zipline / quickjs-kt / Chicory / Chasm / Rhino / GraalJS…） | 调研证据 | 选运行时、评估平台矩阵 |
 | [`research/plugin-hotplug/02-native-loaders.md`](research/plugin-hotplug/02-native-loaders.md) | 原生插件加载（PF4J / Shadow / ClassLoader、iOS 约束） | 调研证据 | 桌面/Android/iOS 原生插件方案 |
@@ -42,6 +44,7 @@
 
 - **第一次来，只想跑起来**：`../AGENTS.md` §1 → `../README.md` 构建与测试 → 跑 `:app:desktop:run`。
 - **要改内核**：`kernel-design.md` §0（怎么用这份文档）→ §2 词汇表 → §3 模块边界 → §4 抽象 → §9 挂载点 → 再动代码；配合 `kernel/src/commonTest/.../api/*` 理解契约。
+- **要写会动宿主数据的插件**：`plugin-host-actions.md`（通用动作目录与 capability 门、先组合再谈缺口）→ `examples/reading-log.md`（三条需求的完整卡片 + 端到端测试）→ `../examples/plugins/ai.reading-log/main.js`。
 - **要改 AI 层**：`agent-manager.md` 全文 → `ai/.../manager/ManagerPrompt.kt` 与 `ManagerAgent.kt` → `eval-prompts.md` 自测；要动工具注入/审批边界，先读 `agent-harness.md`（方向已定，P1 待开工）。
 - **要改工作流清单**：`agent-workflow-ui.md`（设计取舍与状态机）→ `WorkflowTools.kt` / `AppRuntime.beginPlan` / `ChatScreen.PlanChecklist`。
 - **要改学习计划后端**：`plan-backend.md`（模块分工与语义）→ `sdk-domain/.../plan/Contract.kt` → `SqliteLearningPlanService.kt` + `PlanCommands.kt` → `LearningPlanServiceTest`。
