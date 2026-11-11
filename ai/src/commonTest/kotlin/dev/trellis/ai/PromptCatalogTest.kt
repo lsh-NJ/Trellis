@@ -74,4 +74,54 @@ class PromptCatalogTest {
             "实际是: " + prompt.lines().filter { "ping" in it }.joinToString(" | "),
         )
     }
+
+    /**
+     * 造插件的工作流必须从需求清单开始，先查宿主动作，最后验收再回报。
+     * 少了任何一段，模型都会重演 ai.reading-log 那次：只做一半、写进 limitation 就宣布装好了。
+     */
+    @Test
+    fun thePluginWorkflowIsChecklistFirstAndVerifyLast() {
+        val prompt = PromptBuilder.system(TEST_CATALOG)
+        val block = prompt.substringAfter("<when_you_make_a_plugin>")
+            .substringBefore("</when_you_make_a_plugin>")
+
+        for (key in listOf(
+            "需求清单", "list_actions", "openPage", "writeKnowledgeNote", "startFocusTimer",
+            "宿主新增", "describe_screen", "limitation", "cannotDo",
+            "短设计", "ask_choices", "slot.home.section", "900",
+            "description", "必要说明", "同一信息只出现一次", "怎么用 → 设计 → 缺口/限制",
+            "必要内容", "操作说明句", "浮窗", "input", "onSubmit",
+        )) {
+            assertTrue(key in block, "造插件工作流里要提到：$key")
+        }
+        assertTrue(block.indexOf("需求清单") < block.indexOf("短设计"), "先拆需求，再给设计")
+        assertTrue(block.indexOf("短设计") < block.indexOf("list_actions"), "设计完再对能力")
+        assertTrue(block.indexOf("需求清单") < block.indexOf("list_actions"), "先列需求，再查宿主动作")
+        assertTrue(block.indexOf("list_actions") < block.indexOf("openPage"), "先查动作，再谈通用动作组合")
+        assertTrue(
+            block.indexOf("openPage") < block.indexOf("宿主新增"),
+            "先组合现有通用动作，组合不出来才谈宿主新增能力",
+        )
+        assertTrue(
+            block.indexOf("list_actions") < block.indexOf("describe_screen"),
+            "先查动作，deploy 后再 describe_screen",
+        )
+        assertTrue(
+            block.contains("不能只写进 limitation 就交差"),
+            "做不到时要明说，不能只写进 limitation 就交付",
+        )
+        assertTrue(block.contains("没核对过不能说「装好了」"), "没验收过不能宣布装好")
+        assertTrue(
+            block.indexOf("必要内容") < block.indexOf("浮窗"),
+            "先定卡面只留必要内容，再定编辑操作走浮窗输入",
+        )
+        assertTrue(
+            block.contains("别在卡片正文里堆一排 −/+ 或大段表单"),
+            "编辑类操作用浮窗，不把控件堆在卡片正文里",
+        )
+        assertTrue(
+            block.contains("也别为一个插件求宿主加动作"),
+            "不要每做一个插件就要求宿主加一个动作",
+        )
+    }
 }

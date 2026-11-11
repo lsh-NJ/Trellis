@@ -14,6 +14,7 @@ import dev.trellis.kernel.api.UninstallResult
 import dev.trellis.kernel.core.PluginId
 import dev.trellis.kernel.core.SemVer
 import dev.trellis.script.ScriptSandbox
+import dev.trellis.script.buildUiNode
 import dev.trellis.kernel.event.EventDeclaration
 import dev.trellis.kernel.extension.KernelPoints
 import java.io.File
@@ -59,10 +60,20 @@ class PluginTools(
     /** 这一轮碰过插件工具没有（不管动没动手）。用来决定收尾时要不要核对。 */
     private var touched: Boolean = false
 
+    /**
+     * 用户有没有看过这个插件的设计并确认。
+     *
+     * 提示词说了「先设计、再实装」，但模型会在思考里写「应该先问」然后直接装 ——
+     * 说和做之间差一层硬门。所以由外面（AppRuntime）告诉工具：上一轮是不是
+     * 用 ask_choices 停下来问过用户；没问过就不许 deploy 新插件。
+     */
+    private var designConfirmedByUser: Boolean = false
+
     /** 每一轮开始前清账：上一轮的 touched/acted 不能带进这一轮。 */
-    fun beginRound() {
+    fun beginRound(designConfirmedByUser: Boolean = false) {
         touched = false
         acted = false
+        this.designConfirmedByUser = designConfirmedByUser
     }
 
     /**
@@ -98,20 +109,7 @@ class PluginTools(
      * 光给工具不够，还得说清怎么用它们干活。
      * 不说，模型会把 deploy 当第一步，把工具当摆设。
      */
-    val guidance: String = listOf(
-        "<how_to_work>",
-        "0. 先做满，再谈退：这件事如果脚本能写（有输入、有计算、有存取），就别只摆一张卡；规则能自动做，就别让用户自己点。够得着的先够。",
-        "1. 先看清楚：list_plugins 看已经装着什么，list_events 和 list_actions 看有哪些事件和动作能用。",
-        "2. 要改一个已装的插件：read_plugin 把它的文件读回来，在原文上改，再 deploy 同一个 id。不要用新 id 另写一个近似的东西。",
-        "3. 要写新的：先 try_plugin 试跑，报错就改，跑通了再 deploy。",
-        "4. 用户说某个插件不要了：remove_plugin 删掉它（进回收站，七天内能还原）；只是暂时不想用就用 disable_plugin。内置插件删不掉，别白试。",
-        "5. 做不到时先退一步，再谈拒绝：换交互、换数据源、换呈现、换触发，退到哪一级就写进 limitation。四条路都试过还是不行，才 cannotDo。不吭声地退一步，比直接拒绝更糟。",
-        "6. 没说 done 之前不要编事实：你只知道自己调工具看到的东西，「应该已经装好了」不是依据。",
-        "7. 做「高密度数据看板」风格（纸感米白 + 荧光青柠 + 墨黑、硬边小圆角）：主题切 dev.bento.shift/bento（装了才有），" +
-            "卡片样式设 bento，导航放左侧；卡片内部用 stat 配 text(size:'huge', weight:'bold') 做大数字、" +
-            "text(size:'small', font:'mono') 做小标、bars / sparkline / ring 做走势、table 做明细、grid(columns:2..4) 分栏。",
-        "</how_to_work>",
-    ).joinToString("\n")
+    val guidance: String = pluginGuidance()
 
     private val claimKeywords = listOf(
         "装好了", "装上了", "已装", "已经装", "安装好", "部署好", "已经部署", "改好了", "已经改好",
@@ -176,6 +174,8 @@ class PluginTools(
     private class Prepared(
         val files: Map<String, String>,
         val capabilities: Set<String>,
+        /** 每张卡片的文字预览；只有 try_plugin 才生成，deploy 用不上。 */
+        val preview: List<String> = emptyList(),
     )
 
     private fun idOf(draft: Any): String = when (draft) {
@@ -191,24 +191,37 @@ class PluginTools(
      * 脚本实际注册了哪些卡片，而不是听模型自己说。模型说「我挂了三张」而
      * 实际只注册了一张，这种谎言只有跑一遍才看得见。
      */
-    private suspend fun prepare(draft: Any): Any {
+    private suspend fun prepare(draft: Any, withPreview: Boolean = false): Any {
         if (draft is AuthoredPlugin) {
-            return Prepared(draft.toFiles(catalog), draft.capabilities(catalog))
+            val problems = detailProblems(draft.id, draft.description, draft.howToUse) +
+                placementProblems(draft.id, draft.slots.filter { it.point == HOME_POINT }.map { it.order })
+            if (problems.isNotEmpty()) return problems
+            val preview = if (withPreview) {
+                PluginCardPreview.describeDeclarative(draft.id, draft)
+            } else {
+                emptyList()
+            }
+            return Prepared(draft.toFiles(catalog), draft.capabilities(catalog), preview)
         }
         val script = draft as AuthoredScript
         val sandbox = ScriptSandbox(pluginId = script.id, source = script.script)
+        var declared: List<dev.trellis.script.CardDecl> = emptyList()
         var cards: List<ScriptCardDecl> = emptyList()
         var actions: List<ScriptActionDecl> = emptyList()
         var themes: List<ScriptThemeDecl> = emptyList()
+        var preview: List<String> = emptyList()
         try {
             withContext(Dispatchers.Default) { sandbox.boot() }
-            cards = sandbox.declaredCards().map { ScriptCardDecl(it.id, it.pointId) }
+            declared = sandbox.declaredCards()
+            cards = declared.map { ScriptCardDecl(it.id, it.pointId) }
             actions = sandbox.declaredActions().map {
                 ScriptActionDecl("script." + script.id + "." + it.id, it.label)
             }
             themes = sandbox.declaredThemes().map {
                 ScriptThemeDecl(it.id, it.name, it.description, it.light, it.dark)
             }
+            // 预览要趁沙箱还开着渲染；渲不出来也只是缺一行预览，不能让试跑失败。
+            if (withPreview) preview = renderPreviews(sandbox, cards)
         } catch (cancel: CancellationException) {
             throw cancel
         } catch (t: Throwable) {
@@ -219,6 +232,9 @@ class PluginTools(
         if (cards.isEmpty() && themes.isEmpty()) {
             return listOf("脚本里既没有卡片也没有主题，装上不会有任何东西")
         }
+        val problems = detailProblems(script.id, script.description, script.usage) +
+            placementProblems(script.id, declared.filter { it.pointId == HOME_POINT }.map { it.order })
+        if (problems.isNotEmpty()) return problems
         for (theme in themes) {
             val problems = themeProblems(theme.light, theme.dark)
             if (problems.isNotEmpty()) {
@@ -232,7 +248,54 @@ class PluginTools(
                     "。能用的是：" + catalog.mountPointIds.sorted().joinToString("、"),
             )
         }
-        return Prepared(script.toFiles(cards, actions, themes), script.capabilities.toSet())
+        return Prepared(script.toFiles(cards, actions, themes), script.capabilities.toSet(), preview)
+    }
+
+    /**
+     * 插件详情页会展示 description 和 usage：空了用户就看不到「这是干什么的、怎么用」。
+     * 这两句不是给机器看的，是交付给用户的说明书一部分。
+     */
+    private fun detailProblems(id: String, description: String, usage: String): List<String> =
+        buildList {
+            if (description.isBlank()) {
+                add("插件详情要写说明：description 必填，一句话说清这个插件是干什么的（详情页会展示）")
+            }
+            if (usage.isBlank()) {
+                add("插件详情要写说明：usage 必填，说清用户去哪儿看、怎么用（详情页会展示）")
+            }
+        }
+
+    /**
+     * 新插件默认落在首页已有卡片最下方：用户装完不用满界面找它。
+     * 更新已有插件时保留原来的 order —— 只改内容不该让卡片跳位置。
+     */
+    private fun placementProblems(id: String, homeOrders: List<Int>): List<String> {
+        if (File(pluginsDir, id).isDirectory) return emptyList()
+        return homeOrders.filter { it < HOME_MIN_ORDER }.map { order ->
+            "新插件默认放首页已有卡片最下方：slot.home.section 的 order 至少 $HOME_MIN_ORDER（建议 900），现在是 $order"
+        }
+    }
+
+    /**
+     * 用示例数据把每张卡渲染一遍，摊成给模型看的文字。
+     *
+     * 每一步都兜住异常：一张卡渲染失败只该在预览里留一行错误，
+     * 不能把 try_plugin 变成「试跑工具自己崩了」。
+     */
+    private suspend fun renderPreviews(
+        sandbox: ScriptSandbox,
+        cards: List<ScriptCardDecl>,
+    ): List<String> = withContext(Dispatchers.Default) {
+        cards.map { card ->
+            try {
+                val node = buildUiNode(sandbox.render(card.id, PluginCardPreview.sampleData()))
+                PluginCardPreview.describe(card.id, card.pointId, node)
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (t: Throwable) {
+                PluginCardPreview.failed(card.id, card.pointId, t.message ?: "未知错误")
+            }
+        }
     }
 
     private inner class ListPlugins : AgentTool {
@@ -288,7 +351,13 @@ class PluginTools(
                     appendLine("- " + action.id + "：" + action.label + "　参数：" + params)
                 }
             }
-            return ToolResult(text.trimEnd())
+            return ToolResult(
+                text.trimEnd() + "\n\n（先用这些动作组合出用户要的交互；组合不出来的整类缺口，" +
+                    "才告诉用户「这条需求需要宿主新增 X 类能力」，并写进 limitation 当真实缺口。）" +
+                    "\n\n（按钮的 args 是每次渲染时从脚本 render 里现算出来的，可以随数据变化——" +
+                    "「每本书各开一篇笔记」「把卡片上已经存下的内容写进笔记」这类需求，用 render 里" +
+                    "现算的 args 就能做到，别误当成「参数写死、做不到」。）",
+            )
         }
     }
 
@@ -353,12 +422,18 @@ class PluginTools(
             val draft = draftOf(arguments)
             if (draft is String) return ToolResult(draft, isError = true)
             if (draft is List<*>) return ToolResult(draft.joinToString("\n"), isError = true)
-            val prepared = prepare(draft)
+            val prepared = prepare(draft, withPreview = true)
             if (prepared is List<*>) return ToolResult(prepared.joinToString("\n"), isError = true)
-            val files = (prepared as Prepared).files
+            val ready = prepared as Prepared
+            val files = ready.files
             val issues: List<Issue> = selfTest.test(files)
             if (issues.isEmpty()) {
-                return ToolResult("跑通了，没有报错。生成的文件：" + files.keys.joinToString("、"))
+                val head = "跑通了，没有报错。生成的文件：" + files.keys.joinToString("、")
+                if (ready.preview.isEmpty()) return ToolResult(head)
+                return ToolResult(
+                    head + "\n\n装上之后每张卡片会长这样（按示例数据渲染，实际数字随用户数据变）：\n" +
+                        ready.preview.joinToString("\n"),
+                )
             }
             return ToolResult(issues.joinToString("\n") { it.render() }, isError = true)
         }
@@ -395,6 +470,16 @@ class PluginTools(
             val draft = draftOf(arguments)
             if (draft is String) return ToolResult(draft, isError = true)
             if (draft is List<*>) return ToolResult(draft.joinToString("\n"), isError = true)
+            // 新插件先给设计、等用户点头：这是用户定的流程，不能靠模型自觉。
+            if (!designConfirmedByUser && !File(pluginsDir, idOf(draft)).isDirectory) {
+                return ToolResult(
+                    "先别装：新插件要先让用户看过设计再动手。请在回复里说清卡片放哪、" +
+                        "从上到下每一行是什么、点哪里发生什么、哪条需求做不到，" +
+                        "然后用 ask_choices 给「按这个做 / 我要改…」等用户点。" +
+                        "用户点过之后这一轮才允许 deploy；用户已经明确说「直接做/别问了」才可以跳过。",
+                    isError = true,
+                )
+            }
             val prepared = prepare(draft)
             if (prepared is List<*>) return ToolResult(prepared.joinToString("\n"), isError = true)
             val ready = prepared as Prepared
@@ -412,7 +497,63 @@ class PluginTools(
 
             deployedId = idOf(draft)
             acted = true
-            return ToolResult("装好了：" + idOf(draft), done = true)
+            // 不标 done：装完就收工会让「装好了」变成结论，而真正的验收在下一句
+            // ——describe_screen 核对卡片、按需求逐条回报。done 只能由模型自己核对完再说。
+            return ToolResult(deployReceipt(idOf(draft)))
         }
     }
 }
+
+/**
+ * 给模型的插件工作守则。
+ *
+ * 写成顶层函数（而不是内联 list）：内容本身就是交付物的一部分——
+ * 「先试跑、装完必须核对、做不到要让用户选」这几条得能被测试钉住。
+ */
+internal fun pluginGuidance(): String = listOf(
+    "<how_to_work>",
+    "0. 先做满，再谈退：这件事如果脚本能写（有输入、有计算、有存取），就别只摆一张卡；规则能自动做，就别让用户自己点。够得着的先够。",
+    "1. 先看清楚：list_plugins 看已经装着什么，list_events 和 list_actions 看有哪些事件和动作能用。",
+    "2. 先设计、后实装：动手写文件之前，先在回复里给用户一份短设计——卡片放哪、从上到下有什么、" +
+        "每行显示什么、点哪里弹浮窗、浮窗里填什么、用哪些宿主动作、哪条做不到；再用 ask_choices 给「按这个做 / 我要改…」，" +
+        "没问过用户就 deploy 新插件会被工具拦住；" +
+        "等用户确认才写文件（用户此前已明确说直接做才跳过）。",
+    "3. 要改一个已装的插件：read_plugin 把它的文件读回来，在原文上改，再 deploy 同一个 id。不要用新 id 另写一个近似的东西。",
+    "4. 要写新的：先 try_plugin 试跑。它会报错，也会把每张卡渲染出来的样子（标题、Stat、输入框、按钮和动作）一起给你——" +
+        "看那张预览对不对得上用户要的效果，不对劲就改，改到预览跟需求一致再 deploy。",
+    "5. 用户说某个插件不要了：remove_plugin 删掉它（进回收站，七天内能还原）；只是暂时不想用就用 disable_plugin。内置插件删不掉，别白试。",
+    "6. 先看 list_actions，能从通用动作组合出来的就组合：openPage 跳页、writeKnowledgeNote 写笔记、" +
+        "openKnowledgeNote 打开或新建笔记、notify 发通知、startFocusTimer 计时、任务类动作——" +
+        "这些能拼出来的交互别自己造，也不要每做一个插件就要求宿主加一个动作。" +
+        "组合不出来的一整类缺口，才告诉用户「这条需求需要宿主新增 X 类能力」（你改不了宿主代码），" +
+        "并写进 limitation 说清真实缺口，不许静默降级；要降级先告诉用户差在哪、让用户选。" +
+        "limitation 只写真实取舍，不是免责声明。四条路都试过还是不行，才 cannotDo。",
+    "7. 没说 done 之前不要编事实：你只知道自己调工具看到的东西，「应该已经装好了」不是依据。",
+    "8. deploy 之后必须核对：用 describe_screen（或 take_screenshot）确认卡片真的出现了、按钮和输入都在，能点就点一遍验证交互，" +
+        "然后按用户的需求逐条回报（哪条做到了、在哪看到的）。回报顺序固定：怎么用 → 设计 → 缺口/限制（没有就省略）；" +
+        "只回一句「装好了」等于没核对。",
+    "9. 摆放与详情：新插件默认放首页已有卡片最下方——point 用 slot.home.section、order 至少 500（建议 900）；" +
+        "改已有插件保留原 order，别为了改内容给它挪位置。manifest 的 description（一句话用途）和 usage（怎么用）必填，插件详情页会展示这两句。",
+    "10. 卡片文案：卡面只留必要的东西——标题（这是什么）、数据、动作。不要写「点这里做什么」这类操作说明句，" +
+        "同一信息只写一次（书名别写两遍、进度「12 / 300 页」只写一次），不要装饰性废话、不要空标题占位。" +
+        "输入、添加、改数值一律用 input：宿主默认把它收成卡面上的一行可点字，点开才是浮窗输入框（popup），" +
+        "别把一排输入框和 −/+ 堆在卡片正文里；真要常驻输入才写 popup:false。",
+    "11. 做「高密度数据看板」风格（纸感米白 + 荧光青柠 + 墨黑、硬边小圆角）：主题切 dev.bento.shift/bento（装了才有），" +
+        "卡片样式设 bento，导航放左侧；卡片内部用 stat 配 text(size:'huge', weight:'bold') 做大数字、" +
+        "text(size:'small', font:'mono') 做小标、bars / sparkline / ring 做走势、table 做明细、grid(columns:2..4) 分栏。",
+    "</how_to_work>",
+).joinToString("\n")
+
+/** 新插件默认挂的卡片位（首页），以及默认 order 的下限（首页已有卡片最下方）。 */
+private const val HOME_POINT = "slot.home.section"
+private const val HOME_MIN_ORDER = 500
+
+/**
+ * deploy 成功后的回执。
+ *
+ * 现实里最常见的一次性失败就是「装上了就等于做好了」——
+ * 回执必须把下一步核对写死，否则模型报完 done 就收工。
+ */
+internal fun deployReceipt(id: String): String =
+    "装好了：" + id + "。装好只是第一步：用 describe_screen（或 take_screenshot）核对卡片真的出现、" +
+        "按钮/输入都在；能点就点一遍验证核心交互；再按用户需求逐条回报。"
