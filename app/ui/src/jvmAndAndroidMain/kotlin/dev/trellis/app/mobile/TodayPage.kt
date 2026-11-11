@@ -20,6 +20,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -93,6 +94,10 @@ fun TodayPage(runtime: AppRuntime) {
                 layout = runtime.layoutFor(Slots.HomeHeader.id),
             )
         }
+
+        // 本周进度：放在插件头卡之后、任务列表之前 —— 先回答「这周推到哪了」，
+        // 再回答「现在该做什么」。没有计划时卡片自己给一句引导，不消失。
+        item { WeekCard(runtime) }
 
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -197,6 +202,94 @@ fun TodayPage(runtime: AppRuntime) {
             task = sheetTask,
             planTitle = planNames[sheetTask.planId?.value],
             onDismiss = { sheetTaskId = null },
+        )
+    }
+}
+
+/**
+ * 「本周」卡：手机单列版的周进度。
+ *
+ * 数字全部取自运行时已有的周视图，不在页面里重新算：
+ * `planWeekProgress` 由 refreshPlan 从后端当前周算好（本周 done/total、全部剩余、
+ * 已完成预估分钟）；实际投入按活动归因现取（`planWeekAttributedMinutes()`），
+ * 取不到就显示「—」，不拿 0 分钟冒充「没学」。
+ */
+@Composable
+private fun WeekCard(runtime: AppRuntime) {
+    val progress = runtime.planWeekProgress
+    var investedMinutes by remember(runtime.planDays, runtime.planSelectedWeek) {
+        mutableStateOf<Long?>(null)
+    }
+    // 计划数据本来只在进「计划」页时才开库（PlanPage.kt 的进页 LaunchedEffect）；
+    // 首页要显示周进度，就得在这里补一次。只补一次：读到了就不再调，不改变别处的懒加载。
+    LaunchedEffect(Unit) {
+        if (runtime.planWeekProgress == null) runCatching { runtime.refreshPlan() }
+    }
+    // 活动归因要读库，是 suspend；跟着计划周变化重新取一次。
+    LaunchedEffect(runtime.planDays, runtime.planSelectedWeek) {
+        investedMinutes = runCatching { runtime.planWeekAttributedMinutes() }.getOrNull()
+    }
+
+    CardBox {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "本周",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.weight(1f))
+            if (progress != null) Pill(progress.label)
+        }
+        Spacer(Modifier.height(Gap.s))
+        if (progress == null) {
+            Text(
+                "还没有学习计划。去「对话」里说想学什么，管家会把周次和单元排好。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return@CardBox
+        }
+        val invested = investedMinutes
+        Row(horizontalArrangement = Arrangement.spacedBy(Gap.l)) {
+            BigStat(
+                value = progress.done.toString() + "/" + progress.total,
+                label = "本周节点",
+                modifier = Modifier.weight(1f),
+            )
+            BigStat(
+                value = invested?.let { minutesLabel(it.toInt()) } ?: "—",
+                label = "已投入",
+                modifier = Modifier.weight(1f),
+                hint = if (invested != null && invested > 0) "屏幕活动归因" else null,
+            )
+        }
+        Spacer(Modifier.height(Gap.s))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(6.dp)
+                .clip(RoundedCornerShape(percent = 50))
+                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
+        ) {
+            if (progress.progress > 0f) {
+                Box(
+                    Modifier
+                        .fillMaxWidth(progress.progress)
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(percent = 50))
+                        .background(MaterialTheme.colorScheme.primary),
+                )
+            }
+        }
+        Spacer(Modifier.height(Gap.s))
+        val meta = buildList {
+            add(if (progress.allRemaining > 0) "全部还剩 " + progress.allRemaining + " 件" else "全部做完")
+            if (progress.plannedMinutes > 0) add("已完成预估 " + progress.plannedMinutes + " 分钟")
+        }.joinToString(" · ")
+        Text(
+            meta,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }

@@ -97,8 +97,37 @@ class MainActivity : ComponentActivity() {
                 home = home,
                 openTab = openTab,
                 openTabToken = openTabToken,
+                // 运行时创建出来后交给 Activity：生命周期回调（onResume / onPause /
+                // onWindowFocusChanged）只有在 Activity 这一层才拿得到，Compose 里
+                // 用 LocalLifecycleOwner 也能做，但窗口焦点事件本来就属于 Activity。
+                onRuntimeReady = { created -> runtime = created },
             )
         }
+    }
+
+    /**
+     * 回到前台 = 用户可能刚回到椅子前：让管家看看晨/夜仪式是否该说话。
+     * 桌面版把这两个回调挂在 AWT 窗口的焦点监听上（Main.kt:140/144），安卓这边
+     * 窗口焦点和 Activity 生命周期是两套信号，所以两处都接，重复触发由管家的
+     * checkpoint 去重（同一应用内日期最多一次）。
+     */
+    override fun onResume() {
+        super.onResume()
+        runtime?.onWindowFocused()
+    }
+
+    override fun onPause() {
+        // 先告诉运行时「人走了」：它会把 windowFocused 置 false，之后的管家主动消息
+        // 才走系统通知、离开时才自动采纳建议。
+        runtime?.onWindowLostFocus()
+        super.onPause()
+    }
+
+    /** 下拉通知栏/系统弹窗也会走这里：失焦后通知才发得出去，回到窗口再检查一次仪式。 */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        val current = runtime ?: return
+        if (hasFocus) current.onWindowFocused() else current.onWindowLostFocus()
     }
 
     /**
@@ -127,6 +156,8 @@ private fun MobileHost(
     home: File,
     openTab: Int?,
     openTabToken: Int,
+    /** 运行时装配完成时回调一次，交给 Activity 存字段，供生命周期回调使用。 */
+    onRuntimeReady: (AppRuntime) -> Unit,
 ) {
     var ready by remember { mutableStateOf<AppRuntime?>(null) }
     var failure by remember { mutableStateOf<String?>(null) }
@@ -154,7 +185,11 @@ private fun MobileHost(
 
     LaunchedEffect(Unit) {
         try {
-            ready = AppRuntime.create(home)
+            val created = AppRuntime.create(home)
+            // 先把引用交给 Activity，再让它出现在界面上：这样即使首帧渲染很慢，
+            // 生命周期回调也不会对着一个还没登记的运行时空转。
+            onRuntimeReady(created)
+            ready = created
         } catch (t: Throwable) {
             failure = (t.message ?: t.toString()) + "\n" + t.stackTraceToString().take(800)
         }
