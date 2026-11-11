@@ -215,15 +215,3 @@ $env:JAVA_HOME = "$env:USERPROFILE\.jdks\jdk17"; $env:Path = "$env:JAVA_HOME\bin
 
 数据落在 `~/.trellis/store.json`，插件目录是 `~/.trellis/plugins/` ——
 往里面丢插件（`manifest.json` + `main.dsl.json`，或脚本插件的 `manifest.json` + `main.js`），重启应用就能看到新卡片。
-
-> WSL 下需要 WSLg（`C:\Users\<你>\.wslconfig` 里 `guiApplications=true`）+
-> `SKIKO_RENDER_API=SOFTWARE_FAST`（`run-app.sh` 会自动设）。
-> 没有图形环境时，`./run.sh :app:desktop:test` 里的 `UiRenderTest` 会把界面离屏渲染成 PNG。
-
-> **应用开着的时候别重新编译。** `./gradlew :app:desktop:run` 的 classpath 是
-> `build/classes/` 目录，编译会原地重写它；已经跑起来的进程要到第一次用到某个类
-> （典型是点关闭时的 lambda）才会去加载，这时可能抛
-> `NoClassDefFoundError: MainKt$main$1$1$1$1`，于是窗口关不掉、进程也退不出，
-> `~/.trellis/app.log` 里会留着 `ClassNotFoundException`。要改代码就先关窗口再编译。
-> `Main.kt` 已经把这个坑兜住了（关闭回调不会因为异常阻止退出，另外 `Ctrl+Q` 永远能退），
-> 但「边跑边编译」还是会让你看到旧行为、白debug一轮。
