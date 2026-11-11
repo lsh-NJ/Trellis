@@ -158,7 +158,9 @@ internal object NodeBuilder {
 
     private fun stat(value: Scriptable): UiNode {
         val label = string(value, "label") ?: string(value, "title")
-        val number = string(value, "value") ?: string(value, "text")
+        // 数字必须走 plain()：string() 的 Number 分支是 raw.toString()，
+        // 于是脚本里写 value: 1 会被画成「1.0」（真实踩过的 bug）。
+        val number = plainText(value, "value") ?: string(value, "text")
         if (label == null && number == null) {
             return UiNode.Notice("stat 至少要写 label 或 value", UiNoticeTone.Problem)
         }
@@ -390,10 +392,14 @@ internal object NodeBuilder {
 
     private fun input(value: Scriptable): UiNode {
         val on = string(value, "on") ?: return UiNode.Notice("输入框没写 on（提交之后交给谁）", UiNoticeTone.Problem)
+        // 默认浮窗：卡片里只留一行可点的字，点开才填。要常驻输入写 popup:false / inline:true。
+        val inline = boolean(value, "inline") == true
+        val popup = if (inline) false else boolean(value, "popup") ?: true
         return UiNode.Input(
             hint = clip(string(value, "hint") ?: "", MAX_TEXT),
             submitLabel = clip(string(value, "submitLabel") ?: "记下", MAX_LABEL),
             onSubmit = UiTap.Plugin(on),
+            popup = popup,
         )
     }
 
@@ -433,6 +439,23 @@ internal object NodeBuilder {
             if (d == Math.floor(d) && !d.isInfinite()) d.toLong().toString() else d.toString()
         }
         else -> value.toString()
+    }
+
+    /**
+     * 读一个字段并当成纯文本：数字走 [plain]（整数不带 `.0`），
+     * 文本原样返回，其余（对象/布尔）当没写。
+     *
+     * 用在 stat 的 value 上——它既要吃字符串「3 本」也要吃脚本里的数字 3，
+     * 而 [string] 的 Number 分支是 `raw.toString()`，会把 3 画成「3.0」。
+     */
+    private fun plainText(value: Scriptable, name: String): String? {
+        val raw = ScriptableObject.getProperty(value, name)
+        if (raw == null || raw is Undefined || raw === Scriptable.NOT_FOUND) return null
+        return when (raw) {
+            is CharSequence -> raw.toString()
+            is Number -> plain(raw)
+            else -> null
+        }
     }
 
     private fun style(value: Scriptable): UiTextStyle = when (string(value, "style")) {
@@ -481,3 +504,12 @@ internal object NodeBuilder {
     private fun clip(text: String, limit: Int = MAX_TEXT): String =
         if (text.length <= limit) text else text.substring(0, limit) + "…"
 }
+
+/**
+ * 把脚本 `render` 交回来的纯数据翻成 [UiNode]。
+ *
+ * [NodeBuilder] 本身是 internal：翻译只该走 [ScriptPlugin] 这一条路。但宿主模块
+ * 的 `try_plugin` 预览需要**同一套翻译** —— 预览用什么翻、真装上就用什么画，
+ * 否则「试跑时看到的」和「用户看到的」是两张不同的卡。
+ */
+fun buildUiNode(value: Any?): UiNode = NodeBuilder.build(value)

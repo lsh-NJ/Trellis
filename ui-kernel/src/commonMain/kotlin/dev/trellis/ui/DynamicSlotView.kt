@@ -5,6 +5,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,12 +18,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -35,15 +38,24 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -828,38 +840,164 @@ private fun DynamicButton(
     }
 }
 
+/**
+ * 浮窗/常驻两种输入框提交时交给插件处理器的参数。
+ *
+ * 用户打的字永远放在 `value` 里；插件在按钮上写的 `args` 一起带上（用来点名「哪一行」）。
+ * 抽成函数是为了只有一条提交路径：两种形态都走它，谁也别再自己拼一遍参数。
+ */
+fun inputSubmitArgs(node: UiNode.Input, value: String): Map<String, String> {
+    val extra = when (val tap = node.onSubmit) {
+        is UiTap.Plugin -> tap.args
+        is UiTap.Host -> emptyMap()
+    }
+    return extra + mapOf("value" to value)
+}
+
 @Composable
 private fun DynamicInput(node: UiNode.Input, slot: DynamicSlot) {
+    if (node.popup) DynamicPopupInput(node, slot) else DynamicInlineInput(node, slot)
+}
+
+/**
+ * 浮窗版输入框（默认形态）：卡片里只有一行可点的字。
+ *
+ * 为什么要这样：卡片是看数据的地方，一行行输入框会把卡片撑成表单，
+ * 提示语还容易和标题重复。收成一个入口，点开才在浮窗里填，提交后浮窗关掉。
+ */
+@Composable
+private fun DynamicPopupInput(node: UiNode.Input, slot: DynamicSlot) {
     val scope = rememberCoroutineScope()
-    var text by remember(slot.id, node.hint) { mutableStateOf("") }
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    var open by remember(slot.id, node.hint) { mutableStateOf(false) }
     var feedback by remember(slot.id, node.hint) { mutableStateOf("") }
+    var running by remember(slot.id, node.hint) { mutableStateOf(false) }
+    val submitLabel = node.submitLabel.ifBlank { "提交" }
+
+    // 注意：输入的文字在浮窗里，由浮窗作为参数交进来（[PluginInputDialog] 的 onSubmit）。
+    // 不要在这里另存一份 text —— 两份状态必然不同步，用户打的字就会「进不去」。
+    fun submit(value: String) {
+        if (running) return
+        running = true
+        scope.launch {
+            feedback = try {
+                when (val tap = node.onSubmit) {
+                    is UiTap.Plugin -> slot.perform(tap.handler, inputSubmitArgs(node, value)).message
+                    is UiTap.Host -> "这个输入框只能交给插件处理"
+                }
+            } catch (t: Throwable) {
+                t.message ?: "提交失败"
+            } finally {
+                running = false
+            }
+            open = false
+        }
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        OutlinedTextField(
-            value = text,
-            onValueChange = { text = it },
-            label = { Text(node.hint) },
-            singleLine = true,
+        Text(
+            submitLabel,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (running) muted.copy(alpha = 0.5f) else MaterialTheme.colorScheme.primary,
+            modifier = Modifier.clickable(enabled = !running) { open = true },
         )
-        OutlinedButton(
-            onClick = {
-                scope.launch {
-                    feedback = try {
-                        when (val tap = node.onSubmit) {
-                            is UiTap.Plugin -> slot.perform(tap.handler, tap.args + mapOf("value" to text)).message
-                            is UiTap.Host -> "这个输入框只能交给插件处理"
-                        }
-                    } catch (t: Throwable) {
-                        t.message ?: "提交失败"
-                    }
-                    text = ""
-                }
-            },
-        ) {
-            Text(node.submitLabel)
-        }
         if (feedback.isNotEmpty()) {
-            Text(feedback, style = MaterialTheme.typography.bodySmall)
+            Text(feedback, style = MaterialTheme.typography.bodySmall, color = muted)
+        }
+    }
+
+    if (open) {
+        PluginInputDialog(
+            hint = node.hint,
+            submitLabel = submitLabel,
+            running = running,
+            onDismissRequest = { open = false },
+            onSubmit = { value -> submit(value) },
+        )
+    }
+}
+
+/** 常驻版输入框（`popup:false`）：一行文字 + 底线 + 右侧「↵ 提交」。 */
+@Composable
+private fun DynamicInlineInput(node: UiNode.Input, slot: DynamicSlot) {
+    val scope = rememberCoroutineScope()
+    var field by remember(slot.id, node.hint) { mutableStateOf(TextFieldValue("")) }
+    var feedback by remember(slot.id, node.hint) { mutableStateOf("") }
+    var running by remember(slot.id, node.hint) { mutableStateOf(false) }
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    // 占位文字只做提示，不是正文：压到 0.65 的次级墨色，别再抢视线。
+    val placeholder = muted.copy(alpha = 0.65f)
+    val line = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.8f)
+    val submitLabel = node.submitLabel.ifBlank { "提交" }
+
+    fun submit() {
+        if (running) return
+        running = true
+        feedback = ""
+        val value = field.text
+        scope.launch {
+            feedback = try {
+                when (val tap = node.onSubmit) {
+                    is UiTap.Plugin -> slot.perform(tap.handler, inputSubmitArgs(node, value)).message
+                    is UiTap.Host -> "这个输入框只能交给插件处理"
+                }
+            } catch (t: Throwable) {
+                t.message ?: "提交失败"
+            } finally {
+                running = false
+            }
+            field = TextFieldValue("")
+        }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            BasicTextField(
+                value = field,
+                onValueChange = { field = it },
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyLarge.copy(
+                    color = MaterialTheme.colorScheme.onSurface,
+                ),
+                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                modifier = Modifier
+                    .weight(1f)
+                    .onPreviewKeyEvent { event ->
+                        // 输入法组合中的 Enter（选候选）不算提交；组合结束才认。
+                        val composing = field.composition != null
+                        if (event.type == KeyEventType.KeyDown && event.key == Key.Enter && !composing) {
+                            submit()
+                            true
+                        } else {
+                            false
+                        }
+                    },
+                decorationBox = { inner ->
+                    Box(Modifier.fillMaxWidth()) {
+                        if (field.text.isEmpty()) {
+                            Text(
+                                node.hint,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = placeholder,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        inner()
+                    }
+                },
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                "↵ $submitLabel",
+                style = MaterialTheme.typography.labelMedium,
+                color = if (running) muted.copy(alpha = 0.4f) else muted,
+                modifier = Modifier.clickable(enabled = !running) { submit() },
+            )
+        }
+        HorizontalDivider(color = line)
+        if (feedback.isNotEmpty()) {
+            Text(feedback, style = MaterialTheme.typography.bodySmall, color = muted)
         }
     }
 }

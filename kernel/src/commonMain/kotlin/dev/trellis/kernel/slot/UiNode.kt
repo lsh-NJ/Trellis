@@ -246,7 +246,20 @@ sealed interface UiNode {
 
     data class Button(val label: String, val onTap: UiTap) : UiNode
 
-    data class Input(val hint: String, val submitLabel: String, val onSubmit: UiTap) : UiNode
+    /**
+     * 输入框。`popup` 默认打开：卡片里只画一行可点的字（显示 `submitLabel`），
+     * 点开才是浮窗里的输入框（`hint` 是浮窗里的占位提示）。
+     *
+     * 为什么默认浮窗：卡片是「看数据」的地方。输入框常驻会把卡片撑成一排控件，
+     * 同一件事的提示还容易和标题写重。收成一个入口，卡面只剩数据和动作；
+     * 要填的时候才占地方。确实需要常驻输入时（比如快速记一句）写 `popup:false`。
+     */
+    data class Input(
+        val hint: String,
+        val submitLabel: String,
+        val onSubmit: UiTap,
+        val popup: Boolean = true,
+    ) : UiNode
 
     /**
      * 计数步进器：`− 12 页 +`。
