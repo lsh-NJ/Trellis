@@ -215,33 +215,3 @@ $env:JAVA_HOME = "$env:USERPROFILE\.jdks\jdk17"; $env:Path = "$env:JAVA_HOME\bin
 
 数据落在 `~/.trellis/store.json`，插件目录是 `~/.trellis/plugins/` ——
 往里面丢插件（`manifest.json` + `main.dsl.json`，或脚本插件的 `manifest.json` + `main.js`），重启应用就能看到新卡片。
-
-> WSL 下需要 WSLg（`C:\Users\<你>\.wslconfig` 里 `guiApplications=true`）+
-> `SKIKO_RENDER_API=SOFTWARE_FAST`（`run-app.sh` 会自动设）。
-> 没有图形环境时，`./run.sh :app:desktop:test` 里的 `UiRenderTest` 会把界面离屏渲染成 PNG。
-
-> **应用开着的时候别重新编译。** `./gradlew :app:desktop:run` 的 classpath 是
-> `build/classes/` 目录，编译会原地重写它；已经跑起来的进程要到第一次用到某个类
-> （典型是点关闭时的 lambda）才会去加载，这时可能抛
-> `NoClassDefFoundError: MainKt$main$1$1$1$1`，于是窗口关不掉、进程也退不出，
-> `~/.trellis/app.log` 里会留着 `ClassNotFoundException`。要改代码就先关窗口再编译。
-> `Main.kt` 已经把这个坑兜住了（关闭回调不会因为异常阻止退出，另外 `Ctrl+Q` 永远能退），
-> 但「边跑边编译」还是会让你看到旧行为、白debug一轮。
-
-## 铁律
-
-1. **内核不认识领域。** `verifyKernelPurity` 在构建时挡住 `TaskStore` 这类东西（扫代码、跳过注释）。
-2. **失败必须隔离。** 一个插件崩溃、一个 manifest 写坏，都不影响其他插件。
-3. **禁止 `runCatching` 包插件调用。** 用 `guard { }`，它区分「超时」与「协程被取消」。
-4. **时间只有一个来源。** 业务时间走注入的时钟（内核/插件 `ctx.clock`，app 层 `TrellisClock`，计划后端 `LearningPlanStore.open(clock, zone)`）；生产代码禁止直接 `LocalDate.now()` / `Instant.now()` / `System.currentTimeMillis()` 取业务时间，时长/超时用单调时间。细则见 `docs/time-conventions.md`。
-5. **贡献点的注销由内核强制完成。** 插件怎么写都不影响「卸载无残留」。
-6. **报错要能指导修改。** 未知挂载点要列出全部可用值；能力要同时给标题和机器可读 id  Agent 只拿得到报错文本。
-7. **接口拆分时旧方法当场删。** 留着的死代码只会在半年后变成一次莫名其妙的编译错误。
-8. **插件之间只通过接口交换实现。** 用 `ctx.services.publish` / `require`，不许互相 import 具体的类。
-9. **并发测试必须验证过「去掉保护会红」。** 否则它只是长相像测试的注释。
-10. **风险由能力决定，不由调用方声明。** 让插件自证「我很安全」是没有意义的。
-11. **隔离要做进类型，不能做在字符串上。** 插件的接口里出现 `namespace` 参数，隔离就已经漏了。
-12. **发现和启用是两个维度。** 混在一起，「装一个还没启用的插件」就永远做不到。
-13. **同一个库可以配出相反的策略。** 判断依据是失败模式：作者写错要炸，版本错位要忍。
-14. **不要给第三方插件 composable 的注入权。** Compose 装不下第三方代码的异常边界 
-    第三方只能提交**数据**，由宿主渲染。
