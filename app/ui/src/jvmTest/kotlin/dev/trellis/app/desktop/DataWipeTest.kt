@@ -132,6 +132,7 @@ class DataWipeTest {
         touch("steward/checkpoints.json")
         touch("activity/taxonomy.json")
         touch("activity/settings.json")
+        touch("dev.json")
         touch("activity/activity.db")
         touch("plans/plan.db")
         touch("plans/docs/pln_a.md")
@@ -147,7 +148,7 @@ class DataWipeTest {
         assertTrue(result.ok, result.failed.joinToString())
         val left = home.listFiles().orEmpty().map { it.name }.toSet()
         assertEquals(
-            setOf("llm.json", "ui.json", "study.json", "steward", "activity"),
+            setOf("llm.json", "ui.json", "study.json", "dev.json", "steward", "activity"),
             left,
             "只剩配置文件",
         )

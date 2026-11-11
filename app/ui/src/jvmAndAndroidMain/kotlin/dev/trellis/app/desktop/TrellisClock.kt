@@ -122,7 +122,7 @@ internal fun parseSimulatedDate(raw: String?): LocalDate? {
  * 开发者跳日期的持久化：`<home>/dev-clock.json`。
  *
  * 不持久化的话，模拟日期一重启就丢，测到一半还得重新拨。
- * 只在开发者模式（`TRELLIS_DEV=1`）下读写；退出模拟时删文件。
+ * 只在开发者模式（设置页开关，或 `TRELLIS_DEV=1`）下读写；退出模拟时删文件。
  */
 internal class DevClockStore(private val home: File) {
 
@@ -152,9 +152,11 @@ internal class DevClockStore(private val home: File) {
 /**
  * 启动时决定用哪个时钟：`TRELLIS_TODAY` > `dev-clock.json` > 真实时间。
  *
- * 安全边界（见规范 §7）：模拟日期会真的写 missed / 结算事件，不能拿真实数据目录玩——
- * 默认只允许 `TRELLIS_HOME` 指向非默认目录时启用；确实要在默认目录调试，
- * 必须显式 `TRELLIS_DEV_ALLOW_REAL_HOME=1`。
+ * 安全边界（见规范 §7）：模拟日期会真的写 missed / 结算事件。
+ * 2026-11-09 起「调试模式」本身就是一次明确授权：设置页打开（或 `TRELLIS_DEV=1`）后，
+ * 主数据目录（`~/.trellis`）也可以拨日期，不再要求换 `TRELLIS_HOME`；
+ * 界面会提示「正在主数据目录上调试」。[realDataHome] 用来出这条提示。
+ * 没开调试模式时，只有非默认目录才接受 `TRELLIS_TODAY`（演示脚本用法）。
  */
 internal class TrellisClockSetup(
     val clock: DebugTrellisClock,
@@ -164,8 +166,12 @@ internal class TrellisClockSetup(
     val rejectedReason: String?,
     /** 当前数据目录是否允许改模拟时间。 */
     val allowed: Boolean,
-    /** 是否开启了开发者模式（决定设置页显示不显示调试区）。 */
+    /** 是否开启了开发者模式（设置页开关或 `TRELLIS_DEV=1`；决定设置页显示不显示调试区）。 */
     val devMode: Boolean,
+    /** 是否由环境变量 `TRELLIS_DEV=1` 强制开启：设置页据此说明界面开关关不掉它。 */
+    val devModeFromEnv: Boolean = false,
+    /** 当前数据目录是不是主数据目录（`~/.trellis`）：界面据此提示拨日期会写真实数据。 */
+    val realDataHome: Boolean = false,
 )
 
 internal fun createTrellisClock(
@@ -173,21 +179,44 @@ internal fun createTrellisClock(
     env: Map<String, String> = System.getenv(),
     real: TrellisClock = SystemTrellisClock(),
     defaultHome: File = File(System.getProperty("user.home"), ".trellis"),
+    /** 设置页「调试模式」开关（`<home>/dev.json`）；与 `TRELLIS_DEV=1` 任一为真即开启。 */
+    debugMode: Boolean = false,
 ): TrellisClockSetup {
     val clock = DebugTrellisClock(real)
-    val devMode = env["TRELLIS_DEV"]?.trim() == "1"
-    val allowed = runCatching { home.canonicalFile != defaultHome.canonicalFile }
-        .getOrDefault(home != defaultHome) || env["TRELLIS_DEV_ALLOW_REAL_HOME"]?.trim() == "1"
+    val devModeFromEnv = env["TRELLIS_DEV"]?.trim() == "1"
+    val devMode = devModeFromEnv || debugMode
+    val homeIsDefault = runCatching { home.canonicalFile == defaultHome.canonicalFile }
+        .getOrDefault(home == defaultHome)
+    // 调试模式 = 「我知道会写真实数据」的明确授权：打开后主数据目录也允许拨日期。
+    // 非默认目录照旧允许（演示/测试）；TRELLIS_DEV_ALLOW_REAL_HOME 保留为旧脚本的兼容开关。
+    val allowed = devMode || !homeIsDefault ||
+        env["TRELLIS_DEV_ALLOW_REAL_HOME"]?.trim() == "1"
 
     val fromEnv = env["TRELLIS_TODAY"]?.trim()?.takeIf { it.isNotEmpty() }
     val fromFile = if (devMode) DevClockStore(home).load() else null
     val raw = fromEnv ?: fromFile?.toString()
-        ?: return TrellisClockSetup(clock, simulated = false, rejectedReason = null, allowed = allowed, devMode = devMode)
+        ?: return TrellisClockSetup(
+            clock,
+            simulated = false,
+            rejectedReason = null,
+            allowed = allowed,
+            devMode = devMode,
+            devModeFromEnv = devModeFromEnv,
+            realDataHome = homeIsDefault,
+        )
 
     if (!allowed) {
-        val reason = "模拟时间只在非默认数据目录生效（当前 " + home.absolutePath +
-            "）；确实要在这里调试，重启时设 TRELLIS_DEV_ALLOW_REAL_HOME=1"
-        return TrellisClockSetup(clock, simulated = false, rejectedReason = reason, allowed = false, devMode = devMode)
+        val reason = "模拟时间需要先打开调试模式（设置页最底部，或 TRELLIS_DEV=1）；当前是主数据目录 " +
+            home.absolutePath
+        return TrellisClockSetup(
+            clock,
+            simulated = false,
+            rejectedReason = reason,
+            allowed = false,
+            devMode = devMode,
+            devModeFromEnv = devModeFromEnv,
+            realDataHome = homeIsDefault,
+        )
     }
 
     val date = parseSimulatedDate(raw)
@@ -197,8 +226,18 @@ internal fun createTrellisClock(
             rejectedReason = "TRELLIS_TODAY/dev-clock.json 里的日期「$raw」不是 YYYY-MM-DD 格式",
             allowed = allowed,
             devMode = devMode,
+            devModeFromEnv = devModeFromEnv,
+            realDataHome = homeIsDefault,
         )
 
     clock.setSimulatedDate(date)
-    return TrellisClockSetup(clock, simulated = true, rejectedReason = null, allowed = allowed, devMode = devMode)
+    return TrellisClockSetup(
+        clock,
+        simulated = true,
+        rejectedReason = null,
+        allowed = allowed,
+        devMode = devMode,
+        devModeFromEnv = devModeFromEnv,
+        realDataHome = homeIsDefault,
+    )
 }

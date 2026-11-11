@@ -35,7 +35,9 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import java.time.Duration
 import java.time.LocalDate
+import java.time.OffsetDateTime
 
 // ---------------------------------------------------------------------------
 // 今天
@@ -327,6 +329,45 @@ internal fun SqliteLearningPlanService.openNodesOf(planId: String, untilDay: Str
             }
         }
     }
+
+/**
+ * 每个节点实际计时的累计分钟（只算已经结束的 session），用于「计时到点自动完成」。
+ *
+ * 分钟数按 session 的起止自己算（与 `cmdEndSession` 同一口径）：计时器暂停过两者会差一点，
+ * 但计划侧要的是「这段时间在做什么」，差这点不影响「够不够预估时长」的判断。
+ * 只看 [untilDay] 及之前安排的节点——未来的节点计时不该被算成「做完了」。
+ */
+internal fun SqliteLearningPlanService.actualMinutesByOccurrenceOf(
+    planId: String,
+    untilDay: String,
+): Map<String, Int> {
+    val versionId = currentVersion(planId) ?: return emptyMap()
+    val rows = connection.prepareStatement(
+        "SELECT s.occurrence_id, s.started_at, s.ended_at FROM session s " +
+            "JOIN occurrence o ON o.id = s.occurrence_id " +
+            "JOIN commitment c ON c.id = o.commitment_id " +
+            "WHERE c.plan_version_id = ? AND o.day <= ? AND s.ended_at IS NOT NULL",
+    ).use { ps ->
+        ps.setString(1, versionId)
+        ps.setString(2, untilDay)
+        ps.executeQuery().use { rs ->
+            val rows = ArrayList<Triple<String, String, String>>()
+            while (rs.next()) {
+                rows += Triple(rs.getString(1), rs.getString(2), rs.getString(3))
+            }
+            rows
+        }
+    }
+    val minutes = LinkedHashMap<String, Int>()
+    for ((occurrenceId, startedAt, endedAt) in rows) {
+        val start = runCatching { OffsetDateTime.parse(startedAt) }.getOrNull() ?: continue
+        val end = runCatching { OffsetDateTime.parse(endedAt) }.getOrNull() ?: continue
+        val add = Duration.between(start, end).toMinutes().toInt().coerceAtLeast(0)
+        if (add <= 0) continue
+        minutes[occurrenceId] = (minutes[occurrenceId] ?: 0) + add
+    }
+    return minutes
+}
 
 private fun SqliteLearningPlanService.dayItems(planId: String, day: String): List<WeekDayItem> {
     val pairs = connection.prepareStatement(

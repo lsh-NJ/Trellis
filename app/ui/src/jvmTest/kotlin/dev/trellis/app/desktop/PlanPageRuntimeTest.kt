@@ -144,6 +144,27 @@ class PlanPageRuntimeTest {
         assertEquals(null, h.runtime.planSelectedDay)
         assertEquals(null, h.runtime.planDayView)
     }
+
+    /**
+     * 「AI 自动完成」卡片上点「学习 · 网页标题」：切到活动页，并把页面日期定在那一天。
+     * 日期解析不了时只回一句话、不切页（别让人点了没反应也不知道为什么）。
+     */
+    @Test
+    fun theLearningRowJumpsToTheActivityDayItCameFrom() = runTest {
+        val runtime = AppRuntime.create(tempHome())
+        try {
+            val message = runtime.openActivityDay("2026-11-09")
+            assertTrue(message.contains("活动"), "回执要说清去了哪页：$message")
+            assertEquals(TAB_ACTIVITY, runtime.currentTab)
+            assertEquals(LocalDate.parse("2026-11-09"), runtime.pendingActivityDay)
+
+            val bad = runtime.openActivityDay("昨天")
+            assertTrue(bad.contains("没看懂"), "看不懂的日期要明说：$bad")
+            assertEquals(TAB_ACTIVITY, runtime.currentTab, "日期看不懂时不切页")
+        } finally {
+            runtime.shutdown()
+        }
+    }
 }
 
 /**

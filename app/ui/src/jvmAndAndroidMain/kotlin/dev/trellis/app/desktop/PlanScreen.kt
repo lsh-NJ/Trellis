@@ -384,7 +384,7 @@ private fun PlanRhythmCard(runtime: AppRuntime) {
 }
 
 /**
- * 「AI 自动完成」：笔记整理后按知识点判断、自动勾掉的计划节点。
+ * 「AI 自动完成」：笔记整理后按知识点判断、或计时器跑满预估时长后自动勾掉的计划节点。
  *
  * 放在「当天安排」下面：这些勾是机器改的，得让人看得见、能撤销；
  * 撤销过的节点会进屏蔽名单，以后不再被自动完成（卡片右上角可一次性解除）。
@@ -418,7 +418,7 @@ private fun PlanAutoCompletionCard(runtime: AppRuntime) {
             }
             if (entries.isEmpty()) {
                 Text(
-                    "笔记里讲到本周节点时，AI 整理完会自动勾上并记在这里。现在没有记录。",
+                    "笔记里讲到本周节点时，AI 整理完会自动勾上；节点的计时跑满预估时长也会自动勾上。现在没有记录。",
                     style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -454,7 +454,14 @@ private fun AutoCompletionRow(runtime: AppRuntime, entry: AutoCompletionEntry) {
             Text(entry.title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
             ChromeTextLink("撤销", onClick = { runtime.undoAutoCompletion(entry.id) })
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = if (entry.kind == AutoCompletionKind.Time && entry.source == "activity") {
+                Modifier.clickable { runtime.openActivityDay(entry.day) }
+            } else {
+                Modifier
+            },
+        ) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
@@ -462,12 +469,32 @@ private fun AutoCompletionRow(runtime: AppRuntime, entry: AutoCompletionEntry) {
                         style = tokens.type.meta,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Text(
-                        "来自《" + entry.noteTitle.ifBlank { "未命名笔记" } + "》",
-                        style = tokens.type.control,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.clickable { runtime.openAutoCompletionNote(entry.id) },
-                    )
+                    if (entry.kind == AutoCompletionKind.Time) {
+                        if (entry.source == "activity") {
+                            // 屏幕使用来源：只写「学习 + 具体网页/窗口标签」，整行可点，点一下去活动页看归因详情；
+                            // 分钟数不摆在这一行（展开的「证据」里还有）。
+                            Text(
+                                if (entry.sourceTitle.isNotBlank()) "学习 · " + entry.sourceTitle
+                                else "来自屏幕使用",
+                                style = tokens.type.control,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        } else {
+                            Text(
+                                "来自计时 · 实际 " + entry.actualMinutes + " 分钟" +
+                                    if (entry.plannedMinutes > 0) "（预估 " + entry.plannedMinutes + " 分钟）" else "",
+                                style = tokens.type.control,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    } else {
+                        Text(
+                            "来自《" + entry.noteTitle.ifBlank { "未命名笔记" } + "》",
+                            style = tokens.type.control,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.clickable { runtime.openAutoCompletionNote(entry.id) },
+                        )
+                    }
                 }
                 if (entry.chapter.isNotBlank()) {
                     Text(
@@ -477,7 +504,28 @@ private fun AutoCompletionRow(runtime: AppRuntime, entry: AutoCompletionEntry) {
                     )
                 }
             }
-            if (entry.evidence.isNotBlank()) {
+            if (entry.kind == AutoCompletionKind.Time && entry.source == "activity") {
+                // 屏幕使用来源的「学习 · 网页标题」有详情可看：跳活动页、落在归因那一天。
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "详情",
+                        style = tokens.type.control,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.clickable { runtime.openActivityDay(entry.day) },
+                    )
+                    if (entry.evidence.isNotBlank()) {
+                        Text(
+                            if (showEvidence) "收起证据" else "看证据",
+                            style = tokens.type.control,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.clickable { showEvidence = !showEvidence },
+                        )
+                    }
+                }
+            } else if (entry.evidence.isNotBlank()) {
                 Text(
                     if (showEvidence) "收起证据" else "看证据",
                     style = tokens.type.control,
@@ -521,6 +569,13 @@ private fun PlanSimulatedBanner(runtime: AppRuntime) {
                     style = tokens.type.meta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (runtime.devClockOnRealHome) {
+                    Text(
+                        "正在主数据目录（" + runtime.home.absolutePath + "）上模拟：拨日期会真的写计划数据，建议先备份。",
+                        style = tokens.type.meta,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
             }
             Spacer(Modifier.width(10.dp))
             if (runtime.devClockAllowed) {

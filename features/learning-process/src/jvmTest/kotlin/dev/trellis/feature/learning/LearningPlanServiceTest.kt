@@ -488,4 +488,32 @@ class LearningPlanServiceTest {
         assertEquals(0, stillInWeek, "旧周里还留着 ${moved.title}：$week")
     }
 
+    /**
+     * 计时自动完成用的汇总：只算已结束的 session，分两段凑满也累加；只算排期日不晚于截止日的节点。
+     */
+    @Test
+    fun actualMinutesByOccurrenceSumsClosedSessionsOfScheduledNodes() {
+        val svc = service() // 2026-10-26 08:00
+        val (planId, _, _) = seedTwoWeekPlan(svc)
+        val node = svc.today(planId, "2026-10-26").occurrences.first()
+
+        // 第一段 10 分钟：正常结束。
+        val first = svc.startSession(env(planId), node.id, "timer")
+        assertTrue(first.ok, first.error?.message)
+        moveClockTo("2026-10-26T08:10")
+        assertTrue(svc.endSession(env(planId), first.value!!.sessionId).ok)
+
+        // 第二段 15 分钟：也结束 → 累计 25。
+        val second = svc.startSession(env(planId), node.id, "timer")
+        assertTrue(second.ok, second.error?.message)
+        moveClockTo("2026-10-26T08:25")
+        assertTrue(svc.endSession(env(planId), second.value!!.sessionId).ok)
+
+        // 第三段开着没结束：不算进累计。
+        assertTrue(svc.startSession(env(planId), node.id, "timer").ok)
+
+        val minutes = svc.actualMinutesByOccurrence(planId, "2026-10-26")
+        assertEquals(25, minutes[node.id], "已结束的 session 应累计到 25 分钟：$minutes")
+        assertTrue(svc.actualMinutesByOccurrence(planId, "2026-10-25").isEmpty(), "截止日之前的节点不参与")
+    }
 }

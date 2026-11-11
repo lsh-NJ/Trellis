@@ -185,8 +185,8 @@ internal class PlanEditTools(
     private inner class UpdatePlan : AgentTool {
         override val name: String = "update_plan"
         override val description: String =
-            "改学习计划：建计划（手写条目或调研生成）、定/改阶段、加单元、排某一周、改单元的资源/日子/完成状态、" +
-                "改每天投入、写总文档。一次传一组 op，按顺序执行；写操作必须 confirmed=true（用户同意后）。"
+            "改学习计划：建计划（手写条目或调研生成）、定/改阶段、加单元、排某一周、改单元/某条 occurrence 的资源/日子/" +
+                "完成状态、按逾期做整体重排、改每天投入、写总文档。一次传一组 op，按顺序执行；写操作必须 confirmed=true（用户同意后）。"
         override val parameters: String = """
             planId: 可选，默认当前选中计划
             confirmed: 用户已明确同意时才传 true
@@ -369,7 +369,12 @@ internal class PlanEditTools(
             .getOrElse { return OpResult("写阶段失败：${it.message ?: it}", isError = true) }
         if (!result.ok) return OpResult("写阶段失败：${result.error?.message ?: "未知错误"}", isError = true)
         rewriteDocStages(planId, specs)
-        return OpResult("已写入 ${specs.size} 个阶段，并同步总文档的「## 阶段」：" + specs.joinToString("、") { it.name })
+        // 总计划里写了资源，已经存在的节点就得挂上（节点找资源；分不到节点的整本书挂到每个节点）。
+        val attached = attachStageResourcesToPlan(svc, docStore(), planId)
+        return OpResult(
+            "已写入 ${specs.size} 个阶段，并同步总文档的「## 阶段」：" + specs.joinToString("、") { it.name } +
+                if (attached > 0) "；已把阶段资源挂到 $attached 个已有节点上" else "",
+        )
     }
 
     private suspend fun insertUnits(
@@ -557,7 +562,7 @@ internal class PlanEditTools(
         if (dryRun) return OpResult("（dryRun）会排 $week")
         val result = dispatch("plan_week", args)
         if (result.isError) return OpResult(result.content, isError = true)
-        val attached = attachStageResources(svc, id, week)
+        val attached = attachStageResourcesToWeek(svc, docStore(), id, week)
         return OpResult(
             result.content + if (attached > 0) "\n按阶段资源给 $attached 个节点挂上了资料。" else "",
             planId = id,
@@ -579,58 +584,6 @@ internal class PlanEditTools(
         return if (result.isError) OpResult(result.content, isError = true) else OpResult(result.content, planId = id)
     }
 
-    // ---------------------------------------------------------------- 资源匹配
-
-    /** 把总文档阶段里的资源按标题就近挂到本周还没资料的单元上，返回挂上的单元数。 */
-    private suspend fun attachStageResources(svc: LearningPlanService, planId: String, week: String): Int {
-        val stage = docStore()?.stageForWeek(planId, week) ?: return 0
-        val resources = stage.resources.filter { it.url.isNotBlank() }
-        if (resources.isEmpty()) return 0
-        val units = runCatching { svc.week(planId, week) }.getOrNull()?.commitment?.units.orEmpty()
-        if (units.isEmpty()) return 0
-        var attached = 0
-        for (unit in units) {
-            if (unit.resources.isNotEmpty()) continue
-            val matches = resources
-                .map { resource -> resource to score(resource.title, unit.title) }
-                .filter { (_, score) -> score > 0 }
-                .sortedByDescending { (_, score) -> score }
-                .take(2)
-                .map { (resource, _) -> resource }
-            if (matches.isEmpty()) continue
-            val drafts = matches.map {
-                ResourceDraft(
-                    kind = inferKind(it.url),
-                    title = it.title,
-                    url = it.url,
-                    locator = "",
-                    source = "plan_doc",
-                )
-            }
-            val result = runCatching { svc.setUnitResources(env(planId, "tool.plan.edit.attach"), planId, unit.id, drafts) }
-            if (result.getOrNull()?.ok == true) attached++
-        }
-        return attached
-    }
-
-    /** 标题匹配：完全相同 > 包含 > 两个以上词重叠；阈值保证不会把整个阶段硬塞给每个节点。 */
-    private fun score(resourceTitle: String, unitTitle: String): Int {
-        val a = normalize(resourceTitle)
-        val b = normalize(unitTitle)
-        if (a.isBlank() || b.isBlank()) return 0
-        if (a == b) return 100
-        if (a.contains(b) || b.contains(a)) return 60
-        val tokensA = tokens(a)
-        val tokensB = tokens(b)
-        val overlap = tokensA.intersect(tokensB).count { it.length >= 2 }
-        return if (overlap >= 2) 20 + overlap * 5 else 0
-    }
-
-    private fun normalize(value: String): String =
-        value.lowercase().replace(Regex("[\\s\\p{Punct}，。、：；（）【】《》]"), "")
-
-    private fun tokens(value: String): Set<String> =
-        value.split(Regex("[·\\s/]+")).filter { it.isNotBlank() }.toSet()
 
     // ---------------------------------------------------------------- 早间重排
 

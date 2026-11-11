@@ -433,6 +433,9 @@ internal class SqliteLearningPlanService(
 
     override fun openNodes(planId: String, untilDay: String): List<OpenNode> = openNodesOf(planId, untilDay)
 
+    override fun actualMinutesByOccurrence(planId: String, untilDay: String): Map<String, Int> =
+        actualMinutesByOccurrenceOf(planId, untilDay)
+
     override fun overdue(planId: String, today: String): OverdueView = overdueOf(planId, today)
 
     /**

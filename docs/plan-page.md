@@ -152,7 +152,7 @@
    没有动作时页面保持安静。数据来自 `AppRuntime.planRhythmReport`（后端 `RhythmResult`）。
 4. **AI 也有了维护计划的手**：对话里的 `PlanManage` 意图 + `PlanAdminTools`（读状态/排下周/勾节点/顺延/复盘/改每天投入），
    见 `docs/plan-rhythm-draft.md`。计划页本身仍然只读 view model、不做四则运算。
-5. **调试用「模拟时间」横幅**（`PlanSimulatedBanner`）：开发者模式（`TRELLIS_DEV=1`）拨了应用内日期后，
+5. **调试用「模拟时间」横幅**（`PlanSimulatedBanner`）：调试模式（设置页开关或 `TRELLIS_DEV=1`）拨了应用内日期后，
    计划页顶部出现「模拟时间 · 2026-11-02（真实 …）」横幅，带 `+1 天` / `+1 周` / `退出模拟` 快捷按钮；
    拨动后 `AppRuntime.applySimulatedToday(...)` 会立刻 `refreshPlan()`，让结算/补周/复盘按新日期跑一遍。
    边界与安全门槛见 `docs/time-conventions.md` §7（默认数据目录不允许，只有 `TRELLIS_HOME` 指向演示目录才生效）。
@@ -215,12 +215,16 @@
 - **触发**：`KnowledgeScreen.organizeNote` 成功分支末尾（正文 ≥400 字且有候选才发请求）；
   判定逻辑在 `PlanLink.kt`，提示词要求模型输出
   `{"completions":[{"occurrenceId","coverage","confidence","evidence","reason"}]}`。
-- **自动完成条件**（全部满足）：`coverage=full`、`confidence ≥ 0.8`、`evidence` 是正文**逐字片段**
-  （长度 ≥8，照 `KnowledgeGraphAi` 的写法在正文里 `contains` 校验）、节点不在屏蔽名单、同一篇笔记最多 3 个。
+- **自动完成条件**（全部满足）：`coverage=full`、`confidence ≥ 0.8`、`evidence` 写了判断依据（长度 ≥8）；
+  证据可以是正文摘录，也可以是语义概括——**2026-11-09 晚起不再要求逐字出现在正文里**，是否「讲完了」
+  完全交给模型按语义判断（原逐字校验已删：它与「笔记用自己的话复述」冲突）。节点不在屏蔽名单、同一篇笔记最多 3 个。
 - **执行**：`AppRuntime.autoCompletePlanNodes` 逐条 `completeOccurrence`，`Actor.SYSTEM`、
   `origin = "knowledge.auto-complete"`；结果写账本 `<home>/plans/auto-completions.json`
   （`entries` + `blocked`，写前 `.bak`、坏文件改 `.bad-<ms>`，语义在 `AutoCompletionStore.kt`）。
   已完成或已有生效记录的节点会跳过（幂等）。
+  2026-11-09 起还有一条**计时来源**：节点累计实际计时达到预估（至少 5 分钟）时，
+  `stopTimerAndLog` 调 `autoCompleteNodeFromTimer`，`origin = "timer.auto-complete"`，
+  账本里 `kind="time"`、带 `actualMinutes/plannedMinutes`、`noteId` 为空——同一张卡片、同样的撤销/屏蔽。见 §23。
 - **UI**：计划页「当天安排」卡片下方多一张「AI 自动完成」卡片（有记录或屏蔽数 >0 时才出现）：
   每条 `✔ 节点标题｜撤销`，第二行 `计划日 · 来自《笔记名》`（点这一行跳回知识库并选中证据句，
   走 `pendingKnowledgeReveal`）+ 章节 + 「看证据」折叠。发生自动完成时 `planMessage` 提示
@@ -230,7 +234,8 @@
 - **桌面通知**：`UiPrefs.notifyAutoCompletion`（默认关；设置页「笔记联动」→「弹桌面通知」），
   走 `Notifier`，只在本次真的自动完成了节点时发。
 - **限制**：只在笔记整理成功时判一次，不后台轮询；模型判断错了要用户撤销（撤销后该节点永久屏蔽到解除）；
-  跨周节点不参与；判定依赖正文证据，证据被改写后重判会自然失效。
+  跨周节点不参与；判定依赖正文证据，证据被改写后重判会自然失效。计时来源不经过模型（时长本身就是证据），
+  同样是「够了就勾」、错了就撤销。
 - 验收：`PlanLinkTest` 8 个 + `AutoCompletionStoreTest` 7 个；mock 端到端（`/tmp/mock_llm5.py`，8983：
   `kind=extract` + `kind=planlink candidates=14` → 账本写入 1 条、`plan.db` occurrence 变 `done`、
   计划页卡片刻 1 条；撤销后回 `planned` 且出现「解除屏蔽（1）」；解除后再整理会重新自动完成；
@@ -453,3 +458,89 @@ note 含「已经排过了」、单元与 occurrence 数不增。
   `create_learning_plan` 本来就把全局周表铺到本周的天上。空壳只是排周失败时的短暂中间态，而且修好 1 之后不会再有假数据。
 - 回归：`PlanWeekToolsTest.planWeekTargetsTheSelectedOrExplicitPlanInsteadOfTheOldestOne`（选中 / 显式 planId / 不存在的 planId 报错列候选）、
   `planWeekCanScheduleSeveralConsecutiveWeeksAtOnce`（weeks=2 两周都排、两份周文档）。
+
+## 23. 2026-11-09：计时到点也自动完成（计时器来源）
+
+用户要的「笔记**或任务时间**判定完成」里的第二个来源：一个计划节点累计计时达到预估时长，就自动勾上。
+口径（用户定的）：自动勾 + 可撤销（与笔记自动完成同一套账本/撤销）；阈值 100% 且至少 5 分钟；
+来源顺序上先做计时器，活动归因等归类信号升级后再接（见文末「暂不做」）。
+
+- **后端事实**：`LearningPlanService.actualMinutesByOccurrence(planId, untilDay): Map<String, Int>`
+  （默认实现返回空）。SQLite 实现在 `PlanQueries.kt` 的 `actualMinutesByOccurrenceOf`：
+  只算 `ended_at IS NOT NULL` 的 session，分钟按起止自己算（与 `cmdEndSession` 同一口径），
+  只看排期日 `<= untilDay` 的节点——未来的节点计时不该算成「做完了」。
+- **纯规则**（`PlanLink.kt`，无模型调用）：`timeLinkCompletion(candidate, actualMinutes)`——
+  实际 ≥ `max(预估分钟, PLAN_LINK_MIN_TIME_MINUTES=5)` 才算完成；
+  证据写成事实句「计划 X 分钟，实际计时 Y 分钟（Z%）」/「实际计时 Y 分钟（节点没有预估时长）」，
+  `confidence = 1.0`，`reason = "计时达到预估时长"`。
+- **接线**：`AppRuntime.stopTimerAndLog` 关掉节点 session 后调 `autoCompleteNodeFromTimer`：
+  跳过 `blocked` / 已有生效记录的节点；候选从该节点**所在计划**的周视图取；累计计时到点就
+  `completeOccurrence`（`Actor.SYSTEM`、`origin = "timer.auto-complete"`）、写账本
+  （`kind = AutoCompletionKind.Time`、`actualMinutes/plannedMinutes`、`noteId = ""`）、
+  `refreshPlan`、按 `uiPrefs.notifyAutoCompletion` 发桌面通知；`planMessage` 追加
+  「计时到点，已自动勾上，可在「AI 自动完成」里撤销」。写库失败只提示、不影响 session 记账。
+- **账本**：`AutoCompletionEntry` 新增 `kind: AutoCompletionKind`（`note`/`time`，旧文件缺省按 `note`）、
+  `actualMinutes`、`plannedMinutes`；编码时 `kind` 总是写、分钟数 >0 才写（旧账本读进来不报错）。
+- **UI**：计划页「AI 自动完成」卡片——计时来源的行显示「来自计时 · 实际 N 分钟（预估 M 分钟）」，
+  不可点（没有笔记可跳）；空态文案同时提到笔记与计时；撤销/屏蔽/解除屏蔽与笔记来源共用。
+- **测试**：`PlanLinkTest`（到点 / 差一分钟不算 / 无预估要满 5 分钟 / 超时百分比）、
+  `AutoCompletionStoreTest`（计时记录往返 + 旧账本缺省 note）、
+  `LearningPlanServiceTest.actualMinutesByOccurrenceSumsClosedSessionsOfScheduledNodes`
+  （两段已结束 session 累计、未结束不算、untilDay 之前的节点不参与）。
+- **暂不做**：活动归因来源先不用。用户指出「现在的归因不够聪明」——候选只取当天、提示词不发 URL/域名、
+  片段硬切 ≤20 分钟、`AttributionSource.RULE` 还没接、AI 提议全停在 `PROPOSED` 要逐条接受。
+  等归因升级（URL/域名信号 + 规则记忆）后，把 `activityOccurrenceMinutes(day)` 的映射传给同一个
+  `timeLinkCompletion` 即可，不需要再动账本与 UI。
+- 验收：`./gradlew :app:ui:jvmTest :features:learning-process:jvmTest` 全绿
+  （本机没有 Android SDK，`./gradlew check` / `:app:ui:test` 跑不了，用 `jvmTest` 代替）。
+
+## 24. 2026-11-09 晚：资源优先（项目聚合资源）
+
+用户定的口径（2026-11-09 晚）：
+
+> 之前的决定是设计工作、生产项目做实践，像这种课内学习就要重资源。
+> 目前学习的内容都尽量找到资源，这样才能起到项目聚合资源的设计理念。
+
+所以**资源是计划的一部分**，不是可有可无的附件：
+
+- **写进哪里**：总文档 `## 阶段` 下每个阶段尽量带 `- 资源：`（`- [名称](url) — 一句说明`）；
+  写阶段（`update_plan` 的 insert/update stages）和 `schedule_week` 排完都会把阶段资源挂到节点（`source=plan_doc`）：
+  标题对得上的资源每节点最多 3 条；**对不上任何节点的整份资源（一整本书、整个专栏）挂到该阶段覆盖的每个节点**，
+  让用户自己从中找——「不是资源找节点，是节点找资源」。
+  也可以 `update_plan` 的 `update units` 直接 `set.resources`（`source=agent`）。
+- **谁负责找**：`research_plan` 的阶段表 JSON 新增 `resources:[{title,url,note}]`，提示词要求优先用调研里真实出现过的链接、
+  课内学习每阶段至少 1 条、找不到就空数组（宁缺毋滥、**不编造 URL**）；大纲渲染成 `- 资源：`，第一周排完后按标题挂到节点。
+  `ManagerPrompt` 的 `<goal_requests>` 与 `PlanEditTools` 的 guidance 第 5 条也写了同一条口径。
+- **共用逻辑**：`app/ui/.../PlanStageResources.kt` 的
+  `attachStageResourcesToWeek(service, docStore, planId, week, origin)`（单周）+ `attachStageResourcesToPlan(service, docStore, planId)`（整份计划、幂等）
+  + `stageResourceScore` / `stageResourceKind`（标题精确 100 / 包含 60 / 有效词重叠 40；kind 由 URL 推断：bilibili / doc / web）。
+  `PlanEditTools.scheduleWeek`、`PlanEditTools.writeStages`、`PlanWeekTools` 都走它。
+- **阶段标题必须带周区间**：`- 阶段 N · 名称（2026-W46 – 2026-W47，约 N 周）：聚焦`，
+  否则 `PlanDocStore.stageForWeek` 定位不到阶段、`schedule_week` 就挂不上资源。
+- **找不到资源时**：回执明说「这次没找到靠谱的阶段资源，大纲里留空（不编造链接）；你把资料发我，我再补上」。
+- **B 站是一条重要途径**（2026-11-09 用户口径）：找资源时先 `search_bilibili` 搜一轮，搜不到就不用提，但不能连看都没看；
+  `create_learning_plan` 支持 `bvids=[…]` 把互补的 2–4 门课导进同一份计划（各自按分集生成节点、按标题去重、
+  每个节点的分集资源用**它自己那门课**的 bvid 拼链接），只在「两门课互补、节点不重复冲突」时才多门合并。
+- 测试：`ResearchToolsTest.stageResourcesAreWrittenToTheOutlineAndAttachedToThisWeeksUnits`、
+  `PlanEditToolsTest.aWholeBookResourceLandsOnEveryUnitOfItsStage`、
+  `PlanToolsTest.complementaryCoursesShareOnePlanAndKeepTheirOwnResources` / `bvidAndBvidsAreMutuallyExclusive`；
+  全量 `./gradlew :app:ui:jvmTest :ai:jvmTest` 853 / 117 全绿。
+
+## 25. 2026-11-09 晚：卡片行写清「学习 · 具体网页/窗口标签」
+
+用户提的（截图指出「来自屏幕使用 · 实际 50 分钟」这一行）：
+
+> 直接这样写：学习+具体网页标签
+
+- **账本**：`AutoCompletionEntry` 新增 `sourceTitle: String = ""`（旧账本缺省空串，不报错）。
+  屏幕使用来源时，取该节点归因片段里**停留最久**的窗口/标签标题，按 `segment.durationMs` 加权；
+  没有标题时回退 `app` 名，再回退空串。实现是 `AppRuntime.activityOccurrenceTitles(day)`（只读、只用于展示）。
+- **卡片（2026-11-09 晚再改，用户定）**：`kind = time && source = activity` → 只写
+  「学习 · <标题>」（**不写分钟数**），没有标题时写「来自屏幕使用」；这一行右侧有两个入口：
+  「详情」→ `AppRuntime.openActivityDay(entry.day)` 切到活动页并落在归因那天
+  （`pendingActivityDay`，`ActivityScreen` 首次组合时消费并清空），「看证据」原样展开时长依据。
+  计时来源仍是「来自计时 · 实际 N 分钟（预估 M 分钟）」。
+- **回执**：`planMessage` 同时带上「学习《<标题>》」并保留「屏幕使用」字样，方便复盘时区分来源。
+- **为什么**：只写分钟数分不清是刷视频还是读文档；写清具体网页/窗口标签，「项目聚合资源」的账才算对上。
+- 测试：`ActivityAutoCompleteE2ETest` 断言 `sourceTitle` 等于注入的窗口标题
+  （「【高等数学】第 1 章 第 1 节 - 哔哩哔哩」）；`AutoCompletionStoreTest` 断言 `sourceTitle` 落盘往返。

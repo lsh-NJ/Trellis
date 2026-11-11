@@ -115,6 +115,14 @@ interface LearningPlanService {
      */
     fun openNodes(planId: String, untilDay: String): List<OpenNode> = emptyList()
 
+    /**
+     * 每个计划节点实际计时的累计分钟数（只算已经结束的 session），用于「计时到点自动完成」。
+     *
+     * 只看 [untilDay] 及之前安排的节点——未来的节点计时不该被算成「做完了」。
+     * 返回 occurrenceId → 累计分钟；默认返回空：不实现学习计划的适配器不必关心这件事。
+     */
+    fun actualMinutesByOccurrence(planId: String, untilDay: String): Map<String, Int> = emptyMap()
+
     fun todos(planId: String? = null): List<TodoView>
 
     /** 截至事件序号 [seq] 的某周完成单元数（历史不可变，用于审计/黄金测试）。 */

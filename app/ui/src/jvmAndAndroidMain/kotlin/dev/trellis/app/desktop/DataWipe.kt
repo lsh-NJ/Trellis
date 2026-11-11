@@ -8,7 +8,8 @@ import java.io.File
  * 规则很简单：
  * - **只动 `TRELLIS_HOME` 里的数据文件**，不认识的东西（别人的笔记、外部题库、用户自己放的插件）都在 [WipeScope] 里写清楚去留；
  * - **配置永远保留**：模型 key（`llm.json`）、界面偏好（`ui.json`）、学习偏好（`study.json`）、管家设置（`steward/settings.json`）、
- *   活动分类与同步设置（`activity/taxonomy.json`、`activity/settings.json`）——清数据不该把「怎么用」也清掉；
+ *   活动分类与同步设置（`activity/taxonomy.json`、`activity/settings.json`）、调试模式开关（`dev.json`）——
+ *   清数据不该把「怎么用」也清掉，也不该顺手把正在用的调试模式关掉；
  * - 删除失败要**报出来**，不能悄悄当成删好了；调用方（设置页）负责把 failures 显示给用户。
  */
 internal enum class WipeScope(val title: String) {
@@ -37,6 +38,7 @@ internal object DataWipe {
         "steward/settings.json",
         "activity/taxonomy.json",
         "activity/settings.json",
+        "dev.json",
     )
 
     /**

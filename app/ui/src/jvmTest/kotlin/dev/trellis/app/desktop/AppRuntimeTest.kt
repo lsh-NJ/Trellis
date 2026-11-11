@@ -9,6 +9,7 @@ import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -417,4 +418,43 @@ class AppRuntimeTest {
 
         runtime.shutdown()
     }
+
+    /**
+     * 调试模式从设置页开关走：落盘、重启保持、关掉时退出模拟。
+     *
+     * 以前只有 `TRELLIS_DEV=1` 能开，用户必须会改环境变量再重启；这条钉住设置页那条路。
+     */
+    @Test
+    fun debugModeCanBeToggledFromSettingsAndSurvivesRestart() = runTest {
+        val home = tempHome()
+        val runtime = AppRuntime.create(home)
+        assertFalse(runtime.devModeEnabled, "默认不该开调试模式")
+        assertTrue(runtime.devClockAllowed, "临时 home 应当允许模拟时间：${runtime.devClockRejectedReason}")
+
+        val on = runtime.setDebugMode(true)
+        assertTrue(runtime.devModeEnabled, on)
+        assertTrue(DevPrefsStore(home).load().debugMode)
+
+        runtime.applySimulatedToday(java.time.LocalDate.parse("2026-11-05"))
+        assertEquals(java.time.LocalDate.parse("2026-11-05"), runtime.simulatedToday)
+
+        val off = runtime.setDebugMode(false)
+        assertFalse(runtime.devModeEnabled, off)
+        assertNull(runtime.simulatedToday, "关掉调试模式不能留一个看不见的模拟日期")
+        assertFalse(File(home, "dev-clock.json").exists())
+        assertFalse(DevPrefsStore(home).load().debugMode)
+        runtime.shutdown()
+
+        // 重启后按落盘值走：开关打开过一次，下次启动仍然开。
+        val reopened = AppRuntime.create(home)
+        assertFalse(reopened.devModeEnabled)
+        reopened.setDebugMode(true)
+        reopened.shutdown()
+
+        val third = AppRuntime.create(home)
+        assertTrue(third.devModeEnabled, "开关要能跨重启保持")
+        assertTrue(third.devPrefs.debugMode)
+        third.shutdown()
+    }
+
 }
