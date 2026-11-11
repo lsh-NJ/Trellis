@@ -5,7 +5,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 /**
- * 编辑器「AI 补全」提示条的触发规则：只有光标停在一行行尾的 `。。。` 上才弹。
+ * 编辑器「AI 补全」小浮窗的触发规则：只有光标停在一行行尾的 `。。。` 上才弹。
  *
  * 行号用 0 起的正文行号，和 `findAiFillSlots` / `forEachPlainBodyLine` 同一套；
  * 代码块和 `:::ai` 块里的 `。。。` 不算空位。
@@ -65,5 +65,23 @@ class MarkdownAiFillPromptTest {
     fun cursorBeyondTheTextIsClamped() {
         val text = "RAG：。。。"
         assertEquals(0, aiFillPromptLine(text, 999))
+    }
+
+    @Test
+    fun jsonShapedReplyIsUnwrappedBeforeFilling() {
+        // 历史事故：模型按 JSON mode 回 {"content": "..."}，整段 JSON 差点被填进正文。
+        assertEquals(
+            "在检索前后加优化",
+            normalizeAiFillText("""{"content": "在检索前后加优化"}"""),
+        )
+        // 不是 JSON 的正常句子原样保留。
+        assertEquals("一句人话。", normalizeAiFillText("一句人话。"))
+    }
+
+    @Test
+    fun popupLabelReflectsState() {
+        assertEquals("AI 补全", aiFillSuggestionText(busy = false, error = null))
+        assertEquals("AI 补全中…", aiFillSuggestionText(busy = true, error = null))
+        assertEquals(AI_FILL_ERROR_TEXT, aiFillSuggestionText(busy = true, error = AI_FILL_ERROR_TEXT))
     }
 }

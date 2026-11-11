@@ -493,7 +493,8 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
             label = slot.label,
         )
         val raw = try {
-            withTimeoutOrNull(AI_FILL_TIMEOUT_MS) { client.complete(messages) }
+            // 补全要的是一句人话，不能走 complete() 的 JSON mode（会被包成 {"content": "..."}）。
+            withTimeoutOrNull(AI_FILL_TIMEOUT_MS) { client.completeText(messages) }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failed: Exception) {

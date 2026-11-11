@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
@@ -39,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -49,6 +51,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
@@ -82,8 +85,10 @@ import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 import dev.trellis.ui.LocalExtraColors
 import kotlinx.coroutines.CancellationException
@@ -130,6 +135,8 @@ internal fun MarkdownDocumentEditor(
     var editLayout by remember(noteId) { mutableStateOf<TextLayoutResult?>(null) }
     var fieldWidth by remember(noteId) { mutableStateOf(0) }
     var hadFocus by remember(noteId) { mutableStateOf(false) }
+    // 行内补全建议只在正文有焦点时出现（像代码编辑器的 inline suggestion）。
+    var editorFocused by remember(noteId) { mutableStateOf(false) }
 
     // 斜杠命令菜单：slashStart 是那个 `/` 的下标，slashQuery 是 `/` 之后打的过滤词。
     var slashStart by remember(noteId) { mutableStateOf<Int?>(null) }
@@ -141,7 +148,8 @@ internal fun MarkdownDocumentEditor(
     var completion by remember(noteId) { mutableStateOf<ConceptCompletion?>(null) }
     var completionIndex by remember(noteId) { mutableStateOf(0) }
 
-    // 「AI 补全」条：光标所在行以 `。。。` 结尾时出现，点一下只补这一行。
+    // 「AI 补全」小浮窗：光标所在行以 `。。。` 结尾时，在光标下一行浮出补全弹窗
+    // 「AI 补全 Tab」，点它或按 Tab 只补这一行（替换行尾那三个句号）。
     // 行号是「按 \n 切分的原始行号」，和 KnowledgeScreen 里 findAiFillSlotAt 用的是同一套。
     var aiFillDismissedLine by remember(noteId) { mutableStateOf<Int?>(null) }
     var aiFillBusy by remember(noteId) { mutableStateOf(false) }
@@ -251,6 +259,12 @@ internal fun MarkdownDocumentEditor(
             aiFillBusy = false
         }
         field = updated
+        // 真改了字就重新允许建议：Esc 只是「先别烦我」，不是永久隐藏这一行；
+        // 失败提示也一起清掉，别让「重试」两个字跟着新打的字跑。
+        if (textChanged) {
+            aiFillDismissedLine = null
+            aiFillError = null
+        }
         refreshSlash(updated)
         refreshCompletion(updated)
         if (textChanged) onBodyChange(updated.text)
@@ -306,11 +320,50 @@ internal fun MarkdownDocumentEditor(
         return true
     }
 
+    /**
+     * 启动一次「补全这一行」：Tab、点补全小浮窗都走这里。
+     *
+     * 只把结果写回编辑器；落盘/整理仍在 [onRequestAiFill]（KnowledgeScreen.fillSingleSlot）里，
+     * 和之前提示条按钮走的是同一条流程。
+     */
+    fun requestAiFill() {
+        val line = aiFillLine ?: return
+        if (aiFillBusy) return
+        val draft = field.text
+        val editor = editorInstance
+        val request = onRequestAiFill ?: return
+        aiFillError = null
+        aiFillBusy = true
+        aiFillJob?.cancel()
+        aiFillJob = scope.launch {
+            val result = try {
+                request(draft, line)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failed: Exception) {
+                null
+            }
+            // 等模型的时候用户切走了、或切回来重进了这篇：结果已经落盘，别再写缓冲。
+            if (liveEditor.value !== editor) return@launch
+            aiFillJob = null
+            aiFillBusy = false
+            if (result == null) {
+                aiFillError = AI_FILL_ERROR_TEXT
+                return@launch
+            }
+            // 等模型的时候用户改了字：以用户现在的文本为准，这次结果丢弃。
+            if (field.text != draft) return@launch
+            val caret = lineEndOffset(result, line)
+            apply(TextFieldValue(result, TextRange(caret)))
+            focus.requestFocusWhenReady()
+        }
+    }
+
     fun handleKey(event: KeyEvent): Boolean {
         if (event.type != KeyEventType.KeyDown) return false
         if (event.key == Key.Escape) {
             if (aiFillLine != null) {
-                // AI 补全条优先级最高：Esc 先关它（光标和空位都留着，可以再点）。
+                // AI 补全建议优先级最高：Esc 先收它（光标和空位都留着，可以再点/再按 Tab）。
                 aiFillDismissedLine = aiFillLine
                 aiFillJob?.cancel()
                 aiFillJob = null
@@ -323,6 +376,17 @@ internal fun MarkdownDocumentEditor(
             } else {
                 focusManager.clearFocus(force = true)
             }
+            return true
+        }
+        // 代码编辑器的接受手势：Tab 直接接受补全建议（斜杠/概念补全没开着时才抢）。
+        if (
+            event.key == Key.Tab &&
+            aiFillLine != null &&
+            field.selection.collapsed &&
+            completion == null &&
+            slashStart == null
+        ) {
+            requestAiFill()
             return true
         }
         val active = completion
@@ -462,6 +526,66 @@ internal fun MarkdownDocumentEditor(
         }
     }
 
+    // 光标下方的「AI 补全」小浮窗（代码编辑器的补全弹窗样式）：
+    // 行尾有 `。。。` 空位、正文有焦点时，气泡贴在光标下一行浮起来，点它或按 Tab 只补这一行。
+    // 位置用可见文本的 TextLayoutResult 现算，宽度按内容量出来（错误文案更长就跟着变宽）。
+    val aiFillMeasurer = rememberTextMeasurer()
+    val aiFillLabelStyle = remember(scheme) { aiFillLabelTextStyle(scheme.onSurface) }
+    val aiFillKeyStyle = remember(scheme) { aiFillKeyTextStyle(scheme.primary.copy(alpha = 0.82f)) }
+    val aiFillText = aiFillSuggestionText(busy = aiFillBusy, error = aiFillError)
+    val aiFillLabelLayout = remember(aiFillText, aiFillLabelStyle, aiFillMeasurer) {
+        aiFillMeasurer.measure(AnnotatedString(aiFillText), aiFillLabelStyle)
+    }
+    val aiFillKeyLayout = remember(aiFillKeyStyle, aiFillMeasurer) {
+        aiFillMeasurer.measure(AnnotatedString("Tab"), aiFillKeyStyle)
+    }
+    // 选中一段文字时不弹：那时候用户是在选/拖，不是在等补全。
+    val showAiFillPopup = editorFocused && aiFillLine != null && field.selection.collapsed
+    val aiFillPopup = remember(
+        showAiFillPopup,
+        editLayout,
+        projection,
+        field.selection,
+        field.text,
+        fieldWidth,
+        density,
+        aiFillLabelLayout,
+        aiFillKeyLayout,
+        aiFillBusy,
+        aiFillError,
+    ) {
+        val layout = editLayout
+        if (!showAiFillPopup || layout == null || fieldWidth <= 0) {
+            null
+        } else {
+            val caretRaw = field.selection.min.coerceIn(0, field.text.length)
+            val caret = projection.mapping.originalToTransformed(caretRaw)
+                .coerceIn(0, layout.layoutInput.text.length)
+            val line = layout.getLineForOffset(caret)
+            val caretX = layout.getHorizontalPosition(caret, usePrimaryDirection = true)
+            val showTab = !aiFillBusy && aiFillError == null
+            val padH = with(density) { 10.dp.toPx() }
+            val padV = with(density) { 6.dp.toPx() }
+            val accentW = with(density) { 2.dp.toPx() }
+            val accentGap = with(density) { 8.dp.toPx() }
+            val keyGap = if (showTab) with(density) { 12.dp.toPx() } else 0f
+            val keyPadH = if (showTab) with(density) { 8.dp.toPx() } else 0f
+            val contentWidth = accentW + accentGap + aiFillLabelLayout.size.width +
+                (if (showTab) keyGap + aiFillKeyLayout.size.width + keyPadH else 0f)
+            val popupWidth = ceil(contentWidth + padH * 2)
+            // 外层 Box 的坐标系是「gutter + 正文」，所以光标 x 要补上 gutter 宽度。
+            val minX = gutterWidthPx
+            val maxX = (gutterWidthPx + fieldWidth - popupWidth - with(density) { 4.dp.toPx() })
+                .coerceAtLeast(minX)
+            val x = (caretX + gutterWidthPx).coerceIn(minX, maxX)
+            val y = layout.getLineBottom(line) + with(density) { 6.dp.toPx() }
+            AiFillPopupPlacement(
+                offset = IntOffset(x.roundToInt(), y.roundToInt()),
+                width = with(density) { popupWidth.toDp() },
+            )
+        }
+    }
+
     Column(modifier = modifier.fillMaxWidth()) {
     Box(modifier = Modifier.fillMaxWidth()) {
         // gutter 画在文字左边（Canvas 先画 = 在最底层，文字不会盖住它）。
@@ -589,6 +713,7 @@ internal fun MarkdownDocumentEditor(
                     }
                     .focusRequester(focus)
                     .onFocusChanged { state ->
+                        editorFocused = state.isFocused
                         if (state.isFocused) {
                             hadFocus = true
                         } else if (hadFocus) {
@@ -635,6 +760,18 @@ internal fun MarkdownDocumentEditor(
                 modifier = Modifier.offset { menuOffset },
             )
         }
+        // 「AI 补全」小浮窗：贴在光标下一行，和上面两个补全菜单同一层（画在正文之上）。
+        aiFillPopup?.let { placement ->
+            AiFillSuggestionPopup(
+                text = aiFillText,
+                showTab = !aiFillBusy && aiFillError == null,
+                busy = aiFillBusy,
+                error = aiFillError,
+                width = placement.width,
+                onAccept = { requestAiFill() },
+                modifier = Modifier.offset { placement.offset },
+            )
+        }
     }
     // 正文末尾以下的空白：点一下就另起一段（不用再把光标拖到底、按回车）。
     Box(
@@ -649,51 +786,6 @@ internal fun MarkdownDocumentEditor(
                 }
             },
     )
-    if (aiFillLine != null) {
-        AiFillPromptBar(
-            busy = aiFillBusy,
-            error = aiFillError,
-            onFill = {
-                val line = aiFillLine ?: return@AiFillPromptBar
-                val draft = field.text
-                val editor = editorInstance
-                val request = onRequestAiFill ?: return@AiFillPromptBar
-                aiFillError = null
-                aiFillBusy = true
-                aiFillJob?.cancel()
-                aiFillJob = scope.launch {
-                    val result = try {
-                        request(draft, line)
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (failed: Exception) {
-                        null
-                    }
-                    // 等模型的时候用户切走了、或切回来重进了这篇：结果已经落盘，别再写缓冲。
-                    if (liveEditor.value !== editor) return@launch
-                    aiFillJob = null
-                    aiFillBusy = false
-                    if (result == null) {
-                        aiFillError = "这次没补上"
-                        return@launch
-                    }
-                    // 等模型的时候用户改了字：以用户现在的文本为准，这次结果丢弃。
-                    if (field.text != draft) return@launch
-                    val caret = lineEndOffset(result, line)
-                    apply(TextFieldValue(result, TextRange(caret)))
-                    focus.requestFocusWhenReady()
-                }
-            },
-            onDismiss = {
-                aiFillDismissedLine = aiFillLine
-                aiFillJob?.cancel()
-                aiFillJob = null
-                aiFillBusy = false
-                aiFillError = null
-                scope.launch { focus.requestFocusWhenReady() }
-            },
-        )
-    }
     }
 }
 
@@ -731,88 +823,19 @@ private fun lineEndOffset(text: String, lineIndex: Int): Int {
     return text.indexOf('\n', start).let { if (it < 0) text.length else it }
 }
 
-/** 输入框下方的快速补全条：只补光标那一行，不整篇整理。 */
-@Composable
-private fun AiFillPromptBar(
-    busy: Boolean,
-    error: String?,
-    onFill: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val scheme = MaterialTheme.colorScheme
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 10.dp)
-            .clip(ControlShape)
-            .background(scheme.surfaceVariant.copy(alpha = 0.5f))
-            .border(1.dp, scheme.outlineVariant.copy(alpha = 0.6f), ControlShape)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = when {
-                error != null -> error
-                busy -> "正在补全这一处…"
-                else -> "已识别 AI 补全空位"
-            },
-            style = LocalTrellisTokens.current.type.meta,
-            color = if (error != null) scheme.error else scheme.onSurfaceVariant,
-            modifier = Modifier.weight(1f),
-        )
-        AiFillBarButton(
-            label = if (busy) "补全中…" else "AI 补全",
-            enabled = !busy,
-            primary = true,
-            onClick = onFill,
-        )
-        Spacer(Modifier.width(8.dp))
-        AiFillBarButton(label = "先不用", enabled = true, primary = false, onClick = onDismiss)
-    }
-}
+/** 行内建议失败时的文案：点它重试。 */
+internal const val AI_FILL_ERROR_TEXT: String = "这次没补上 · 点这里重试"
 
-@Composable
-private fun AiFillBarButton(
-    label: String,
-    enabled: Boolean,
-    primary: Boolean,
-    onClick: () -> Unit,
-) {
-    val scheme = MaterialTheme.colorScheme
-    val interaction = remember { MutableInteractionSource() }
-    val hovered by interaction.collectIsHoveredAsState()
-    val accent = scheme.primary
-    val fill = when {
-        !enabled -> Color.Transparent
-        primary && hovered -> accent.copy(alpha = 0.18f)
-        primary -> accent.copy(alpha = 0.12f)
-        hovered -> scheme.onSurfaceVariant.copy(alpha = 0.1f)
-        else -> Color.Transparent
-    }
-    Text(
-        text = label,
-        style = LocalTrellisTokens.current.type.meta,
-        color = when {
-            !enabled -> scheme.onSurfaceVariant.copy(alpha = 0.45f)
-            primary -> accent
-            else -> scheme.onSurfaceVariant
-        },
-        modifier = Modifier
-            .clip(ControlShape)
-            .background(fill)
-            .border(
-                1.dp,
-                if (primary) accent.copy(alpha = 0.35f) else scheme.outlineVariant,
-                ControlShape,
-            )
-            .clickable(
-                interactionSource = interaction,
-                indication = null,
-                enabled = enabled,
-                onClick = onClick,
-            )
-            .padding(horizontal = 10.dp, vertical = 5.dp),
-    )
+/**
+ * 行内补全建议上显示的字。
+ *
+ * 正常是「AI 补全」，等模型时改成「AI 补全中…」，失败时给可点的重试提示——
+ * 三种状态都挂在光标后方同一个位置，不额外弹条。
+ */
+internal fun aiFillSuggestionText(busy: Boolean, error: String?): String = when {
+    error != null -> error
+    busy -> "AI 补全中…"
+    else -> "AI 补全"
 }
 
 /** 这些行的内容本身就是语法，回车只换行。 */
@@ -914,6 +937,122 @@ private fun buildDocumentEditText(
     for (span in projection.codeHighlights) {
         if (span.start >= span.end) continue
         add(span.start..(span.end - 1), SpanStyle(color = codeColors.of(span.kind)))
+    }
+}
+
+/** 「AI 补全」浮窗里那行字的样式（量宽度和真正画出来必须用同一个，不然 Tab 键帽会折行）。 */
+private fun aiFillLabelTextStyle(color: Color): TextStyle = TextStyle(
+    color = color,
+    fontSize = 13.sp,
+    fontWeight = FontWeight.Medium,
+)
+
+/** 「AI 补全」浮窗里 `Tab` 键帽的样式，同样用在测量和绘制两处。 */
+private fun aiFillKeyTextStyle(color: Color): TextStyle = TextStyle(
+    color = color,
+    fontSize = 10.sp,
+    fontFamily = AppFonts.mono,
+    fontWeight = FontWeight.SemiBold,
+)
+
+/** 光标下方「AI 补全」小浮窗的位置：外层 Box 坐标 + 浮窗该多宽。 */
+private data class AiFillPopupPlacement(val offset: IntOffset, val width: Dp)
+
+/**
+ * 「AI 补全」小浮窗：代码编辑器补全弹窗的样式，只有一行。
+ *
+ * 光标行尾有 `。。。` 空位时贴在光标下一行浮起来，整块可点（点一下补这一行）。
+ * 正常态带 `Tab` 键帽提示；等模型时显示「AI 补全中…」且暂时不可点；
+ * 失败时换成失败文案（点它就是重试），左侧强调条转成错误色。
+ */
+@Composable
+private fun AiFillSuggestionPopup(
+    text: String,
+    showTab: Boolean,
+    busy: Boolean,
+    error: String?,
+    width: Dp,
+    onAccept: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val scheme = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(8.dp)
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val accent = when {
+        error != null -> scheme.error
+        busy -> scheme.onSurfaceVariant.copy(alpha = 0.45f)
+        else -> scheme.primary
+    }
+    Row(
+        modifier = modifier
+            .width(width)
+            .shadow(elevation = 10.dp, shape = shape)
+            .clip(shape)
+            .background(
+                if (hovered && !busy) {
+                    scheme.primary.copy(alpha = 0.06f).compositeOver(scheme.surface)
+                } else {
+                    scheme.surface
+                },
+            )
+            .border(
+                width = 1.dp,
+                color = if (hovered && !busy) {
+                    accent.copy(alpha = 0.45f)
+                } else {
+                    scheme.outlineVariant.copy(alpha = 0.9f)
+                },
+                shape = shape,
+            )
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                enabled = !busy,
+                onClick = onAccept,
+            )
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 左侧强调条：像补全弹窗里「当前项」的标记，也把建议和正文分开一点。
+        Box(
+            Modifier
+                .width(2.dp)
+                .height(15.dp)
+                .clip(RoundedCornerShape(1.dp))
+                .background(accent),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = text,
+            style = aiFillLabelTextStyle(
+                when {
+                    error != null -> scheme.error
+                    busy -> scheme.onSurfaceVariant
+                    else -> scheme.onSurface
+                },
+            ),
+            maxLines = 1,
+            softWrap = false,
+        )
+        if (showTab) {
+            Spacer(Modifier.width(12.dp))
+            Text(
+                text = "Tab",
+                style = aiFillKeyTextStyle(scheme.primary.copy(alpha = 0.82f)),
+                maxLines = 1,
+                softWrap = false,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(scheme.primary.copy(alpha = 0.10f))
+                    .border(
+                        width = 1.dp,
+                        color = scheme.primary.copy(alpha = 0.30f),
+                        shape = RoundedCornerShape(3.dp),
+                    )
+                    .padding(horizontal = 4.dp, vertical = 1.dp),
+            )
+        }
     }
 }
 
