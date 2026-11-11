@@ -1,4 +1,4 @@
-﻿package dev.trellis.script
+package dev.trellis.script
 
 import dev.trellis.dsl.JvmPluginFileSystem
 import dev.trellis.kernel.core.PluginId
@@ -12,7 +12,8 @@ import kotlin.test.assertTrue
 // 目的：保证「能装上去」不是我在嘴里说的，而是每次构建都真的跑了一遍。
 class SamplePluginTest {
 
-    private val root = "src/test/resources/plugins"
+    // 资源实际放在 jvmTest 源集里（这条测试以前一直 UP-TO-DATE 没真正跑过，路径写错了没暴露）。
+    private val root = "src/jvmTest/resources/plugins"
 
     @Test
     fun theLoaderFindsItAndReadsItsManifest() {
