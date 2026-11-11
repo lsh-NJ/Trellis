@@ -20,6 +20,9 @@ import kotlinx.serialization.json.jsonPrimitive
 /** 一次最多能建多少个单元；bvid 全量导入和手写 units 共用这个上限。 */
 private const val UNIT_LIMIT = 200
 
+/** 一次最多把几门互补的 B 站课导进同一份计划（再多节点会互相撞车）。 */
+private const val MAX_COURSE_SOURCES = 4
+
 /**
  * 一集拆出来的单元分钟数：0 → 25；<10 → 10；10..45 原样；>45 拆两段，各取一半并夹在 10..45。
  */
@@ -293,21 +296,26 @@ class PlanTools(
         "<how_to_create_learning_plan>",
         "1. `set_plan` 只写这一轮的动作；**计划页要的是 create_learning_plan**。",
         "   长期、要按周推进的事调 create_learning_plan；一次性、几条能勾完的用 add_tasks。不用问用户「待办还是计划」，自己判断。",
-        "2. 用户只有目标、没有指定课程/BV/链接时，**先 research_plan 调研出路径**（见 how_to_research_plan），不要一上来搜 B 站。",
-        "   用户明确指定了课程/视频/BV 号，或要求「用某门课速通」时，才把 bvid 直接交给 create_learning_plan(bvid=...)，",
+        "2. 找学习资源时**先把 B 站这条路走一遍**：即使没给 BV 号，也先 search_bilibili 搜一轮（B 站常有高质量系统课，",
+        "   别跳过、也别只在别处找）；搜到合适的就按 bvid 建计划，搜不到就不用提，继续 research_plan 调研路径。",
+        "   用户明确指定了课程/视频/BV 号，或要求「用某门课速通」时，直接把 bvid 交给 create_learning_plan(bvid=...)，",
         "   可选 fromPart/toPart 只导入第几集到第几集。宿主会自己拉分集、按分集标题生成全部单元，",
         "   并把**从本周起的全局周表**一次排好（每周按每天分钟数**参考**估算，整门课不会只排前两周；排不完就往后延周，时间只做参考）。**总路线要全**：不要替用户挑「前面几集」，也不要逐条抄分集标题。",
+        "   有多门候选时：一般只挑最合适的一门；只有两门确实互补（各自覆盖不同部分、节点不重复冲突）才用 bvids=[…] 一起导进同一份计划。",
         "   走 add_tasks 那条路才从目录里挑 6-12 集；排计划不要挑。",
-        "3. 用了 bvid 就不要再写 units / weeks：单元和全局周表都由宿主自动做。手写会和分集对不上，工具会直接报错让你删掉。",
+        "3. 用了 bvid / bvids 就不要再写 units / weeks：单元和全局周表都由宿主自动做。手写会和分集对不上，工具会直接报错让你删掉。",
         "4. dailyMinutes 只是**建议**：用户主动说了就用用户的值；没说就用设置页「每天预计投入」（默认 60）。",
         "   不要为这个值单独问用户、更不要弹选项；排完在回复里说一句「按每天 X 分钟排的，想改随时说（也可以直接让我调节奏）」。",
         "5. 计划先做**整体**、再做**每周局部**：先把整条路线按周排全（覆盖到目标/截止日期），之后每周由节奏引擎把该周铺到天；不要让计划只活在前两周。",
         "6. 来源不是 B 站（自己的书 / 网课章节 / 其它资料）才手写 units + weeks：单元时间按真实时长估（10–45 分钟）；",
         "   weeks 从本周起、周与周连续、每周 1–14 个；把能覆盖到目标的周表一次给全（**不设周数上限**）。",
-        "7. 用户给了考试/截止日期（「还有两周考试」「月底前学完」）：先按今天换算成具体日期，再把 deadline 传给 create_learning_plan / research_plan，",
+        "7. 总计划（计划文档的「## 阶段」）里写了学习资源，节点**必须**关联资源：宿主会在排周 / 写阶段后按标题把资源挂到节点上；",
+        "   分不到具体节点的（一整本书、整个专栏）会挂到该阶段每个节点，让用户自己从中找。",
+        "   所以写阶段资源时不要因为「分不清属于哪一讲」就不写——多写几条比空着强；也不要编造链接。",
+        "8. 用户给了考试/截止日期（「还有两周考试」「月底前学完」）：先按今天换算成具体日期，再把 deadline 传给 create_learning_plan / research_plan，",
         "   宿主会按截止周倒排全局周表；最后 1–2 周留复习/模考。排不下就整体延期、其余留在待安排，不要为此擅自抬高每天投入。",
-        "8. 手写 units + weeks 时第一周必须是**本周**（今天所在的那一周）：计划从今天开始排，不要从下周开始。",
-        "9. 写完说清「全局排了多少周、本周 X 个、待安排还剩几个」；不要去改用户别的数据。",
+        "9. 手写 units + weeks 时第一周必须是**本周**（今天所在的那一周）：计划从今天开始排，不要从下周开始。",
+        "10. 写完说清「全局排了多少周、本周 X 个、待安排还剩几个」；不要去改用户别的数据。",
         "</how_to_create_learning_plan>",
     ).joinToString("\n")
 
@@ -316,14 +324,16 @@ class PlanTools(
     private inner class CreateLearningPlan : AgentTool {
         override val name: String = "create_learning_plan"
         override val description: String =
-            "在「计划」页建一份学习计划。排 B 站课程时优先传 bvid：宿主会直接拉分集，" +
+            "在「计划」页建一份学习计划。排 B 站课程时优先传 bvid（互补的两三门课可传 bvids）：宿主会直接拉分集，" +
                 "把整门课**全量**变成单元（总路线要全），并按**从本周起的全局周表**把整门课排到未来各周（每周按每天分钟数**参考**估算；时间只做参考，排不完就往后延周）；" +
-                "传了 bvid 就不要手写 units/weeks。非 B 站来源才手写 units + weeks（第一周必须是本周、周与周连续、每周 1–14 个，" +
+                "传了 bvid/bvids 就不要手写 units/weeks。非 B 站来源才手写 units + weeks（第一周必须是本周、周与周连续、每周 1–14 个，" +
                 "周数按整个计划周期给全，不设上限）。dailyMinutes 是建议值（15–240；用户没主动说就别单独问）；传 deadline 时宿主按截止周倒排、排不下留待安排。" +
                 "会写用户数据；长期学习计划用这个，一次性任务用 add_tasks。"
         override val parameters: String =
             "bvid：B 站视频 BV 号（首选，例：BV1YE411D7nH）；传了就不要再传 units/weeks，单元由宿主按分集生成、全局周表也由宿主自动排。" +
-                "fromPart / toPart：可选，只导入第几集到第几集（1-based，省略=全部集）。" +
+                "bvids：可选数组，互补的 2–4 门课一起导进同一份计划，每项可以是 BV 号字符串，或 {bvid, fromPart?, toPart?}；" +
+                "只挑一门就传 bvid，别把重复覆盖的课堆进来（节点会撞车）。" +
+                "fromPart / toPart：可选，只导入第几集到第几集（1-based，省略=全部集；bvids 里每项单独带）。" +
                 "title：计划标题（如「操作系统速通」）；" +
                 "dailyMinutes：建议值，每天投入分钟数（15–240；没说就按设置里的每天预计投入/60）；" +
                 "deadline：可选截止日期（YYYY-MM-DD）。用户说「还有两周考试」「月底前学完」时，按今天算出日期再传给 create_learning_plan，" +
@@ -346,8 +356,9 @@ class PlanTools(
             val dailyMinutes = arguments.intArg("dailyMinutes")?.coerceIn(15, 240)
                 ?: (weeklyCapacity()?.div(7)?.takeIf { it >= 15 } ?: 60)
 
-            val bvid = arguments.textArg("bvid")
-            if (bvid != null) return createFromSource(plan, arguments, title, dailyMinutes, bvid)
+            val (sources, sourceError) = parseCourseSources(arguments)
+            sourceError?.let { return ToolResult(it, isError = true) }
+            if (sources != null) return createFromSources(plan, arguments, title, dailyMinutes, sources)
 
             // ---------------- 手写 units + weeks 路径（行为不变，只把上限 60 提到 200） ----------------
             val rawUnits = arguments["units"] as? JsonArray
@@ -458,18 +469,79 @@ class PlanTools(
     }
 
     /**
-     * bvid 模式：只选源，不手写内容。
+     * B 站课程源：一门课 + 可选的起止集。
+     *
+     * 一般只挑最合适的一门；只有两门确实互补（各自覆盖不同部分、节点不重复冲突）才一次导进同一份计划。
+     */
+    private data class CourseSource(
+        val bvid: String,
+        val fromPart: Int? = null,
+        val toPart: Int? = null,
+    )
+
+    /** 分集 → 单元时记住它来自哪门课：落库后按各自 bvid 拼资源链接。 */
+    private data class SourcedUnit(val bvid: String, val unit: CourseUnit)
+
+    /**
+     * 解析 bvid / bvids 两种写法。
+     *
+     * 返回 (sources, error)：error 非空就是要直接回给模型的话；sources 为 null 表示没走 B 站路径（手写 units 分支）。
+     */
+    private fun parseCourseSources(arguments: JsonObject): Pair<List<CourseSource>?, String?> {
+        val single = arguments.textArg("bvid")
+        if (single != null) {
+            val raw = arguments["bvids"]
+            if (raw is JsonArray && raw.isNotEmpty()) {
+                return null to "bvid 和 bvids 只传一个：一门课用 bvid，互补的几门课用 bvids。"
+            }
+            val fromPart = arguments.intArg("fromPart")
+            val toPart = arguments.intArg("toPart")
+            sourceRangeError(fromPart, toPart)?.let { return null to it }
+            return listOf(CourseSource(single, fromPart, toPart)) to null
+        }
+        val raw = arguments["bvids"] as? JsonArray ?: return null to null
+        if (raw.isEmpty()) return null to "bvids 是空的：要么不传，要么写 2–" + MAX_COURSE_SOURCES + " 门互补的课。"
+        if (raw.size > MAX_COURSE_SOURCES) {
+            return null to "bvids 一次最多 " + MAX_COURSE_SOURCES + " 门课（现在是 " + raw.size + " 门）；再多就分成几份计划。"
+        }
+        val sources = raw.mapNotNull { element ->
+            when (element) {
+                is JsonPrimitive -> element.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }?.let { CourseSource(it) }
+                is JsonObject -> element.textArg("bvid")?.let { bvid ->
+                    CourseSource(bvid, element.intArg("fromPart"), element.intArg("toPart"))
+                }
+                else -> null
+            }
+        }
+        if (sources.isEmpty()) return null to "bvids 里没有可用的 BV 号。"
+        sources.forEach { source ->
+            sourceRangeError(source.fromPart, source.toPart)?.let { return null to "（" + source.bvid + "）" + it }
+        }
+        return sources to null
+    }
+
+    private fun sourceRangeError(fromPart: Int?, toPart: Int?): String? {
+        if (fromPart != null && fromPart < 1) return "fromPart 是 1-based（第 1 集写 1），现在是 " + fromPart
+        if (toPart != null && toPart < 1) return "toPart 是 1-based（第 1 集写 1），现在是 " + toPart
+        if (fromPart != null && toPart != null && fromPart > toPart) {
+            return "fromPart（" + fromPart + "）不能大于 toPart（" + toPart + "）"
+        }
+        return null
+    }
+
+    /**
+     * B 站模式：只选源，不手写内容。
      *
      * 分集 → 单元是确定性的：目录先过 [pickCourseParts] 洗掉片尾/预告等非正片，
      * 再由 [courseUnitsFromParts] 算标题/时长/章节；排周也是确定性的（[autoCommitments]：
-     * 全局周表），模型只负责选视频和起止集。
+     * 全局周表），模型只负责选视频和起止集。多门互补课合并成一份计划：按标题去重、共用一张全局周表。
      */
-    private suspend fun createFromSource(
+    private suspend fun createFromSources(
         plan: LearningPlanService,
         arguments: JsonObject,
         title: String,
         dailyMinutes: Int,
-        bvid: String,
+        sources: List<CourseSource>,
     ): ToolResult {
         if (arguments["weeks"] != null) {
             return ToolResult(
@@ -484,85 +556,89 @@ class PlanTools(
                 isError = true,
             )
         }
-        val fromPart = arguments.intArg("fromPart")
-        val toPart = arguments.intArg("toPart")
-        if (fromPart != null && fromPart < 1) {
-            return ToolResult("fromPart 是 1-based（第 1 集写 1），现在是 $fromPart", isError = true)
-        }
-        if (toPart != null && toPart < 1) {
-            return ToolResult("toPart 是 1-based（第 1 集写 1），现在是 $toPart", isError = true)
-        }
-        if (fromPart != null && toPart != null && fromPart > toPart) {
-            return ToolResult("fromPart（$fromPart）不能大于 toPart（$toPart）", isError = true)
-        }
-
-        val parts = try {
-            bilibili.parts(bvid)
-        } catch (e: BilibiliException) {
-            return ToolResult(e.message ?: "B 站这次没答上来。", isError = true)
-        }
-        val from = fromPart ?: 0
-        val to = toPart ?: Int.MAX_VALUE
-        val selected = parts.filter { it.page in from..to }
-        if (selected.isEmpty()) {
-            val rangeText = when {
-                fromPart != null && toPart != null -> "第 $fromPart–$toPart 集"
-                fromPart != null -> "第 $fromPart 集之后"
-                else -> "第 $toPart 集之前"
-            }
-            return ToolResult(
-                "（$bvid）共 ${parts.size} 集，$rangeText 没有分集；检查一下 fromPart/toPart。",
-                isError = true,
-            )
-        }
 
         val deadlineText = arguments.textArg("deadline")
         val deadline = checkDeadline(arguments, clock.today())
         deadline.error?.let { return ToolResult(it, isError = true) }
 
-        // 目录清洗：片尾/预告/花絮这类条目不是课程内容，不能变成用户要勾的节点。
-        // 清洗后不足 3 集就退回原始目录（课程只有一两集时不能清空），但过滤计数留着当警告。
-        val (courseParts, filteredOut) = pickCourseParts(selected)
-        val fellBack = filteredOut > 0 && courseParts.size == selected.size
+        val imported = mutableListOf<SourcedUnit>()
+        var filteredOut = 0
+        var fellBack = false
+        sources.forEach { source ->
+            val parts = try {
+                bilibili.parts(source.bvid)
+            } catch (e: BilibiliException) {
+                return ToolResult(e.message ?: "B 站这次没答上来。", isError = true)
+            }
+            val from = source.fromPart ?: 0
+            val to = source.toPart ?: Int.MAX_VALUE
+            val selected = parts.filter { it.page in from..to }
+            if (selected.isEmpty()) {
+                val rangeText = when {
+                    source.fromPart != null && source.toPart != null -> "第 " + source.fromPart + "–" + source.toPart + " 集"
+                    source.fromPart != null -> "第 " + source.fromPart + " 集之后"
+                    else -> "第 " + source.toPart + " 集之前"
+                }
+                return ToolResult(
+                    "（" + source.bvid + "）共 " + parts.size + " 集，" + rangeText + " 没有分集；检查一下 fromPart/toPart。",
+                    isError = true,
+                )
+            }
+            // 目录清洗：片尾/预告/花絮这类条目不是课程内容，不能变成用户要勾的节点。
+            // 清洗后不足 3 集就退回原始目录（课程只有一两集时不能清空），但过滤计数留着当警告。
+            val (courseParts, cut) = pickCourseParts(selected)
+            filteredOut += cut
+            fellBack = fellBack || (cut > 0 && courseParts.size == selected.size)
+            courseUnitsFromParts(courseParts).forEach { imported += SourcedUnit(source.bvid, it) }
+        }
 
-        val allCourseUnits = courseUnitsFromParts(courseParts)
-        val truncated = allCourseUnits.size > UNIT_LIMIT
-        val courseUnits = allCourseUnits.take(UNIT_LIMIT)
-        val units = courseUnits.map { it.draft }
-        // 单元下标 → 原始分集：资源落库（setUnitResources）按它写原分集标题/页码，见 phase 2。
-        val partByUnit: Map<Int, BilibiliPart> = courseUnits.mapIndexed { index, unit -> index to unit.part }.toMap()
-        val sourcePartCount = partByUnit.values.map { it.page }.distinct().size
+        val overLimit = imported.size > UNIT_LIMIT
+        val capped = imported.take(UNIT_LIMIT)
+        // 互补课的标题偶尔撞车：同一门课里 node 内容不同但标题一样时会撞成两个同名节点，合并掉并说明。
+        val deduped = capped.distinctBy { it.unit.draft.title }
+        val droppedDuplicates = capped.size - deduped.size
+        val units = deduped.map { it.unit.draft }
+        val sourcePartCount = deduped.groupBy { it.bvid }.values
+            .sumOf { list -> list.map { it.unit.part.page }.distinct().size }
+        val bvidList = sources.joinToString("、") { it.bvid }
 
         val commitments = autoCommitments(units, dailyMinutes, currentIsoWeek(), deadline.lastWeek)
         if (commitments.isEmpty()) {
-            return ToolResult("（$bvid）没生成出可排的单元，换一个视频或检查分集时长。", isError = true)
+            return ToolResult("（" + bvidList + "）没生成出可排的单元，换一个视频或检查分集时长。", isError = true)
         }
 
         val written = writePlan(plan, title, dailyMinutes, units, commitments, arguments.textArg("goalId")) { planId ->
-            writeBilibiliResources(plan, planId, bvid, courseUnits, commitments.map { it.week })
+            writeBilibiliResources(plan, planId, deduped, commitments.map { it.week })
         }
         written.error?.let { return it }
 
         val placed = commitments.sumOf { it.unitIndexes.size }
         val weekLines = commitments.joinToString("；") { draft ->
-            "${draft.week} ${draft.unitIndexes.size} 个单元"
+            draft.week + " " + draft.unitIndexes.size + " 个单元"
         }
         return ToolResult(
             buildString {
-                append("计划「$title」建好了：按 B 站 $bvid 的分集全量导入 ${units.size} 个单元（来自 $sourcePartCount 集）")
-                if (truncated) append("，超过 $UNIT_LIMIT 个已截断：只取前 $UNIT_LIMIT 个")
+                if (sources.size == 1) {
+                    append("计划「$title」建好了：按 B 站 " + sources.first().bvid + " 的分集全量导入 " + units.size + " 个单元（来自 " + sourcePartCount + " 集）")
+                } else {
+                    append("计划「$title」建好了：按 B 站 " + sources.size + " 门课（" + bvidList + "）共导入 " + units.size + " 个单元（合计 " + sourcePartCount + " 集）")
+                }
+                if (overLimit) append("，超过 " + UNIT_LIMIT + " 个已截断：只取前 " + UNIT_LIMIT + " 个")
+                if (droppedDuplicates > 0) append("；" + droppedDuplicates + " 个标题重复的单元已合并")
                 if (filteredOut > 0) {
                     if (fellBack) {
-                        append("；目录里 $filteredOut 条像片尾/预告的条目没清掉（清洗后不足 3 集，已退回使用原始分集）")
+                        append("；目录里 " + filteredOut + " 条像片尾/预告的条目没清掉（清洗后不足 3 集，已退回使用原始分集）")
                     } else {
-                        append("；已按课程大纲清洗 $sourcePartCount 集，过滤 $filteredOut 条（片尾/预告等）")
+                        append("；已按课程大纲清洗 " + sourcePartCount + " 集，过滤 " + filteredOut + " 条（片尾/预告等）")
                     }
                 }
-                append("。全局周表共 ${commitments.size} 周（$weekLines）")
-                deadline.lastWeek?.let { append("，按截止日 $deadlineText 排到 $it") }
-                if (placed < units.size) append("；按每天 $dailyMinutes 分钟（参考值）排，截止日前没排进任何一周的 ${units.size - placed} 个留在「待安排」池（之后再说）")
+                append("。全局周表共 " + commitments.size + " 周（" + weekLines + "）")
+                deadline.lastWeek?.let { append("，按截止日 " + deadlineText + " 排到 " + it) }
+                if (placed < units.size) {
+                    append("；按每天 " + dailyMinutes + " 分钟（参考值）排，截止日前没排进任何一周的 " + (units.size - placed) + " 个留在「待安排」池（之后再说）")
+                }
                 written.notes.forEach { append("；").append(it) }
-                append("。总路线一次排完，之后每周到点会自动铺到天；每天按 $dailyMinutes 分钟（参考值）排，内容多会往后延周（想改随时说）。")
+                append("。总路线一次排完，之后每周到点会自动铺到天；每天按 " + dailyMinutes + " 分钟（参考值）排，内容多会往后延周（想改随时说）。")
                 append("去「计划」页能看到全局周卡片和每天安排。")
             },
         )
@@ -665,8 +741,7 @@ class PlanTools(
     private suspend fun writeBilibiliResources(
         plan: LearningPlanService,
         planId: String,
-        bvid: String,
-        courseUnits: List<CourseUnit>,
+        courseUnits: List<SourcedUnit>,
         weeks: List<String>,
     ): List<String> {
         if (courseUnits.isEmpty()) return emptyList()
@@ -674,7 +749,9 @@ class PlanTools(
         var written = 0
         var missing = 0
         val failures = mutableListOf<String>()
-        courseUnits.forEach { unit ->
+        courseUnits.forEach { sourced ->
+            val unit = sourced.unit
+            val bvid = sourced.bvid
             val unitId = idByTitle[unit.draft.title]
             if (unitId == null) {
                 missing++

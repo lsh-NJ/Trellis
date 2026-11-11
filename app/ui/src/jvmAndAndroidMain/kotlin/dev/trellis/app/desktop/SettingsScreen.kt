@@ -1,14 +1,23 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package dev.trellis.app.desktop
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.FlowRowScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -29,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -44,8 +54,10 @@ import kotlin.math.roundToInt
  * 宿主自己只认一项（[StudyPrefs.dailyMinutes]），其余都交给插件 ——
  * 「设置页分组」这个挂载点（`slot.settings.section`）就是给它们的。
  *
- * 版式与知识库/网络页同一套：区段标题（[GraphSectionLabel]）＋ 发丝分隔线 ＋ 扁平行，
+ * 版式与知识库/网络页同一套：区段标题（[GraphSectionLabel]）＋ 发丝分隔线，
  * 去掉了每块标题下的解释性长文案；只保留「当前值 / 安全提示」这类功能信息。
+ * 外观七组各用一个「浅凹陷底 + 发丝边框」的组卡圈起来，组名加粗、用次级墨色；
+ * 选项是横向胶囊（窄窗自动换行），一眼能看出「这是哪一组的取值」。
  * 插件管理和诊断也收在这里：两者都不常用，各占一个导航位不值当，
  * 所以导航是 任务 / 计划 / 知识库 / 对话 / 活动 / 设置 六条。
  */
@@ -67,13 +79,6 @@ fun SettingsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
 
         item { StewardSection(runtime) }
 
-        // 时间调试：只有开发者模式（TRELLIS_DEV=1）才出现。
-        // 拨「应用内今天」而不是改系统时间——跨周/结算/复盘这些逻辑才需要它。
-        if (runtime.devModeEnabled) item { DevTimeSection(runtime) }
-
-        // 清除数据（同样只在开发者模式出现）：演示/测试弄脏后一把擦干净。
-        if (runtime.devModeEnabled) item { DevDataSection(runtime) }
-
         item { PluginsSection(runtime) }
 
         // 插件设置：没有插件贡献时 SlotArea 自己什么都不画，不占位。
@@ -89,6 +94,12 @@ fun SettingsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
 
         // 诊断原先在导航里占一格，现在从这一块进去：它只在出事时才打开。
         item { DiagnosticsSection(runtime) }
+
+        // 调试模式：以前只能靠启动前设 TRELLIS_DEV=1，现在开关落盘在 <home>/dev.json。
+        // 打开后下面两张卡才出现——时间调试拨「应用内今天」，清除数据会真删文件。
+        item { DebugSection(runtime) }
+        if (runtime.devModeEnabled) item { DevTimeSection(runtime) }
+        if (runtime.devModeEnabled) item { DevDataSection(runtime) }
     }
 
     if (llmOpen) {
@@ -246,29 +257,52 @@ private fun AppearanceSection(runtime: AppRuntime) {
     }
 }
 
-/** 外观里的一组：弱标签 + 若干选项行。 */
+/**
+ * 外观里的一组：小标题 + 横向选项。
+ *
+ * 每组用「凹陷底 + 发丝边框」圈成一块，和上面区段标题下的发丝线是同一套语言；
+ * 组名加粗、用次级墨色，选项则是带边框的胶囊——名字是标签，选项是控件，
+ * 一眼分得开。选项用 [FlowRow] 横排，窄窗自动换行。
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AppearanceGroup(label: String, content: @Composable ColumnScope.() -> Unit) {
+private fun AppearanceGroup(
+    label: String,
+    content: @Composable FlowRowScope.() -> Unit,
+) {
     val tokens = LocalTrellisTokens.current
-    Text(
-        label,
-        style = tokens.type.meta,
-        color = tokens.colors.ink3,
-        modifier = Modifier.padding(
-            start = tokens.space.s,
-            top = tokens.space.m,
-            bottom = tokens.space.xs,
-        ),
-    )
-    Column(Modifier.fillMaxWidth()) { content() }
+    val shape = RoundedCornerShape(tokens.radius.card)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = tokens.space.s)
+            .clip(shape)
+            .background(tokens.colors.sunken.copy(alpha = 0.35f))
+            .border(1.dp, tokens.colors.rule.copy(alpha = 0.55f), shape)
+            .padding(horizontal = tokens.space.m, vertical = tokens.space.s),
+    ) {
+        Text(
+            label,
+            style = tokens.type.control.copy(fontWeight = FontWeight.SemiBold),
+            color = tokens.colors.ink2,
+        )
+        Spacer(Modifier.height(tokens.space.s))
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(tokens.space.s),
+            verticalArrangement = Arrangement.spacedBy(tokens.space.s),
+        ) {
+            content()
+        }
+    }
 }
 
 /**
- * 外观选项行：直接走 [ChromeListRow]。
+ * 外观选项：横向胶囊。
  *
- * 行高、选中竖条、紧跟标签的 ✓、键盘焦点环都由组件负责；设置页只声明「哪个选了」。
- * 旧的 [SettingsChoiceRow]（7dp 灰方块 + 行尾「当前」）也换成同一个组件——方块对纸底
- * 只有 1.23:1 等于没画，「当前」贴在 1000pt 外要横跨整页去找。
+ * 选中态是「强调色边框 + 浅强调底 + ✓」，未选中是发丝线边框；hover 时边框收紧一档。
+ * 不用 [ChromeListRow]：外观一组最多 6 个短选项，竖排会让 7 组占满整页、也更难看出
+ * 「这些是同一组里的取值」。其他设置页（管家/每日投入）仍然是竖排行。
  */
 @Composable
 private fun AppearanceChoiceRow(
@@ -276,7 +310,50 @@ private fun AppearanceChoiceRow(
     selected: Boolean,
     onClick: () -> Unit,
 ) {
-    ChromeListRow(title = label, selected = selected, onClick = onClick)
+    val tokens = LocalTrellisTokens.current
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val focused by interaction.collectIsFocusedAsState()
+    val shape = RoundedCornerShape(tokens.radius.pill)
+    Row(
+        modifier = Modifier
+            .defaultMinSize(minHeight = 32.dp)
+            .clip(shape)
+            .background(
+                when {
+                    selected -> tokens.colors.accentSoft.copy(alpha = 0.55f)
+                    hovered -> tokens.colors.sunken.copy(alpha = 0.85f)
+                    else -> Color.Transparent
+                },
+            )
+            .border(
+                if (focused) 2.dp else 1.dp,
+                when {
+                    focused || selected -> tokens.colors.accent.copy(alpha = 0.85f)
+                    hovered -> tokens.colors.ruleStrong
+                    else -> tokens.colors.rule
+                },
+                shape,
+            )
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick,
+            )
+            .padding(horizontal = tokens.space.m, vertical = tokens.space.xs),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (selected) {
+            Text("✓", style = tokens.type.control, color = tokens.colors.accent)
+            Spacer(Modifier.width(tokens.space.xs))
+        }
+        Text(
+            label,
+            style = tokens.type.control,
+            color = tokens.colors.ink,
+            maxLines = 1,
+        )
+    }
 }
 
 /** 「跟随主题」在界面上要把数字写出来，否则用户不知道现在到底是几 dp。 */
@@ -366,15 +443,47 @@ private fun KnowledgeLinkSection(runtime: AppRuntime) {
 }
 
 /**
+ * 开发者 · 调试模式开关。
+ *
+ * 这一组以前只有启动前设 `TRELLIS_DEV=1` 才能看到：验证周滚动/结算、演示前清数据
+ * 都得改环境变量再重启。现在开关写进 `<home>/dev.json`，打开后立刻出现下面的
+ * 「时间调试」「清除数据」；环境变量仍然是启动级覆盖（脚本/截图/CI 用），
+ * 由它强制开启时这里只显示状态、不给关掉的选项。
+ */
+@Composable
+private fun DebugSection(runtime: AppRuntime) {
+    val forced = runtime.devModeForcedByEnv
+    val on = runtime.devModeEnabled
+    var message by remember { mutableStateOf<String?>(null) }
+    SettingsSection(
+        title = "调试模式",
+        status = when {
+            forced -> "已开（环境变量）"
+            on -> "已开"
+            else -> "已关"
+        },
+    ) {
+        if (forced) {
+            SettingsStatusLine("环境变量 TRELLIS_DEV=1 正在强制开启；这里只能决定下次不带它启动时开不开。")
+        } else {
+            SettingsChoiceRow("打开", selected = on) { message = runtime.setDebugMode(true) }
+            SettingsChoiceRow("关闭（默认）", selected = !on) { message = runtime.setDebugMode(false) }
+        }
+        SettingsStatusLine("开启后出现「时间调试」和「清除数据」。两者都会改真实数据：时间调试会按模拟日期真的结算/补周（主数据目录也会生效，卡片里会提示先备份），清除数据前会二次确认。")
+        message?.let { SettingsStatusLine(it) }
+    }
+}
+
+/**
  * 开发者 · 时间调试。
  *
  * 程序里很多逻辑是「时间推移才发生」的（周滚动、结算、结转、复盘、逾期、跨天）。
  * 靠改系统时钟既危险又影响别的应用，所以这里只拨**应用内今天**：
  * 计划后端、AI 工具、计划页都从同一个时钟取日期；计时器/超时仍走真实单调时间。
  *
- * 安全门槛：默认数据目录不允许（模拟日期会真的写 missed / 结算事件），
- * 要么用 `TRELLIS_HOME` 指到演示目录，要么显式 `TRELLIS_DEV_ALLOW_REAL_HOME=1`。
- * 界面只负责拨日期；「真的会写数据」这件事在 AppRuntime.applySimulatedToday 里再拦一次。
+ * 安全：拨日期会真的写 missed / 结算事件。2026-11-09 起调试模式本身就是明确授权，
+ * 主数据目录也能拨（不再要求换 `TRELLIS_HOME`），此时卡片里红字提示先备份；
+ * 演示目录（非默认 home）一直允许。界面只负责拨日期，写入仍走 AppRuntime.applySimulatedToday。
  */
 @Composable
 private fun DevTimeSection(runtime: AppRuntime) {
@@ -436,12 +545,19 @@ private fun DevTimeSection(runtime: AppRuntime) {
         note?.let { SettingsStatusLine(it, error = true) }
         if (!runtime.devClockAllowed) {
             SettingsStatusLine(
-                runtime.devClockRejectedReason ?: "当前数据目录不允许改模拟时间：换一个 TRELLIS_HOME 再试",
+                runtime.devClockRejectedReason ?: "模拟时间没启用：先关掉再打开调试模式试试",
+                error = true,
+            )
+        }
+        if (runtime.devClockAllowed && runtime.devClockOnRealHome) {
+            SettingsStatusLine(
+                "当前是主数据目录（" + runtime.home.absolutePath +
+                    "）：拨日期会真的写 missed / 结算事件，建议先备份",
                 error = true,
             )
         }
         SettingsStatusLine(
-            "提醒：模拟日期下活动页、计时器仍是真实数据；拨动后计划会立刻按新日期结算/补周，数据目录请用演示副本",
+            "提醒：模拟日期下活动页、计时器仍是真实数据；拨动后计划会立刻按新日期结算/补周",
         )
     }
 }
@@ -779,7 +895,7 @@ private fun DevDataSection(runtime: AppRuntime) {
             WipeChip("练习记录", WipeScope.Practice) { pending = it }
             WipeChip("全部清空", WipeScope.All) { pending = it }
         }
-        SettingsStatusLine("保留：llm.json、ui.json、study.json、steward/settings.json、activity 下的分类与同步设置。全部清空后建议重启应用。")
+        SettingsStatusLine("保留：llm.json、ui.json、study.json、dev.json、steward/settings.json、activity 下的分类与同步设置。全部清空后建议重启应用。")
     }
 
     val scope = pending

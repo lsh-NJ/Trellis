@@ -8,10 +8,12 @@ import dev.trellis.domain.plan.WeekView
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * 笔记 → 计划节点联动判定的纯逻辑测试：候选筛选、提示词、解析、逐字校验、上限。
+ * 笔记 → 计划节点联动判定的纯逻辑测试：候选筛选、提示词、解析、语义校验、上限。
  *
  * 真正调模型和写计划库不在这里（`AppRuntime` 的 `autoCompletePlanNodes` 集成，
  * 验证走 mock 端到端）；账本读写见 `AutoCompletionStoreTest`。
@@ -77,7 +79,7 @@ class PlanLinkTest {
     }
 
     @Test
-    fun promptListsTheCandidatesAndAsksForVerbatimEvidence() {
+    fun promptListsTheCandidatesAndAsksForEvidence() {
         val messages = buildPlanLinkMessages(
             noteTitle = "HNSW 笔记",
             body = body,
@@ -85,7 +87,8 @@ class PlanLinkTest {
         )
         val system = messages.first().content
         val user = messages.last().content
-        assertTrue(system.contains("逐字"), "system 要强调 evidence 逐字摘录")
+        assertTrue(system.contains("依据"), "system 要说明 evidence 写判断依据")
+        assertTrue(system.contains("概括"), "system 允许概括，不要求逐字")
         assertTrue(system.contains("coverage=full"))
         assertTrue(user.contains("occ_1"))
         assertTrue(user.contains("HNSW 建图"))
@@ -117,7 +120,7 @@ class PlanLinkTest {
     }
 
     @Test
-    fun onlyFullHighConfidenceVerbatimEvidenceIsAutoCompleted() {
+    fun onlyFullHighConfidenceWithEvidenceIsAutoCompleted() {
         val candidates = listOf(
             candidate("occ_1", "HNSW 建图"),
             candidate("occ_2", "BM25 检索"),
@@ -133,8 +136,8 @@ class PlanLinkTest {
             PlanLinkJudgment("occ_2", PlanLinkCoverage.Full, 0.5, evidence),
             // 只覆盖一部分。
             PlanLinkJudgment("occ_3", PlanLinkCoverage.Partial, 0.95, evidence),
-            // 证据不在正文里（模型改写/编造）。
-            PlanLinkJudgment("occ_4", PlanLinkCoverage.Full, 0.9, "每个节点认识 64 个邻居"),
+            // 证据是语义概括、正文里没有逐字出现——2026-11-09 起照样通过。
+            PlanLinkJudgment("occ_4", PlanLinkCoverage.Full, 0.85, "笔记用邻居上限把建图过程讲清楚了"),
             // 用户屏蔽过。
             PlanLinkJudgment("occ_5", PlanLinkCoverage.Full, 0.9, evidence),
             // 候选里没有这个节点。
@@ -146,8 +149,20 @@ class PlanLinkTest {
             judgments = judgments,
             blocked = setOf("occ_5"),
         )
-        assertEquals(listOf("occ_1"), completions.map { it.occurrenceId })
-        assertEquals(evidence, completions.single().evidence)
+        assertEquals(listOf("occ_1", "occ_4"), completions.map { it.occurrenceId })
+        assertEquals(evidence, completions.first().evidence)
+        assertEquals("笔记用邻居上限把建图过程讲清楚了", completions[1].evidence)
+    }
+
+    @Test
+    fun evidenceMustStillSaySomething() {
+        val candidates = listOf(candidate("occ_1", "HNSW 建图"))
+        // 太短（不足 8 字）仍然丢掉，避免模型用「懂了」这种占位糊过去。
+        val tooShort = listOf(PlanLinkJudgment("occ_1", PlanLinkCoverage.Full, 0.95, "懂了"))
+        assertTrue(validatePlanLinkJudgments(body, candidates, tooShort).isEmpty())
+        // 只要写了依据（哪怕正文里没有逐字出现）就通过。
+        val okay = listOf(PlanLinkJudgment("occ_1", PlanLinkCoverage.Full, 0.95, "笔记把建图流程讲完了"))
+        assertEquals(1, validatePlanLinkJudgments(body, candidates, okay).size)
     }
 
     @Test
@@ -180,5 +195,31 @@ class PlanLinkTest {
         val selected = selectPlanLinkCandidates(body, candidates, limit = 1)
         // 正文里「界面布局与按钮样式」出现多次，相关度最高。
         assertEquals(listOf("occ_1"), selected.map { it.occurrenceId })
+    }
+
+    @Test
+    fun timeCompletionNeedsTheWholeEstimateAndAtLeastFiveMinutes() {
+        val target = candidate("occ_1", "HNSW 建图") // 预估 25 分钟
+        assertNull(timeLinkCompletion(target, 0), "没计时不算做完")
+        assertNull(timeLinkCompletion(target, 24), "差一分钟不算做完")
+        val done = assertNotNull(timeLinkCompletion(target, 25))
+        assertEquals("occ_1", done.occurrenceId)
+        assertEquals(1.0, done.confidence)
+        assertTrue(done.evidence.contains("25"), done.evidence)
+        assertTrue(done.reason.contains("计时"), done.reason)
+    }
+
+    @Test
+    fun aNodeWithoutAnEstimateNeedsTheMinimumFiveMinutes() {
+        val target = candidate("occ_2", "临时看的章节").copy(minutes = 0)
+        assertNull(timeLinkCompletion(target, 4))
+        val done = assertNotNull(timeLinkCompletion(target, PLAN_LINK_MIN_TIME_MINUTES))
+        assertTrue(done.evidence.contains("没有预估时长"), done.evidence)
+    }
+
+    @Test
+    fun overrunningTheEstimateIsAlsoACompletion() {
+        val done = assertNotNull(timeLinkCompletion(candidate("occ_3", "HNSW 建图"), 40))
+        assertTrue(done.evidence.contains("160%"), done.evidence)
     }
 }

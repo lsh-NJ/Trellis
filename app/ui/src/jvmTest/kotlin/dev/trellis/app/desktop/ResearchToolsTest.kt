@@ -354,4 +354,37 @@ class ResearchToolsTest {
         assertTrue(result.content.contains("已建好"), result.content)
         assertEquals(1, harness.service.plans().size)
     }
+
+    /** 阶段资源：写进大纲（带周区间，schedule_week 才能按阶段挂），排完本周后挂到对应节点。 */
+    @Test
+    fun stageResourcesAreWrittenToTheOutlineAndAttachedToThisWeeksUnits() = runTest {
+        val harness = harness(shellJson(stagesWithResources()))
+        val result = call(harness)
+        assertFalse(result.isError, result.content)
+        val planId = assertNotNull(harness.service.activePlanId())
+
+        // 模型给的资源要落进大纲：`- 资源：` + 可点击链接；阶段标题要带周区间。
+        val doc = assertNotNull(harness.docStore.read(planId), "大纲文档要写出来")
+        assertTrue(doc.contains("  - 资源："), doc)
+        assertTrue(doc.contains("[命令行 30 讲](https://www.bilibili.com/video/BV1demo)"), doc)
+        assertTrue(doc.contains("2026-W45 – 2026-W46"), doc)
+        val stage = harness.docStore.stageForWeek(planId, thisWeek)
+        assertNotNull(stage, "大纲阶段要能被按周定位（否则 schedule_week 挂不了资源）")
+        assertEquals(listOf("命令行 30 讲"), stage.resources.map { it.title })
+
+        // 本周排完，资源按标题挂到「命令行 30 讲」这个单元上。
+        val unit = harness.service.week(planId, thisWeek).commitment.units.first { it.title == "命令行 30 讲" }
+        assertEquals(listOf("https://www.bilibili.com/video/BV1demo"), unit.resources.map { it.url })
+        assertEquals("bilibili", unit.resources.single().kind)
+        assertTrue(result.content.contains("大纲里写了 1 条阶段资源"), result.content)
+        assertTrue(result.content.contains("本周已按标题给 1 个节点挂上了资料"), result.content)
+    }
+
+    /** 3 个阶段，第一个阶段带 1 条真实链接（B 站分集），后两个阶段没有资源。 */
+    private fun stagesWithResources(): String =
+        """[""" +
+            """{"name":"基础与工具","weeks":2,"focus":"命令行、Python、数据处理","deliverable":"笔记+最小示例","acceptance":"能复述并跑通","resources":[{"title":"命令行 30 讲","url":"https://www.bilibili.com/video/BV1demo","note":"分集课"}]}, """ +
+            """{"name":"做一个可运行的小项目","weeks":2,"focus":"用真实数据做一个能跑的服务"}, """ +
+            """{"name":"收尾与复盘","weeks":1,"focus":"补弱项、重做错题"}""" +
+            """]"""
 }

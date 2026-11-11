@@ -147,4 +147,43 @@ class AutoCompletionStoreTest {
         )
         assertEquals(listOf("ac_2", "ac_3"), ledger.recentEntries(2).map { it.id })
     }
+
+    @Test
+    fun timeEntriesRememberTheirMinutesThroughTheFile() {
+        val store = store()
+        val timeEntry = sampleEntry("ac_00000002").copy(
+            kind = AutoCompletionKind.Time,
+            noteId = "",
+            noteTitle = "",
+            evidence = "计划 25 分钟，实际计时 30 分钟（120%）",
+            actualMinutes = 30,
+            plannedMinutes = 25,
+            source = "activity",
+            sourceTitle = "CPU 是如何执行程序的？ - 小林coding",
+        )
+        assertTrue(store.save(AutoCompletionLedger(entries = listOf(timeEntry))))
+        val loaded = store.load().entries.single()
+        assertEquals(AutoCompletionKind.Time, loaded.kind)
+        assertEquals(30, loaded.actualMinutes)
+        assertEquals(25, loaded.plannedMinutes)
+        assertEquals("", loaded.noteId)
+        assertEquals("activity", loaded.source)
+        assertEquals("CPU 是如何执行程序的？ - 小林coding", loaded.sourceTitle)
+    }
+
+    @Test
+    fun entriesWithoutAKindWereWrittenByTheOlderNotesPipeline() {
+        val store = store()
+        store.file.parentFile.mkdirs()
+        store.file.writeText(
+            "{\"version\":1,\"entries\":[{\"id\":\"ac_1\",\"planId\":\"plan_1\",\"occurrenceId\":\"occ_1\"," +
+                "\"title\":\"HNSW 建图\",\"day\":\"2026-11-05\",\"noteId\":\"n_1\",\"noteTitle\":\"笔记\"," +
+                "\"evidence\":\"逐字证据\",\"confidence\":0.9,\"at\":1}],\"blocked\":[]}",
+            Charsets.UTF_8,
+        )
+        val entry = store.load().entries.single()
+        assertEquals(AutoCompletionKind.Note, entry.kind, "旧账本没有 kind，按笔记处理")
+        assertEquals(0, entry.actualMinutes)
+        assertEquals(0, entry.plannedMinutes)
+    }
 }

@@ -73,7 +73,7 @@ class TrellisClockTest {
     }
 
     @Test
-    fun theEnvironmentDateIsOnlyHonouredOutsideTheDefaultDataDirectory() {
+    fun theEnvironmentDateNeedsTheDebugModeOnTheMainDataDirectory() {
         val home = Files.createTempDirectory("trellis-demo-home").toFile()
         val defaultHome = Files.createTempDirectory("trellis-default-home").toFile()
         try {
@@ -84,14 +84,26 @@ class TrellisClockTest {
             assertEquals(LocalDate.parse("2026-11-02"), enabled.clock.simulatedDate())
             assertEquals("2026-W45", enabled.clock.isoWeek())
 
-            // 默认数据目录：拒绝，避免模拟日期把真实计划写满 missed / 结算事件。
+            // 没开调试模式：主数据目录拒绝，避免普通用户随手把真实计划写满 missed / 结算事件。
             val refused = createTrellisClock(defaultHome, env = env, defaultHome = defaultHome)
             assertFalse(refused.simulated)
             assertNull(refused.clock.simulatedDate())
             assertFalse(refused.allowed)
-            assertTrue(refused.rejectedReason!!.contains("TRELLIS_DEV_ALLOW_REAL_HOME"), refused.rejectedReason!!)
+            assertTrue(refused.realDataHome)
+            assertTrue(refused.rejectedReason!!.contains("调试模式"), refused.rejectedReason!!)
 
-            // 显式确认要冒险，就允许。
+            // 打开调试模式（设置页开关或 TRELLIS_DEV=1）就是明确授权：主数据目录也允许。
+            val dev = createTrellisClock(
+                defaultHome,
+                env = env + ("TRELLIS_DEV" to "1"),
+                defaultHome = defaultHome,
+            )
+            assertTrue(dev.simulated)
+            assertTrue(dev.allowed)
+            assertTrue(dev.realDataHome)
+            assertEquals(LocalDate.parse("2026-11-02"), dev.clock.simulatedDate())
+
+            // 旧开关保留兼容（脚本里还在用）。
             val override = createTrellisClock(
                 defaultHome,
                 env = env + ("TRELLIS_DEV_ALLOW_REAL_HOME" to "1"),
@@ -140,6 +152,30 @@ class TrellisClockTest {
             )
             assertTrue(dev.simulated)
             assertEquals(LocalDate.parse("2026-11-05"), dev.clock.simulatedDate())
+        } finally {
+            home.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun debugModeRestoresThePersistedDateEvenOnTheMainDataDirectory() {
+        val home = Files.createTempDirectory("trellis-main-home").toFile()
+        try {
+            DevClockStore(home).save(LocalDate.parse("2026-11-07"))
+
+            // 设置页开关（不带环境变量、home 就是主数据目录）：允许并恢复上次拨的日期。
+            val setup = createTrellisClock(
+                home,
+                env = emptyMap(),
+                defaultHome = home,
+                debugMode = true,
+            )
+            assertTrue(setup.devMode)
+            assertFalse(setup.devModeFromEnv)
+            assertTrue(setup.allowed)
+            assertTrue(setup.realDataHome)
+            assertTrue(setup.simulated)
+            assertEquals(LocalDate.parse("2026-11-07"), setup.clock.simulatedDate())
         } finally {
             home.deleteRecursively()
         }

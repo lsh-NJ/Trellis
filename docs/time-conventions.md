@@ -2,7 +2,7 @@
 
 > 性质：**规范（要遵守）**。适用范围：`kernel` / `sdk-domain` / `features/*` / `ai` / `app:desktop` / 插件运行时全部模块。
 > 最后更新：2026-10-29。与代码冲突时以本文为准，并顺手把代码改对。
-> 状态：**P0 已落地（2026-10-29 晚）**——`TrellisClock` / `DebugTrellisClock`、`TRELLIS_DEV` + `TRELLIS_TODAY`、`dev-clock.json`、计划页「模拟时间」徽章、计划链路（`AppRuntime` / `PlanTools` / `PlanAdminTools` / 计划后端注入）都已接上；P1 显示类 / P2 其它存量见 §9。
+> 状态：**P0 已落地（2026-10-29 晚，2026-11-09 把开发者模式收进设置页）**——`TrellisClock` / `DebugTrellisClock`、设置页「调试模式」开关（`<home>/dev.json`）/ `TRELLIS_DEV` + `TRELLIS_TODAY`、`dev-clock.json`、计划页「模拟时间」徽章、计划链路（`AppRuntime` / `PlanTools` / `PlanAdminTools` / 计划后端注入）都已接上；P1 显示类 / P2 其它存量见 §9。
 
 ---
 
@@ -62,7 +62,9 @@ class DebugTrellisClock(real) : TrellisClock {             // 调试：只拨「
 }
 
 // 启动时决定：TRELLIS_TODAY > dev-clock.json > 真实时间；不安全的数据目录直接拒绝
-internal fun createTrellisClock(home, env, defaultHome): TrellisClockSetup
+// debugMode 来自设置页开关（<home>/dev.json），与 TRELLIS_DEV=1 任一为真即开启；
+// devModeFromEnv 告诉界面「这次是环境变量强制的，开关关不掉」。
+internal fun createTrellisClock(home, env, defaultHome, debugMode = false): TrellisClockSetup
 ```
 
 两类时钟的关键差别：`DebugTrellisClock` 只改「今天是几号」，事件时间戳的**时分秒仍取真实 wall clock**（不会整片 00:00）；`monotonicMs()` 永远是真实单调时间，所以计时器/超时/看门狗不受拨日期影响。
@@ -135,12 +137,14 @@ internal fun createTrellisClock(home, env, defaultHome): TrellisClockSetup
 1. **入口一：启动环境变量 `TRELLIS_TODAY=YYYY-MM-DD`**（已实现）。
    启动时构造模拟日期，作用于 §2 的注入链路；启动日志/`app.log` 必须同时出现真实时间与模拟时间，例如：
    `模拟时间：2026-11-02（真实 2026-10-29）；数据目录 /tmp/trellis-demo`。
-2. **入口二：开发者模式 UI（已实现）**。
-   启动时设 `TRELLIS_DEV=1`，设置页出现「时间调试（开发者）」卡片：日期输入 + 「应用」、`+1 天`、`+1 周`、`退出模拟`，并显示当前是模拟还是真实时间。
-   模拟日期持久化到 `<home>/dev-clock.json`（`{"date":"2026-11-02"}`）：重启后恢复；退出模拟即删文件。只有 `TRELLIS_DEV=1` 时才会读这个文件，普通用户不会「突然穿越」。
+2. **入口二：调试模式 UI（已实现）**。
+   设置页最底部「调试模式」开关（手机在「我的」页；落盘 `<home>/dev.json` 的 `debugMode`），打开后出现「时间调试（开发者）」卡片：日期输入 + 「应用」、`+1 天`、`+1 周`、`退出模拟`，并显示当前是模拟还是真实时间。关掉调试模式会一并退出模拟（`dev-clock.json` 删除），避免下次启动留下一个界面上看不见的模拟日期。
+   模拟日期持久化到 `<home>/dev-clock.json`（`{"date":"2026-11-02"}`）：重启后恢复；退出模拟即删文件。只有调试模式开启时才会读这个文件，普通用户不会「突然穿越」。
+   环境变量 `TRELLIS_DEV=1` 仍然有效，是给演示脚本/截图/CI 的启动级覆盖：它强制开启，界面开关关不掉；不带它启动时按 `dev.json` 走（默认关）。
 3. **页面徽章（已实现）**：模拟时间生效时，计划页顶部显示「模拟时间 · 2026-11-02（真实 …）」横幅，带 `+1 天` / `+1 周` / `退出模拟` 快捷按钮。**不允许静默生效。**
 4. **安全边界（已实现）**：
-   - 默认数据目录（`~/.trellis`）下拒绝启用，原因写进 `app.log` 与设置页卡片；确实要在真实目录调试，必须显式 `TRELLIS_DEV_ALLOW_REAL_HOME=1`。
+   - 2026-11-09 起「调试模式」本身就是明确授权：打开后（设置页开关或 `TRELLIS_DEV=1`）**主数据目录（`~/.trellis`）也能拨日期**，不再要求换 `TRELLIS_HOME`；设置页/手机页/计划页横幅会用红字提示「会真的写 missed / 结算事件，建议先备份」。
+   - 没开调试模式时，主数据目录仍拒绝 `TRELLIS_TODAY`（拒绝原因写进 `app.log` 与设置页）；`TRELLIS_DEV_ALLOW_REAL_HOME=1` 保留为旧脚本的兼容开关。
    - 不改系统时钟、不改系统时区；不做「时间加速/倍速」。
    - 模拟时间只影响本进程的业务时钟；活动采集的原始事件仍按真实时间入库（模拟日期下活动页可能是空的，属预期）。
 5. **可审计**：每次拨日期写一行 `app.log`（`调试：模拟时间 → 2026-11-02`）。**待办**：dev 跳日期触发的自动写事件目前 origin 仍是 `scheduler`，后续应改标 `scheduler.dev`，便于区分「真到点」和「调试跳的」。
@@ -163,7 +167,7 @@ internal fun createTrellisClock(home, env, defaultHome): TrellisClockSetup
 4. UI 的日期相关展示抽纯函数（周卡/灰卡/今天标记/相对时间文案），函数接受日期或 `now` 参数并单测。
 5. 新增命令/接口若涉及「今天」，契约里不出现由 UI 传入的 `today` 字符串（调试 `asOf` 除外）。
 
-**现有钉子**：`TrellisClockTest`（6 个：调试时钟只拨日期/ISO 跨年/文件持久化/env 安全门/坏日期/开发者模式恢复）、`PlanToolsTest`（固定时钟排周）、后端 `LearningPlanRhythmTest`（7 个假时钟推进）。
+**现有钉子**：`TrellisClockTest`（7 个：调试时钟只拨日期/ISO 跨年/文件持久化/env 安全门（无调试模式拒绝主数据目录、调试模式解锁）/坏日期/开发者模式恢复/主数据目录恢复模拟日期）、`DevPrefsTest`（5 个：默认关/落盘/坏文件兜底/设置开关开调试模式/env 强制覆盖/开关恢复模拟日期）、`PlanToolsTest`（固定时钟排周）、后端 `LearningPlanRhythmTest`（7 个假时钟推进）。
 
 ---
 
@@ -222,4 +226,4 @@ grep -rn "LocalDate.now()\|LocalDateTime.now()\|Instant.now()\|System.currentTim
 
 ## 12. 一句话给改动的人
 
-> 你这轮要不要碰时间？要碰就按本文：**取时间走注入的 clock，日期用 `today()`，周用 `isoWeek()`，时长用 `monotonicMs()`；新增业务取时间点不要直接 `LocalDate.now()`，也不要手动改系统时间。调试时间推移用 `TRELLIS_DEV=1` + 设置页或 `TRELLIS_TODAY`（只限演示数据目录）。**
+> 你这轮要不要碰时间？要碰就按本文：**取时间走注入的 clock，日期用 `today()`，周用 `isoWeek()`，时长用 `monotonicMs()`；新增业务取时间点不要直接 `LocalDate.now()`，也不要手动改系统时间。调试时间推移用设置页「调试模式」（或 `TRELLIS_DEV=1`）+ 时间调试卡片，或 `TRELLIS_TODAY`（只限演示数据目录）。**

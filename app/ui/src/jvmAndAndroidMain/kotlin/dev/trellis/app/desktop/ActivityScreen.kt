@@ -92,7 +92,9 @@ internal fun ActivityScreen(runtime: AppRuntime, modifier: Modifier = Modifier) 
     val scope = rememberCoroutineScope()
 
     var mode by remember { mutableStateOf(ActivityMode.Day) }
-    var selectedDay by remember { mutableStateOf(LocalDate.now()) }
+    // 从计划页「AI 自动完成」卡片点「学习 · 网页标题」过来时直接落在归因那天；
+    // 其余进入方式照旧落在今天。
+    var selectedDay by remember { mutableStateOf(runtime.pendingActivityDay ?: LocalDate.now()) }
     var rangeStart by remember { mutableStateOf(LocalDate.now().minusDays(6)) }
     var rangeEnd by remember { mutableStateOf(LocalDate.now()) }
 
@@ -116,6 +118,8 @@ internal fun ActivityScreen(runtime: AppRuntime, modifier: Modifier = Modifier) 
 
     // 进页面才开库，然后按 settings.json 的间隔轮询；离开页面时作用域取消，后台不再跑。
     LaunchedEffect(Unit) {
+        // 上面已经把它当初始日期用了，这里只负责消费掉，免得下次进页面又跳回那天。
+        runtime.pendingActivityDay = null
         runtime.ensureActivityEngine()
         while (true) {
             runtime.syncActivity()

@@ -151,12 +151,12 @@ private fun NoteListRow(
             .fillMaxWidth()
             .hoverable(interaction)
             .listRowSurface(selected, hovered)
-            .clickable(onClick = onClick)
-            .padding(start = 8.dp, end = 4.dp),
+            .clickable(onClick = onClick),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // 与对话页会话行同一套骨架：竖条贴着行的左缘（不额外内缩），文字前 8dp。
         ListRowSelectionBar(selected)
-        Spacer(Modifier.width(6.dp))
+        Spacer(Modifier.width(8.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 displayTitle(note.title),
@@ -167,7 +167,7 @@ private fun NoteListRow(
             )
             Text(
                 metaOverride ?: (knowledgeTimeLabel(note.updatedAt, zone) + " · " + note.chars + " 字符"),
-                style = tokens.type.caption,
+                style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -182,6 +182,7 @@ private fun NoteListRow(
                 .clickable(onClick = onDelete)
                 .padding(6.dp),
         )
+        Spacer(Modifier.width(4.dp))
     }
 }
 
@@ -563,12 +564,11 @@ internal fun ConceptListPanel(
                     .fillMaxWidth()
                     .hoverable(interaction)
                     .listRowSurface(selected, hovered)
-                    .clickable { onSelect(concept.name) }
-                    .padding(start = 8.dp, end = 8.dp),
+                    .clickable { onSelect(concept.name) },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 ListRowSelectionBar(selected)
-                Spacer(Modifier.width(6.dp))
+                Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
                         concept.name,

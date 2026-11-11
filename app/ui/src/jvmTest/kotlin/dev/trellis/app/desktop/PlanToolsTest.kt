@@ -7,6 +7,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.add
+import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -34,6 +35,18 @@ class PlanToolsTest {
             when {
                 "finger/spi" in url -> """{"code":0,"data":{"b_3":"BUV3TEST","b_4":"BUV4TEST"}}"""
                 "player/pagelist" in url -> pagelist
+                else -> error("unexpected url: $url")
+            }
+        },
+    )
+
+    /** 假 B 站（按 bvid 分别返回目录）：验证互补的几门课一起导进同一份计划。 */
+    private fun fakeBilibiliByBvid(pagelists: Map<String, String>): BilibiliClient = BilibiliClient(
+        fetch = { url, _ ->
+            when {
+                "finger/spi" in url -> """{"code":0,"data":{"b_3":"BUV3TEST","b_4":"BUV4TEST"}}"""
+                "player/pagelist" in url -> pagelists.entries.firstOrNull { (bvid, _) -> bvid in url }?.value
+                    ?: error("unexpected pagelist url: $url")
                 else -> error("unexpected url: $url")
             }
         },
@@ -612,5 +625,82 @@ class PlanToolsTest {
         assertTrue(first.locator.startsWith("第 1 集"), first.locator)
         // 长分集拆成（上）（下）两个单元，但都指向同一集。
         assertEquals("https://www.bilibili.com/video/BV1YE411D7nH?p=3", units[3].resources.single().url)
+    }
+
+    /**
+     * 互补的两三门课导进同一份计划：单元合并成一张全局周表，
+     * 每个节点的分集资源按**它自己那门课**的 bvid 拼链接（不能全用第一门的）。
+     */
+    @Test
+    fun complementaryCoursesShareOnePlanAndKeepTheirOwnResources() = runTest {
+        val service = LearningPlanStore.inMemory()
+        val firstBvid = "BV1AAAAAAAA1"
+        val secondBvid = "BV1BBBBBBBB2"
+        val tool = PlanTools(
+            { service }, {},
+            bilibili = fakeBilibiliByBvid(
+                mapOf(
+                    firstBvid to pageList(
+                        listOf(Triple(1, "第1章 导论", 20 * 60), Triple(2, "第1章 工具链", 20 * 60)),
+                    ),
+                    secondBvid to pageList(
+                        listOf(Triple(1, "第2章 索引", 20 * 60), Triple(2, "第2章 检索", 20 * 60)),
+                    ),
+                ),
+            ),
+        ).all.single { it.name == "create_learning_plan" }
+
+        val result = tool.call(
+            buildJsonObject {
+                put("title", "RAG 两门课")
+                put("dailyMinutes", 60)
+                putJsonArray("bvids") {
+                    addJsonObject {
+                        put("bvid", firstBvid)
+                        put("fromPart", 1)
+                        put("toPart", 2)
+                    }
+                    add(secondBvid)
+                }
+            },
+        )
+
+        assertTrue(!result.isError, result.content)
+        assertTrue(result.content.contains("2 门课"), "回执要说清是多门课：" + result.content)
+        val planId = service.activePlanId()!!
+        val units = service.map(planId).weeks.flatMap { week -> service.week(planId, week.week).commitment.units }
+        assertEquals(4, units.size, "两门课各 2 集，应该合并成 4 个节点：" + units.map { it.title })
+
+        val urls = units.map { unit ->
+            val url = unit.resources.singleOrNull()?.url
+            assertTrue(url != null, unit.title + " 没挂上分集资源：" + unit.resources)
+            unit.title to url!!
+        }.toMap()
+        urls.forEach { (title, url) ->
+            val expected = if (title.startsWith("第1章")) firstBvid else secondBvid
+            assertTrue(url.contains(expected), title + " 应指向 " + expected + "，实际：" + url)
+        }
+    }
+
+    /** 一门课用 bvid，互补的几门课用 bvids：两个一起传要直接拒绝，说清怎么改。 */
+    @Test
+    fun bvidAndBvidsAreMutuallyExclusive() = runTest {
+        val service = LearningPlanStore.inMemory()
+        val tool = PlanTools(
+            { service }, {},
+            bilibili = fakeBilibili(pageList(listOf(Triple(1, "第1章 导论", 20 * 60)))),
+        ).all.single { it.name == "create_learning_plan" }
+
+        val result = tool.call(
+            buildJsonObject {
+                put("title", "两个都传")
+                put("bvid", "BV1YE411D7nH")
+                putJsonArray("bvids") { add("BV1YE411D7nH") }
+            },
+        )
+
+        assertTrue(result.isError, result.content)
+        assertTrue(result.content.contains("只传一个"), "错误要能纠正：" + result.content)
+        assertEquals(null, service.activePlanId(), "报错时不能留下半个计划")
     }
 }

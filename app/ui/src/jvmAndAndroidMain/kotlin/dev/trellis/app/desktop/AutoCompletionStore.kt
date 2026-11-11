@@ -38,6 +38,21 @@ internal enum class AutoCompletionStatus(val wire: String) {
     }
 }
 
+/** 这笔自动完成是谁触发的：笔记整理判定，还是计时器跑满预估时长。 */
+internal enum class AutoCompletionKind(val wire: String) {
+    /** 笔记 AI 整理后判定「这篇笔记已经讲完这个节点」。 */
+    Note("note"),
+
+    /** 计时器/计划 session 的实际计时达到节点预估时长。 */
+    Time("time"),
+    ;
+
+    companion object {
+        fun fromWire(raw: String): AutoCompletionKind =
+            entries.firstOrNull { it.wire.equals(raw.trim(), ignoreCase = true) } ?: Note
+    }
+}
+
 /** 一笔自动完成。 */
 internal data class AutoCompletionEntry(
     val id: String,
@@ -51,6 +66,16 @@ internal data class AutoCompletionEntry(
     val evidence: String,
     val confidence: Double,
     val at: Long,
+    val kind: AutoCompletionKind = AutoCompletionKind.Note,
+    val actualMinutes: Int = 0,
+    val plannedMinutes: Int = 0,
+    /** 时间来源：`timer` = 计时器 session；`activity` = 屏幕使用归因；空 = 旧记录（只有计时）。 */
+    val source: String = "",
+    /**
+     * 屏幕使用来源的「学的是什么」：归因片段里停留最久的窗口/标签标题（例如
+     * `CPU 是如何执行程序的？ - 小林coding`）。只用于计划页展示，不参与是否完成的判定。
+     */
+    val sourceTitle: String = "",
     val status: AutoCompletionStatus = AutoCompletionStatus.Auto,
     val undoneAt: Long? = null,
 )
@@ -178,6 +203,11 @@ internal class AutoCompletionStore(
                 evidence = obj.stringValue("evidence").orEmpty(),
                 confidence = obj.doubleValue("confidence") ?: 0.0,
                 at = obj.longValue("at") ?: 0L,
+                kind = AutoCompletionKind.fromWire(obj.stringValue("kind").orEmpty()),
+                actualMinutes = obj.intValue("actualMinutes") ?: 0,
+                plannedMinutes = obj.intValue("plannedMinutes") ?: 0,
+                source = obj.stringValue("source").orEmpty(),
+                sourceTitle = obj.stringValue("sourceTitle").orEmpty(),
                 status = AutoCompletionStatus.fromWire(obj.stringValue("status").orEmpty()),
                 undoneAt = obj.longValue("undoneAt"),
             )
@@ -206,6 +236,11 @@ internal class AutoCompletionStore(
         put("evidence", entry.evidence)
         put("confidence", entry.confidence)
         put("at", entry.at)
+        put("kind", entry.kind.wire)
+        if (entry.actualMinutes > 0) put("actualMinutes", entry.actualMinutes)
+        if (entry.plannedMinutes > 0) put("plannedMinutes", entry.plannedMinutes)
+        if (entry.source.isNotBlank()) put("source", entry.source)
+        if (entry.sourceTitle.isNotBlank()) put("sourceTitle", entry.sourceTitle)
         put("status", entry.status.wire)
         if (entry.undoneAt != null) put("undoneAt", entry.undoneAt)
     }

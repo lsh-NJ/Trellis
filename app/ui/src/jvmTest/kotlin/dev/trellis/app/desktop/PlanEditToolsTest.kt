@@ -327,4 +327,58 @@ class PlanEditToolsTest {
         assertTrue(h.service.stages(h.planId).isEmpty(), "dryRun 不能写阶段")
         assertTrue(!h.docStore.read(h.planId).orEmpty().contains("### 阶段 1"), "dryRun 不能写文档")
     }
+
+    /**
+     * 一整本书这种「分不到具体节点」的资源，不能丢：
+     * 宿主把它挂到该阶段覆盖的每个节点上，让用户自己从中找。
+     */
+    @Test
+    fun aWholeBookResourceLandsOnEveryUnitOfItsStage() = runTest {
+        val h = harness()
+        // 本周再铺一个节点：整本书的挂法要覆盖这一周所有节点，而不只是第一个。
+        val appended = h.service.appendUnits(env(), h.planId, listOf(UnitDraft("第 1 章", "读第一章", 30)))
+        assertTrue(appended.ok, "加单元失败：" + appended.error?.message)
+        val extraId = appended.value.orEmpty().first()
+        assertTrue(h.service.placeUnit(env(), h.planId, week, extraId, today.toString()).ok, "排今天失败")
+        val bookUrl = "https://book.douban.com/subject/26912767/"
+        val result = updateTool(h).call(
+            buildJsonObject {
+                put("confirmed", true)
+                put("planId", h.planId)
+                putJsonArray("ops") {
+                    addJsonObject {
+                        put("op", "insert")
+                        put("into", "stages")
+                        putJsonArray("stages") {
+                            addJsonObject {
+                                put("name", "系统基础")
+                                put("weekStart", week)
+                                put("weekEnd", week)
+                                put("focus", "把整本书过一遍")
+                                put("deliverable", "读完前六章")
+                                put("acceptance", "能复述关键概念")
+                                putJsonArray("resources") {
+                                    addJsonObject {
+                                        put("title", "深入理解计算机系统")
+                                        put("url", bookUrl)
+                                        put("note", "整本书，按章节自己挑")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+        )
+        assertFalse(result.isError, result.content)
+
+        val units = h.service.week(h.planId, week).commitment.units
+        assertTrue(units.size >= 2, "这一周应该不止一个节点：" + units.map { it.title })
+        units.forEach { unit ->
+            assertTrue(
+                unit.resources.any { it.url == bookUrl },
+                "分不到节点的整本书资源要挂到每个节点上：" + unit.title + " 实际：" + unit.resources,
+            )
+        }
+    }
 }

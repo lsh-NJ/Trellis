@@ -337,9 +337,23 @@ class AppRuntime private constructor() {
     var simulatedToday by mutableStateOf<LocalDate?>(null)
         private set
 
-    /** 开发者模式（`TRELLIS_DEV=1`）：设置页显示调试区。 */
-    internal var devModeEnabled: Boolean = false
+    /**
+     * 开发者模式：设置页（手机是「我的」）的「调试模式」开关或 `TRELLIS_DEV=1` 任一开启。
+     *
+     * 打开后设置页才出现「时间调试」「清除数据」；开关本身落盘在 `<home>/dev.json`。
+     */
+    internal var devModeEnabled by mutableStateOf(false)
         private set
+
+    /** 是否由环境变量 `TRELLIS_DEV=1` 强制开启：界面开关关不掉它，设置页据此提示。 */
+    internal var devModeForcedByEnv: Boolean = false
+        private set
+
+    /** 调试模式的落盘状态；见 [setDebugMode]。 */
+    internal var devPrefs: DevPrefs = DevPrefs()
+        private set
+
+    private lateinit var devPrefsStore: DevPrefsStore
 
     /** 当前数据目录是否允许改模拟时间（默认目录不允许，防止模拟日期污染真实数据）。 */
     internal var devClockAllowed: Boolean = false
@@ -347,6 +361,10 @@ class AppRuntime private constructor() {
 
     /** 请求了模拟但被拒绝的原因；给日志和设置页显示。 */
     internal var devClockRejectedReason: String? = null
+        private set
+
+    /** 调试模式正作用在主数据目录（`~/.trellis`）：界面据此提示拨日期会真的写数据。 */
+    internal var devClockOnRealHome: Boolean = false
         private set
 
     private lateinit var devClockStore: DevClockStore
@@ -359,10 +377,45 @@ class AppRuntime private constructor() {
         get() = simulatedToday != null && System.getenv("TRELLIS_HIDE_SIM_BANNER")?.trim() != "1"
 
     /**
+     * 设置页「调试模式」开关：落盘 `<home>/dev.json`，并立刻决定调试区显示不显示。
+     *
+     * 环境变量 `TRELLIS_DEV=1` 是启动级覆盖（演示脚本/截图/CI 不想依赖用户目录状态时用），
+     * 开关关不掉它；不带环境变量启动时，这里记下的值就是默认值。
+     *
+     * 关掉开关时如果正在模拟时间，一并退出模拟——否则下次启动会留下一个
+     * 界面上再也关不掉的模拟日期（`dev-clock.json` 还在，但「时间调试」卡不见了）。
+     */
+    fun setDebugMode(enabled: Boolean): String {
+        val prefs = devPrefs.copy(debugMode = enabled)
+        devPrefs = prefs
+        if (::devPrefsStore.isInitialized) devPrefsStore.save(prefs)
+        devModeEnabled = enabled || devModeForcedByEnv
+        // 调试模式就是「我知道会写真实数据」的明确授权：打开后连主数据目录也允许拨日期；
+        // 关掉时主数据目录重新上锁，演示目录（非默认 home）照旧不受影响。
+        if (enabled) {
+            devClockAllowed = true
+            devClockRejectedReason = null
+        } else if (!devModeEnabled) {
+            // 先退出模拟、再把主数据目录重新上锁：applySimulatedToday(null) 要过
+            // devClockAllowed 这一关，顺序反了会关掉开关却还停在模拟日期上。
+            if (simulatedToday != null) applySimulatedToday(null)
+            devClockAllowed = !devClockOnRealHome
+        }
+        appendAppLog(if (devModeEnabled) "调试模式：开" else "调试模式：关")
+        tick += 1
+        return when {
+            enabled && devModeForcedByEnv -> "调试模式已开（环境变量 TRELLIS_DEV=1 也在强制开启）"
+            enabled -> "调试模式已开：设置页出现「时间调试」和「清除数据」"
+            devModeForcedByEnv -> "已记下关闭，但环境变量 TRELLIS_DEV=1 正在强制开启；去掉它再启动才会关"
+            else -> "调试模式已关"
+        }
+    }
+
+    /**
      * 开发者模式：把「应用内今天」拨到指定日期；传 null 回真实时间。
      *
-     * 真的会写计划数据（结算旧周、补承诺、生成复盘），所以默认数据目录被拒绝；
-     * 允许的前提是 `TRELLIS_HOME` 指向非默认目录，或显式 `TRELLIS_DEV_ALLOW_REAL_HOME=1`。
+     * 真的会写计划数据（结算旧周、补承诺、生成复盘）：主数据目录也能拨（2026-11-09 起
+     * 调试模式本身就是明确授权），界面会提示先备份；演示目录一直允许。
      */
     fun applySimulatedToday(date: LocalDate?) {
         if (!devClockAllowed) {
@@ -391,7 +444,7 @@ class AppRuntime private constructor() {
     /**
      * 调试用：清除数据（开发者模式）。
      *
-     * 具体删什么见 [DataWipe]：配置（模型 key / 界面偏好 / 学习偏好 / 管家设置 / 活动设置）一律保留。
+     * 具体删什么见 [DataWipe]：配置（模型 key / 界面偏好 / 学习偏好 / 管家设置 / 活动设置 / 调试模式开关）一律保留。
      * 先关掉会写文件的句柄再删，删完把内存里的视图状态复位；计划库下一次刷新会惰性重建一个空库。
      */
     internal fun clearData(scope: WipeScope): WipeResult {
@@ -668,18 +721,230 @@ class AppRuntime private constructor() {
      *
      * 待办任务记「投入分钟」（不足一分钟按一分钟算）；计划节点没有分钟字段，落的是 session ——
      * 计划侧要的是「这段时间在做什么」，分钟由 session 的起止自己算。
+     * 计划节点记完后再看一眼累计计时：够预估时长就自动勾上（[autoCompleteNodeFromTimer]）。
      */
     suspend fun stopTimerAndLog() {
         val minutes = minutesToLog(timerElapsedSeconds)
         val node = timerNodeTarget
         if (node != null) {
             endNodeSession()
-            if (minutes > 0) planMessage = "记了 $minutes 分钟：" + node.title
+            val autoCompleted = autoCompleteNodeFromTimer(node)
+            if (minutes > 0) {
+                planMessage = if (autoCompleted) {
+                    "记了 $minutes 分钟：" + node.title + "（计时到点，已自动勾上，可在「AI 自动完成」里撤销）"
+                } else {
+                    "记了 $minutes 分钟：" + node.title
+                }
+            }
         } else {
             val task = timerTaskId?.let { id -> tasks.firstOrNull { it.id == id } }
             if (task != null && minutes > 0) logTime(task, minutes)
         }
         closeTimer()
+    }
+
+    /**
+     * 计时结束后的自动完成：这个节点的累计实际计时达到预估时长（且至少 5 分钟）就自动勾上。
+     *
+     * 只看计时器来源；活动归因要等归类信号升级后再接（用户定的顺序）。
+     * 判定用的是「这个节点全部已结束 session 的累计分钟」，所以分两次计时凑满也算。
+     * 屏蔽过/已经自动完成过的节点直接跳过；写库失败只提示、不反向影响计时记账。
+     */
+    private fun autoCompleteNodeFromTimer(node: TimerNodeTarget): Boolean {
+        val service = learningPlan() ?: return false
+        val ledger = readAutoCompletionLedger()
+        if (ledger.isBlocked(node.occurrenceId)) return false
+        if (ledger.activeCompletionFor(node.occurrenceId) != null) return false
+        val candidate = runCatching {
+            val week = service.planState(node.planId).week
+            planLinkCandidates(service.week(node.planId, week))
+                .firstOrNull { it.occurrenceId == node.occurrenceId }
+        }.getOrNull() ?: return false
+        val actual = runCatching { service.actualMinutesByOccurrence(node.planId, clock.today().toString()) }
+            .getOrDefault(emptyMap())[node.occurrenceId] ?: 0
+        val completion = timeLinkCompletion(candidate, actual) ?: return false
+        val command = CommandEnvelope(
+            commandId = "cmd_" + java.util.UUID.randomUUID().toString().replace("-", ""),
+            actor = Actor.SYSTEM,
+            planId = node.planId,
+            origin = "timer.auto-complete",
+        )
+        val result = runCatching { service.completeOccurrence(command, node.occurrenceId) }
+            .getOrElse { error ->
+                reportPlanProblem("计时到点了，但这笔自动完成没记上：" + (error.message ?: "未知原因"))
+                return false
+            }
+        if (!result.ok) {
+            reportPlanProblem(result.error?.message ?: "计时到点了，但这笔自动完成没记上。")
+            return false
+        }
+        val entry = AutoCompletionEntry(
+            id = nextAutoCompletionEntryId(ledger),
+            planId = node.planId,
+            occurrenceId = node.occurrenceId,
+            title = candidate.title,
+            chapter = candidate.chapter,
+            day = candidate.day,
+            noteId = "",
+            noteTitle = "",
+            evidence = completion.evidence,
+            confidence = completion.confidence,
+            at = clock.nowMs(),
+            kind = AutoCompletionKind.Time,
+            actualMinutes = actual,
+            plannedMinutes = candidate.minutes,
+            source = "timer",
+        )
+        saveAutoCompletionLedger(ledger.withCompletion(entry))
+        refreshPlan()
+        tick++
+        if (uiPrefs.notifyAutoCompletion) {
+            notifyWithTarget(
+                "Trellis · 计划自动完成",
+                "「" + candidate.title + "」计时到点（" + actual + " 分钟），已自动勾上",
+                NotifyTarget.Plan,
+            )
+        }
+        return true
+    }
+
+    /**
+     * 计时 / 屏幕使用事实 → 计划节点自动完成。
+     *
+     * 数据来源有两种，优先级「计时器 > 屏幕使用」：
+     * - `actualMinutesByOccurrence`：这个节点全部已结束 session 的累计计时（[autoCompleteNodeFromTimer] 用的就是它）；
+     * - `activityOccurrenceMinutes`：屏幕使用按 `occurrence:` 归因到该节点的毫秒数（活动页「归到任务」/ AI 归因的结果）。
+     * 同一节点两边都有时只按计时算，避免「计时 20 分钟 + 屏幕使用 20 分钟」被当成 40 分钟。
+     *
+     * 阈值与笔记来源共用 [timeLinkCompletion]（max(预估, 5) 分钟），账本也与计时来源共用
+     * （`kind = Time`、`source` 记来源），所以计划页的「AI 自动完成」可撤销，撤销过进屏蔽名单。
+     *
+     * 每刷新一次计划页就对一次账（活动库是本地文件，外部改库后切回计划页也能补勾）；
+     * 用 [timeFactLock] 串行、[timeReconciling] 挡住「本函数内部 refreshPlan → 再次进入」的递归。
+     */
+    private var timeReconciling = false
+    private val timeFactLock = Mutex()
+    private val timeFactScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /** 计划页刷新后调一次：已经有一次对账在跑就不排队（它结束时会把状态刷新好）。 */
+    private fun scheduleTimeReconcile() {
+        if (timeReconciling) return
+        timeFactScope.launch {
+            // 后台对账失败不该冒泡成崩溃：计划页只是少一次自动勾选。
+            runCatching { reconcileTimeAutoCompletions() }
+        }
+    }
+
+    internal suspend fun reconcileTimeAutoCompletions(day: LocalDate = clock.today()) {
+        timeFactLock.withLock {
+            timeReconciling = true
+            try {
+                val service = learningPlan() ?: return
+                val planId = learningPlanId ?: return
+                val candidates = runCatching { planLinkWeekCandidates() }.getOrDefault(emptyList())
+                if (candidates.isEmpty()) return
+                val timerMap = runCatching {
+                    service.actualMinutesByOccurrence(planId, day.toString())
+                }.getOrDefault(emptyMap())
+                val activityMap = runCatching { activityOccurrenceMinutes(day) }
+                    .getOrDefault(emptyMap())
+                    .mapValues { (_, ms) -> (ms / 60_000L).toInt() }
+                // 屏幕使用来源额外记下「学的是什么」：卡片上写「学习 · 具体网页标签」，
+                // 只有分钟数的话复盘时分不清是刷视频还是读文档。计时来源不需要。
+                val activityTitles = runCatching { activityOccurrenceTitles(day) }.getOrDefault(emptyMap())
+                var ledger = readAutoCompletionLedger()
+                val done = ArrayList<Pair<AutoCompletionEntry, String>>()
+                var problem: String? = null
+                for (candidate in candidates) {
+                    if (ledger.isBlocked(candidate.occurrenceId)) continue
+                    if (ledger.activeCompletionFor(candidate.occurrenceId) != null) continue
+                    val timerMinutes = timerMap[candidate.occurrenceId]?.takeIf { it > 0 }
+                    val source = if (timerMinutes != null) "timer" else "activity"
+                    val actual = timerMinutes ?: activityMap[candidate.occurrenceId] ?: continue
+                    val completion = timeLinkCompletion(candidate, actual) ?: continue
+                    val command = CommandEnvelope(
+                        commandId = "cmd_" + java.util.UUID.randomUUID().toString().replace("-", ""),
+                        actor = Actor.SYSTEM,
+                        planId = planId,
+                        origin = if (source == "timer") "timer.auto-complete" else "activity.auto-complete",
+                    )
+                    val result = runCatching { service.completeOccurrence(command, candidate.occurrenceId) }
+                        .getOrElse { error ->
+                            problem = error.message ?: "未知原因"
+                            null
+                        } ?: continue
+                    if (!result.ok) {
+                        problem = result.error?.message ?: problem
+                        continue
+                    }
+                    // 计时来源沿用 timeLinkCompletion 的原文；屏幕使用来源把证据换成「屏幕使用」，
+                    // 否则演示/复盘时会误以为节点是靠计时跑满的。
+                    val planned = candidate.minutes.coerceAtLeast(0)
+                    val shown = if (source == "activity") {
+                        completion.copy(
+                            evidence = if (planned > 0) {
+                                "计划 $planned 分钟，屏幕使用 $actual 分钟（" + (actual * 100 / planned) + "%）"
+                            } else {
+                                "屏幕使用 $actual 分钟（节点没有预估时长）"
+                            },
+                            reason = if (planned > 0) "屏幕使用达到预估时长" else "屏幕使用达到最低时长",
+                        )
+                    } else {
+                        completion
+                    }
+                    val entry = AutoCompletionEntry(
+                        id = nextAutoCompletionEntryId(ledger),
+                        planId = planId,
+                        occurrenceId = candidate.occurrenceId,
+                        title = candidate.title,
+                        chapter = candidate.chapter,
+                        day = candidate.day,
+                        noteId = "",
+                        noteTitle = "",
+                        evidence = shown.evidence,
+                        confidence = shown.confidence,
+                        at = clock.nowMs(),
+                        kind = AutoCompletionKind.Time,
+                        actualMinutes = actual,
+                        plannedMinutes = candidate.minutes,
+                        source = source,
+                        sourceTitle = if (source == "activity") activityTitles[candidate.occurrenceId].orEmpty() else "",
+                    )
+                    ledger = ledger.withCompletion(entry)
+                    done += entry to source
+                }
+                if (done.isEmpty()) {
+                    // 什么都没做也把失败原因留在页面上（计时来源有同样的习惯）。
+                    problem?.let { planMessage = "计时/屏幕使用对账没记上：" + it }
+                    return
+                }
+                saveAutoCompletionLedger(ledger)
+                refreshPlan()
+                tick++
+                val titles = done.joinToString("、") { (entry, _) -> "「" + entry.title + "」" }
+                planMessage = if (done.size == 1) {
+                    val (entry, source) = done.first()
+                    if (source == "activity") {
+                        "「" + entry.title + "」屏幕使用 " + entry.actualMinutes + " 分钟" +
+                            (if (entry.sourceTitle.isNotBlank()) "（学习《" + entry.sourceTitle + "》" else "（") +
+                            "预估 " + entry.plannedMinutes + " 分钟），已自动勾上，可在「AI 自动完成」里撤销"
+                    } else {
+                        "「" + entry.title + "」计时到点（实际 " + entry.actualMinutes + " 分钟），已自动勾上，可在「AI 自动完成」里撤销"
+                    }
+                } else {
+                    titles + "已自动勾上，可在「AI 自动完成」里撤销"
+                }
+                if (uiPrefs.notifyAutoCompletion) {
+                    notifyWithTarget(
+                        "Trellis · 计划自动完成",
+                        titles + "（屏幕使用/计时到点），已自动勾上",
+                        NotifyTarget.Plan,
+                    )
+                }
+            } finally {
+                timeReconciling = false
+            }
+        }
     }
 
     /** 从待办板的计划节点点 ⏱ 进来：和任务共用同一个小窗，只是落账走 session。 */
@@ -804,10 +1069,16 @@ class AppRuntime private constructor() {
         currentTab = TAB_KNOWLEDGE
     }
 
-    /** 「AI 自动完成」列表里点来源笔记：打开它并选中当时的证据片段。 */
+    /**
+     * 「AI 自动完成」列表里点来源笔记：打开它并选中当时的证据片段。
+     *
+     * 计时来源的记录没有笔记（noteId 为空），没有可跳的地方，直接不动。
+     */
     fun openAutoCompletionNote(entryId: String) {
         val entry = readAutoCompletionLedger().entries.firstOrNull { it.id == entryId } ?: return
+        if (entry.noteId.isBlank()) return
         val note = runCatching { knowledgeStore.read(entry.noteId) }.getOrNull()
+        // 证据可能是模型的语义概括、不逐字出现在正文里：找不到（-1）就只打开笔记不定位。
         val start = note?.body?.indexOf(entry.evidence)?.takeIf { it >= 0 } ?: -1
         val end = if (start >= 0) start + entry.evidence.length else -1
         openKnowledgeReveal(entry.noteId, start, end)
@@ -1161,15 +1432,15 @@ class AppRuntime private constructor() {
      * 用户想看的是「现在」的完整现状，不是逐条补播。
      */
     private var pendingAutonomy: PendingAutonomy? = null
+    /** 早间重排的内存去重（checkpoints 会被其它写入盖掉，不能只靠它）。 */
+    private var lastMorningRearrangeDay: String? = null
+    /** 早间重排建议已发出，等用户下一条消息确认；确认轮临时给写权限。 */
+    private var awaitingMorningConfirmation: Boolean = false
 
     /** 正在跑的自主检查属于哪个计划；普通对话轮为 null。 */
     private var autonomyPlanId: String? = null
     private var autonomyPlanTitle: String = ""
     private var autonomyRested: Boolean = false
-    /** 早间重排的内存去重（checkpoints 会被其它写入盖掉，不能只靠它）。 */
-    private var lastMorningRearrangeDay: String? = null
-    /** 早间重排建议已发出，等用户下一条消息确认；确认轮临时给写权限。 */
-    private var awaitingMorningConfirmation: Boolean = false
 
     /** 从界面发起一轮对话：job 挂在 runtime 上，切页不会把它掐断。 */
     fun ask(request: String) {
@@ -2370,6 +2641,22 @@ class AppRuntime private constructor() {
         }
         currentTab = target
         return "切到了「" + tabName(target) + "」页。"
+    }
+
+    /**
+     * 从计划页「AI 自动完成」卡片的「学习 · 网页标题」跳到活动页看归因详情。
+     *
+     * 活动页的日期是页面内状态，这里只留一个「下次进活动页落在哪天」的待办，
+     * 由 `ActivityScreen` 初次组合时消费并清空；不传日期（或解析失败）就照旧落在今天。
+     */
+    internal var pendingActivityDay: LocalDate? = null
+
+    fun openActivityDay(day: String): String {
+        val parsed = runCatching { LocalDate.parse(day) }.getOrNull()
+            ?: return "日期没看懂：" + day + "；活动页会停在今天。"
+        pendingActivityDay = parsed
+        currentTab = TAB_ACTIVITY
+        return "切到了「活动」页，日期 " + parsed + "。"
     }
 
     /**
@@ -4358,6 +4645,10 @@ class AppRuntime private constructor() {
             }.getOrNull()
             planMessage = null
         }.onFailure { planMessage = "计划读不出来：" + (it.message ?: "未知原因") }
+        // 屏幕使用/计时事实可能已经够让某个节点完成：刷新完再对一次账。
+        // 演示口径：外部改了 activity.db 或计划库后切回计划页，也能自动补勾（不依赖归因那一刻的调用栈）。
+        // [scheduleTimeReconcile] 用 [timeReconciling] 挡住「对账里 refreshPlan」的递归。
+        scheduleTimeReconcile()
     }
 
     /**
@@ -5588,6 +5879,8 @@ class AppRuntime private constructor() {
             else -> {
                 activityMessage = null
                 activitySyncedAtMs = report.nowMs
+                // 新同步进来的屏幕使用可能已经够让本周某个节点自动完成：同步成功后对一次账。
+                runCatching { reconcileTimeAutoCompletions() }
                 "已同步 " + report.buckets + " 个 bucket、" + report.rows + " 条事件"
             }
         }
@@ -5734,6 +6027,9 @@ class AppRuntime private constructor() {
         }.exceptionOrNull()
         if (failure != null) return listOf("归因保存失败：" + (failure.message ?: "未知原因"))
         activityMessage = null
+        // 刚归因的这段屏幕使用可能已经够让某个计划节点自动完成：当场对一次账。
+        // 失败不影响归因本身（归因已经写进去了），只是少一次自动勾选。
+        runCatching { reconcileTimeAutoCompletions(activityDate(fromMs)) }
         return emptyList()
     }
 
@@ -5778,6 +6074,29 @@ class AppRuntime private constructor() {
                 if (id != time.taskRef && id.isNotEmpty()) id to time.durationMs else null
             }
             .toMap()
+    }
+
+    /**
+     * 屏幕使用来源的「学的是什么」：某天 occurrenceId → 归因片段里停留最久的窗口/标签标题。
+     *
+     * 只用于计划页「AI 自动完成」卡片上写清来源（例如「学习 · CPU 是如何执行程序的？ - 小林coding」），
+     * 不参与是否完成的判定；活动库里没有可用标题时返回空串，卡片回退成「来自屏幕使用」。
+     */
+    internal suspend fun activityOccurrenceTitles(day: LocalDate): Map<String, String> {
+        val dayMs = day.atTime(12, 0).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val byOccurrence = LinkedHashMap<String, MutableMap<String, Long>>()
+        activitySegments(dayMs).forEach { segment ->
+            val ref = segment.taskRef ?: return@forEach
+            val id = ref.removePrefix("occurrence:")
+            if (id == ref || id.isEmpty()) return@forEach
+            val title = segment.title?.trim().orEmpty().ifBlank { segment.app?.trim().orEmpty() }
+            if (title.isBlank()) return@forEach
+            val titles = byOccurrence.getOrPut(id) { LinkedHashMap() }
+            titles[title] = (titles[title] ?: 0L) + segment.durationMs
+        }
+        return byOccurrence.mapValues { (_, titles) ->
+            titles.maxByOrNull { it.value }?.key.orEmpty()
+        }
     }
 
     /**
@@ -6083,11 +6402,16 @@ class AppRuntime private constructor() {
         ): AppRuntime {
             val runtime = AppRuntime()
             // 时间源先定：内核、计划后端、AI 工具都从同一个钟取时间（规范见 docs/time-conventions.md）。
-            val clockSetup = createTrellisClock(home)
+            // 调试模式开关也先读：它决定要不要恢复上次拨的模拟日期（见 createTrellisClock）。
+            runtime.devPrefsStore = DevPrefsStore(home)
+            runtime.devPrefs = runtime.devPrefsStore.load()
+            val clockSetup = createTrellisClock(home, debugMode = runtime.devPrefs.debugMode)
             runtime.clock = clockSetup.clock
             runtime.devModeEnabled = clockSetup.devMode
+            runtime.devModeForcedByEnv = clockSetup.devModeFromEnv
             runtime.devClockAllowed = clockSetup.allowed
             runtime.devClockRejectedReason = clockSetup.rejectedReason
+            runtime.devClockOnRealHome = clockSetup.realDataHome
             runtime.devClockStore = DevClockStore(home)
             val storeFile = File(home, "store.json")
             val pluginsDir = File(home, "plugins").apply { mkdirs() }

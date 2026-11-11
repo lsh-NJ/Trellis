@@ -9,6 +9,7 @@ import dev.trellis.domain.plan.Actor
 import dev.trellis.domain.plan.CommandEnvelope
 import dev.trellis.domain.plan.LearningPlanService
 import dev.trellis.domain.plan.StageDraft
+import dev.trellis.feature.learning.DocResource
 import dev.trellis.feature.learning.PlanDocStore
 import java.time.LocalDate
 import java.util.UUID
@@ -60,6 +61,10 @@ class ResearchTools(
         "3. 之后每周开始时用 `plan_week` 从大纲定这一周的内容（宿主铺到天、写周文档）。",
         "4. 用户明确给了材料（bvid、课程名、大纲）就走 `create_learning_plan`，不要用 research_plan。",
         "5. research_plan 失败（超时/输出不可用）退回 create_learning_plan 手写路径，并说清原因，不要假装建好了。",
+        "6. 找学习资源时**先把 B 站这条路走一遍**：先调一次 search_bilibili 搜一轮（即使没指定课程也搜；搜不到就不用提），",
+        "   再把网页/官方文档作为补充。看到高质量的系统课就按 bvid 走 create_learning_plan，不要只在别处找。",
+        "7. 阶段 resources 里写的资源宿主会按标题挂到节点上；分不清归哪一讲的（一整本书、整个专栏）会挂到该阶段每个节点，",
+        "   让用户自己从中找——所以不要因为「说不清属于哪一讲」就不写，多写几条比空着强，但也别编造 URL。",
         "</how_to_research_plan>",
     ).joinToString("\n")
 
@@ -159,7 +164,7 @@ class ResearchTools(
                             LlmMessage(LlmRole.System, shellSystemPrompt(thisWeek, deadline, dailySuggestion, sources != null)),
                             LlmMessage(LlmRole.User, shellUserPrompt(goal, today.toString(), thisWeek, deadline, sources?.render())),
                             LlmMessage(LlmRole.Assistant, raw.take(4000)),
-                            LlmMessage(LlmRole.User, "上面的输出不是可解析的 JSON。请只输出一个 JSON 对象（不要 markdown 代码块、不要解释），字段与示例完全一致：title / dailyMinutes / stages[{name, weeks, focus, deliverable, acceptance}]。"),
+                            LlmMessage(LlmRole.User, "上面的输出不是可解析的 JSON。请只输出一个 JSON 对象（不要 markdown 代码块、不要解释），字段与示例完全一致：title / dailyMinutes / stages[{name, weeks, focus, deliverable, acceptance, resources}]。"),
                         ),
                     )
                 }
@@ -213,7 +218,7 @@ class ResearchTools(
 
             onProgress("写大纲文档…")
             planDocStore()?.let { store ->
-                runCatching { store.save(planId, buildOutline(goal, draft)) }
+                runCatching { store.save(planId, buildOutline(goal, draft, stageDrafts)) }
                     .onFailure { appendFailedLog("计划文档写入失败：" + it.message) }
             }
 
@@ -246,6 +251,16 @@ class ResearchTools(
             onChanged(planId)
             onProgress("写完了，收尾")
 
+            // 资源是计划的一部分（项目聚合资源）：本周排完后，把阶段资源按标题挂到对应单元上。
+            val attachedResources = if (firstWeek != null) {
+                runCatching {
+                    attachStageResourcesToWeek(plan, planDocStore(), planId, thisWeek, origin = "plan.research.attach")
+                }.getOrDefault(0)
+            } else {
+                0
+            }
+            val stageResourceCount = resolved.stages.sumOf { it.resources.size }
+
             val totalWeeks = resolved.stages.sumOf { it.weeks }
             return ToolResult(
                 buildString {
@@ -274,6 +289,14 @@ class ResearchTools(
                             append("。")
                         }
                         else -> append("本周（").append(thisWeek).append("）按你的要求先没排，要排的时候说一声或调 plan_week。")
+                    }
+                    if (stageResourceCount > 0) {
+                        append("大纲里写了 ").append(stageResourceCount).append(" 条阶段资源。")
+                    } else {
+                        append("这次没找到靠谱的阶段资源，大纲里留空（不编造链接）；你把资料发我，我再补上。")
+                    }
+                    if (attachedResources > 0) {
+                        append("本周已按标题给 ").append(attachedResources).append(" 个节点挂上了资料。")
                     }
                     if (sources != null) {
                         append("这次参考了网上搜到的 ").append(sources.hits.size).append(" 条资料（其中 ")
@@ -350,7 +373,15 @@ class ResearchTools(
             val focus = sanitizeStageText(obj["focus"]?.jsonPrimitive?.contentOrNull)
             val deliverable = sanitizeStageText(obj["deliverable"]?.jsonPrimitive?.contentOrNull)
             val acceptance = sanitizeStageText(obj["acceptance"]?.jsonPrimitive?.contentOrNull)
-            ShellStage(name = name.take(40).trim(), weeks = weeks, focus = focus, deliverable = deliverable, acceptance = acceptance)
+            val resources = parseStageResources(obj)
+            ShellStage(
+                name = name.take(40).trim(),
+                weeks = weeks,
+                focus = focus,
+                deliverable = deliverable,
+                acceptance = acceptance,
+                resources = resources,
+            )
         }
         // 丢了一两条坏阶段还能用；全丢才当解析失败。阶段总数仍要落在 1..MAX_STAGES。
         if (stages.isEmpty()) return null
@@ -362,6 +393,22 @@ class ResearchTools(
             if (lastWeek > deadlineWeek) return null
         }
         return ShellDraft(title = title, dailyMinutes = daily, stages = stages)
+    }
+
+    /** 阶段资源：`resources:[{title,url,note}]`；没有可打开链接的条目直接丢（宁缺毋滥）。 */
+    private fun parseStageResources(stage: JsonObject): List<DocResource> {
+        val array = stage["resources"] as? JsonArray ?: return emptyList()
+        return array.mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val title = obj["title"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty().take(60)
+            val url = obj["url"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            if (title.isEmpty() || url.isEmpty()) return@mapNotNull null
+            DocResource(
+                title = title,
+                url = url,
+                note = sanitizeStageText(obj["note"]?.jsonPrimitive?.contentOrNull),
+            )
+        }.distinctBy { it.url }.take(MAX_STAGE_RESOURCES)
     }
 
     /** 大纲阶段 → 计划里的阶段区间：从本周一（含）起按各阶段周数依次铺，end 是最后一周的周日。 */
@@ -381,7 +428,11 @@ class ResearchTools(
         }
     }
 
-    private fun buildOutline(goal: String, draft: ShellDraft): String = buildString {
+    /**
+     * 大纲文档：阶段块带上周区间（`（2026-W46 – 2026-W47，约 2 周）`），
+     * 这样「按阶段资源挂到节点」才能知道这一周属于哪个阶段。
+     */
+    private fun buildOutline(goal: String, draft: ShellDraft, weekRanges: List<StageDraft>): String = buildString {
         appendLine("# 目标与验收")
         appendLine("- 目标：" + goal)
         appendLine("- 验收：下面每个阶段都有自己的「交付物」和「过关标准」，逐条自测；")
@@ -389,11 +440,26 @@ class ResearchTools(
         appendLine()
         appendLine("## 阶段")
         draft.stages.forEachIndexed { index, stage ->
-            append("- 阶段 ").append(index + 1).append(" · ").append(stage.name).append("（约 ").append(stage.weeks).append(" 周）")
+            append("- 阶段 ").append(index + 1).append(" · ").append(stage.name)
+            val range = weekRanges.getOrNull(index)
+            if (range != null) {
+                append("（").append(range.weekStart).append(" – ").append(range.weekEnd)
+                    .append("，约 ").append(stage.weeks).append(" 周）")
+            } else {
+                append("（约 ").append(stage.weeks).append(" 周）")
+            }
             if (stage.focus.isNotBlank()) append("：").append(stage.focus)
             appendLine()
             append("  - 交付物：").appendLine(stage.deliverable.ifBlank { fallbackDeliverable(index) })
             append("  - 过关标准：").appendLine(stage.acceptance.ifBlank { fallbackAcceptance() })
+            if (stage.resources.isNotEmpty()) {
+                appendLine("  - 资源：")
+                stage.resources.forEach { resource ->
+                    append("    - [").append(resource.title).append("](").append(resource.url).append(")")
+                    if (resource.note.isNotBlank()) append(" — ").append(resource.note)
+                    appendLine()
+                }
+            }
         }
     }
 
@@ -418,7 +484,7 @@ class ResearchTools(
         buildString {
             appendLine("你是学习规划师。用户只有一句目标，你要先做**全局规划**（不是排具体单元）：把目标拆成阶段，估算每个阶段的周数。")
             appendLine("只输出一个 JSON 对象，不要 markdown、不要解释：")
-            appendLine("{\"title\":\"计划标题（≤16 字）\",\"dailyMinutes\":" + dailyMinutes + ",\"stages\":[{\"name\":\"阶段名（≤16 字）\",\"weeks\":2,\"focus\":\"聚焦什么（≤30 字）\",\"deliverable\":\"这一阶段结束时要拿出的东西（≤30 字）\",\"acceptance\":\"怎么算过关（可自测，≤30 字）\"}]}")
+            appendLine("{\"title\":\"计划标题（≤16 字）\",\"dailyMinutes\":" + dailyMinutes + ",\"stages\":[{\"name\":\"阶段名（≤16 字）\",\"weeks\":2,\"focus\":\"聚焦什么（≤30 字）\",\"deliverable\":\"这一阶段结束时要拿出的东西（≤30 字）\",\"acceptance\":\"怎么算过关（可自测，≤30 字）\",\"resources\":[{\"title\":\"资源名\",\"url\":\"https://…\",\"note\":\"一句话说明\"}]}]}")
             appendLine("约束：阶段 1–8 个，每个阶段 1–12 周，总周数 ≤ 40；这个计划从 " + thisWeek + " 这一周开始。")
             if (deadline != null) appendLine("用户给了截止日期 " + deadline + "，总周数要能覆盖到那个日期之前。")
             appendLine("阶段要覆盖从入门到能做出东西的完整路线：通识/理论学习在前，动手实践（写代码、做项目）后置。")
@@ -428,6 +494,9 @@ class ResearchTools(
             appendLine("2. name / focus / deliverable / acceptance 里不要出现来源站点名或括号标注（如「（Zpedu）」「(GitHub)」「（阿里云）」）；")
             appendLine("   来源只在正文里参考，不要写进这四段文案。")
             appendLine("3. 不要写任何内部工具名（如 plan_week / research_plan / sync_plan_week），用户看不到这些。")
+            appendLine("4. 每个阶段尽量带 resources（资源是计划的一部分，「项目聚合资源」）；B 站系统课是常见好资源，资料里有就直接写：")
+            appendLine("   优先用 <research_sources> 里真实出现过的链接（整门课 / 分集视频 / 官方文档）；")
+            appendLine("   课内学习（课程 / 考试 / 教材）每阶段至少 1 条；确实找不到就空数组，宁缺毋滥，**不要编造 URL**。")
             if (hasSources) {
                 appendLine("用户消息里会附一段 <research_sources>（宿主从网上搜到的资料）。")
                 appendLine("优先用它里面的事实与结构（比如岗位要求、常见学习顺序、真实项目），引用时写出站点名；")
@@ -455,6 +524,8 @@ class ResearchTools(
         val focus: String = "",
         val deliverable: String = "",
         val acceptance: String = "",
+        /** 阶段资源：写进大纲，排完本周后按标题挂到对应单元（2026-11-09 起调研计划也带资源）。 */
+        val resources: List<DocResource> = emptyList(),
     )
 
     private data class ShellDraft(val title: String, val dailyMinutes: Int, val stages: List<ShellStage>)
@@ -465,6 +536,7 @@ class ResearchTools(
         const val PLAN_TIMEOUT_MS = 30_000L
         const val DEFAULT_DAILY_MINUTES = 90
         const val MAX_STAGES = 8
+        const val MAX_STAGE_RESOURCES = 4
         const val MAX_STAGE_WEEKS = 12
         const val MAX_TOTAL_WEEKS = 40
         const val RESEARCH_TIMEOUT_MS = 45_000L

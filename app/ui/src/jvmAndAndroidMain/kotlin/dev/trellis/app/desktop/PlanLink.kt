@@ -17,7 +17,8 @@ import kotlinx.serialization.json.jsonObject
  * 1. 只取**本周还没完成**的节点当候选（[planLinkCandidates]），未来周与已完成的都不参与；
  * 2. 笔记 AI 整理成功后再跑一次判定（[buildPlanLinkMessages]），正文太短或没有候选就直接跳过；
  * 3. 模型给每个候选 `coverage/confidence/evidence`，这里只信任能通过硬校验的（[validatePlanLinkJudgments]）：
- *    `coverage=full`、`confidence ≥ 0.8`、`evidence` 必须是正文逐字子串、节点没被用户屏蔽；
+ *    `coverage=full`、`confidence ≥ 0.8`、`evidence` 非空、节点没被用户屏蔽；证据只用于展示/定位，
+ *    不再要求逐字出现在正文里——是否「讲完了」由模型按语义判断（2026-11-09 用户定的）。
  * 4. 校验通过的交给 `AppRuntime` 用系统身份完成并写进 `plans/auto-completions.json`，可撤销。
  *
  * 这个文件只有纯逻辑（提示词 / 解析 / 校验），不碰文件、不碰 UI、不调网络。
@@ -45,7 +46,7 @@ internal enum class PlanLinkCoverage(val wire: String) {
     }
 }
 
-/** 模型返回的一条原始判断（还没过逐字校验）。 */
+/** 模型返回的一条原始判断（还没过校验）。 */
 internal data class PlanLinkJudgment(
     val occurrenceId: String,
     val coverage: PlanLinkCoverage,
@@ -79,7 +80,7 @@ internal const val PLAN_LINK_MAX_BODY_CHARS: Int = 12000
 /** 一次判定最多给模型看这么多个候选节点（按与正文的相关度挑）。 */
 internal const val PLAN_LINK_MAX_CANDIDATES: Int = 20
 
-/** 证据至少这么长，避免模型给一两个字蒙过逐字校验。 */
+/** 证据至少这么长：只要求「写了依据」，不要求逐字出现在正文里。 */
 private const val PLAN_LINK_MIN_EVIDENCE_CHARS: Int = 8
 
 private const val PLAN_LINK_MAX_EVIDENCE_CHARS: Int = 160
@@ -169,8 +170,8 @@ internal fun buildPlanLinkMessages(
         "只输出 JSON 对象，不输出任何解释。硬规则：" +
         "① 只有确实认为笔记已经覆盖住这个节点时才给 coverage=full；只有一部分给 partial；沾不上给 none。" +
         "② confidence 用 0~1 的小数，拿不准就给低一点（低于 0.8 不会被自动完成）。" +
-        "③ evidence 必须从笔记正文里**逐字**摘一段（不要改写、不要加省略号、不要跨段拼接），" +
-        "系统会用它在正文里做精确匹配，匹配不上这条判断就作废。" +
+        "③ evidence 写你判断「笔记已经讲完这个节点」的依据：能摘原文就摘原文（系统会用它定位到正文），" +
+        "不能就概括笔记里的相关表述；不要空、不要编造正文里没有的内容。" +
         "④ occurrenceId 只能从给定的节点列表里挑，不能编造。"
     val shown = body.take(PLAN_LINK_MAX_BODY_CHARS)
     val truncated = body.length > PLAN_LINK_MAX_BODY_CHARS
@@ -189,7 +190,7 @@ internal fun buildPlanLinkMessages(
             append("\n")
         }
         append("\n输出 JSON：{\"completions\":[{\"occurrenceId\":\"…\",\"coverage\":\"full|partial|none\",")
-        append("\"confidence\":0.0,\"evidence\":\"正文逐字片段\",\"reason\":\"一句话\"}]}")
+        append("\"confidence\":0.0,\"evidence\":\"判断依据（原文摘录或概括）\",\"reason\":\"一句话\"}]}")
         append("\n每个候选节点都输出一条；没有把握的给 none/低 confidence。")
     }
     return listOf(
@@ -237,10 +238,14 @@ internal fun parsePlanLinkJudgments(raw: String): List<PlanLinkJudgment> {
  * - 节点在候选里、且没被用户屏蔽（[blocked]）；
  * - `coverage = full`；
  * - `confidence ≥ [PLAN_LINK_MIN_CONFIDENCE]`；
- * - `evidence` 至少 [PLAN_LINK_MIN_EVIDENCE_CHARS] 个字，并且是正文的**逐字子串**。
+ * - `evidence` 至少 [PLAN_LINK_MIN_EVIDENCE_CHARS] 个字（只要求写了依据，不要求逐字出现在正文里）。
+ *
+ * 是否「讲完了」交给模型按语义判断（2026-11-09 用户定的）：这里只做结构、置信度、屏蔽与去重校验，
+ * [body] 保留在签名里是为了以后需要补正文侧校验时不用改调用方。
  *
  * 通过后按 confidence 从高到低取前 [maxCompletions] 个（同一节点只留一条）。
  */
+@Suppress("UNUSED_PARAMETER")
 internal fun validatePlanLinkJudgments(
     body: String,
     candidates: List<PlanLinkCandidate>,
@@ -260,7 +265,6 @@ internal fun validatePlanLinkJudgments(
         if (!seen.add(candidate.occurrenceId)) continue
         val evidence = judgment.evidence.trim()
         if (evidence.length < PLAN_LINK_MIN_EVIDENCE_CHARS) continue
-        if (!body.contains(evidence)) continue
         accepted += candidate to judgment
     }
     return accepted
@@ -278,6 +282,39 @@ internal fun validatePlanLinkJudgments(
                 reason = judgment.reason,
             )
         }
+}
+
+/** 计时到点自动完成的最低实际分钟：不到 5 分钟的半截计时不算「做完了」。 */
+internal const val PLAN_LINK_MIN_TIME_MINUTES: Int = 5
+
+/**
+ * 计时器来源的自动完成：某个节点的实际计时达到预估（且至少 [PLAN_LINK_MIN_TIME_MINUTES] 分钟）就算完成。
+ *
+ * 与笔记判定不同，这里不经过模型——时长本身就是证据。预估分钟为 0/缺失时只要求最低时长。
+ * 证据写成一句事实（「计划 X 分钟，实际计时 Y 分钟」），计划页的「AI 自动完成」列表直接展示它。
+ *
+ * @return `null` 表示还没到点。
+ */
+internal fun timeLinkCompletion(
+    candidate: PlanLinkCandidate,
+    actualMinutes: Int,
+): PlanLinkCompletion? {
+    val required = maxOf(candidate.minutes, PLAN_LINK_MIN_TIME_MINUTES)
+    if (actualMinutes < required) return null
+    val planned = candidate.minutes.coerceAtLeast(0)
+    val evidence = if (planned > 0) {
+        "计划 $planned 分钟，实际计时 $actualMinutes 分钟（" + (actualMinutes * 100 / planned) + "%）"
+    } else {
+        "实际计时 $actualMinutes 分钟（节点没有预估时长）"
+    }
+    return PlanLinkCompletion(
+        occurrenceId = candidate.occurrenceId,
+        title = candidate.title,
+        day = candidate.day,
+        confidence = 1.0,
+        evidence = evidence,
+        reason = "计时达到预估时长",
+    )
 }
 
 // ---------------------------------------------------------------------------
