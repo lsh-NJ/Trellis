@@ -330,7 +330,7 @@ internal fun NoteConceptPanel(
         }
         if (concepts.isEmpty()) {
             Text(
-                "这篇还没有概念。保存后 AI 会整理，也可以在下面加。",
+                "这篇还没有概念。点页头「AI 整理」让模型补，也可以在下面加。",
                 style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),

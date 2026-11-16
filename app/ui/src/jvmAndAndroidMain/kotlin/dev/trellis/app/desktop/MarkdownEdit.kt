@@ -297,3 +297,81 @@ private fun insertAtCursor(text: String, cursor: Int, insertion: String): TextFi
     val newText = text.substring(0, cursor) + insertion + text.substring(cursor)
     return TextFieldValue(newText, TextRange(cursor + insertion.length))
 }
+
+/** 缩进单位：列表/普通行 2 空格，代码块 4 空格。 */
+internal const val LIST_INDENT: String = "  "
+internal const val CODE_INDENT: String = "    "
+
+/**
+ * Tab：给选中行的行首加一个 [unit]。
+ *
+ * 只动行首，行中内容和列表编号原样保留；折叠光标时只处理当前行，光标跟着整行一起右移，
+ * 相对行首的偏移不变。
+ *
+ * [indentEmptyLines] 决定空行加不加：正文/列表里不加（免得留下看不见的空白、删起来也烦），
+ * 代码块里要加——空行按 Tab 补 4 空格是代码编辑器的常态，不补就成了「按了没反应」。
+ */
+internal fun indentMarkdownLines(
+    text: String,
+    selection: TextRange,
+    unit: String,
+    indentEmptyLines: Boolean = false,
+): MarkdownEditResult {
+    val (start, end) = bounds(selection)
+    val from = lineStartOf(text, start)
+    val to = selectedLinesEnd(text, start, end)
+    val lines = text.substring(from, to).split('\n')
+    val newBlock = lines.joinToString("\n") { if (it.isEmpty() && !indentEmptyLines) it else unit + it }
+    val newText = text.substring(0, from) + newBlock + text.substring(to)
+    return if (start == end) {
+        // 折叠时只碰了光标所在行：空行按口径跳过，否则光标整体右移一个 unit。
+        val cursor = when {
+            lines.first().isEmpty() && !indentEmptyLines -> start
+            else -> start + unit.length
+        }
+        MarkdownEditResult(newText, TextRange(cursor))
+    } else {
+        // 选区：行首插入了 unit，返回的选区仍盖住原来那几行。
+        MarkdownEditResult(newText, TextRange(from, from + newBlock.length))
+    }
+}
+
+/**
+ * 选区覆盖到哪一行的行尾。
+ *
+ * 选区的 [end] 经常正好停在**下一行行首**（Shift+↓、鼠标从下一行行首往回拖都是这个形状）：
+ * 这时上一行的换行符在 [end] - 1 上，要按上一行结尾算，否则会多改一行——多缩进一行还能看出来，
+ * 多反缩进一行就是「删了没选中的缩进」。
+ */
+private fun selectedLinesEnd(text: String, start: Int, end: Int): Int =
+    if (end > start && end > 0 && text[end - 1] == '\n') lineEndOf(text, end - 1) else lineEndOf(text, end)
+
+/**
+ * Shift+Tab：每行最多删掉行首一个 [unit]。
+ *
+ * 行首是 Tab 就删一个 Tab，否则删掉行首最多 unit.length 个空格；不足一个单位就删已有的，
+ * 删不到正文。折叠光标时若光标在行首空白之后则跟着前移，但不会落进空白里。
+ */
+internal fun outdentMarkdownLines(text: String, selection: TextRange, unit: String): MarkdownEditResult {
+    val (start, end) = bounds(selection)
+    val from = lineStartOf(text, start)
+    val to = selectedLinesEnd(text, start, end)
+    val lines = text.substring(from, to).split('\n')
+    val cuts = lines.map { leadingIndentLength(it, unit) }
+    val newBlock = lines.mapIndexed { index, line -> line.substring(cuts[index]) }.joinToString("\n")
+    val newText = text.substring(0, from) + newBlock + text.substring(to)
+    return if (start == end) {
+        // 折叠时只改当前行：光标跟着前移，但不许越过行首。
+        MarkdownEditResult(newText, TextRange((start - cuts.first()).coerceAtLeast(from)))
+    } else {
+        MarkdownEditResult(newText, TextRange(from, from + newBlock.length))
+    }
+}
+
+/** 行首要删掉几个字符：Tab 算一个单位，其余最多删 unit.length 个空格。 */
+private fun leadingIndentLength(line: String, unit: String): Int {
+    if (line.isNotEmpty() && line[0] == '\t') return 1
+    var spaces = 0
+    while (spaces < line.length && spaces < unit.length && line[spaces] == ' ') spaces++
+    return spaces
+}

@@ -3,6 +3,9 @@
 build/
 .dev/
 *.log
+# JVM 崩溃日志（打包后 JavaFX/WebKit 出问题时落在工作目录）
+hs_err_pid*.log
+replay_pid*.log
 *.jks
 *.keystore
 keystore.properties
@@ -14,3 +17,9 @@ local.properties
 tools/exams/.cache/
 # 题库管线的 Python 字节码缓存
 tools/exams/__pycache__/
+
+# WebView 编辑器源码的依赖与中间产物（源码 tools/web-editor/src，产物写回 resources/editor/editor.js）
+tools/web-editor/node_modules/
+tools/web-editor/build/
+# pnpm 本地内容寻址存储（可重建）
+.pnpm-store/

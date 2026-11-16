@@ -1,6 +1,7 @@
 package dev.trellis.app.desktop
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.runtime.Composable
@@ -35,14 +36,14 @@ import javax.swing.SwingUtilities
 import netscape.javascript.JSObject
 
 /**
- * WebView 版编辑器（`TRELLIS_EDITOR=webview` 时启用，默认仍用 [MarkdownDocumentEditor]）。
+ * WebView 版编辑器（设置页「编辑器 → 段落式」或 `TRELLIS_EDITOR=webview` 时启用，默认仍用 [MarkdownDocumentEditor]）。
  *
  * 为什么需要它：Compose 的整篇单文本框里，行高由 `textStyle.lineHeight` 统一决定，
  * 段落之间的空行只能整行占——段间距只能在 1 倍 / 2 倍里选。marktext 这类编辑器之所以
  * 能做到 1.25–1.5 倍，是因为正文是浏览器里的块级 DOM，段间距就是 CSS `margin`。
  *
  * 这一版只做到「能用 + 默认不启用」：
- *  - 页面 = `resources/editor/index.html` + 打包好的 Tiptap bundle（见 editor.js 顶部说明）；
+ *  - 页面 = `resources/editor/index.html` + Tiptap bundle（源码在 `tools/web-editor/`，`pnpm run build` 产出；见该目录 README）；
  *  - 正文改动通过 JS 桥 `trellisEditorBridge.onUpdate(markdown)` 回推，失焦回调 `onBlur`；
  *  - Compose 侧只负责铺一块 `SwingPanel`，不改页面的其它逻辑（自动保存、AI 整理都照旧）。
  *
@@ -60,12 +61,16 @@ internal fun MarkdownWebEditor(
     revealToken: Int = 0,
     onPageShortcut: ((String) -> Unit)? = null,
     onEditingFinished: (() -> Unit)? = null,
+    bindings: List<MarkdownBinding> = defaultMarkdownBindings,
+    menuOpen: Boolean = false,
+    onMenuClosed: () -> Unit = {},
 ) {
     // 只建一个宿主：切笔记时用 setMarkdown 换内容，重建 WebView 会留下空白/重复的面板。
     val host = remember { MarkdownWebHost() }
     val latestChange by rememberUpdatedState(onBodyChange)
     val latestFinished by rememberUpdatedState(onEditingFinished)
     val latestShortcut by rememberUpdatedState(onPageShortcut)
+    val latestMenuClosed by rememberUpdatedState(onMenuClosed)
     val scheme = MaterialTheme.colorScheme
     val conceptGreen = LocalExtraColors.current.accentText
     val theme = remember(scheme.background, scheme.onBackground, scheme.onSurfaceVariant, conceptGreen) {
@@ -84,8 +89,11 @@ internal fun MarkdownWebEditor(
     LaunchedEffect(conceptNames) { host.setConcepts(conceptNames) }
     // AI 补全 / 搜索命中 / 概念反查的定位跳转（Compose 侧传的是 Markdown 原文偏移）。
     LaunchedEffect(revealToken) { reveal?.let { host.reveal(it.min, it.max) } }
-    // WebView 自己发上来的正文；记下来避免把它再灌回 WebView（否则每次击键都会 setContent）。
-    var applied by remember { mutableStateOf(body) }
+    // WebView 自己发上来的正文；记下来避免把它再刷回 WebView（否则每次击键都会 setContent）。
+    // 初值必须是「还没灌过」而不是当前 body：首次组合时 body 就已经是打开的笔记，
+    // 若把 applied 初始化成 body，下面的 LaunchedEffect 会判定「一样」而不下发，
+    // 页面就永远停在空文档（表现为编辑器一片空白，只剩 gutter 的 ¶）。
+    var applied by remember { mutableStateOf("") }
 
     SideEffect {
         host.onMarkdownChanged = { markdown ->
@@ -96,6 +104,7 @@ internal fun MarkdownWebEditor(
         }
         host.onEditingFinished = { latestFinished?.invoke() }
         host.onShortcut = { latestShortcut?.invoke(it) }
+        host.onMenuClosed = { latestMenuClosed() }
     }
 
     LaunchedEffect(noteId, body) {
@@ -104,12 +113,17 @@ internal fun MarkdownWebEditor(
             host.setMarkdown(body)
         }
     }
+    // 「菜单」在页面里画（Compose 的浮层会被重量级 JFXPanel 盖住）：打开时把清单推给页面，
+    // 关闭由页面内的遮罩/Esc 触发，通过桥回调把状态同步回 Compose。
+    LaunchedEffect(menuOpen, bindings) {
+        if (menuOpen) host.showShortcutMenu(markdownMenuJson(bindings)) else host.hideShortcutMenu()
+    }
     DisposableEffect(host) { onDispose { host.dispose() } }
 
-    // 页面把编辑器放在 verticalScroll 里（高度约束是无限的），所以这里显式给一个最小高度，
-    // 让 SwingPanel 有实际尺寸可画；WebView 自己内部滚动。
-    Box(modifier.fillMaxWidth().heightIn(min = 560.dp)) {
-        SwingPanel(factory = { host.panel }, modifier = Modifier.fillMaxWidth().heightIn(min = 560.dp))
+    // WebView 自己内部滚动：页面（KnowledgeScreen）在段落式模式下会把这里的 modifier 设成
+    // weight(1f)，所以直接吃满剩余高度；再给一个最小高度兜底（例如权限/布局异常时）。
+    Box(modifier.fillMaxWidth().heightIn(min = 320.dp)) {
+        SwingPanel(factory = { host.panel }, modifier = Modifier.fillMaxSize())
     }
 }
 
@@ -123,6 +137,7 @@ private class MarkdownWebHost {
     var onMarkdownChanged: ((String) -> Unit)? = null
     var onEditingFinished: (() -> Unit)? = null
     var onShortcut: ((String) -> Unit)? = null
+    var onMenuClosed: (() -> Unit)? = null
 
     private val fxPanel = JFXPanel()
     private var webView: WebView? = null
@@ -132,6 +147,7 @@ private class MarkdownWebHost {
     private var pendingConcepts: List<String>? = null
     private var pendingMarkdown: String? = null
     private var pendingReveal: Pair<Int, Int>? = null
+    private var pendingMenu: String? = null
 
     /** 上一次鼠标按下时，指针是不是落在 WebView 里（用来判断「点到编辑器外面了」）。 */
     private var pointerWasInside = false
@@ -147,6 +163,9 @@ private class MarkdownWebHost {
         val inside = source === fxPanel || SwingUtilities.isDescendingFrom(source, fxPanel)
         if (inside) {
             pointerWasInside = true
+            // 键盘事件走的是 AWT 焦点链：只在 JavaFX 场景里落光标不够，Compose 的画布
+            // 还占着 AWT 焦点，页面能点、能滚动，但一个键都打不进去（打包版实测）。
+            if (!fxPanel.isFocusOwner) fxPanel.requestFocusInWindow()
         } else if (pointerWasInside) {
             pointerWasInside = false
             SwingUtilities.invokeLater { onEditingFinished?.invoke() }
@@ -161,7 +180,13 @@ private class MarkdownWebHost {
             webView = view
             fxPanel.scene = Scene(view)
             view.engine.loadWorker.stateProperty().addListener { _, _, state ->
-                if (state == Worker.State.SUCCEEDED) installBridge()
+                if (state == Worker.State.SUCCEEDED) {
+                    // 不要在这个回调里直接 executeScript：WebKit 还在派发 load 事件，
+                    // 重入它的 JS 绑定（JSObject / get_method_id）会踩到已释放的引用，
+                    // 实测在 jpackage 出来的运行时里直接 SIGSEGV（gradle run 只是没撞上）。
+                    // 推到下一个 FX pulse 再装桥，顺便用 runLater 天然去重。
+                    Platform.runLater { installBridgeOnce() }
+                }
             }
             view.engine.loadContent(editorPage())
         }
@@ -184,6 +209,25 @@ private class MarkdownWebHost {
                 return@runLater
             }
             webView?.engine?.executeScript("window.setTheme(${theme.toJsObject()})")
+        }
+    }
+
+    /** 打开页面里的「菜单」浮层（快捷键清单）；json 是 markdownMenuJson() 的产物。 */
+    fun showShortcutMenu(json: String) {
+        Platform.runLater {
+            if (!bridgeInstalled) {
+                pendingMenu = json
+                return@runLater
+            }
+            runCatching { webView?.engine?.executeScript("window.showShortcutMenu($json)") }
+        }
+    }
+
+    fun hideShortcutMenu() {
+        pendingMenu = null
+        Platform.runLater {
+            if (!bridgeInstalled) return@runLater
+            runCatching { webView?.engine?.executeScript("window.hideShortcutMenu()") }
         }
     }
 
@@ -216,12 +260,19 @@ private class MarkdownWebHost {
         }
     }
 
+    /** 只装一次：加载完成可能被多个状态回调/重试触发。 */
+    private fun installBridgeOnce() {
+        if (bridgeInstalled) return
+        installBridge()
+    }
+
     private fun installBridge() {
         val window = webView?.engine?.executeScript("window") as? JSObject ?: return
         val jxb = MarkdownEditorBridge().also { b ->
             b.markdownListener = { markdown -> SwingUtilities.invokeLater { onMarkdownChanged?.invoke(markdown) } }
             b.blurListener = { SwingUtilities.invokeLater { onEditingFinished?.invoke() } }
             b.shortcutListener = { name -> SwingUtilities.invokeLater { onShortcut?.invoke(name) } }
+            b.menuClosedListener = { SwingUtilities.invokeLater { onMenuClosed?.invoke() } }
         }
         bridge = jxb
         window.setMember("trellisEditorBridge", jxb)
@@ -242,6 +293,10 @@ private class MarkdownWebHost {
             pendingReveal = null
             runCatching { webView?.engine?.executeScript("window.revealRange($start, $end)") }
         }
+        pendingMenu?.let { json ->
+            pendingMenu = null
+            runCatching { webView?.engine?.executeScript("window.showShortcutMenu($json)") }
+        }
     }
 
 }
@@ -256,6 +311,7 @@ internal class MarkdownEditorBridge {
     var markdownListener: ((String) -> Unit)? = null
     var blurListener: (() -> Unit)? = null
     var shortcutListener: ((String) -> Unit)? = null
+    var menuClosedListener: (() -> Unit)? = null
 
     fun onUpdate(markdown: String) {
         markdownListener?.invoke(markdown)
@@ -270,6 +326,11 @@ internal class MarkdownEditorBridge {
     fun onShortcut(name: String) {
         shortcutListener?.invoke(name)
     }
+
+    /** 页面里的「菜单」被关掉（点遮罩 / Esc）。 */
+    fun onMenuClosed() {
+        menuClosedListener?.invoke()
+    }
 }
 
 /** 把 index.html 和打包好的 editor.js 拼成一页，直接 loadContent（不走临时文件）。 */
@@ -277,7 +338,11 @@ internal class MarkdownEditorBridge {
 private fun editorPage(): String {
     val html = readResource("/editor/index.html")
     val script = readResource("/editor/editor.js")
-    return html.replace("</body>", "<script>$script</script></body>")
+    // KaTeX 的样式（连字体 base64 一起）由 tools/web-editor/scripts/embed-katex.mjs 生成：
+    // loadContent 没有 base URL，外链 CSS/字体都加载不到，只能整段内联。
+    val katex = runCatching { readResource("/editor/katex.css") }.getOrNull()
+    val withStyle = if (katex.isNullOrBlank()) html else html.replace("</head>", "<style>$katex</style></head>")
+    return withStyle.replace("</body>", "<script>$script</script></body>")
 }
 
 private fun readResource(path: String): String =

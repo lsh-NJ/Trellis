@@ -1,0 +1,359 @@
+package dev.trellis.app.desktop
+
+import java.io.File
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.TimeUnit
+import javafx.application.Platform
+import javafx.embed.swing.SwingFXUtils
+import javafx.scene.Scene
+import javafx.scene.web.WebView
+import javafx.stage.Stage
+import javax.imageio.ImageIO
+
+/**
+ * H1：仓库内的 WebView 编辑器回归 harness（**当前 bundle 基线**）。
+ *
+ * 为什么要有它：笔记编辑器的 WebView 路线（[MarkdownWebEditor] / editor.js）把 Markdown 的
+ * 解析、渲染、再序列化全交给了 Tiptap + turndown。改 bundle、改 Tiptap 版本、改自定义语法
+ * （`{{…}}`、`[[…]]`、`:::ai`、`。。。`）时，行为很容易悄悄漂移，而 Compose 侧的
+ * 单元测试碰不到 JS。所以这里用**和宿主一模一样的方式**把页面拼起来、真的在 JavaFX WebView
+ * 里跑一遍，把 `setMarkdown → getMarkdown/getHTML` 的结果落成基线 JSON + 截图，
+ * 供新源码实现做逐条对比。
+ *
+ * 跑法见 [WebEditorHarnessTest]：只有 `TRELLIS_WEB_HARNESS=1` 时才真正执行，
+ * 避免默认 jvmTest 在无显示/无 JavaFX 的机器上挂掉。
+ *
+ * 页面拼法与宿主一致（MarkdownWebEditor.editorPage）：/editor/index.html 的 HTML
+ * + 把 /editor/editor.js 内容内联到 `</body>` 前，再 loadContent。**不要**在这里改
+ * editor.js/index.html，harness 只负责跑当前 bundle。
+ */
+internal object WebEditorHarness {
+
+    private const val VIEW_WIDTH = 900.0
+    private const val VIEW_HEIGHT = 1300.0
+    private const val PAGE_READY_TIMEOUT_MS = 30_000L
+    private const val MARKDOWN_STABLE_TIMEOUT_MS = 3_000L
+    private const val POLL_INTERVAL_MS = 100L
+    private const val SETTLE_BEFORE_SCREENSHOT_MS = 800L
+
+    private const val FIXTURE_RESOURCE_DIR = "/web-editor/fixtures"
+
+    data class Fixture(val name: String, val markdown: String)
+
+    data class FixtureResult(val input: String, val markdown: String, val html: String)
+
+    /** 一次完整跑批的产出；null 表示环境（窗口/WebView）起不来，调用方按 SKIP 处理。 */
+    data class Report(val fixtureCount: Int, val jsonFile: File, val pngFile: File)
+
+    /**
+     * 跑全部夹具并写 baseline。
+     *
+     * 返回 null 只有一种情况：JavaFX toolkit 已经就绪，但**窗口/WebView 创建不出来**
+     * （典型是无显示环境）。这种算环境不可用，测试应 SKIP 而不是 FAIL。
+     * 页面就绪超时、夹具读不到等属于 harness 自身问题，会直接抛异常让测试红。
+     */
+    fun run(): Report? {
+        val fixtures = loadFixtures()
+        check(fixtures.isNotEmpty()) { "找不到夹具：$FIXTURE_RESOURCE_DIR" }
+        val outDir = outputDir()
+        check(outDir.mkdirs() || outDir.isDirectory) { "建不出输出目录：$outDir" }
+        val jsonFile = File(outDir, "baseline-current.json")
+        val pngFile = File(outDir, "baseline-current.png")
+
+        val host = try {
+            bootPage()
+        } catch (t: Throwable) {
+            println("[web-editor-harness] SKIP：无法创建 JavaFX 窗口/WebView（${t.javaClass.name}: ${t.message}）")
+            t.printStackTrace()
+            return null
+        }
+
+        val results = LinkedHashMap<String, FixtureResult>()
+        try {
+            awaitEditorReady(host) || error("页面 30 秒内没有就绪（window.editorReady != true）")
+
+            fixtures.forEachIndexed { index, fixture ->
+                onFx { host.view.engine.executeScript("window.setMarkdown(${jsString(fixture.markdown)})") }
+                val markdown = awaitStableMarkdown(host)
+                    ?: error("夹具 ${fixture.name} 的 getMarkdown() 在 3 秒内没有稳定")
+                val html = onFx { host.view.engine.executeScript("window.getHTML()") as? String ?: "" }
+                results[fixture.name] = FixtureResult(fixture.markdown, markdown, html)
+                println(summaryLine(fixture.name, fixture.markdown, markdown))
+                if (index == 0) {
+                    // 截图只取第一个夹具：留一点时间让 WebView 完成重排/字体落位。
+                    Thread.sleep(SETTLE_BEFORE_SCREENSHOT_MS)
+                    saveScreenshot(host, pngFile)
+                }
+            }
+            // 「菜单」浮层也截一张：它必须在 WebView 里画得出来（Compose 的浮层会被重量级
+            // JFXPanel 盖住，所以改成了 DOM 版）。
+            runCatching {
+                onFx {
+                    host.view.engine.executeScript(
+                        "window.showShortcutMenu([" +
+                            "{title:'编辑器',items:[{action:'粗体',keys:'⌘B'},{action:'表格',keys:'⌘T'}]}," +
+                            "{title:'页面',items:[{action:'保存',keys:'⌘S'}]}])",
+                    )
+                }
+                Thread.sleep(SETTLE_BEFORE_SCREENSHOT_MS)
+                saveScreenshot(host, File(outDir, "shortcut-menu.png"))
+            }
+            // 列表按键探针：三级列表末尾回车 → 退格一次（并回上一项、变软换行）→ 再退格一次（合回一行）。
+            runCatching {
+                val script = """
+                    (function () {
+                      const e = window.__trellisEditor;
+                      window.setMarkdown("1. a\n   1. b\n      1. c\n");
+                      e.commands.focus('end');
+                      // 把光标放到最后一个列表项（1. c）的末尾：setMarkdown 后文档末尾会多一个空段落，
+                      // 直接 focus('end') 会落到那个空段落里，列表按键就测不到了。
+                      let target = null;
+                      e.state.doc.descendants((node, pos) => {
+                        if (node.type.name === 'paragraph' && node.textContent === 'c') target = pos + 1 + node.content.size;
+                        return true;
+                      });
+                      if (target != null) e.commands.setTextSelection(target);
+                      const key = (k) => window.__trellisKey(k);
+                      const deletePrev = () => {
+                        const pos = e.state.selection.from;
+                        e.view.dispatch(e.state.tr.delete(pos - 1, pos));
+                      };
+                      const out = { start: window.getMarkdown() };
+                      out.enterReturned = key('Enter');
+                      out.afterEnter = window.getMarkdown();
+                      out.htmlAfterEnter = window.getHTML();
+                      out.backspace1Returned = key('Backspace');
+                      out.afterBackspace1 = window.getMarkdown();
+                      out.htmlAfterBackspace1 = window.getHTML();
+                      out.backspace2Returned = key('Backspace');
+                      if (!out.backspace2Returned) deletePrev();
+                      out.afterBackspace2 = window.getMarkdown();
+                      out.selection = e.state.selection.from;
+                      out.depth = e.state.selection.${'$'}from.depth;
+                      out.parent = e.state.selection.${'$'}from.parent.type.name;
+                      out.ancestors = (() => { const names = []; const f = e.state.selection.${'$'}from; for (let d = 0; d <= f.depth; d += 1) names.push(f.node(d).type.name); return names; })();
+                      out.html = window.getHTML();
+                      out.docSize = e.state.doc.content.size;
+                      return JSON.stringify(out);
+                    })()
+                """.trimIndent()
+                val result = onFx { host.view.engine.executeScript(script) as? String ?: "" }
+                println("[web-editor-harness] list-keys: " + result)
+                Thread.sleep(400)
+                saveScreenshot(host, File(outDir, "list-keys.png"))
+            }
+            // 滚动条截图：长文档滚到中间，确认是低调的胶囊而不是系统大滑条。
+            runCatching {
+                onFx { host.view.engine.executeScript("window.hideShortcutMenu()") }
+                val longDoc = (1..40).joinToString("\n\n") { "第 " + it + " 段：滚动条样式检查。" }
+                onFx { host.view.engine.executeScript("window.setMarkdown(${jsString(longDoc)})") }
+                Thread.sleep(500)
+                onFx { host.view.engine.executeScript("document.getElementById('editor').scrollTop = 300") }
+                Thread.sleep(700)
+                saveScreenshot(host, File(outDir, "scrollbar.png"))
+            }
+        } finally {
+            runCatching {
+                onFx {
+                    host.view.engine.load(null)
+                    host.stage.close()
+                    Platform.exit()
+                }
+            }
+        }
+
+        writeJson(jsonFile, results)
+        println("[web-editor-harness] 写出 ${results.size} 个夹具 → ${jsonFile.absolutePath}")
+        if (pngFile.isFile) println("[web-editor-harness] 截图 → ${pngFile.absolutePath}")
+        return Report(results.size, jsonFile, pngFile)
+    }
+
+    // ------------------------------------------------------------------ 环境/夹具
+
+    private class Host(val stage: Stage, val view: WebView)
+
+    /** 在 FX 线程建 WebView + 显示 Stage，再 loadContent；与宿主 MarkdownWebHost 的启动顺序一致。 */
+    private fun bootPage(): Host = onFx {
+        Platform.setImplicitExit(false)
+        val view = WebView().apply {
+            prefWidth = VIEW_WIDTH
+            prefHeight = VIEW_HEIGHT
+            isContextMenuEnabled = false
+        }
+        val stage = Stage().apply {
+            title = "Trellis WebView Editor Harness"
+            scene = Scene(view, VIEW_WIDTH, VIEW_HEIGHT)
+            // 必须真的 show：不显示的 Scene 不会持续渲染，snapshot 会拿到空白。
+            show()
+        }
+        Host(stage, view).also { it.view.engine.loadContent(editorPage()) }
+    }
+
+    /** 与 MarkdownWebEditor.editorPage() 相同的拼页方式：HTML + 内联 katex.css + editor.js。 */
+    private fun editorPage(): String {
+        val html = readResource("/editor/index.html")
+        val script = readResource("/editor/editor.js")
+        val katex = runCatching { readResource("/editor/katex.css") }.getOrNull()
+        val withStyle = if (katex.isNullOrBlank()) html else html.replace("</head>", "<style>$katex</style></head>")
+        return withStyle.replace("</body>", "<script>$script</script></body>")
+    }
+
+    private fun readResource(path: String): String =
+        WebEditorHarness::class.java.getResourceAsStream(path)
+            ?.bufferedReader(Charsets.UTF_8)
+            ?.use { it.readText() }
+            ?: error("缺少编辑器资源：$path")
+
+    private fun loadFixtures(): List<Fixture> {
+        val dir = fixtureDir()
+        return (dir.listFiles { f -> f.isFile && f.name.endsWith(".md") } ?: emptyArray())
+            .sortedBy { it.name }
+            .map { Fixture(it.nameWithoutExtension, it.readText(Charsets.UTF_8)) }
+    }
+
+    private fun fixtureDir(): File {
+        val resource = WebEditorHarness::class.java.getResource(FIXTURE_RESOURCE_DIR)
+        if (resource != null) {
+            runCatching {
+                val dir = File(resource.toURI())
+                if (dir.isDirectory) return dir
+            }
+        }
+        // 兜底：Gradle 测试的工作目录是模块目录（app/ui），直接读源目录。
+        val workingDir = File(System.getProperty("user.dir")).absoluteFile
+        val candidates = listOf(
+            File(workingDir, "src/jvmTest/resources/web-editor/fixtures"),
+            File(workingDir, "app/ui/src/jvmTest/resources/web-editor/fixtures"),
+        )
+        return candidates.firstOrNull { it.isDirectory }
+            ?: error("找不到夹具目录（$FIXTURE_RESOURCE_DIR）：$workingDir")
+    }
+
+    /** 输出到模块构建目录：app/ui/build/web-editor/。 */
+    private fun outputDir(): File {
+        val workingDir = File(System.getProperty("user.dir")).absoluteFile
+        for (dir in listOf(workingDir) + generateSequence(workingDir.parentFile) { it.parentFile }.take(4)) {
+            if (File(dir, "build.gradle.kts").isFile) return File(dir, "build/web-editor")
+        }
+        return File(workingDir, "build/web-editor")
+    }
+
+    // ------------------------------------------------------------------ 页面交互
+
+    private fun awaitEditorReady(host: Host, timeoutMillis: Long = PAGE_READY_TIMEOUT_MS): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        while (System.currentTimeMillis() < deadline) {
+            val ready = runCatching {
+                onFx { host.view.engine.executeScript("String(window.editorReady)") as? String }
+            }.getOrNull()
+            if (ready == "true") return true
+            Thread.sleep(POLL_INTERVAL_MS)
+        }
+        return false
+    }
+
+    /** 连续两次采样相同即认为稳定；超时返回 null。Tiptap 的 setContent 是同步的，通常一次就稳。 */
+    private fun awaitStableMarkdown(host: Host, timeoutMillis: Long = MARKDOWN_STABLE_TIMEOUT_MS): String? {
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        var previous: String? = null
+        while (System.currentTimeMillis() < deadline) {
+            val sample = runCatching {
+                onFx { host.view.engine.executeScript("window.getMarkdown()") as? String }
+            }.getOrNull()
+            if (sample != null && sample == previous) return sample
+            previous = sample
+            Thread.sleep(POLL_INTERVAL_MS)
+        }
+        return previous
+    }
+
+    private fun saveScreenshot(host: Host, file: File) {
+        onFx {
+            val image = host.view.snapshot(null, null)
+            file.parentFile?.mkdirs()
+            ImageIO.write(SwingFXUtils.fromFXImage(image, null), "png", file)
+        }
+    }
+
+    /** 在 FX 线程上执行并等结果；FX 线程内调用则直接跑（避免自等死锁）。 */
+    private fun <T> onFx(block: () -> T): T {
+        if (Platform.isFxApplicationThread()) return block()
+        val future = CompletableFuture<T>()
+        Platform.runLater {
+            try {
+                future.complete(block())
+            } catch (t: Throwable) {
+                future.completeExceptionally(t)
+            }
+        }
+        return try {
+            future.get(120, TimeUnit.SECONDS)
+        } catch (e: ExecutionException) {
+            throw e.cause ?: e
+        }
+    }
+
+    // ------------------------------------------------------------------ 落盘
+
+    private fun summaryLine(name: String, input: String, markdown: String): String {
+        val firstLine = markdown.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+        val head = if (firstLine.length > 60) firstLine.take(60) + "…" else firstLine
+        val changed = if (input == markdown) "原样" else "往返有差异"
+        return "[web-editor-harness] $name | 输入 ${input.length} 字符 → 输出 ${markdown.length} 字符（$changed） | 首行：${head.ifBlank { "（空文档）" }}"
+    }
+
+    private fun writeJson(file: File, results: LinkedHashMap<String, FixtureResult>) {
+        val sb = StringBuilder()
+        sb.append("{\n")
+        var first = true
+        for ((name, result) in results) {
+            if (!first) sb.append(",\n")
+            first = false
+            sb.append("  ").append(jsonString(name)).append(": {\n")
+            sb.append("    \"input\": ").append(jsonString(result.input)).append(",\n")
+            sb.append("    \"markdown\": ").append(jsonString(result.markdown)).append(",\n")
+            sb.append("    \"html\": ").append(jsonString(result.html)).append("\n")
+            sb.append("  }")
+        }
+        sb.append("\n}\n")
+        file.writeText(sb.toString(), Charsets.UTF_8)
+    }
+
+    private fun jsonString(value: String): String = buildString(value.length + 16) {
+        append('"')
+        for (ch in value) {
+            when (ch) {
+                '\\' -> append("\\\\")
+                '"' -> append("\\\"")
+                '\n' -> append("\\n")
+                '\r' -> append("\\r")
+                '\t' -> append("\\t")
+                '\b' -> append("\\b")
+                '\u000C' -> append("\\f")
+                '\u2028' -> append("\\u2028")
+                '\u2029' -> append("\\u2029")
+                else -> if (ch < ' ') append("\\u%04x".format(ch.code)) else append(ch)
+            }
+        }
+        append('"')
+    }
+
+    /** 生成可安全塞进 executeScript 的 JS 字符串字面量（与 MarkdownWebEditor.jsString 同规则）。 */
+    private fun jsString(value: String): String = buildString(value.length + 16) {
+        append('"')
+        for (ch in value) {
+            when (ch) {
+                '\\' -> append("\\\\")
+                '"' -> append("\\\"")
+                '\n' -> append("\\n")
+                '\r' -> append("\\r")
+                '\t' -> append("\\t")
+                '\u2028' -> append("\\u2028")
+                '\u2029' -> append("\\u2029")
+                else -> append(ch)
+            }
+        }
+        append('"')
+    }
+}

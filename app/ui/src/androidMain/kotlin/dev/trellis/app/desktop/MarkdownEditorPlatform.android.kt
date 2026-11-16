@@ -1,5 +1,6 @@
 package dev.trellis.app.desktop
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.TextRange
@@ -10,6 +11,8 @@ import androidx.compose.ui.text.TextRange
  * 桌面的 WebView 路线依赖 JavaFX + Swing，安卓上两者都没有；手机上也不需要
  * 1.25 倍段间距这种精细排版 —— 触摸屏上更重要的是光标、选区手柄和输入法。
  */
+internal actual fun resolvePlatformEditorMode(preference: String): String = MARKDOWN_EDITOR_COMPOSE
+
 @Composable
 internal actual fun PlatformMarkdownEditor(
     noteId: String,
@@ -23,7 +26,12 @@ internal actual fun PlatformMarkdownEditor(
     @Suppress("UNUSED_PARAMETER") onPageShortcut: ((String) -> Unit)?,
     onEditingFinished: (() -> Unit)?,
     onRequestAiFill: (suspend (String, Int) -> String?)?,
+    @Suppress("UNUSED_PARAMETER") editorMode: String,
+    bindings: List<MarkdownBinding>,
+    menuOpen: Boolean,
+    onMenuClosed: () -> Unit,
 ) {
+    Box(modifier) {
     MarkdownDocumentEditor(
         noteId = noteId,
         body = body,
@@ -35,5 +43,10 @@ internal actual fun PlatformMarkdownEditor(
         revealToken = revealToken,
         onEditingFinished = onEditingFinished,
         onRequestAiFill = onRequestAiFill,
+        bindings = bindings,
     )
+    if (menuOpen) {
+        MarkdownMenuOverlay(onClose = onMenuClosed, bindings = bindings)
+    }
+    }
 }

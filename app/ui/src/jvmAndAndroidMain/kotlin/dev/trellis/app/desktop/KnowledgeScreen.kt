@@ -68,7 +68,7 @@ private data class PendingReveal(val noteId: String, val start: Int, val end: In
  * - 笔记：`<home>/knowledge/notes/<id>.md`，frontmatter 里记 `concepts:`；
  * - 概念：索引每次从笔记现算，点亮 = 至少一篇笔记的 frontmatter 提到它；
  *    「熄灭」就是从所有笔记里删掉这条引用（本轮从当前笔记删）；
- * - 抽取：焦点离开正文时（不是每次保存）才让模型补一轮概念与空位
+ * - 抽取：2026-11-16 起和保存脱钩——只有用户点页头「AI 整理」才让模型补一轮概念与空位
  *    （只建议、默认点亮、可删），失败不影响保存；没配模型就跳过，用户也可以手动添加。
  */
 @Composable
@@ -267,7 +267,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     }
 
     /**
-     * 焦点离开正文时整理这一篇：抽概念 + 补空位。
+     * 用户点页头「AI 整理」时整理这一篇：抽概念 + 补空位（保存仍然自动，互不触发）。
      *
      * 只在「人写的内容真的变了」时才调模型——比较基准见 [bodyForAiComparison]：
      * AI 补全、删/加 `[[概念]]` 标记都不算正文变化，所以不会反复解析。
@@ -276,7 +276,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         val note = store.read(id) ?: return
         if (note.body.isBlank()) return
         val slots = findAiFillSlots(note.body)
-        // force = 用户点了「保存并整理」：不再等「正文真的变过」，也不因正文短就跳过。
+        // force = 用户点了「AI 整理」：不再等「正文真的变过」，也不因正文短就跳过。
         if (!force && note.body.length < 40 && slots.isEmpty()) return
         if (!force && bodyForAiComparison(note.body) == aiBaselines[id]) return
         val client = runtime.llmClientOrNull()
@@ -362,7 +362,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
             extracting = false
             val result = merged.copy(candidates = candidates)
             val current = store.read(id) ?: return@launch
-            // 调模型期间人又改了：这轮结果作废，等下次焦点离开再整理（不覆盖新内容）。
+            // 调模型期间人又改了：这轮结果作废，等下次点「AI 整理」再跑（不覆盖新内容）。
             if (bodyForAiComparison(current.body) != bodyForAiComparison(note.body)) return@launch
             val filled = applyAiFills(current.body, alignAiFills(slots, result.fills))
             // 抽到的概念在正文第一次出现处包成 [[概念]]：标记才是「本文概念」的唯一来源，
@@ -540,7 +540,6 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
 
     fun createNote() {
         persistNow()
-        loaded?.id?.let { previous -> organizeNote(previous) }
         val note = store.create()
         notes = store.list()
         selectedId = note.id
@@ -579,7 +578,6 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     fun selectNote(id: String) {
         if (id == selectedId) return
         persistNow()
-        loaded?.id?.takeIf { it != id }?.let { previous -> organizeNote(previous) }
         selectedId = id
     }
 
@@ -724,19 +722,27 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
             revision = 0
             return@LaunchedEffect
         }
-        val note = store.read(id)
-        if (note == null) {
+        val raw = store.read(id)
+        if (raw == null) {
             message = "这篇笔记的文件不见了：" + id
             selectedId = notes.firstOrNull { it.id != id }?.id
             return@LaunchedEffect
         }
-        loaded = note
-        title = note.title
-        body = note.body
-        savedAtMs = note.updatedAt
+        // 打开时按正文重算一次「本文概念」缓存：老文件里可能留着早期 WebView 保存 bug
+        // 转义过的 `\[\[…\]\]`，或 frontmatter 与正文对不上。不清算的话用户会看到
+        // 「明明标了却还是 0 个概念 / 概念全进了已删除」。只有真的变了才写盘。
+        val healed = synchronizeConceptMembership(raw, currentIdentities())
+        if (healed != raw) {
+            runCatching { store.save(healed) }
+            notes = store.list()
+        }
+        loaded = healed
+        title = healed.title
+        body = healed.body
+        savedAtMs = healed.updatedAt
         revision = 0
         runtime.knowledgeNoteId = id
-        aiBaselines[id] = bodyForAiComparison(note.body)
+        aiBaselines[id] = bodyForAiComparison(healed.body)
     }
 
     // 定位请求：等目标笔记载入后，把命中范围交给编辑器选中。
@@ -837,7 +843,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         EditorChip(
-                            label = if (extracting) "整理中…" else "保存并整理",
+                            label = if (extracting) "整理中…" else "AI 整理",
                             active = extracting,
                             onClick = {
                                 persistNow()
@@ -895,7 +901,6 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                             onOpenNote = { noteId, start, end ->
                                 persistNow()
                                 if (selectedId != noteId) {
-                                    loaded?.id?.takeIf { it != noteId }?.let { previous -> organizeNote(previous) }
                                     selectedId = noteId
                                 }
                                 pendingReveal = PendingReveal(noteId, start, end)
@@ -992,13 +997,18 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                                 end = if (MarkdownSidebarState.visible) 0.dp else 4.dp,
                             ),
                         ) {
-                            // 标题和正文共用一条滚动轴（需求：标题跟着正文走）。
-                            // 文档编辑器自己不再滚动，高度随内容长；滚动交给这里。
+                            // 段落式（WebView）自己滚动，所以要「顶天立地」：标题下留一点、底栏上留一点，
+                            // 高度吃满剩余空间；Compose 单文本框则跟着整页滚（需求：标题跟着正文走）。
+                            val webviewActive =
+                                resolvePlatformEditorMode(runtime.uiPrefs.editorMode) == MARKDOWN_EDITOR_WEBVIEW
+                            val pageScroll = rememberScrollState()
                             Box(Modifier.weight(1f).fillMaxWidth()) {
                                 Column(
-                                    Modifier
-                                        .fillMaxSize()
-                                        .verticalScroll(rememberScrollState()),
+                                    if (webviewActive) {
+                                        Modifier.fillMaxSize().padding(top = 8.dp, bottom = 10.dp)
+                                    } else {
+                                        Modifier.fillMaxSize().verticalScroll(pageScroll)
+                                    },
                                 ) {
                                     NoteTitleField(
                                         title = title,
@@ -1016,7 +1026,11 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                                             body = it
                                             revision++
                                         },
-                                        modifier = Modifier.fillMaxWidth(),
+                                        modifier = if (webviewActive) {
+                                            Modifier.weight(1f).fillMaxWidth()
+                                        } else {
+                                            Modifier.fillMaxWidth()
+                                        },
                                         reveal = revealRange,
                                         revealToken = revealToken,
                                         // WebView 模式有焦点时页面收不到键，由 JS 桥转发回来；
@@ -1034,6 +1048,12 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                                         conceptNames = conceptHighlightNames(),
                                         // 编辑器里输入 `。。。` 后点「AI 补全」：只补这一行，不整篇整理。
                                         onRequestAiFill = { draft, lineIndex -> fillSingleSlot(draft, lineIndex) },
+                                        // 编辑器形态（评审意见一）与生效键位（评审意见三）都从 runtime 取：
+                                        // 设置页改完立刻生效，不用重启。
+                                        editorMode = runtime.uiPrefs.editorMode,
+                                        bindings = runtime.markdownBindings,
+                                        menuOpen = shortcutsOpen,
+                                        onMenuClosed = { shortcutsOpen = false },
                                         onDeleteAiLine = { line ->
                                             val next = removeAiBlockLine(body, line)
                                             if (next != null) {
@@ -1042,14 +1062,11 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                                                 message = "已删掉一处 AI 内容"
                                             }
                                         },
-                                        // 焦点离开正文（点标题/列表/别的地方）才算一次「写完了」：
-                                        // 先落盘，再决定要不要请 AI 整理（正文真变了才调模型）。
-                                        onEditingFinished = {
-                                            persistNow()
-                                            loaded?.id?.let { id -> organizeNote(id) }
-                                        },
+                                        // 焦点离开正文只负责落盘（自动保存有 600ms 延迟）。
+                                        // AI 分析已和保存脱钩：只在页头点「AI 整理」时跑，避免边写边调模型。
+                                        onEditingFinished = { persistNow() },
                                     )
-                                    Spacer(Modifier.height(20.dp))
+                                    if (!webviewActive) Spacer(Modifier.height(20.dp))
                                 }
                             }
                             // 底部状态条固定，不跟着正文滚走。
@@ -1156,9 +1173,6 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
 }
             }
         }
-        if (shortcutsOpen) {
-            MarkdownMenuOverlay(onClose = { shortcutsOpen = false })
-        }
     }
 
     deleteTarget?.let { target ->
@@ -1229,7 +1243,7 @@ private fun KnowledgeEmptyState(onCreate: () -> Unit) {
         ) {
             Text("还没有笔记", style = MaterialTheme.typography.titleMedium)
             Text(
-                "先写一篇：标题 + Markdown 正文，存成本地 .md 文件；保存后 AI 会帮着整理概念。",
+                "先写一篇：标题 + Markdown 正文，存成本地 .md 文件；点「AI 整理」让模型补概念与空位。",
                 style = tokens.type.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

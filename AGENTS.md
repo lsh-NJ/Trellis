@@ -49,7 +49,7 @@ Set-Location C:\Users\breakM\Desktop\work\Trellis
 | `TRELLIS_DEV` | `=1` 强制开启调试模式（演示脚本/截图/CI 用）。平时用设置页最底部「调试模式」开关（手机在「我的」页；落盘 `<home>/dev.json`）；打开后出现「时间调试」「清除数据」（见 `docs/time-conventions.md` §7） |
 | `TRELLIS_TODAY` | `YYYY-MM-DD`，启动即把「应用内今天」拨到该日期（计划周滚动/结算/复盘按它走）；只在 `TRELLIS_HOME` 指向非默认目录时生效 |
 | `TRELLIS_DEV_ALLOW_REAL_HOME` | 旧开关（`=1` 允许在默认数据目录玩模拟时间）；2026-11-09 起打开「调试模式」本身就允许主数据目录拨日期，不再需要它，只为旧脚本保留 |
-| `TRELLIS_EDITOR` | `=webview` 时知识库正文改用 WebView + Tiptap 编辑器（P1 实验开关，默认仍走 Compose 的 `MarkdownDocumentEditor`；见 `MarkdownWebEditor.kt`） |
+| `TRELLIS_EDITOR` | 知识库正文用哪个编辑器：默认（2026-11-15 起）是 WebView + Tiptap（`MarkdownWebEditor.kt`）；`=compose` 切回 Compose 单文本（`MarkdownDocumentEditor.kt`，功能最全的退路，等 WebView 补齐后删） |
 | `TRELLIS_DIST_DIR` | 打包输出目录覆盖（`createDistributable` 不覆盖正在运行的 `.app`） |
 
 > 历史会话留下的 `.dev/` 临时脚本已于 2026-10-29 清理，仓库里没有 `.dev/` 目录；也别再从别处捡回这类脚本当入口。

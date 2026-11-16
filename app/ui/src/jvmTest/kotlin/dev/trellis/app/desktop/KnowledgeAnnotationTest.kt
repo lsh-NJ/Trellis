@@ -53,6 +53,25 @@ class KnowledgeAnnotationTest {
     }
 
     @Test
+    fun escapedBracketsStayLiteralInsteadOfBecomingAnnotations() {
+        // 「手动转义」= 我想显示字面方括号：`\[\[…\]\]` 不是概念标注，不能自动当成标注。
+        val annotations = parseConceptAnnotations("## \\[\\[查看环境变量\\]\\]：")
+        assertTrue(annotations.isEmpty())
+    }
+
+    @Test
+    fun escapedBracketsDoNotCountAsConceptMembership() {
+        // 正文先有一条真标注，强制走「按标注重算」路径；转义形式不能算进 concepts。
+        val before = note(
+            "[[RAG]] 与 \\[\\[查看环境变量\\]\\] 并存",
+            concepts = listOf("RAG", "查看环境变量"),
+        )
+        val after = synchronizeConceptMembership(before, emptyList())
+        assertEquals(listOf("RAG"), after.concepts)
+        assertTrue(after.removedConcepts.contains("查看环境变量"))
+    }
+
+    @Test
     fun acceptsArrowSeparatorToo() {
         val annotations = parseConceptAnnotations("[[图检索→GraphRAG]]")
         assertEquals(1, annotations.size)

@@ -70,6 +70,15 @@ data class UiPrefs(
     val appearance: String = "auto",
     /** 笔记自动完成计划节点时要不要弹桌面通知（默认关，设置页可开）。 */
     val notifyAutoCompletion: Boolean = false,
+    /**
+     * 知识库正文编辑器形态：`webview`（Tiptap 段落式，默认）或 `compose`（整篇单文本框，退路）。
+     *
+     * 段落式显示（段间距离 ≈1.4 倍行距、无空行、光标不落分隔处）只有块级 DOM 能做到；
+     * Compose 单文本框的行高整篇统一，做不到（见 docs/markdown-editor-review-2026-11-12.md）。
+     * 2026-11-15 起默认 WebView；Compose 版功能最全（Tab 缩进/自定义键位/AI 补全），
+     * 作为退路保留到 WebView 对齐后删除。
+     */
+    val editorMode: String = MARKDOWN_EDITOR_WEBVIEW,
 ) {
     fun normalized(): UiPrefs = copy(
         palette = palette.takeIf { it in PALETTES } ?: "default",
@@ -83,6 +92,7 @@ data class UiPrefs(
         navTone = navTone.takeIf { it in NAV_TONES } ?: "default",
         theme = theme.ifBlank { DEFAULT_THEME },
         appearance = appearance.takeIf { it in APPEARANCES } ?: "auto",
+        editorMode = editorMode.takeIf { it in EDITOR_MODES } ?: MARKDOWN_EDITOR_WEBVIEW,
     )
 
     fun describe(): String = listOf(
@@ -95,10 +105,19 @@ data class UiPrefs(
         "圆角 " + if (radius < 0) "跟随主题" else (radius.toString() + "dp"),
         "字号 " + (Math.round(fontScale * 100)) + "%",
         "导航 " + navLabel(nav) + "（" + navToneLabel(navTone) + "底）",
+        "笔记编辑器 " + editorModeLabel(editorMode),
     ).filter { it.isNotBlank() }.joinToString("，")
 }
 
 internal val APPEARANCES = listOf("auto", "light", "dark")
+
+/** 知识库正文编辑器形态，见 [UiPrefs.editorMode]。 */
+internal val EDITOR_MODES = listOf(MARKDOWN_EDITOR_COMPOSE, MARKDOWN_EDITOR_WEBVIEW)
+
+internal fun editorModeLabel(mode: String): String = when (mode) {
+    MARKDOWN_EDITOR_WEBVIEW -> "段落式（WebView）"
+    else -> "单文本（Compose）"
+}
 
 internal fun appearanceLabel(appearance: String): String = when (appearance) {
     "light" -> "浅色"
@@ -181,6 +200,7 @@ internal class UiPrefsStore(home: File) {
             theme = str("theme") ?: DEFAULT_THEME,
             appearance = str("appearance") ?: "auto",
             notifyAutoCompletion = obj["notifyAutoCompletion"]?.jsonPrimitive?.booleanOrNull ?: false,
+            editorMode = str("editorMode") ?: MARKDOWN_EDITOR_WEBVIEW,
         ).normalized()
     }
 
@@ -199,6 +219,7 @@ internal class UiPrefsStore(home: File) {
             put("theme", clean.theme)
             put("appearance", clean.appearance)
             put("notifyAutoCompletion", clean.notifyAutoCompletion)
+            put("editorMode", clean.editorMode)
         }
         runCatching {
             file.parentFile?.mkdirs()

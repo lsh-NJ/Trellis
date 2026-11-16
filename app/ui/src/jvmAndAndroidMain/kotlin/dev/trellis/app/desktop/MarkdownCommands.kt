@@ -1,6 +1,5 @@
 package dev.trellis.app.desktop
 
-import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.text.TextRange
 
 /**
@@ -8,8 +7,9 @@ import androidx.compose.ui.text.TextRange
  *
  * - [markdownCommands]：斜杠菜单里的命令。用户敲 `/` 唤起、打几个字过滤、回车插入，
  *   编辑界面上**不再摆一排工具栏按钮**（按钮占一行高度，而且十个按钮也放不下十六种语法）；
- * - [markdownKeyBindings]：直接可用的快捷键。键位只在这里定义一次，
- *   键盘分发和「快捷键清单」都读它，不会出现「说明书写的和实际按键不一致」。
+ * - [markdownShortcutHints]：页头「菜单」里的快捷键清单。编辑器键位来自
+ *   [MarkdownKeys.kt] 的注册表（默认 17 条 + 用户覆盖），键盘分发和清单读同一份
+ *   生效键位，不会出现「说明书写的和实际按键不一致」。
  *
  * 命令都是纯函数（文本 + 选区 → 新文本 + 新选区），所以能在单测里钉住。
  */
@@ -261,19 +261,6 @@ internal fun insideCodeFence(text: String, cursor: Int): Boolean {
     return open
 }
 
-/**
- * 一条快捷键：`Ctrl/Cmd + key`（[shift] 为 true 时还要按住 Shift）。
- *
- * Windows/Linux 用 Ctrl、macOS 用 Cmd，[label] 统一写成 `Ctrl/Cmd+X`。
- */
-internal data class MarkdownKeyBinding(
-    val key: Key,
-    val shift: Boolean,
-    /** 平台无关写法（`Ctrl/Cmd+B`）；显示前过一次 [platformShortcutLabel]。 */
-    val label: String,
-    val commandId: String,
-)
-
 /** 当前是不是 macOS：快捷键说明按平台换符号（⌘ / ⇧ / ⌥）。 */
 internal val shortcutUsesMacSymbols: Boolean =
     System.getProperty("os.name").orEmpty().lowercase().contains("mac")
@@ -301,26 +288,6 @@ internal fun platformShortcutLabel(raw: String, mac: Boolean = shortcutUsesMacSy
     }
 }
 
-internal val markdownKeyBindings: List<MarkdownKeyBinding> = listOf(
-    MarkdownKeyBinding(Key.B, false, "Ctrl/Cmd+B", "bold"),
-    MarkdownKeyBinding(Key.I, false, "Ctrl/Cmd+I", "italic"),
-    MarkdownKeyBinding(Key.K, false, "Ctrl/Cmd+K", "link"),
-    MarkdownKeyBinding(Key.X, true, "Ctrl/Cmd+Shift+X", "strike"),
-    MarkdownKeyBinding(Key.C, true, "Ctrl/Cmd+Shift+C", "code"),
-    MarkdownKeyBinding(Key.One, false, "Ctrl/Cmd+1", "h1"),
-    MarkdownKeyBinding(Key.Two, false, "Ctrl/Cmd+2", "h2"),
-    MarkdownKeyBinding(Key.Three, false, "Ctrl/Cmd+3", "h3"),
-    MarkdownKeyBinding(Key.Zero, false, "Ctrl/Cmd+0", "paragraph"),
-    MarkdownKeyBinding(Key.L, true, "Ctrl/Cmd+Shift+L", "bullet"),
-    MarkdownKeyBinding(Key.O, true, "Ctrl/Cmd+Shift+O", "numbered"),
-    MarkdownKeyBinding(Key.Q, true, "Ctrl/Cmd+Shift+Q", "quote"),
-    MarkdownKeyBinding(Key.R, true, "Ctrl/Cmd+Shift+R", "rule"),
-    MarkdownKeyBinding(Key.T, true, "Ctrl/Cmd+Shift+T", "table"),
-)
-
-internal fun markdownBindingFor(key: Key, shift: Boolean): MarkdownKeyBinding? =
-    markdownKeyBindings.firstOrNull { it.key == key && it.shift == shift }
-
 /**
  * 「菜单」里的一行：动作在前、按键在后（人先找「我要做什么」，再顺便记快捷键）。
  *
@@ -332,17 +299,44 @@ internal data class ShortcutHint(
     val owned: Boolean = true,
 )
 
-/** 编辑器自己处理的按键，和页面级快捷键一起显示在一张清单里（名称叫「菜单」）。 */
-internal val markdownShortcutHints: List<ShortcutHint> = buildList {
-    for (binding in markdownKeyBindings) {
-        val command = markdownCommand(binding.commandId) ?: continue
-        add(ShortcutHint(action = command.label, keys = platformShortcutLabel(binding.label)))
+/** 给 WebView 的「菜单」浮层用的 JSON：两段（编辑器 / 页面）+ action/keys。 */
+internal fun markdownMenuJson(bindings: List<MarkdownBinding> = defaultMarkdownBindings): String {
+    val hints = markdownShortcutHints(bindings)
+    fun items(list: List<ShortcutHint>): String = list.joinToString(prefix = "[", postfix = "]") { hint ->
+        "{\"action\":" + jsonQuote(hint.action) + ",\"keys\":" + jsonQuote(hint.keys) + "}"
     }
-    add(ShortcutHint(action = "保存", keys = platformShortcutLabel("Ctrl/Cmd+S"), owned = false))
-    add(ShortcutHint(action = "新建笔记", keys = platformShortcutLabel("Ctrl/Cmd+N"), owned = false))
-    add(ShortcutHint(action = "打开 / 关闭这份菜单", keys = platformShortcutLabel("Ctrl/Cmd+/"), owned = false))
-    add(ShortcutHint(action = "在光标处打开命令菜单", keys = "/"))
-    add(ShortcutHint(action = "在命令菜单里选择", keys = "↑ ↓ · 回车"))
-    add(ShortcutHint(action = "自动续写列表 / 引用", keys = "回车"))
-    add(ShortcutHint(action = "关掉命令菜单或这份菜单", keys = "Esc"))
+    return "[{\"title\":\"编辑器\",\"items\":" + items(hints.filter { it.owned }) + "}," +
+        "{\"title\":\"页面\",\"items\":" + items(hints.filter { !it.owned }) + "}]"
 }
+
+private fun jsonQuote(value: String): String = buildString {
+    append('"')
+    for (ch in value) {
+        when (ch) {
+            '\\' -> append("\\\\")
+            '"' -> append("\\\"")
+            '\n' -> append("\\n")
+            else -> append(ch)
+        }
+    }
+    append('"')
+}
+
+/**
+ * 编辑器自己处理的按键，和页面级快捷键一起显示在一张清单里（名称叫「菜单」）。
+ *
+ * 编辑器键位从生效注册表来（[markdownShortcutHintLines]）：用户改过键位后清单立刻跟着变，
+ * 不会出现「说明书写的和按键对不上」。页面级快捷键不归编辑器分发，固定列在后面。
+ */
+internal fun markdownShortcutHints(bindings: List<MarkdownBinding> = defaultMarkdownBindings): List<ShortcutHint> =
+    buildList {
+        addAll(markdownShortcutHintLines(bindings))
+        add(ShortcutHint(action = "保存", keys = platformShortcutLabel("Ctrl/Cmd+S"), owned = false))
+        add(ShortcutHint(action = "新建笔记", keys = platformShortcutLabel("Ctrl/Cmd+N"), owned = false))
+        add(ShortcutHint(action = "打开 / 关闭这份菜单", keys = platformShortcutLabel("Ctrl/Cmd+/"), owned = false))
+        add(ShortcutHint(action = "在光标处打开命令菜单", keys = "/"))
+        add(ShortcutHint(action = "在命令菜单里选择", keys = "↑ ↓ · 回车"))
+        add(ShortcutHint(action = "自动续写列表 / 引用", keys = "回车"))
+        add(ShortcutHint(action = "Tab / Shift+Tab 缩进", keys = "Tab / Shift+Tab"))
+        add(ShortcutHint(action = "关掉命令菜单或这份菜单", keys = "Esc"))
+    }

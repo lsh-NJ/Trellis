@@ -35,6 +35,7 @@ internal object DataWipe {
         "llm.json",
         "ui.json",
         "study.json",
+        "markdown.json",
         "steward/settings.json",
         "activity/taxonomy.json",
         "activity/settings.json",

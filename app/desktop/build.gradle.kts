@@ -71,7 +71,23 @@ compose.desktop {
             // NoClassDefFoundError: java/sql/DriverManager（SQLite 事件库用），
             // 或者一点「生成 / 聊天」就 NoClassDefFoundError: java/net/http/HttpClient。
             // 教训：**JDBC 驱动是通过 java.sql 的接口加载的，jdeps 推断不出来，必须手写在这里。**
-            modules("java.net.http", "java.sql")
+            // 同上教训：jlink 也推断不出 JFXPanel 的依赖。
+            // JavaFX 用反射调 jdk.swing.interop.SwingInterOpUtils，缺 jdk.unsupported.desktop 时
+            // 段落式编辑器（WebView）会变成一块白板、并且每次 FX pulse 都抛
+            // NoClassDefFoundError: jdk/swing/interop/SwingInterOpUtils，整页鼠标/点击跟着失灵。
+            // jdk.jsobject / jdk.xml.dom：javafx.web 的 module-info 里写了 requires，但 JavaFX 是当
+            // classpath jar 用的，jlink 不会跟着拉；缺了以后 executeScript 在 WebKit 里解 JSObject 时
+            // 直接 SIGSEGV（不是可捕获异常）。
+            modules(
+                "java.net.http",
+                "java.sql",
+                "jdk.unsupported.desktop",
+                "jdk.jsobject",
+                "jdk.xml.dom",
+                // JavaFX WebView 的软件绘制路径用 sun.misc.Unsafe（jdk.unsupported），
+                // 缺了以后页面能加载但一 paint 就 ClassNotFoundException，编辑器是白板。
+                "jdk.unsupported",
+            )
 
             // 想在应用正开着的时候单独打一份、不覆盖正在运行的 bundle，可以指定输出目录：
             //   TRELLIS_DIST_DIR=/tmp/trellis-dist ./gradlew :app:desktop:createDistributable

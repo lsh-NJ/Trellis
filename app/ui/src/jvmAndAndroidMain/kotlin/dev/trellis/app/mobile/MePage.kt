@@ -601,7 +601,7 @@ private fun DevDataCard(runtime: AppRuntime) {
         }
         Spacer(Modifier.height(Gap.xs))
         Text(
-            "保留：llm.json、ui.json、study.json、dev.json、steward/settings.json、activity 下的分类与同步设置。" +
+            "保留：llm.json、ui.json、study.json、markdown.json、dev.json、steward/settings.json、activity 下的分类与同步设置。" +
                 "全部清空后建议重启应用。",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

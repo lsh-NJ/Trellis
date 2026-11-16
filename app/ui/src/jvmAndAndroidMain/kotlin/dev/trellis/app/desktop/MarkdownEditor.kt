@@ -60,8 +60,17 @@ internal fun MarkdownEditor(
     onPageShortcut: ((String) -> Unit)? = null,
     onEditingFinished: (() -> Unit)? = null,
     onRequestAiFill: (suspend (String, Int) -> String?)? = null,
+    /** 编辑器形态：[MARKDOWN_EDITOR_COMPOSE]（默认）/ [MARKDOWN_EDITOR_WEBVIEW]（段落式实验）。 */
+    editorMode: String = MARKDOWN_EDITOR_COMPOSE,
+    /** 生效的快捷键（设置页改过键位后由页面传入）。 */
+    bindings: List<MarkdownBinding> = defaultMarkdownBindings,
+    /** 「菜单」（快捷键清单）是否打开。 */
+    menuOpen: Boolean = false,
+    /** 编辑器里的菜单被关掉时回调（WebView 版在页面里画，点遮罩/Esc 后要同步状态）。 */
+    onMenuClosed: () -> Unit = {},
 ) {
-    // 真正落到哪个编辑器由平台决定：桌面可以选 JavaFX WebView（`TRELLIS_EDITOR=webview`），
+    // 真正落到哪个编辑器由平台决定：桌面默认 Compose，设置页「编辑器」可切段落式
+    // （JavaFX WebView + Tiptap；`TRELLIS_EDITOR` 环境变量仍可强制），
     // 安卓只有 Compose 版（没有 JavaFX，也不该为了一段文字引入 WebView）。
     PlatformMarkdownEditor(
         noteId = noteId,
@@ -75,6 +84,10 @@ internal fun MarkdownEditor(
         onPageShortcut = onPageShortcut,
         onEditingFinished = onEditingFinished,
         onRequestAiFill = onRequestAiFill,
+        editorMode = editorMode,
+        bindings = bindings,
+        menuOpen = menuOpen,
+        onMenuClosed = onMenuClosed,
     )
 }
 
@@ -167,10 +180,14 @@ internal fun ShortcutKeyCap(label: String, modifier: Modifier = Modifier) {
  * 不要求先记符号。macOS 上显示 ⌘ / ⇧，其它平台显示 Ctrl / Shift（见 [markdownShortcutHints]）。
  */
 @Composable
-internal fun MarkdownMenuSheet(modifier: Modifier = Modifier) {
+internal fun MarkdownMenuSheet(
+    modifier: Modifier = Modifier,
+    bindings: List<MarkdownBinding> = defaultMarkdownBindings,
+) {
     val tokens = LocalTrellisTokens.current
-    val editorHints = remember { markdownShortcutHints.filter { it.owned } }
-    val pageHints = remember { markdownShortcutHints.filter { !it.owned } }
+    val hints = remember(bindings) { markdownShortcutHints(bindings) }
+    val editorHints = remember(hints) { hints.filter { it.owned } }
+    val pageHints = remember(hints) { hints.filter { !it.owned } }
     Column(
         modifier = modifier
             .width(380.dp)
@@ -236,7 +253,10 @@ private fun MenuSection(title: String, hints: List<ShortcutHint>) {
 
 /** 菜单浮层：半透明遮罩 + 居中清单；点遮罩（失焦/点别处）就关。 */
 @Composable
-internal fun MarkdownMenuOverlay(onClose: () -> Unit) {
+internal fun MarkdownMenuOverlay(
+    onClose: () -> Unit,
+    bindings: List<MarkdownBinding> = defaultMarkdownBindings,
+) {
     val scrim = remember { MutableInteractionSource() }
     val sheet = remember { MutableInteractionSource() }
     Box(
@@ -249,7 +269,7 @@ internal fun MarkdownMenuOverlay(onClose: () -> Unit) {
         Box(
             modifier = Modifier.clickable(interactionSource = sheet, indication = null, onClick = {}),
         ) {
-            MarkdownMenuSheet()
+            MarkdownMenuSheet(bindings = bindings)
         }
     }
 }

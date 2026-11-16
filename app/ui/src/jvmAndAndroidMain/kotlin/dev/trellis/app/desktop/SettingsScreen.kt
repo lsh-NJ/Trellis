@@ -5,6 +5,7 @@ package dev.trellis.app.desktop
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
@@ -31,6 +32,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,7 +40,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -74,8 +87,12 @@ fun SettingsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
 
         item { AppearanceSection(runtime) }
 
+        item { EditorSection(runtime) }
+
         item { DailyBudgetSection(runtime) }
         item { KnowledgeLinkSection(runtime) }
+
+        item { MarkdownShortcutSection(runtime) }
 
         item { StewardSection(runtime) }
 
@@ -375,6 +392,38 @@ private fun fontScaleLabel(scale: Float): String = when (scale) {
 }
 
 /**
+ * 编辑器：知识库正文用哪个编辑面。
+ *
+ * 2026-11-15 起默认「段落式」（WebView + Tiptap）：块级排版（段间距/代码块/表格）更接近成品。
+ * 「单文本（Compose）」是退路：整篇一个输入框，Tab 缩进/自定义键位/AI 补全最全，但在等 WebView 补齐后删除。
+ * 选择写进 `ui.json`（[UiPrefs.editorMode]），下次启动照旧。
+ */
+@Composable
+private fun EditorSection(runtime: AppRuntime) {
+    val mode = runtime.uiPrefs.editorMode
+    var message by remember { mutableStateOf("") }
+    SettingsSection(
+        title = "编辑器",
+        status = editorModeLabel(mode),
+    ) {
+        SettingsChoiceRow(
+            label = editorModeLabel(MARKDOWN_EDITOR_COMPOSE),
+            selected = mode == MARKDOWN_EDITOR_COMPOSE,
+            onClick = { message = runtime.updateEditorMode(MARKDOWN_EDITOR_COMPOSE) },
+        )
+        SettingsChoiceRow(
+            label = editorModeLabel(MARKDOWN_EDITOR_WEBVIEW),
+            selected = mode == MARKDOWN_EDITOR_WEBVIEW,
+            onClick = { message = runtime.updateEditorMode(MARKDOWN_EDITOR_WEBVIEW) },
+        )
+        SettingsStatusLine("段落式（WebView）是默认编辑器；代码高亮/公式/AI 补全浮窗/自定义键位仍在补，暂可切「单文本」兜底。")
+        if (message.isNotBlank()) {
+            SettingsStatusLine(message, error = isRejectedNote(message))
+        }
+    }
+}
+
+/**
  * 「每天预计投入」。
  *
  * 只有一个数：这个数唯一的去处是建计划时的每周容量。
@@ -441,6 +490,162 @@ private fun KnowledgeLinkSection(runtime: AppRuntime) {
         }
     }
 }
+
+/**
+ * Markdown 快捷键：17 条编辑器命令的键位自定义。
+ *
+ * 默认表是 [defaultMarkdownBindings]，用户配置只存「和默认不同」的覆盖
+ * （`<home>/markdown.json`，空串 = 解绑）。改键走 [AppRuntime.updateMarkdownBinding]：
+ * 冲突 / 非法都由它当场拒绝并说清原因，界面不另写一套校验，免得两边口径对不上。
+ * 键位只对 Compose 编辑器生效——WebView 实验路径还没接这套注册表。
+ */
+@Composable
+private fun MarkdownShortcutSection(runtime: AppRuntime) {
+    val overrides = runtime.markdownKeys
+    val bindings = runtime.markdownBindings.associateBy { it.commandId }
+    // 正在捕获键位的命令 id；null = 没有行处在改键态。
+    var capturing by remember { mutableStateOf<String?>(null) }
+    var message by remember { mutableStateOf("") }
+
+    SettingsSection(
+        title = "Markdown 快捷键",
+        status = if (overrides.isEmpty()) null else overrides.size.toString() + " 条已改",
+    ) {
+        SettingsStatusLine("改键只对 Compose 编辑器生效。")
+        for (command in markdownCommands) {
+            ShortcutBindingRow(
+                command = command,
+                binding = bindings[command.id],
+                overridden = overrides.containsKey(command.id),
+                capturing = capturing == command.id,
+                onStartCapture = {
+                    message = ""
+                    capturing = command.id
+                },
+                onCancelCapture = { capturing = null },
+                onCaptured = { label ->
+                    message = runtime.updateMarkdownBinding(command.id, label)
+                    capturing = null
+                },
+                onUnbind = { message = runtime.updateMarkdownBinding(command.id, "") },
+                onReset = { message = runtime.resetMarkdownBinding(command.id) },
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            EditorChip(
+                label = "全部恢复默认",
+                active = false,
+                onClick = {
+                    capturing = null
+                    message = runtime.resetMarkdownBindings()
+                },
+            )
+        }
+        if (message.isNotBlank()) {
+            SettingsStatusLine(message, error = isRejectedNote(message))
+        }
+    }
+}
+
+/**
+ * 一条快捷键：命令名在左，当前键帽/「未绑定」在右，再跟「改键」和（改过才有的）「恢复」。
+ *
+ * 捕获态只给这一行挂 [FocusRequester] + `onPreviewKeyEvent`：焦点进不来时按键事件到不了这里，
+ * 所以进入捕获态先等布局就绪再请求焦点（[requestFocusWhenReady] 失败会安静放弃，
+ * 鼠标仍可用「取消」退出）。捕获期间所有 KeyDown 都吃掉，避免 Cmd+S 这类键漏到页面快捷键；
+ * Esc 是唯一例外——它退出捕获，不消费。
+ */
+@Composable
+private fun ShortcutBindingRow(
+    command: MarkdownCommand,
+    binding: MarkdownBinding?,
+    overridden: Boolean,
+    capturing: Boolean,
+    onStartCapture: () -> Unit,
+    onCancelCapture: () -> Unit,
+    onCaptured: (String) -> Unit,
+    onUnbind: () -> Unit,
+    onReset: () -> Unit,
+) {
+    val tokens = LocalTrellisTokens.current
+    val extra = LocalExtraColors.current
+    val focus = remember { FocusRequester() }
+
+    LaunchedEffect(capturing) {
+        if (capturing) focus.requestFocusWhenReady()
+    }
+
+    val rowModifier = if (capturing) {
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 6.dp, vertical = 2.dp)
+            .focusRequester(focus)
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                if (event.key == Key.Escape) {
+                    onCancelCapture()
+                    return@onPreviewKeyEvent false
+                }
+                val label = shortcutLabelForKey(
+                    key = event.key,
+                    ctrlCmd = event.isCtrlPressed || event.isMetaPressed,
+                    shift = event.isShiftPressed,
+                    alt = event.isAltPressed,
+                )
+                // 不合法的键（F1、方向键、只按 Shift…）不写配置，但捕获态也不能把它漏出去。
+                if (label != null) onCaptured(label)
+                true
+            }
+            .focusable()
+    } else {
+        Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp)
+    }
+
+    Row(
+        modifier = rowModifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            command.label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (capturing) tokens.colors.accent else tokens.colors.ink,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (capturing) {
+            Text(
+                "按下新的组合键…（Esc 取消）",
+                style = tokens.type.meta,
+                color = extra.dataMuted,
+            )
+            // 焦点请求失败时键盘事件到不了这一行，鼠标得有条退路。
+            EditorChip(label = "取消", active = false, onClick = onCancelCapture)
+        } else {
+            if (binding == null) {
+                Text("未绑定", style = tokens.type.meta, color = extra.dataMuted)
+            } else {
+                ShortcutKeyCap(platformShortcutLabel(binding.label))
+            }
+            EditorChip(label = "改键", active = false, onClick = onStartCapture)
+            if (binding != null) {
+                EditorChip(label = "解绑", active = false, onClick = onUnbind)
+            }
+            if (overridden) {
+                EditorChip(label = "恢复", active = false, onClick = onReset)
+            }
+        }
+    }
+}
+
+/** 这类 API 的拒绝文案都直说原因；只把「被拒绝」染成错误色，成功/说明保持弱色。 */
+private fun isRejectedNote(text: String): Boolean =
+    text.contains("不合法") || text.contains("占用") || text.contains("未知")
 
 /**
  * 开发者 · 调试模式开关。
@@ -895,7 +1100,7 @@ private fun DevDataSection(runtime: AppRuntime) {
             WipeChip("练习记录", WipeScope.Practice) { pending = it }
             WipeChip("全部清空", WipeScope.All) { pending = it }
         }
-        SettingsStatusLine("保留：llm.json、ui.json、study.json、dev.json、steward/settings.json、activity 下的分类与同步设置。全部清空后建议重启应用。")
+        SettingsStatusLine("保留：llm.json、ui.json、study.json、markdown.json、dev.json、steward/settings.json、activity 下的分类与同步设置。全部清空后建议重启应用。")
     }
 
     val scope = pending

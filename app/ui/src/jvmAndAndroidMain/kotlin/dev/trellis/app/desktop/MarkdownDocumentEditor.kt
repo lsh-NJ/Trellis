@@ -55,6 +55,7 @@ import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.isShiftPressed
@@ -122,6 +123,13 @@ internal fun MarkdownDocumentEditor(
     onEditingFinished: (() -> Unit)? = null,
     /** 编辑器里的「AI 补全」：传入当前正文与槽位行号，返回补全后的整篇正文；null 表示不提供。 */
     onRequestAiFill: (suspend (String, Int) -> String?)? = null,
+    /**
+     * 生效的快捷键。
+     *
+     * 默认是注册表里的 17 条默认键位；设置页改过键位后由页面传进来，编辑器只认这一份，
+     * 不再直接读全局常量——否则「设置里改完、编辑器不认」这种事故迟早出现。
+     */
+    bindings: List<MarkdownBinding> = defaultMarkdownBindings,
 ) {
     val paragraphStyle = MaterialTheme.typography.bodyLarge
     val scheme = MaterialTheme.colorScheme
@@ -435,15 +443,36 @@ internal fun MarkdownDocumentEditor(
                 else -> Unit
             }
         }
-        val commandPressed = event.isCtrlPressed || event.isMetaPressed
-        if (commandPressed && event.key == Key.Enter) {
+        val commandPressed = event.isCtrlPressed || event.isMetaPressed || event.isAltPressed
+        // 只有 Ctrl/Cmd+Enter 才是「收起焦点」；Alt+Enter 不该变成失焦——macOS 上拿 Option+Enter
+        // 当换行/分段的习惯很多，误判会把「继续写」变成「保存 + 可能触发 AI 整理」。
+        if ((event.isCtrlPressed || event.isMetaPressed) && event.key == Key.Enter) {
             focusManager.clearFocus(force = true)
             return true
         }
         if (commandPressed) {
-            val binding = markdownBindingFor(event.key, event.isShiftPressed) ?: return false
-            val command = markdownCommand(binding.commandId) ?: return false
-            val result = command.apply(field.text, field.selection)
+            val binding = markdownBindingFor(event.key, event.isShiftPressed, event.isAltPressed, bindings)
+            if (binding != null) {
+                val command = markdownCommand(binding.commandId)
+                if (command != null) {
+                    val result = command.apply(field.text, field.selection)
+                    apply(TextFieldValue(result.text, result.selection))
+                    return true
+                }
+            }
+        }
+        // Tab / Shift+Tab 缩进（评审意见二）：列表/任务/引用/普通行 2 空格，代码块 4 空格。
+        // 斜杠菜单、概念补全、AI 补全的 Tab 认领在上面已经先抢走了，走到这里就是纯缩进。
+        if (event.key == Key.Tab) {
+            val inCode = projection.caretKind == DocumentLineKind.CodeFence ||
+                projection.caretKind == DocumentLineKind.CodeContent
+            val unit = if (inCode) CODE_INDENT else LIST_INDENT
+            val result = if (event.isShiftPressed) {
+                outdentMarkdownLines(field.text, field.selection, unit)
+            } else {
+                // 代码块里空行也要补缩进（代码编辑器常态）；正文/列表里空行不加，免得留下看不见的空白。
+                indentMarkdownLines(field.text, field.selection, unit, indentEmptyLines = inCode)
+            }
             apply(TextFieldValue(result.text, result.selection))
             return true
         }
@@ -720,7 +749,7 @@ internal fun MarkdownDocumentEditor(
                             hadFocus = false
                             closeSlash()
                             closeCompletion()
-                            // 焦点离开正文：算「这一轮写完了」，页面据此收尾（如 AI 整理）。
+                            // 焦点离开正文：算「这一轮写完了」，页面据此落盘（AI 整理已改成页头按钮显式触发）。
                             onEditingFinished?.invoke()
                         }
                     }

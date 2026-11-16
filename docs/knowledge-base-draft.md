@@ -41,7 +41,7 @@
 
 ## 4. 概念从哪来（AI 抽取，错了可删）
 
-1. **焦点离开正文时抽取**（后台）：LLM 抽候选概念 + 一句话定义；失败降级为「未抽取」，不阻塞保存；只改了 AI 标记/补全不算正文变化，不重抽（见 §10 补丁 4、§11）。
+1. **点页头「AI 整理」时抽取**（后台；2026-11-16 起和保存脱钩）：LLM 抽候选概念 + 一句话定义；失败降级为「未抽取」，不阻塞保存；只改了 AI 标记/补全不算正文变化，不重抽（见 §10 补丁 4、§11）。
 2. **直接点亮、可删**：抽到的概念立即写引用（笔记 frontmatter + 索引；不逐步确认——点亮只是索引、不是断言，错了删掉成本低）；编辑器下方 chips 显示「本笔记涉及：RAG ×、向量检索 ×、HNSW ×」，可删、可改名、可手加。
 3. **手动兜底**：选中文本 →「标为概念」；未配 LLM/离线时全走这条。
 4. **纠错补全**：AI 给规范化名、别名、定义建议，**只建议不改原文**。
@@ -91,7 +91,7 @@
 ## 9. 已拍板（2026-10-30 实施时按建议默认执行）
 
 1. **入口**：导航第三项「知识库」（任务 / 计划 / 知识库 / 对话 / 活动 / 设置）。
-2. **抽取时机**：焦点离开正文时自动（不是每次保存）+ 结果默认直接点亮、chips 可删；失败不阻塞保存；没配模型则跳过，可手动添加。正文里只有 `[[概念]]` 标记/AI 补全进出时不重抽。
+2. **抽取时机**：只有点页头「AI 整理」才跑（写正文、失焦、保存都不再触发）+ 结果默认直接点亮、chips 可删；失败不阻塞保存；没配模型则提示跳过，可手动添加。正文里只有 `[[概念]]` 标记/AI 补全进出时不重抽。
 3. **外部笔记导入**：复制进 `knowledge/`（可重建、原目录变动不影响）——**待做**，P1。
 4. **概念定义**：AI 补全 + 用户可改（存 `concepts.json`）；AI 只填空定义、不覆盖用户改过的文本。
 5. **别名/合并**：P1 再做；现在靠 `conceptKey`（大小写不敏感）去重，不做别名表。
@@ -134,7 +134,7 @@
 
 - **工具栏撤掉**：格式不再摆一排按钮（十几种语法摆不下、也记不住）。入口只剩两个，都在 `MarkdownCommands.kt`：
   1. 斜杠命令菜单：行首或空格后敲 `/`，打几个字过滤（标签、id、拼音首字母都认），↑↓ 选、回车插入、Esc 关；16 条命令覆盖标题 1–3/正文/有序无序任务列表/引用/分割线/代码块/表格/粗斜体删除线行内代码/链接/图片。代码块里敲 `/` 不触发（写路径不会误弹）。
-  2. 快捷键：`Ctrl/Cmd+B/I/K`、`Ctrl/Cmd+Shift+X/C/L/O/Q/R/T`、`Ctrl/Cmd+0/1/2/3`。键位只在 `markdownKeyBindings` 定义一次，键盘分发和「快捷键清单」都读它，不会出现「说明书和实际按键不一致」。
+  2. 快捷键：`Ctrl/Cmd+B/I/K`、`Ctrl/Cmd+Shift+X/C/L/O/Q/R/T`、`Ctrl/Cmd+0/1/2/3`。键位只在 `MarkdownKeys.kt` 的注册表定义一次（默认 17 条 + 用户覆盖，可自定义），键盘分发和「快捷键清单」都读它，不会出现「说明书和实际按键不一致」。
 - **快捷键清单**（`Ctrl/Cmd+/` 或编辑器右上角「快捷键」）：编辑器 + 页面（`Ctrl/Cmd+S/N/E`）两段；`/`、↑↓、回车续列表、Esc 也写在里面。
 - **右侧目录**（`MarkdownOutline.kt`）：按 `#`~`######` 生成树（围栏代码块里的不算），分级折叠、全部收起/展开、可收起；中间拖拽条改宽度，上下限 180–420dp（`MarkdownSidebarState`，切页回来宽度还在）。点标题跳转：编辑态把光标挪到标题行（输入框会把它滚进可视区），预览态按渲染块的实测坐标滚动（`MarkdownText(onBlockLayout)`）。
 - **Markdown 渲染补齐**（`MarkdownText.kt`，会话页和笔记预览共用）：分割线 `---` / `***` / `___`（`- - -` 也认，但不会把 `- 列表项` 吃成横线）、任务清单 `- [ ]` / `- [x]`（方框自绘，避免 `☑` 落到彩色 emoji 字体）、图片 `![说明](url)`（不联网取图，显示成「［图］说明 (url)」）、`***粗斜体***`；标题改成 `#` 后必须真有文字，**目录和预览共用同一套标题规则**（否则第 N 条目录会跳到第 N+1 个标题）。
@@ -192,7 +192,7 @@
 
 **已落地（2026-11-01，P0 第七批补丁 4：AI 解析时机 + 取消概念上限）**
 
-- **只在焦点离开正文时解析**：删掉 `KnowledgeScreen` 原来「保存后停手 2.5s」的 `LaunchedEffect(savedAtMs)` 自动抽取；改成 `MarkdownBlockEditor.exitEdit()` → `onEditingFinished`（经 `MarkdownEditor` 透传）→ `persistNow()` + `organizeNote(id)`。效果：切到别的块/点标题/点预览/换笔记这些「写完了」的时刻才可能调模型，连打字时不会一直请求。
+- **只在点「AI 整理」时解析**：删掉 `KnowledgeScreen` 原来「保存后停手 2.5s」的 `LaunchedEffect(savedAtMs)` 自动抽取，也不再挂在 `onEditingFinished` 上；现在只有页头 chip 调 `organizeNote(id, force = true)`（经 `MarkdownEditor` 透传）→ `persistNow()` + `organizeNote(id)`。效果：切到别的块/点标题/点预览/换笔记这些「写完了」的时刻才可能调模型，连打字时不会一直请求。
 - **AI 标记/AI 补全不算「正文变了」**：新增 `KnowledgeNote.bodyForAiComparison(body)` 作为比较基准——去掉 `[[概念]]` 包裹（只留名字）、整段去掉 `{{AI 补全}}`、整块去掉 `:::ai…:::`、忽略行尾空白与连续空行。`organizeNote` 先比「当前正文基准」与 `aiBaselines[id]`，相同就直接跳过。于是人工删/加 AI 标记、AI 补全本身都不会触发再解析；人真的改了正文才会调模型。若调模型期间人又改了正文，结果作废（`bodyForAiComparison(current) != bodyForAiComparison(note)` 时 return）。
 - **取消概念数量上限**：删掉 `KnowledgeExtraction.MAX_EXTRACTED_CONCEPTS`，提示词第 3 条改成「数量不设上限：正文里确实讲过的概念都可以列，但每个都必须满足上面的依据；拿不准的就别抽」，`parseCandidatesFrom` 不再 `take(...)`（仍按名字去重）；质量门槛（正文依据 + 名字逐字出现 + 定义 ≤40 字）保留。
 - **切换笔记时顺手整理上一篇**：`selectNote`/`createNote` 在切走前先 `persistNow()`，再对上一篇跑一次 `organizeNote`（正文没变时基准相同、直接跳过），不会漏掉「改完直接点别的笔记」的情况；同一篇的请求后到先得（`aiJob?.cancel()`）。
@@ -256,6 +256,12 @@ marktext / Typora / Notion 能做到，是因为正文是浏览器里的**块级
 
 所以加了一个实验开关（默认关闭，不影响现有编辑器）：`TRELLIS_EDITOR=webview`。
 
+2026-11-12 起，这个开关之外多了一条用户入口：**设置页「编辑器」**可以选「段落式（WebView 实验）」，即时生效并写进 `ui.json` 的 `editorMode`（评审意见一「段落式显示」的落地形态；`TRELLIS_EDITOR` 仍优先，给演示/调试用）。**2026-11-15 起默认就是段落式（WebView）**；Compose 单文本保留为设置里的退路——它的 Tab 缩进/自定义键位/AI 补全浮窗还没在 WebView 路线对齐，对齐后删除。
+
+2026-11-14 把编辑器 bundle **源码化**了：`tools/web-editor/`（Tiptap 3 + marked + turndown + esbuild）成为 `app/ui/src/jvmMain/resources/editor/editor.js` 的唯一来源，并修掉旧 bundle 的往返 bug：代码围栏/语言、表格、任务清单 checkbox、`[[原文 => 概念名]]`、`:::ai` 块、段内软换行都保留（旧 bundle 分别会退化/丢失/拍平/合并）；空文档返回空串而不是 `\n`。仓库内加了 JavaFX WebView 回归 harness（16 个夹具，`TRELLIS_WEB_HARNESS=1` 才跑），旧/新 bundle 的基线 JSON 在 `tools/web-editor/docs/`。下一步按计划接代码高亮、公式、AI 补全浮窗、自定义键位。逆向后发现旧 bundle 还有一个隐患（`setMarkdown` 会把整篇灌入写进 undo 历史，切换笔记后 Cmd+Z 可能把上一篇内容写进当前笔记），新实现里已通过「灌完内容重建 EditorState」清空历史。逆向记录在 `tools/web-editor/docs/current-bundle-behavior.md`。
+
+2026-11-14 修了一处会假死的启动问题：JavaFX toolkit 初始化失败时，`JFXPanel` 会在 EDT 的 `SecondaryLoop` 里等一个永远不来的初始化，界面点不动。现在 `MarkdownWebRuntime` 把启动挪到后台线程（20s 超时）、把 `javafx.cachedir` 指到系统临时目录（`~/.openjfx` 不可写时也能起），失败就回退 Compose 编辑器并显示原因（`MarkdownEditorPlatform.jvm.kt`）。
+
 - 依赖：`app/desktop/build.gradle.kts` 的 JavaFX 21.0.4（base/graphics/controls/web/media/swing，按 os/arch 选 classifier）；jar 全在 Maven，无运行时下载，macOS arm64 约 40MB。
 - 页面：`app/ui/src/jvmMain/resources/editor/index.html` + `editor.js`（esbuild 打包 Tiptap + marked + turndown，约 385KB）；`{{…}}`/`[[…]]` 用自定义 mark 往返（支持 `[[原文 => 概念名]]`：显示只留原文，`=> 概念名` 存在 mark 的 `data-target` 里，序列化时拼回去）。
 - 字体/排版（P2 第一轮）：对齐 Compose 的 `bodyLarge`——`-apple-system, sans-serif`、16px / 1.5 行高、段落 `margin: 0 0 10px`（段落 pitch ≈1.42 倍行距）、标题 24/21/19px + 1.32 行高。
@@ -265,7 +271,7 @@ marktext / Typora / Notion 能做到，是因为正文是浏览器里的**块级
 - `[[` 补全：Compose 把概念名（本文标注 + 概念库）通过 `window.setConcepts([...])` 灌进页面；输入 `[[` 弹候选浮层，点选或键盘认领后插入 concept mark（显示只有概念名，序列化回 `[[名字]]`）。
 - 补全键盘认领（P2 第二轮）：新增 Tiptap `TrellisKeys` extension，用 `addKeyboardShortcuts` 把 Enter/Tab/ArrowDown/ArrowUp/Escape 转交页面的 `window.__trellisHandleKey`——`handleKeyDown` 在 ProseMirror 默认处理之前跑，比在 DOM 上抢 `keydown` 可靠。认领不依赖菜单是否渲染：直接从光标前文本解析 `[[query`，↑↓ 在候选里移动、Enter/Tab 插入、Esc 关闭。
 - `/` 斜杠菜单（P2 第二轮）：行首或空白后敲 `/` 弹出（代码块里不触发）；命令用 Tiptap 自带 chain：标题 1/2/3、无序列表、有序列表、引用、代码块、分隔线；↑↓ 选、Enter/Tab 执行、Esc 关闭、也可以鼠标点选；执行前先删掉敲的 `/query` 再 `deleteRange` + `toggle*`。
-- 编辑器快捷键（2026-11-06）：格式键（`Cmd/Ctrl+B/I/K`、`Cmd/Ctrl+Shift+X/C`、`Cmd/Ctrl+1/2/3/0`）由 Tiptap keymap 处理（`markdownKeyBindings` 是清单），已在 WebView 里验证 `Cmd+B` 能落 `**…**`。
+- 编辑器快捷键（2026-11-06）：格式键（`Cmd/Ctrl+B/I/K`、`Cmd/Ctrl+Shift+X/C`、`Cmd/Ctrl+1/2/3/0`）由 Tiptap keymap 处理，已在 WebView 里验证 `Cmd+B` 能落 `**…**`。2026-11-12 起 Compose 侧键位改成 `MarkdownKeys.kt` 注册表（默认 17 条 + 设置页自定义）；**WebView 的键位仍由打包好的 JS 管理，自定义键位只对 Compose 编辑器生效**。
 - 页面级快捷键桥（2026-11-06）：WebView 有焦点时 Compose 收不到键，所以 JS 在 `window` 上 capture 阶段监听 keydown，命中 `Cmd/Ctrl+S/N//` 就 `preventDefault()` + `notifyBridge('onShortcut', 'save'|'newNote'|'menu')`；Kotlin 侧桥方法 `MarkdownEditorBridge.onShortcut(name)` → `MarkdownWebHost.onShortcut` → `MarkdownWebEditor(onPageShortcut=…)` → `KnowledgeScreen` 执行保存/新建/开关菜单。注意 JavaFX WebView 在 macOS 上给 Cmd 组合键的 `event.key` 是空串，必须用 `event.keyCode` 兜底（65–90 → 字母、48–57 → 数字、191/111 → `/`）。
 - AI 定位跳转（2026-11-06 接线）：编辑器多两个参数 `reveal: TextRange?` / `revealToken: Int`；Kotlin 侧 `host.reveal(start, end)` 调 JS `window.revealRange(start, end)`，JS 用 `locateOffset()` 把 Markdown 偏移换算成 ProseMirror 位置后 `setTextSelection` + `scrollIntoView`；桥未就绪时先存 `pendingReveal`，`installBridge()` 后补执行。
 - 未对齐（后续）：代码块/表格/公式的专门渲染、Windows/Linux 打包与 IME 回归；AI 定位跳转的端到端（搜索命中/概念反查触发）还需真机确认。
@@ -291,9 +297,11 @@ marktext / Typora / Notion 能做到，是因为正文是浏览器里的**块级
 | 点击正文末尾以下 | 点正文最后一行下方的空白 = 直接另起一段（不用先把光标拖到底再按回车） | `MarkdownDocumentEditor.kt` |
 | 段落标记（gutter） | 正文左侧 34dp 窄栏只画**光标所在段落**的标记与一条淡竖线：`¶` 普通段、`H1`–`H6` 标题、`•` 无序列表、`☰` 有序列表、`▍` 引用、`{ }` 代码、`▦` 表格、`∑` 公式、`AI` AI 块；相邻同类型列表算一段 | `MarkdownDocumentEdit.kt`（`groupDocumentParagraphs`/`paragraphMarker`）/ `MarkdownDocumentEditor.kt` |
 | `{{…}}` | 编辑态折叠花括号、内容变绿，并按位置画「左上一颗“、右下一颗”」的大绿引号（跨行时贴首行左上 / 末行右下）；`:::ai` 块同老规则在块左上/右下画引号 | `MarkdownDocumentEdit.kt` / `MarkdownDocumentEditor.kt` |
-| Esc / Ctrl+Enter / 失焦 | Esc 收起斜杠菜单、Ctrl/Cmd+Enter 或点页头「预览」chip 切到预览；焦点离开正文时触发一次 AI 整理（正文真变了才调模型，见 §10 补丁 4） | `MarkdownDocumentEditor.kt` |
+| Esc / Ctrl+Enter / 失焦 | Esc 收起斜杠菜单、Ctrl/Cmd+Enter 或点页头「预览」chip 切到预览；失焦只负责落盘，AI 整理必须点页头「AI 整理」（2026-11-16 起，见 §10 补丁 4） | `MarkdownDocumentEditor.kt` |
 | `/` 斜杠命令 | 行首或空白后唤起斜杠命令菜单（代码围栏里不触发） | `MarkdownCommands.kt` |
-| 快捷键 | `Ctrl/Cmd+B/I/K`、`Shift+X/C/L/O/Q/R/T`、`0–3` 作用在光标所在行或选区 | `MarkdownCommands.kt` |
+| 快捷键 | 17 个菜单命令每个都有默认键位（`Ctrl/Cmd+B/I/K`、`Shift+X/C/L/O/Q/R/T`、`Shift+K/E/I` 任务清单/代码块/图片、`0–3`），作用在光标所在行或选区；**设置页「Markdown 快捷键」可逐条改键/恢复默认**（覆盖存 `<home>/markdown.json`，冲突当场拒绝） | `MarkdownKeys.kt` / `MarkdownCommands.kt` / `SettingsScreen.kt` |
+| Tab / Shift+Tab | 列表/任务/引用/普通行：Tab 行首缩进 2 空格、Shift+Tab 删一级；代码块：Tab/Shift+Tab 对当前行或选中行加/删 4 空格；AI 补全/概念补全/斜杠菜单的 Tab 认领优先 | `MarkdownEdit.kt`（`indentMarkdownLines`/`outdentMarkdownLines`）→ `MarkdownDocumentEditor.handleKey` |
+| 编辑器形态 | 设置页「编辑器」可在「段落式（WebView + Tiptap，**默认**）」和「单文本（Compose，退路）」之间切换；段落式没有空行、段距 1.42 倍，是评审意见一的落地形态（Compose 单文本框行高统一，做不到 <1 行段距） | `UiPrefs.editorMode` + `MarkdownEditorPlatform.jvm.kt`；设计与实测见 `docs/markdown-editor-review-2026-11-12.md` |
 | 编辑 / 预览 | 页头 chip 整体切只读渲染（预览态正文只读，点它不会进编辑）；编辑态里代码/表格/公式/AI 块显示样式化源码 | `KnowledgeScreen.kt` |
 | 目录 | 右栏标题树，点标题把光标送到对应行并滚动过去；可全部收起/展开、拖宽、收起 | `MarkdownOutline.kt` |
 | 菜单 | 页头「菜单」chip：动作在前、按键在后、按键按平台显示；点空白处关闭 | `MarkdownEditor.kt` |
@@ -310,8 +318,8 @@ marktext / Typora / Notion 能做到，是因为正文是浏览器里的**块级
 - **中文粗体是「系统字重 + 同色阴影」叠出来的**：不依赖平台字体有没有真正的 Bold 字面，跨平台观感一致；阴影颜色跟随文字色（概念绿字加粗仍是绿的）。行内代码是「等宽 + 自绘圆角芯片」，上下沿按基线算出、不靠 padding。
 - **链接默认只显示 label**（marktext 式）：地址藏在源码里，光标进去才看得到；聊天消息仍显示地址，避免模型给的链接丢了。
 - **编辑态与预览态的差别**：代码块、引用块在编辑态就整块渲染（卡片 / 竖线，光标进块才露出围栏与前缀）；表格、`$$` 公式块、`:::ai` 块仍只显示「等宽 / 配色的源码」，完整渲染只在预览态（同一个 `BasicTextField` 里不能内嵌小部件）；嵌套列表缩进只按行首空白粗略处理。换路径的动机与代价见 §10 第八批补丁。
-- **空行就是分段**：段落之间空一行；段落内想换行用 Shift+Enter 写一个 `\n`。段间距只能取「一个空行」或「没有空行」两档：整篇是一个 `BasicTextField`，行高由 `textStyle.lineHeight` 统一决定，没法只把空行压到半行（试过 `ParagraphStyle`/`SpanStyle`/零宽空格承载，最小仍是一整行 2 倍行距）。2026-11-04 的决定是保留空行（段间距 = 2 倍行距，marktext 观感），光标段落靠左侧 gutter 标记区分。
+- **空行就是分段**：段落之间空一行；段落内想换行用 Shift+Enter 写一个 `\n`。Compose 单文本框里段间距只能取「一个空行」或「没有空行」两档（行高由 `textStyle.lineHeight` 统一决定；2026-11-12 又用 `MultiParagraph` 探针复核过 `ParagraphStyle`/零宽空格都不能把空行压到行高以下，详见 `docs/markdown-editor-review-2026-11-12.md` §3.2），所以 2026-11-04 的决定是保留空行（段间距 = 2 倍行距，marktext 观感），光标段落靠左侧 gutter 标记区分；要真正的 1.4 倍段距，用设置页「编辑器 → 段落式（WebView 实验）」。
 - **标题也是正文行**（`# …`），行内语法同样折叠；目录与笔记列表的标题走同一套 `stripInlineMarkdown`。
 - **概念有显式语法** `[[概念名]]`：预览只显示名字（浅绿下划线），和隐式「按概念表匹配」共存；AI 抽取会把首次出现自动包成这个写法。
-- **AI 只在焦点离开正文时动手**：删/加 `[[概念]]`、AI 补全本身都不算正文变化（比较用 `bodyForAiComparison`），所以不会「人工改完标记又被 AI 盖一轮」；概念数量不设上限，但每个都要有正文依据。
+- **AI 只在点「AI 整理」时动手**：删/加 `[[概念]]`、AI 补全本身都不算正文变化（比较用 `bodyForAiComparison`），所以不会「人工改完标记又被 AI 盖一轮」；概念数量不设上限，但每个都要有正文依据。
 - **不做**：全局知识图、块拖拽排序、多光标；撤销/重做仍靠输入框自身。

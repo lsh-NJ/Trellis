@@ -3718,6 +3718,21 @@ class AppRuntime private constructor() {
     private lateinit var uiPrefsStore: UiPrefsStore
 
     /**
+     * Markdown 快捷键的用户覆盖（commandId → 平台无关 label；空串 = 解绑）。
+     *
+     * 只存「与默认不同」的项，落盘在 `<home>/markdown.json`（见 [MarkdownKeyStore]）。
+     * 编辑器与页头「菜单」都从这里取生效键位（[markdownBindings]），不再直接读全局默认表。
+     */
+    var markdownKeys: Map<String, String> by mutableStateOf(emptyMap())
+        private set
+
+    private lateinit var markdownKeyStore: MarkdownKeyStore
+
+    /** 生效键位 = 17 条默认 + 用户覆盖；设置页也用它算「当前键帽」。 */
+    internal val markdownBindings: List<MarkdownBinding>
+        get() = effectiveMarkdownBindings(markdownKeys)
+
+    /**
      * 学习节奏偏好：用户对自己「一天能投多少」的估计。
      *
      * 和 [uiPrefs] 分开存（`study.json`）：那个决定界面长什么样，这个决定计划怎么排。
@@ -5706,6 +5721,107 @@ class AppRuntime private constructor() {
     }
 
     /**
+     * 切换知识库正文编辑器形态（评审意见一：段落式显示）。
+     *
+     * 默认 `webview`（段落式，2026-11-15 起）；`compose` 是整篇单文本框的退路
+     * （Tiptap，段距由 CSS margin 控制）。写进 `ui.json`，下次启动照旧。
+     */
+    fun updateEditorMode(mode: String): String {
+        updateUiPrefs(uiPrefs.copy(editorMode = mode))
+        return "笔记编辑器已切换：" + editorModeLabel(uiPrefs.editorMode)
+    }
+
+    /**
+     * 改一条 Markdown 快捷键。
+     *
+     * 校验口径：
+     * - 命令必须存在；
+     * - 非空 label 必须带 Ctrl/Cmd 或 Alt（只按 Shift 的键不能当命令键位）；
+     * - 不能和**其它命令当前生效的键位**重复——按下去执行谁没有答案，所以当场拒绝并报占用者；
+     * - [label] 传空串 = 解绑（这条命令暂时没有快捷键）。
+     *
+     * 改回默认值时顺手删掉覆盖项，配置文件只留真正改过的项。
+     */
+    fun updateMarkdownBinding(commandId: String, label: String): String {
+        val command = markdownCommand(commandId) ?: return "未知的编辑器命令：" + commandId
+        val raw = label.trim()
+        if (raw.isEmpty()) {
+            return commitMarkdownKeys(markdownKeys + (commandId to ""), "已解绑「" + command.label + "」")
+        }
+        val normalized = normalizeMarkdownShortcut(raw)
+            ?: return "键位不合法：" + label + "（至少带 Ctrl/Cmd 或 Alt；只支持字母、数字和少量符号）"
+        if (normalized in markdownReservedShortcuts) {
+            return "「" + platformShortcutLabel(normalized) + "」是页面/窗口快捷键，不能绑给命令"
+        }
+        val owner = effectiveMarkdownBindings(markdownKeys)
+            .firstOrNull { it.commandId != commandId && it.label == normalized }
+        if (owner != null) {
+            val ownerLabel = markdownCommand(owner.commandId)?.label ?: owner.commandId
+            return "这个键位已被「" + ownerLabel + "」占用，先改掉它"
+        }
+        val defaultLabel = defaultMarkdownBindings.firstOrNull { it.commandId == commandId }?.label
+        val next = if (normalized == defaultLabel) {
+            markdownKeys - commandId
+        } else {
+            markdownKeys + (commandId to normalized)
+        }
+        return commitMarkdownKeys(next, "「" + command.label + "」改为 " + platformShortcutLabel(normalized))
+    }
+
+    /** 一条命令恢复默认键位。 */
+    fun resetMarkdownBinding(commandId: String): String {
+        val command = markdownCommand(commandId) ?: return "未知的编辑器命令：" + commandId
+        return commitMarkdownKeys(markdownKeys - commandId, "「" + command.label + "」已恢复默认键位")
+    }
+
+    /** 全部恢复默认键位。 */
+    fun resetMarkdownBindings(): String = commitMarkdownKeys(emptyMap(), "已恢复全部默认键位")
+
+    /**
+     * 写入覆盖前先验算：**存进去的配置必须和算出来的生效键位一致**。
+     *
+     * 不验算会出现「设置页显示改好了、按下去还是旧键」：改键是「先看当前生效表、再写覆盖」，
+     * 把一条键位让给别的命令之后，后续操作可能让某个覆盖在重算时被冲突规则静默丢掉。
+     * 所以这里逐条检查 17 个命令：
+     * - 有非空覆盖 → 生效表里必须是这条键位；
+     * - 覆盖为空串（解绑）→ 生效表里不能有这条命令；
+     * - 没有覆盖 → 生效表里必须还是默认键位。
+     * 任何一条对不上就拒绝并说清是哪条命令/被谁占着，绝不产生「看着成功、其实没生效」的状态。
+     */
+    private fun commitMarkdownKeys(next: Map<String, String>, message: String): String {
+        val resolved = effectiveMarkdownBindings(next).associateBy { it.commandId }
+        for (row in defaultMarkdownBindings) {
+            val raw = next[row.commandId]?.trim()
+            val expectedLabel = when {
+                raw == null -> row.label
+                raw.isEmpty() -> null
+                // 非法 label 在读取/写入时都会回退默认，这里按默认算，避免把坏配置当成「解绑」。
+                else -> normalizeMarkdownShortcut(raw) ?: row.label
+            }
+            val actualLabel = resolved[row.commandId]?.label
+            if (actualLabel == expectedLabel) continue
+            val commandLabel = markdownCommand(row.commandId)?.label ?: row.commandId
+            val owner = expectedLabel?.let { wanted ->
+                effectiveMarkdownBindings(next).firstOrNull { it.commandId != row.commandId && it.label == wanted }
+            }
+            val ownerLabel = owner?.let { markdownCommand(it.commandId)?.label ?: it.commandId }
+            return when {
+                ownerLabel != null ->
+                    "这条改动会让「" + commandLabel + "」的键位被「" + ownerLabel + "」占掉，先改掉「" + ownerLabel + "」"
+
+                expectedLabel == null ->
+                    "「" + commandLabel + "」的默认键位被别的命令占着，先改掉那条命令再解绑"
+
+                else -> "「" + commandLabel + "」的键位会和别的命令冲突，先改掉占用的那条"
+            }
+        }
+        markdownKeys = next
+        if (::markdownKeyStore.isInitialized) markdownKeyStore.save(next)
+        tick += 1
+        return message
+    }
+
+    /**
      * 改「每天预计投入」。
      *
      * 越界的值不拒绝，按 [StudyPrefs.normalized] 收进合法区间 —— 设置页的加减按钮
@@ -6472,6 +6588,8 @@ class AppRuntime private constructor() {
             runtime.cardLayout = runtime.layoutStore.load()
             runtime.uiPrefsStore = UiPrefsStore(home)
             runtime.uiPrefs = runtime.uiPrefsStore.load()
+            runtime.markdownKeyStore = MarkdownKeyStore(home)
+            runtime.markdownKeys = runtime.markdownKeyStore.load()
             runtime.studyPrefsStore = StudyPrefsStore(home)
             runtime.studyPrefs = runtime.studyPrefsStore.load()
             runtime.pluginUsageStore = PluginUsageStore(home)

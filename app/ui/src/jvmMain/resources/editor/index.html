@@ -123,5 +123,59 @@
   .slash-item .slash-label { color: var(--fg); font-size: 14px; }
   .slash-item .slash-hint { color: var(--fg-soft); font-size: 11px; }
   .ProseMirror p.is-editor-empty:first-child::before { content: attr(data-placeholder); color: var(--fg-soft); opacity: 0.6; float: left; height: 0; pointer-events: none; }
+  /* 表格：Tiptap 的表格节点，宿主不提供工具栏，只给最基础的边框与内边距。 */
+  .ProseMirror table { border-collapse: collapse; margin: 0 0 10px 0; table-layout: fixed; width: auto; }
+  .ProseMirror th, .ProseMirror td { border: 1px solid var(--border); padding: 4px 8px; min-width: 60px; vertical-align: top; }
+  .ProseMirror th { background: rgba(127, 127, 127, 0.08); font-weight: 600; }
+  .ProseMirror th p, .ProseMirror td p { margin: 0; }
+  /* 任务清单：宿主不画工具栏，checkbox 用原生控件就行。 */
+  .ProseMirror ul[data-type="taskList"] { list-style: none; padding-left: 0.2em; }
+  .ProseMirror ul[data-type="taskList"] li { display: flex; align-items: flex-start; gap: 6px; }
+  .ProseMirror ul[data-type="taskList"] li > label { flex: 0 0 auto; margin-top: 2px; }
+  .ProseMirror ul[data-type="taskList"] li > div { flex: 1 1 auto; }
+  .ProseMirror ul[data-type="taskList"] li > div p { margin: 0; }
+  /* AI 块：和行内 AI 一样用绿色大引号；整块左边一条淡绿竖线。 */
+  .ProseMirror .ai-block { position: relative; margin: 0 0 10px 0; padding: 2px 0 2px 12px; border-left: 2px solid var(--accent-soft); color: var(--accent); }
+  .ProseMirror .ai-block::before { content: "\201C"; font-size: 22px; line-height: 1; }
+  .ProseMirror .ai-block::after { content: "\201D"; font-size: 22px; line-height: 1; float: right; }
+  .ProseMirror .ai-block p { margin: 0 0 4px 0; color: var(--accent); }
+  /* 页面里的「菜单」：光标旁边的浮窗（Compose 浮层会被重量级 WebView 盖住，所以在 DOM 里画）。 */
+  .shortcut-scrim { position: fixed; inset: 0; z-index: 40; background: rgba(0, 0, 0, 0.08); }
+  .shortcut-panel { position: fixed; left: 0; top: 0; width: 340px; max-width: calc(100vw - 24px); max-height: min(60vh, 460px); display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22); overflow: hidden; }
+  .shortcut-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px 8px 14px; border-bottom: 1px solid var(--border); }
+  .shortcut-title { font-size: 13px; font-weight: 600; font-family: "SF Mono", Menlo, monospace; color: var(--fg); }
+  .shortcut-hint { font-size: 11px; color: var(--fg-soft); opacity: 0.8; }
+  .shortcut-list { flex: 1 1 auto; overflow-y: auto; padding: 6px 14px 18px 14px; }
+  .shortcut-section { margin: 8px 0 3px 0; font-size: 11px; color: var(--fg-soft); }
+  .shortcut-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0; }
+  .shortcut-action { font-size: 13px; color: var(--fg); }
+  .shortcut-keys { flex: 0 0 auto; font-family: "SF Mono", Menlo, monospace; font-size: 11px; color: var(--fg-soft); background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+  .shortcut-list::-webkit-scrollbar { width: 8px; }
+  .shortcut-list::-webkit-scrollbar-track { background: transparent; }
+  .shortcut-list::-webkit-scrollbar-thumb { background: rgba(127, 127, 127, 0.28); border-radius: 999px; }
+  /* 滚动条：不要系统大滑条；做成低对比度的透明胶囊，明暗主题都靠中性灰。 */
+  #editor::-webkit-scrollbar { width: 10px; height: 10px; }
+  #editor::-webkit-scrollbar-track { background: transparent; }
+  #editor::-webkit-scrollbar-thumb { background: rgba(127, 127, 127, 0.30); border-radius: 999px; border: 2px solid transparent; background-clip: content-box; }
+  #editor::-webkit-scrollbar-thumb:hover { background: rgba(127, 127, 127, 0.48); border-radius: 999px; border: 2px solid transparent; background-clip: content-box; }
+  #editor::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+  /* 数学：Tiptap Maths 的 node view（.tiptap-mathematics-render）里是 KaTeX 渲染结果。 */
+  .ProseMirror [data-type="block-math"] { margin: 6px 0 12px 0; text-align: center; overflow-x: auto; overflow-y: hidden; }
+  .ProseMirror [data-type="inline-math"] { padding: 0 1px; }
+  .ProseMirror .block-math-error, .ProseMirror .inline-math-error { color: #c0392b; font-family: "SF Mono", Menlo, monospace; font-size: 0.92em; }
+  .ProseMirror [data-type="block-math"].tiptap-mathematics-render--editable:hover, .ProseMirror [data-type="inline-math"].tiptap-mathematics-render--editable:hover { background: rgba(127, 127, 127, 0.10); border-radius: 4px; }
+  /* 代码高亮：lowlight 输出 hljs-* class。色调按深浅主题都能看（默认深色主题）。 */
+  .ProseMirror pre code { display: block; background: none; padding: 0; border-radius: 0; }
+  .hljs-comment, .hljs-quote { color: #7f848e; font-style: italic; }
+  .hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-doctag { color: #c678dd; }
+  .hljs-string, .hljs-regexp, .hljs-addition, .hljs-attribute, .hljs-meta .hljs-string { color: #98c379; }
+  .hljs-number, .hljs-symbol, .hljs-variable, .hljs-template-variable, .hljs-link { color: #d19a66; }
+  .hljs-title, .hljs-section, .hljs-title.function_, .hljs-title.class_ { color: #61afef; }
+  .hljs-type, .hljs-built_in, .hljs-class .hljs-title { color: #e5c07b; }
+  .hljs-attr, .hljs-property { color: #56b6c2; }
+  .hljs-deletion { color: #e06c75; }
+  .hljs-emphasis { font-style: italic; }
+  .hljs-strong { font-weight: 600; }
+  /* 行首缩进在 pre 里靠 white-space: pre；保持原样。 */
 </style></head>
 <body><div id="editor"></div></body></html>

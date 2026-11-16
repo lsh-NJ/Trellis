@@ -821,6 +821,10 @@ internal data class ConceptAnnotation(
     val target: String?,
 )
 
+/**
+ * 正文里的概念标注。`\[\[…\]\]`（手动转义）不算标注——那是「我想显示字面方括号」的写法，
+ * 交给 Markdown 当普通文本；标注只认字面 `[[…]]`。
+ */
 private val conceptAnnotationPattern = Regex("\\[\\[([^\\[\\]\\n]*?)\\]\\]")
 private val inlineAiSpanPattern = Regex("\\{\\{[^\\n]*?\\}\\}")
 private val conceptSeparatorPattern = Regex("\\s*(?:=>|→)\\s*")

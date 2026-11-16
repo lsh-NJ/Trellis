@@ -82,6 +82,25 @@ kotlin {
             implementation(libs.kotlinx.coroutines.test)
             implementation(compose.desktop.currentOs)
             implementation(libs.kotlinx.coroutines.swing)
+
+            // H1 回归 harness（WebEditorHarnessTest）要在 jvmTest 里真的 new WebView，
+            // 把当前 editor.js 跑在 JavaFX WebView 里。依赖与 jvmMain 同款：
+            // 同样 6 个模块 + 按 os/arch 选 natives classifier（复制那段逻辑，不动 jvmMain）。
+            val javafxVersion = "21.0.4"
+            val javafxClassifier = run {
+                val os = System.getProperty("os.name").lowercase()
+                val arch = System.getProperty("os.arch").lowercase()
+                when {
+                    os.contains("mac") && arch.contains("aarch64") -> "mac-aarch64"
+                    os.contains("mac") -> "mac"
+                    os.contains("win") -> "win"
+                    else -> "linux"
+                }
+            }
+            listOf("base", "graphics", "controls", "web", "media", "swing").forEach { module ->
+                implementation("org.openjfx:javafx-$module:$javafxVersion")
+                implementation("org.openjfx:javafx-$module:$javafxVersion:$javafxClassifier")
+            }
         }
         androidMain.dependencies {
             implementation(libs.kotlinx.coroutines.android)
