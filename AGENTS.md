@@ -42,7 +42,7 @@ Set-Location C:\Users\breakM\Desktop\work\Trellis
 调试/演示用环境变量：
 
 | 变量 | 作用 |
-|---|---|
+| --- | --- |
 | `TRELLIS_HOME` | 数据根目录，默认 `~/.trellis`；做演示/截图时指到临时目录，别动真实数据 |
 | `TRELLIS_TAB` | 启动落在哪一页：`tasks`（默认）/ `plan` / `knowledge`（也可写 `kb`）/ `chat` / `activity` / `plugins` / `diag` |
 | `TRELLIS_LLM_KEY` / `TRELLIS_LLM_MODEL` / `TRELLIS_LLM_ENDPOINT` / `TRELLIS_LLM_THINKING` | 覆盖 LLM 配置（也可写 `~/.trellis/llm.json`）；`THINKING` 为 `true/false`，不设时 DeepSeek 地址默认开思考 |
@@ -61,7 +61,7 @@ Set-Location C:\Users\breakM\Desktop\work\Trellis
 ## 2. 模块地图（模块 → 源码根 → 职责 → 入口文件）
 
 | 模块 | 源码根 | 职责 | 先看这些文件 |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `:kernel` | `kernel/src/commonMain/kotlin/dev/trellis/kernel/` | 插件内核：生命周期、扩展点、能力/审批、存储、规则、表达式、UI 节点词汇。**不认识任何业务概念** | `api/Kernel.kt`（单文件门面，59KB，先看类头注释）<br>`plugin/PluginManifest.kt`、`plugin/Plugin.kt`<br>`extension/ExtensionPoint.kt`、`extension/ExtensionRegistry.kt`、`extension/ServiceRegistry.kt`（`KernelPoints`）<br>`slot/Slot.kt`（9 个挂载点）、`slot/UiNode.kt`（界面词汇表）<br>`spi/PluginLoader.kt`、`spi/BuiltinLoader.kt` |
 | `:sdk-domain` | `sdk-domain/src/commonMain/kotlin/dev/trellis/domain/` | 领域契约：`Plan`/`Task`/`PlanSummary`/`PlanService`/`TaskQuery` | `Model.kt`、`PlanService.kt`、`PlanPoints.kt` |
 | `:features:plan-core` | `features/plan-core/src/commonMain/kotlin/dev/trellis/feature/plan/` | `PlanService` 的内置实现（required 插件 `core.plan`），数据存 `ctx.kv` | `PlanCorePlugin.kt`（manifest + 注册）<br>`KvPlanService.kt`（增删改查 / summary / 事件）<br>`PlanActions.kt`（给 AI 的 6 个动作）<br>`PlanSummaryDataProvider.kt`（`summary.*` 数据字段） |
@@ -78,7 +78,7 @@ Set-Location C:\Users\breakM\Desktop\work\Trellis
 其它目录：
 
 | 路径 | 是什么 |
-|---|---|
+| --- | --- |
 | `docs/` | 设计与调研文档（入口见 `docs/README.md`） |
 | `examples/plugins/` | 三个可直接丢进 `plugins/` 的示例插件（bento 主题 / 看板 / 复杂看板） |
 | `trellis-review/`（工作区根，不在仓库里） | 外部 UI 评审稿与交互稿（`修改建议.md`、`配色指导.md`、`会话设计.md`、`*.html`） |
@@ -89,7 +89,7 @@ Set-Location C:\Users\breakM\Desktop\work\Trellis
 ## 3. 按问题找文件（直接查这张表）
 
 | 我想改… | 去这里 |
-|---|---|
+| --- | --- |
 | 插件清单字段、依赖、能力声明 | `kernel/src/commonMain/kotlin/dev/trellis/kernel/plugin/PluginManifest.kt` |
 | 插件启动/停止/启用/停用/卸载 | `kernel/.../api/Kernel.kt`（`PluginController` + `Kernel.install/disable/enable/remove`） |
 | 插件加载器注册（新增一种插件轨道） | `kernel/.../spi/PluginLoader.kt`；装配处 `app/desktop/.../AppRuntime.kt` 的 `create()`（`BuiltinLoader`/`DslLoader`/`ScriptLoader`） |
@@ -161,7 +161,7 @@ Set-Location C:\Users\breakM\Desktop\work\Trellis
 ## 4. 数据与配置（默认根 `~/.trellis`，可用 `TRELLIS_HOME` 覆盖）
 
 | 路径 | 内容 |
-|---|---|
+| --- | --- |
 | `store.json` | KV 存储：`plan:*`、`task:*` 以及各插件的 `m:` 命名空间 |
 | `plugins/<pluginId>/` | 第三方插件目录（`manifest.json` + `main.dsl.json` 或 `main.js` + 资产） |
 | `plugins/.trash/` | 卸载后的回收站（7 天后可彻底清） |
@@ -200,7 +200,7 @@ Set-Location C:\Users\breakM\Desktop\work\Trellis
 ## 5. 插件三轨、生命周期与边界
 
 | 轨道 | 目录形态 | 运行方式 | 能做什么 |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 内置 `builtin` | 编译进 jar | Kotlin `Plugin` 实现，可贡献 Compose 卡片 | 全部能力（宿主信任它） |
 | 声明式 `dsl` | `manifest.json` + `main.dsl.json` | `DslLoader`：JSON → `TemplateSlot`/`TextSlot`/规则 | 静态卡片 + 事件规则；不能写逻辑 |
 | 脚本 `script` | `manifest.json` + `main.js` | `ScriptLoader`：Rhino 沙箱，ES5 | 有状态卡片（按钮/输入）、`trellis.register` 渲染 `UiNode`、可贡献主题 |
@@ -335,9 +335,11 @@ ChatScreen ──> AppRuntime.sendChat()
 
 - **提交前先核对清单**：`git diff --stat` 一条条看，每条都得是自己这轮改的。裹进别人的改动不会报错、不会冲突，但历史会变成「他做的事挂在他的提交消息下」——2026-10-28 就真发生过：一条「计划页加计划设置」的提交里 13 个文件有 8 个是另一个会话的节点改动（`OpenNode.kt`、`PlanNodes.kt`、`PlanNodesTest.kt`、`PlanQueries.kt`、`SqliteLearningPlanService.kt`、`LearningPlanService.kt` 等），事后只能靠读 diff 才能还原归属。
 - **只 add 具体文件**，别 `git add -A`、别 `git commit -a`。工作区里随时可能有别人的半成品（尤其 `.kotlin/` 这类构建副产物），`-A` 一律带走：
+
   ```powershell
   wsl.exe -e bash -lc "cd /mnt/c/Users/breakM/Desktop/work/Trellis && git add path/to/A.kt path/to/B.kt && git status --short"
   ```
+
 - **一个能编译的完整步子提交一次**，别攒一整天。未提交的改动是并行会话最大的风险来源。
 - 提交信息写「改了什么 + 为什么」，仓库历史一直是这个风格。
 - 合回 `main` 前先 `git rebase main`，冲突在分支里解决，别带到 `main`。
