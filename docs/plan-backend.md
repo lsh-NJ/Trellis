@@ -301,3 +301,74 @@
 - **触发**：不经过 AGENT 的「排周」；由 `AppRuntime.maybeRunMorningRearrange()` 在早上第一次打开应用、
   有逾期时跑隐藏轮（只读 + ask_choices），用户确认后的普通轮执行 `rearrange`。
   只读轮工具集与提示词见 `MorningRearrangePrompt`。
+
+---
+
+## 18 2026-11-15：文档进库、节点钟点、create_plan 四步流程
+
+- **文档进库（`plan_doc`）**：总文档与周文档从 `plans/docs/*.md` 搬进 `plans/plan.db` 的
+  `plan_doc(plan_id, kind, week, markdown, updated_at)`，UNIQUE(plan_id,kind,week)；
+  `PlanDocStore` 的方法签名不变（read/save/saveWeek/weeks/parse/stages/stageForWeek），
+  只是后端从文件换成同一个 SQLite（共享文件、各自连接，靠 busy_timeout 串行化）。
+  旧文件在第一次打开时导入（只补没有的行、坏 UTF-8 跳过），不再作为真相。
+  为什么要进库：写文档和写节点本来就是同一件事的两个部分，两条真相会漂移；
+  文档进库后知识库的只读计划文档区也从这里读，不再有「文件改了库不知道」。
+- **钟点（`occurrence.start_minute`）**：0–1439 的当天分钟数，NULL = 只知道哪天。
+  `placeUnit` 可带 startMinute；新命令 `setOccurrenceStart` 只改这一列（不改日期/时长，不受
+  no-remap 触发器限制）；move/split/shorten 会把原来的钟点带过去。日视图与周视图都按
+  `start_minute`（NULL 排后面）再按路线顺序排；`read_plan` 与计划页节点行显示 `HH:mm`。
+  为什么只加一列：时长仍受 5–60 分钟约束，超过一小时的任务本来就该拆成两个节点，
+  不需要为了「精确到小时」重建 occurrence 的约束。
+- **`create_plan` 四步流程**：状态落在 v1 契约里一直没用的 `job` / `job_step`（`PlanWorkflowStore`）。
+  1. 调研（只调模型 + 搜索，不写计划库；原始阶段表 JSON 存进 job.payload）；
+  2. 建空壳计划 + 阶段 + 目标/里程碑 + 总文档；
+  3. `plan_week` 排本周（周文档 + 单元 + 铺天）；
+  4. 给本周节点定钟点（今天从「现在之后最近的 15 分钟」开始，未来从 9:00 开始，间隔 10 分钟）。
+  每一步都停在 `job.state = awaiting_user`；`advance` 必须 `confirmed=true` 才推进，
+  `revise` 按用户反馈重做当前步（第二步可带整份 markdown 重写总文档）。
+  `research_plan` 保留为内部实现（`update_plan insert plan(mode=research)` 仍走它），
+  它的「调研 → 落库」两段被抽成 `ResearchTools.draftShellOnly` / `applyShell` 供 create_plan 复用。
+- **提示词**：`<task:work>` 的目标式建计划改成 `create_plan`；计划域入口从「一读一写」改为
+  read_plan / update_plan / create_plan 三个。排周提示词新增节点命名规则：标题写「要做/要学什么」，
+  不照抄资料/视频标题、不带来源标签。
+- **测试**：`LearningPlanTimeSlotTest`（排期带钟点、按时间排序、清空、改日期带走钟点、完成后禁改）、
+  `PlanDocStoreTest`（读写替换、周文档、旧文件导入且不覆盖、坏文件跳过）、
+  `CreatePlanToolsTest`（第一步不写库、未确认不推进、每次只走一步、完成后记到当天、cancel）。
+
+---
+
+## 19 2026-11-16：周队列模式（先不排到天）
+
+- **两种排程模式**：`process.schedule_mode = day | queue`。旧计划保持 `day`；
+  `create_plan` 建的新计划自动切 `queue`，也可用 `update_plan` 的
+  `{"op":"update","target":"plan","set":{"scheduleMode":"queue"}}` 手动切（切到 queue 会把未来
+  还没做的 planned occurrence 标 superseded，单元仍留在周队列）。
+- **queue 语义**：单元只进 `commitment_unit`（周队列），不建 `occurrence`；
+  周视图的天条只显示**当天完成的节点**；完成走 `completeUnit(planId, unitId)`，
+  当天建一条 occurrence 并标 done（已有今天的 planned 锚点就复用，已完成幂等）。
+- **结算**：queue 模式下 `settleWeek` 不再标 missed，而是把这一周没完成的单元整队顺延进下一周
+  的 `commitment_unit`（不建 occurrence）；切回 `day` 时按当前周重新 `materializeWeek`。
+- **周计划**：`plan_week` 在 queue 模式下只 `appendUnits` + `enqueueUnits` + 写周文档
+  （节点清单，不写「哪天做」）；`create_plan` 从四步收成三步（调研 → 总文档 → 本周队列）。
+- **UI**：计划页新增「本周节点」卡（前 5 条 + 展开），勾掉即从队列消失、落到当天的完成记录；
+  日折叠卡在 queue 模式下只显示有完成记录的日子。
+- **待补**：queue 模式暂不提供手动计时入口与活动归因锚点（没有 occurrence 就没有会话可挂）；
+  需要时先「开始做」建当天锚点，或后续补按节点归因。
+
+---
+
+## 20 2026-11-16：周规划按资源 id 关联
+
+- `plan_week` 在排某一周时读取 **资源切片**：当前计划 `status='active'`、非 `course` 容器的资源，
+  最多 120 条，作为「可用资源（只是参考，不是任务）」写进提示词，每条形如 `[res_x] 标题（N 分钟）`。
+- 模型输出的节点可以带 `resources: ["res_x", …]`（0–3 条）；宿主只保留切片里存在的 id
+  （不存在/已 dropped 的 id 直接丢掉），再按 `appended` 的 unit id 调 `setUnitResources`
+  写进 `unit_resource`。失败只少资料，不拖垮整周。
+- 资源 kind 映射到 unit_resource：part→bilibili，article/wiki→web，book→doc，其余 other。
+- 这样 `create_plan` 的链路是：start 带 bvid/urls → 资源入库（dropped 标记卖课集）→
+  阶段表只看容器级资源 → 周规划把分集/文章作为参考、节点名仍写知识点 → 节点落库后按 id 挂资源。
+- 仍待办：`create_learning_plan(bvid)` 还是旧的「清洗分集标题直接生成单元」路径，
+  没有改走资源池；`unit_resource.resource_id` 列已留但尚未写入（当前只复制字段）。
+
+
+

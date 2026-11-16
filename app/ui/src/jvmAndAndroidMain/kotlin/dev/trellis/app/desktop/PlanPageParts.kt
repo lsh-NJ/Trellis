@@ -280,9 +280,14 @@ private fun PlanPendingTick(count: Int, selected: Boolean, onClick: () -> Unit) 
  * 放在同一个框里，扫一列就知道这周的负荷长什么样。
  */
 @Composable
-internal fun PlanDayAccordion(runtime: AppRuntime, controller: PlanDragController) {
+internal fun PlanDayAccordion(
+    runtime: AppRuntime,
+    controller: PlanDragController,
+    /** queue 模式只看「当天完成了什么」：空的日子不画。 */
+    onlyCompleted: Boolean = false,
+) {
     val tokens = LocalTrellisTokens.current
-    val unscheduled = runtime.planWeekCards
+    val unscheduled = !onlyCompleted && runtime.planWeekCards
         .firstOrNull { it.week == runtime.planSelectedWeek }
         ?.scheduled == false
     // 展开状态跟「当前看的周」绑定：换周就重新落到那周的今天（或后端给的默认选中天）。
@@ -300,14 +305,19 @@ internal fun PlanDayAccordion(runtime: AppRuntime, controller: PlanDragControlle
                 )
             }
         }
-        if (runtime.planDays.isEmpty()) {
+        val days = if (onlyCompleted) {
+            runtime.planDays.filter { day -> day.items.any { it.status == "done" } }
+        } else {
+            runtime.planDays
+        }
+        if (days.isEmpty()) {
             Text(
-                "这一周还没有排内容。",
+                if (onlyCompleted) "这一周还没有完成记录。" else "这一周还没有排内容。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        runtime.planDays.forEach { day ->
+        days.forEach { day ->
             val expanded = day.day == expandedDay
             PlanDayCard(
                 runtime = runtime,
@@ -635,6 +645,9 @@ private fun PlanOccurrenceRow(
                 Text(occurrence.title, style = MaterialTheme.typography.bodyLarge)
                 Text(
                     buildString {
+                        occurrence.startMinute?.let { minute ->
+                            append("%02d:%02d".format(minute / 60, minute % 60)).append(" · ")
+                        }
                         if (occurrence.chapter.isNotBlank()) append(occurrence.chapter).append(" · ")
                         append(occurrence.minutes).append(" 分钟")
                         append(" · ").append(unitKindLabel(occurrence.kind))

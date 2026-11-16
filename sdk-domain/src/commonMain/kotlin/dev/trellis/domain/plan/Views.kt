@@ -44,6 +44,8 @@ data class DayOccurrence(
      * 天条卡片上可以直接点开；待办型 occurrence 没有单元，是空列表。
      */
     val resources: List<UnitResourceView> = emptyList(),
+    /** 当天第几分钟开始（0–1439）；null = 只知道哪天、没定钟点。 */
+    val startMinute: Int? = null,
 )
 
 @Serializable
@@ -104,6 +106,8 @@ data class WeekDayItem(
     val kind: String = "study",
     /** 单元资料；周视图的天条里也能直接点开。 */
     val resources: List<UnitResourceView> = emptyList(),
+    /** 当天第几分钟开始（0–1439）；null = 没定钟点。 */
+    val startMinute: Int? = null,
 )
 
 @Serializable
@@ -145,6 +149,23 @@ data class LearningPlanInfo(
  * 一个单元可以有多条：比如「看视频 + 配套讲义 + 课后题」。后端按单元批量取，
  * 视图里直接带着走，UI 不用逐条再查。
  */
+/** 计划资源池里的一条（课程/分集/文章/wiki/书/练习）。分集通过 parentId 挂在课程下。 */
+@Serializable
+data class PlanResourceView(
+    val id: String,
+    val parentId: String? = null,
+    /** course | part | article | wiki | book | exercise | other */
+    val kind: String,
+    val title: String,
+    val url: String = "",
+    val locator: String = "",
+    val minutes: Int? = null,
+    val note: String = "",
+    val source: String = "",
+    /** active | suggested | dropped */
+    val status: String = "active",
+)
+
 @Serializable
 data class UnitResourceView(
     /** bilibili | web | doc | other */
@@ -315,6 +336,8 @@ data class PlanStateView(
     val title: String = "",
     /** 计划里「每天投入多少分钟」：由 `process.weekly_capacity_minutes / 7` 反推；没设就是 null。只作排程参考，不是硬上限。 */
     val dailyMinutes: Int? = null,
+    /** day = 节点铺到具体天；queue = 只进本周队列，完成时落当天。 */
+    val scheduleMode: String = "day",
 )
 
 @Serializable

@@ -90,6 +90,24 @@ interface LearningPlanService {
 
     fun removeMilestone(env: CommandEnvelope, milestoneId: String): CommandResult<Unit>
 
+    // ---------------- 资源池 ----------------
+
+    /** 计划资源池（课程/分集/文章/wiki/书/练习）；默认不含 dropped。 */
+    fun resources(planId: String, includeDropped: Boolean = false): List<PlanResourceView>
+
+    /**
+     * 批量写入资源池（按 url 或 parent+locator 去重，重复时更新标题/时长/状态）。
+     * 返回与 [drafts] 顺序一致的资源 id。
+     */
+    fun upsertResources(
+        env: CommandEnvelope,
+        planId: String,
+        drafts: List<PlanResourceDraft>,
+    ): CommandResult<List<String>>
+
+    /** 改一条资源的状态（active / suggested / dropped）。 */
+    fun setResourceStatus(env: CommandEnvelope, resourceId: String, status: String): CommandResult<Unit>
+
     /** 把计划挂到一个目标上；`goalId = null` 表示解除关联。 */
     fun linkPlanToGoal(env: CommandEnvelope, planId: String, goalId: String?): CommandResult<Unit>
 
@@ -241,9 +259,35 @@ interface LearningPlanService {
         week: String,
         unitId: String,
         day: String,
+        /** 当天第几分钟（0–1439）；null = 只知道哪天。 */
+        startMinute: Int? = null,
     ): CommandResult<OccurrenceRef>
 
+    /**
+     * 把一批单元放进某一周的队列（queue 模式，不建 occurrence）。
+     *
+     * 幂等：已经在队列里的跳过；目标周没有承诺就建一条。返回这次新加进去的单元数。
+     */
+    fun enqueueUnits(
+        env: CommandEnvelope,
+        planId: String,
+        week: String,
+        unitIds: List<String>,
+    ): CommandResult<Int>
+
     fun moveOccurrence(env: CommandEnvelope, occurrenceId: String, toDay: String, reason: String? = null): CommandResult<OccurrenceRef>
+
+    /**
+     * 给一条已排期的节点定钟点（或取消钟点）。
+     *
+     * 只改「几点开始」，不动日期和时长；日期要改走 [moveOccurrence]。
+     * 只允许 planned：已经做完/跳过的条目改时间没有意义，也会把复盘弄乱。
+     */
+    fun setOccurrenceStart(
+        env: CommandEnvelope,
+        occurrenceId: String,
+        startMinute: Int?,
+    ): CommandResult<OccurrenceRef>
 
     fun splitOccurrence(env: CommandEnvelope, occurrenceId: String, parts: List<SplitPart>): CommandResult<List<OccurrenceRef>>
 
@@ -252,6 +296,27 @@ interface LearningPlanService {
     fun skipOccurrence(env: CommandEnvelope, occurrenceId: String, reasonChip: String): CommandResult<Unit>
 
     fun completeOccurrence(env: CommandEnvelope, occurrenceId: String, note: String? = null): CommandResult<OccurrenceRef>
+
+    /**
+     * 直接完成周队列里的一个节点（queue 模式的主入口）。
+     *
+     * 没有预先排期也能完成：当天建一条 occurrence（day = 今天）并标 done；
+     * 已有今天的 planned（开始计时建的锚点）就复用；已经完成过则幂等返回。
+     */
+    fun completeUnit(
+        env: CommandEnvelope,
+        planId: String,
+        unitId: String,
+        note: String? = null,
+    ): CommandResult<OccurrenceRef>
+
+    /**
+     * 切换排程模式：`day`（节点铺到具体天）/ `queue`（只进本周队列）。
+     *
+     * 切到 queue 时会把未来还没做的 planned occurrence 标成 superseded（历史保留），
+     * 单元继续留在对应周的队列里；切回 day 会按当前周重新铺一次。
+     */
+    fun setScheduleMode(env: CommandEnvelope, planId: String, mode: String): CommandResult<Unit>
 
     /** 把「已完成」改回「没做」（误点恢复）。只允许 done → planned。 */
     fun uncompleteOccurrence(env: CommandEnvelope, occurrenceId: String): CommandResult<OccurrenceRef>
@@ -344,6 +409,21 @@ data class StageDraft(
     val weekEnd: String,
     val focus: String = "",
     val sortOrder: Int = 0,
+)
+
+/** 资源池里的一条；`parentId` 用于课程 → 分集。 */
+@kotlinx.serialization.Serializable
+data class PlanResourceDraft(
+    val kind: String,
+    val title: String,
+    val url: String = "",
+    val locator: String = "",
+    val minutes: Int? = null,
+    val note: String = "",
+    val source: String = "",
+    /** active | suggested | dropped */
+    val status: String = "active",
+    val parentId: String? = null,
 )
 
 /** 单元的一条资料：`kind` 由后端归一成 bilibili / web / doc / other。 */

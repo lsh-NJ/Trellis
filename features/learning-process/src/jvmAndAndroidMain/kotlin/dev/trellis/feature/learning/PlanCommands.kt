@@ -19,6 +19,7 @@ import dev.trellis.domain.plan.SettleResult
 import dev.trellis.domain.plan.SplitPart
 import dev.trellis.domain.plan.StageDraft
 import dev.trellis.domain.plan.TodoRef
+import dev.trellis.domain.plan.PlanResourceDraft
 import dev.trellis.domain.plan.UnitDraft
 import dev.trellis.domain.plan.VersionRef
 import dev.trellis.domain.plan.fail
@@ -371,6 +372,8 @@ internal fun SqliteLearningPlanService.planDailyMinutes(planId: String): Int? =
  * 已经排过的单元跳过；当天已经被占用的分钟数（典型来源：上周结转过来的两步）算进分配。
  */
 internal fun SqliteLearningPlanService.materializeWeek(planId: String, versionId: String, week: String): Int {
+    // queue 模式不铺天：节点只在周队列里，完成时才落当天。
+    if (scheduleModeOf(planId) == "queue") return 0
     val commitmentId = connection.prepareStatement(
         "SELECT id FROM commitment WHERE plan_version_id = ? AND week = ?",
     ).use { ps ->
@@ -1056,7 +1059,11 @@ internal fun SqliteLearningPlanService.cmdPlaceUnit(
     week: String,
     unitId: String,
     day: String,
+    startMinute: Int? = null,
 ): CommandResult<OccurrenceRef> {
+    if (startMinute != null && startMinute !in 0..1439) {
+        return fail(ErrorCode.E_INVALID, "开始时间要写成 0–1439 的分钟数（9:00 = 540）。")
+    }
     if (!PlanTime.isWeekFormat(week)) {
         return fail(ErrorCode.E_INVALID, "周要写成 ISO 周（例：2026-W44）。")
     }
@@ -1128,7 +1135,9 @@ internal fun SqliteLearningPlanService.cmdPlaceUnit(
             ps.executeUpdate()
         }
 
-        val id = insertOccurrence(commitmentId, unitId, null, day, unit.estimateMinutes, "full")
+        val id = insertOccurrence(
+            commitmentId, unitId, null, day, unit.estimateMinutes, "full", startMinute = startMinute,
+        )
         appendEvent(
             type = "occurrence.scheduled", entity = "occurrence", entityId = id, planId = planId,
             payload = eventJson(
@@ -1136,6 +1145,7 @@ internal fun SqliteLearningPlanService.cmdPlaceUnit(
                 "week" to JsonPrimitive(week),
                 "unitId" to JsonPrimitive(unitId),
                 "minutes" to JsonPrimitive(unit.estimateMinutes),
+                "startMinute" to JsonPrimitive(startMinute ?: -1),
                 "reason" to JsonPrimitive("拖拽重排"),
             ),
             actor = env.actor, commandId = env.commandId,
@@ -1149,6 +1159,210 @@ internal fun SqliteLearningPlanService.cmdPlaceUnit(
             "已撤销这次重排"
         }
         ok(OccurrenceRef(id), undo = undo)
+    }
+}
+
+/**
+ * 把一批单元放进某一周的队列（queue 模式）：只写 commitment_unit，不铺 occurrence。
+ *
+ * 周队列的顺序就是 commitment_unit.sort_order，完成时按 unit 找周、落当天。
+ */
+// ---------------------------------------------------------------------------
+// 资源池（课程/分集/文章/wiki/书/练习）
+// ---------------------------------------------------------------------------
+
+private fun resourceKindOf(raw: String): String = when (raw.lowercase()) {
+    "course", "bilibili_course" -> "course"
+    "part", "bilibili" -> "part"
+    "article", "web", "blog" -> "article"
+    "wiki" -> "wiki"
+    "book", "doc" -> "book"
+    "exercise", "exam" -> "exercise"
+    else -> "other"
+}
+
+private fun resourceStatusOf(raw: String): String = when (raw.lowercase()) {
+    "suggested" -> "suggested"
+    "dropped" -> "dropped"
+    else -> "active"
+}
+
+internal fun SqliteLearningPlanService.cmdUpsertResources(
+    env: CommandEnvelope,
+    planId: String,
+    drafts: List<PlanResourceDraft>,
+): CommandResult<List<String>> {
+    if (drafts.isEmpty()) return fail(ErrorCode.E_INVALID, "资源是空的。")
+    if (drafts.size > 300) return fail(ErrorCode.E_INVALID, "一次最多写 300 条资源。")
+    return write(env) {
+        if (planStatus(planId) == null) return@write fail(ErrorCode.E_NOT_FOUND, "找不到这个计划。")
+        val ids = mutableListOf<String>()
+        var sort = connection.prepareStatement(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM plan_resource WHERE plan_id = ?",
+        ).use { ps ->
+            ps.setString(1, planId)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        }
+        for (draft in drafts) {
+            val title = draft.title.trim()
+            if (title.isEmpty()) return@write fail(ErrorCode.E_INVALID, "资源标题不能为空。")
+            val kind = resourceKindOf(draft.kind)
+            val status = resourceStatusOf(draft.status)
+            val url = draft.url.trim()
+            val locator = draft.locator.trim()
+            val minutes = draft.minutes
+            val existing = connection.prepareStatement(
+                "SELECT id FROM plan_resource WHERE plan_id = ? AND " +
+                    "((? <> '' AND url = ?) OR (? = '' AND title = ? AND locator = ?)) LIMIT 1",
+            ).use { ps ->
+                ps.setString(1, planId)
+                ps.setString(2, url); ps.setString(3, url)
+                ps.setString(4, url); ps.setString(5, title); ps.setString(6, locator)
+                ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+            }
+            val id = if (existing != null) {
+                connection.prepareStatement(
+                    "UPDATE plan_resource SET parent_id = ?, kind = ?, title = ?, url = ?, locator = ?, " +
+                        "minutes = ?, note = ?, source = ?, status = ? WHERE id = ?",
+                ).use { ps ->
+                    ps.setString(1, draft.parentId)
+                    ps.setString(2, kind)
+                    ps.setString(3, title)
+                    ps.setString(4, url)
+                    ps.setString(5, locator)
+                    if (minutes == null) ps.setNull(6, java.sql.Types.INTEGER) else ps.setInt(6, minutes)
+                    ps.setString(7, draft.note)
+                    ps.setString(8, draft.source)
+                    ps.setString(9, status)
+                    ps.setString(10, existing)
+                    ps.executeUpdate()
+                }
+                existing
+            } else {
+                val newId = Ids.next("res_")
+                connection.prepareStatement(
+                    "INSERT INTO plan_resource(id,plan_id,parent_id,kind,title,url,locator,minutes,note,source,status,sort_order,created_at) " +
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ).use { ps ->
+                    ps.setString(1, newId)
+                    ps.setString(2, planId)
+                    ps.setString(3, draft.parentId)
+                    ps.setString(4, kind)
+                    ps.setString(5, title)
+                    ps.setString(6, url)
+                    ps.setString(7, locator)
+                    if (minutes == null) ps.setNull(8, java.sql.Types.INTEGER) else ps.setInt(8, minutes)
+                    ps.setString(9, draft.note)
+                    ps.setString(10, draft.source)
+                    ps.setString(11, status)
+                    ps.setInt(12, sort)
+                    ps.setString(13, nowIso())
+                    ps.executeUpdate()
+                }
+                sort++
+                newId
+            }
+            ids += id
+        }
+        appendEvent(
+            type = "plan.resources_upserted", entity = "plan", entityId = planId, planId = planId,
+            payload = eventJson("count" to JsonPrimitive(ids.size)),
+            actor = env.actor, commandId = env.commandId,
+        )
+        ok(ids)
+    }
+}
+
+internal fun SqliteLearningPlanService.cmdSetResourceStatus(
+    env: CommandEnvelope,
+    resourceId: String,
+    status: String,
+): CommandResult<Unit> {
+    val normalized = resourceStatusOf(status)
+    if (status.lowercase() !in setOf("active", "suggested", "dropped")) {
+        return fail(ErrorCode.E_INVALID, "资源状态只能是 active / suggested / dropped。")
+    }
+    return write(env) {
+        val planId = connection.prepareStatement(
+            "SELECT plan_id FROM plan_resource WHERE id = ?",
+        ).use { ps ->
+            ps.setString(1, resourceId)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+        } ?: return@write fail(ErrorCode.E_NOT_FOUND, "找不到这条资源。")
+        connection.prepareStatement("UPDATE plan_resource SET status = ? WHERE id = ?").use { ps ->
+            ps.setString(1, normalized); ps.setString(2, resourceId); ps.executeUpdate()
+        }
+        appendEvent(
+            type = "plan.resource_status", entity = "plan_resource", entityId = resourceId, planId = planId,
+            payload = eventJson("status" to JsonPrimitive(normalized)),
+            actor = env.actor, commandId = env.commandId,
+        )
+        ok(Unit)
+    }
+}
+
+internal fun SqliteLearningPlanService.cmdEnqueueUnits(
+    env: CommandEnvelope,
+    planId: String,
+    week: String,
+    unitIds: List<String>,
+): CommandResult<Int> {
+    if (!PlanTime.isWeekFormat(week)) return fail(ErrorCode.E_INVALID, "周要写成 ISO 周（例：2026-W44）。")
+    if (unitIds.isEmpty()) return fail(ErrorCode.E_INVALID, "要放进队列的单元是空的。")
+    return write(env) {
+        if (planStatus(planId) == null) return@write fail(ErrorCode.E_NOT_FOUND, "找不到这个计划。")
+        if (planStatus(planId) == "ended") return@write fail(ErrorCode.E_STATE, "这个计划已经结束了。")
+        val versionId = currentVersion(planId)
+            ?: return@write fail(ErrorCode.E_STATE, "这个计划还没有生效的版本。")
+        val valid = mutableListOf<String>()
+        unitIds.forEach { id ->
+            val unit = unitRow(id) ?: return@write fail(ErrorCode.E_NOT_FOUND, "找不到节点「$id」。")
+            if (unit.versionId != versionId) return@write fail(ErrorCode.E_INVALID, "「${unit.title}」不在当前版本里。")
+            valid += id
+        }
+        val commitmentId = connection.prepareStatement(
+            "SELECT id FROM commitment WHERE plan_version_id = ? AND week = ?",
+        ).use { ps ->
+            ps.setString(1, versionId); ps.setString(2, week)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+        } ?: Ids.next("cm_").also { id ->
+            connection.prepareStatement(
+                "INSERT INTO commitment(id,plan_version_id,week,created_at) VALUES(?,?,?,?)",
+            ).use { ps ->
+                ps.setString(1, id); ps.setString(2, versionId)
+                ps.setString(3, week); ps.setString(4, nowIso())
+                ps.executeUpdate()
+            }
+        }
+        var sort = connection.prepareStatement(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM commitment_unit WHERE commitment_id = ?",
+        ).use { ps ->
+            ps.setString(1, commitmentId)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        }
+        var added = 0
+        valid.forEach { unitId ->
+            val changed = connection.prepareStatement(
+                "INSERT OR IGNORE INTO commitment_unit(commitment_id,unit_id,sort_order) VALUES(?,?,?)",
+            ).use { ps ->
+                ps.setString(1, commitmentId); ps.setString(2, unitId); ps.setInt(3, sort)
+                ps.executeUpdate()
+            }
+            if (changed > 0) { added++; sort++ }
+        }
+        if (added > 0) {
+            appendEvent(
+                type = "units.enqueued", entity = "plan", entityId = planId, planId = planId,
+                payload = JsonObject(
+                    mapOf(
+                        "week" to JsonPrimitive(week),
+                        "count" to JsonPrimitive(added),
+                    ),
+                ),
+                actor = env.actor, commandId = env.commandId,
+            )
+        }
+        ok(added)
     }
 }
 
@@ -1219,6 +1433,7 @@ internal fun SqliteLearningPlanService.cmdMoveOccurrence(
         val newId = insertOccurrence(
             commitmentId = targetCommitmentId, unitId = row.unitId, todoId = null,
             day = toDay, minutes = row.minutes, mode = row.mode, movedFrom = row.id,
+            startMinute = row.startMinute,
         )
         supersede(row.id, newId)
         appendEvent(
@@ -1237,6 +1452,7 @@ internal fun SqliteLearningPlanService.cmdMoveOccurrence(
             val back = insertOccurrence(
                 commitmentId = row.commitmentId, unitId = row.unitId, todoId = null,
                 day = row.day, minutes = row.minutes, mode = row.mode, movedFrom = newId,
+                startMinute = row.startMinute,
             )
             appendEvent(
                 type = "occurrence.moved_back", entity = "occurrence", entityId = back, planId = row.planId,
@@ -1246,6 +1462,44 @@ internal fun SqliteLearningPlanService.cmdMoveOccurrence(
             "已把它放回 ${row.day}"
         }
         ok(OccurrenceRef(newId), undo = undo)
+    }
+}
+
+/**
+ * 给一条已排期的节点定钟点（或清掉钟点）。
+ *
+ * 只动 `start_minute`：occurrence 的 no-remap 触发器拦的是身份列（日期、时长、来源），
+ * 钟点是可变的属性，所以这里不需要「新开一行」也能改。事件照记一条，撤销/追溯有据。
+ */
+internal fun SqliteLearningPlanService.cmdSetOccurrenceStart(
+    env: CommandEnvelope,
+    occurrenceId: String,
+    startMinute: Int?,
+): CommandResult<OccurrenceRef> {
+    if (startMinute != null && startMinute !in 0..1439) {
+        return fail(ErrorCode.E_INVALID, "开始时间要写成 0–1439 的分钟数（9:00 = 540）。")
+    }
+    return write(env) {
+        val row = occurrenceRow(occurrenceId) ?: return@write fail(ErrorCode.E_NOT_FOUND, "找不到这条任务。")
+        if (row.status != "planned") return@write fail(ErrorCode.E_STATE, "这条已经处理过了，改不了时间。")
+        connection.prepareStatement("UPDATE occurrence SET start_minute = ? WHERE id = ?").use { ps ->
+            if (startMinute == null) {
+                ps.setNull(1, java.sql.Types.INTEGER)
+            } else {
+                ps.setInt(1, startMinute)
+            }
+            ps.setString(2, occurrenceId)
+            ps.executeUpdate()
+        }
+        appendEvent(
+            type = "occurrence.time_set", entity = "occurrence", entityId = occurrenceId, planId = row.planId,
+            payload = eventJson(
+                "day" to JsonPrimitive(row.day),
+                "startMinute" to JsonPrimitive(startMinute ?: -1),
+            ),
+            actor = env.actor, commandId = env.commandId,
+        )
+        ok(OccurrenceRef(occurrenceId))
     }
 }
 
@@ -1266,10 +1520,12 @@ internal fun SqliteLearningPlanService.cmdSplitOccurrence(
         if (parts.any { it.estimateMinutes >= row.minutes }) {
             return@write fail(ErrorCode.E_INVALID, "拆出来的每一段都要比原来短。")
         }
-        val ids = parts.map { part ->
+        val ids = parts.mapIndexed { index, part ->
             insertOccurrence(
                 commitmentId = row.commitmentId, unitId = row.unitId, todoId = null,
                 day = part.day, minutes = part.estimateMinutes, mode = row.mode, movedFrom = row.id,
+                // 第一段接着原来的钟点，后面的段不猜时间（由用户/AI 再排）。
+                startMinute = if (index == 0) row.startMinute else null,
             )
         }
         supersede(row.id, ids.first())
@@ -1290,6 +1546,7 @@ internal fun SqliteLearningPlanService.cmdSplitOccurrence(
             val back = insertOccurrence(
                 commitmentId = row.commitmentId, unitId = row.unitId, todoId = null,
                 day = row.day, minutes = row.minutes, mode = row.mode, movedFrom = ids.first(),
+                startMinute = row.startMinute,
             )
             appendEvent(
                 type = "occurrence.unsplit", entity = "occurrence", entityId = back, planId = row.planId,
@@ -1318,6 +1575,7 @@ internal fun SqliteLearningPlanService.cmdShortenOccurrence(
         val newId = insertOccurrence(
             commitmentId = row.commitmentId, unitId = row.unitId, todoId = null,
             day = row.day, minutes = toEstimateMinutes, mode = mode, movedFrom = row.id,
+            startMinute = row.startMinute,
         )
         supersede(row.id, newId)
         appendEvent(
@@ -1334,6 +1592,7 @@ internal fun SqliteLearningPlanService.cmdShortenOccurrence(
             val back = insertOccurrence(
                 commitmentId = row.commitmentId, unitId = row.unitId, todoId = null,
                 day = row.day, minutes = row.minutes, mode = row.mode, movedFrom = newId,
+                startMinute = row.startMinute,
             )
             appendEvent(
                 type = "occurrence.unshortened", entity = "occurrence", entityId = back, planId = row.planId,
@@ -1343,6 +1602,152 @@ internal fun SqliteLearningPlanService.cmdShortenOccurrence(
             "已恢复 ${row.minutes} 分钟"
         }
         ok(OccurrenceRef(newId), undo = undo)
+    }
+}
+
+/**
+ * 直接完成周队列里的一个节点（queue 模式）。
+ *
+ * 没有排期也能完成：当天建一条 occurrence 并标 done，于是「完成日志」里就有它。
+ * 已有今天的 planned（计时锚点）就复用；已经完成过则幂等返回，不重复记。
+ */
+internal fun SqliteLearningPlanService.cmdCompleteUnit(
+    env: CommandEnvelope,
+    planId: String,
+    unitId: String,
+    note: String?,
+): CommandResult<OccurrenceRef> {
+    return write(env) {
+        val status = planStatus(planId) ?: return@write fail(ErrorCode.E_NOT_FOUND, "找不到这个计划。")
+        if (status == "ended") return@write fail(ErrorCode.E_STATE, "这个计划已经结束了。")
+        val versionId = currentVersion(planId)
+            ?: return@write fail(ErrorCode.E_STATE, "这个计划还没有生效的版本。")
+        val unit = unitRow(unitId) ?: return@write fail(ErrorCode.E_NOT_FOUND, "找不到这个节点。")
+        if (unit.versionId != versionId) return@write fail(ErrorCode.E_INVALID, "「${unit.title}」不在当前版本里。")
+
+        val existingDone = connection.prepareStatement(
+            "SELECT o.id FROM occurrence o JOIN commitment c ON c.id = o.commitment_id " +
+                "JOIN plan_version pv ON pv.id = c.plan_version_id " +
+                "WHERE pv.plan_id = ? AND o.unit_id = ? AND o.status = 'done' " +
+                "ORDER BY o.completed_at DESC LIMIT 1",
+        ).use { ps ->
+            ps.setString(1, planId); ps.setString(2, unitId)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+        }
+        if (existingDone != null) {
+            return@write ok(OccurrenceRef(existingDone), warnings = listOf("这个节点已经完成了，没有重复记。"))
+        }
+
+        // 节点属于哪一周的队列：优先本周，其次最近的未来周，最后退回它所在的周。
+        val weeks = mutableListOf<Pair<String, String>>()
+        connection.prepareStatement(
+            "SELECT c.id, c.week FROM commitment c JOIN commitment_unit cu ON cu.commitment_id = c.id " +
+                "WHERE c.plan_version_id = ? AND cu.unit_id = ? ORDER BY c.week",
+        ).use { ps ->
+            ps.setString(1, versionId); ps.setString(2, unitId)
+            ps.executeQuery().use { rs ->
+                while (rs.next()) weeks += rs.getString(1) to rs.getString(2)
+            }
+        }
+        val current = currentWeek()
+        val target = weeks.firstOrNull { it.second == current }
+            ?: weeks.filter { it.second > current }.minByOrNull { it.second }
+            ?: weeks.maxByOrNull { it.second }
+            ?: return@write fail(ErrorCode.E_STATE, "「${unit.title}」还没进任何一周的队列。")
+        val (commitmentId, week) = target
+        val day = today().toString()
+
+        // 计时开始时会建一条今天的 planned：有就复用，别重复插。
+        val todayPlanned = connection.prepareStatement(
+            "SELECT id FROM occurrence WHERE unit_id = ? AND status = 'planned' AND day = ? LIMIT 1",
+        ).use { ps ->
+            ps.setString(1, unitId); ps.setString(2, day)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+        }
+        // 别的日期的 planned（旧模式/顺延遗留）先作废，避免同一单元同时挂在两天。
+        connection.prepareStatement(
+            "SELECT id FROM occurrence WHERE unit_id = ? AND status = 'planned' AND day <> ?",
+        ).use { ps ->
+            ps.setString(1, unitId); ps.setString(2, day)
+            ps.executeQuery().use { rs ->
+                while (rs.next()) supersede(rs.getString(1), rs.getString(1))
+            }
+        }
+        val occurrenceId = todayPlanned ?: insertOccurrence(
+            commitmentId, unitId, null, day, unit.estimateMinutes, "full",
+        )
+        connection.prepareStatement(
+            "UPDATE occurrence SET status = 'done', completed_at = ?, note = COALESCE(?, note) " +
+                "WHERE id = ? AND status = 'planned'",
+        ).use { ps ->
+            ps.setString(1, nowIso())
+            ps.setString(2, note)
+            ps.setString(3, occurrenceId)
+            ps.executeUpdate()
+        }
+        appendEvent(
+            type = "unit.completed", entity = "occurrence", entityId = occurrenceId, planId = planId,
+            payload = eventJson(
+                "unitId" to JsonPrimitive(unitId),
+                "week" to JsonPrimitive(week),
+                "day" to JsonPrimitive(day),
+                "mode" to JsonPrimitive("queue"),
+            ),
+            actor = env.actor, commandId = env.commandId,
+        )
+        val undo = registerUndo(env, planId, "撤销完成") {
+            connection.prepareStatement(
+                "UPDATE occurrence SET status = 'planned', completed_at = NULL WHERE id = ? AND status = 'done'",
+            ).use { ps -> ps.setString(1, occurrenceId); ps.executeUpdate() }
+            appendEvent(
+                type = "occurrence.uncompleted", entity = "occurrence", entityId = occurrenceId, planId = planId,
+                payload = eventJson("undoOf" to JsonPrimitive(occurrenceId)),
+                actor = dev.trellis.domain.plan.Actor.USER, commandId = null,
+            )
+            "已把「${unit.title}」恢复成未完成"
+        }
+        ok(OccurrenceRef(occurrenceId), undo = undo)
+    }
+}
+
+/**
+ * 切换排程模式。切到 queue 时把未来的 planned 作废（单元仍留在周队列），
+ * 切回 day 时按当前周重新铺一次。
+ */
+internal fun SqliteLearningPlanService.cmdSetScheduleMode(
+    env: CommandEnvelope,
+    planId: String,
+    mode: String,
+): CommandResult<Unit> {
+    if (mode != "day" && mode != "queue") return fail(ErrorCode.E_INVALID, "排程模式只能是 day 或 queue。")
+    return write(env) {
+        if (planStatus(planId) == null) return@write fail(ErrorCode.E_NOT_FOUND, "找不到这个计划。")
+        connection.prepareStatement(
+            "UPDATE process SET schedule_mode = ? WHERE id = (SELECT process_id FROM plan WHERE id = ?)",
+        ).use { ps ->
+            ps.setString(1, mode); ps.setString(2, planId); ps.executeUpdate()
+        }
+        if (mode == "queue") {
+            val ids = mutableListOf<String>()
+            connection.prepareStatement(
+                "SELECT o.id FROM occurrence o JOIN commitment c ON c.id = o.commitment_id " +
+                    "JOIN plan_version pv ON pv.id = c.plan_version_id " +
+                    "WHERE pv.plan_id = ? AND o.status = 'planned' AND o.day >= ?",
+            ).use { ps ->
+                ps.setString(1, planId); ps.setString(2, today().toString())
+                ps.executeQuery().use { rs -> while (rs.next()) ids += rs.getString(1) }
+            }
+            ids.forEach { id -> supersede(id, id) }
+        } else {
+            val version = currentVersion(planId)
+            if (version != null) materializeWeek(planId, version, currentWeek())
+        }
+        appendEvent(
+            type = "plan.schedule_mode_changed", entity = "plan", entityId = planId, planId = planId,
+            payload = eventJson("mode" to JsonPrimitive(mode)),
+            actor = env.actor, commandId = env.commandId,
+        )
+        ok(Unit)
     }
 }
 

@@ -19,6 +19,7 @@ import dev.trellis.ai.LlmMessage
 import dev.trellis.ai.LlmRole
 import dev.trellis.ai.manager.ManagerAgent
 import dev.trellis.ai.tool.AgentTool
+import dev.trellis.ai.tool.ToolResult
 import dev.trellis.ai.tool.DeepSeekMarkup
 import dev.trellis.ai.manager.ManagerPrompt
 import dev.trellis.ai.manager.ManagerRouter
@@ -51,6 +52,7 @@ import dev.trellis.domain.plan.UnitProgress
 import dev.trellis.domain.plan.WeekDay
 import dev.trellis.feature.learning.LearningPlanStore
 import dev.trellis.feature.learning.PlanDocStore
+import dev.trellis.feature.learning.PlanWorkflowStore
 import dev.trellis.feature.exams.ExamSeed
 import dev.trellis.feature.exams.Exercise
 import dev.trellis.feature.exams.ExerciseAttempt
@@ -2768,18 +2770,6 @@ class AppRuntime private constructor() {
             val taskTools = TaskTools(this)
             // 计划页是三只手之外的第四个去处：`set_plan` 只是这一轮的动作清单，
             // 真正的周/单元要 createProcess → saveDraft → acceptDraft 才写得进去。
-            val planTools = PlanTools(
-                { learningPlan() },
-                { created ->
-                    refreshPlan(focus = created)
-                    // 计划建好就把「想法」落成文档：之后排周/重排时先读文档，不靠对话记忆。
-                    ensurePlanDoc(created)
-                    bindPlanSession(created)
-                },
-                { studyPrefs.weeklyMinutes },
-                planDbError = { planDbError },
-                clock = clock,
-            )
             // 计划的「维护」是另一套手：读现状、排下周、勾节点、顺延、复盘、改每天投入。
             // 没有它，AI 只能建计划，用户还是得自己去计划页点。
             val planAdminTools = PlanAdminTools(
@@ -2826,7 +2816,8 @@ class AppRuntime private constructor() {
             val diagnosticsTools = DiagnosticsTools { diagnosticsReport() }
             // 计划域收成一读一写两个入口：旧的建/排/读/写工具仍作为内部实现被 op 调用，
             // 但不再单独注册给模型 —— 模型只需要知道「读计划」和「改计划」两件事。
-            val legacyPlanTools = (planTools.all + planAdminTools.all + planDocTools.all +
+            // create_learning_plan 已下线（bvid 旧路径）：新建计划统一走 create_plan。
+            val legacyPlanTools = (planAdminTools.all + planDocTools.all +
                 researchTools.all + planWeekTools.all).associateBy { it.name }
             val planEditTools = PlanEditTools(
                 service = { runCatching { learningPlan() }.getOrNull() },
@@ -2836,6 +2827,21 @@ class AppRuntime private constructor() {
                 legacy = legacyPlanTools,
                 onChanged = { refreshPlan() },
                 dbError = { planDbError },
+            )
+            // 新建计划的四步流程：调研 → 建计划+总文档 → 排本周 → 定钟点，每一步都等用户确认。
+            // 状态落 job/job_step，换一轮对话能接着走；内部复用 research_plan / plan_week 的实现。
+            val createPlanTools = CreatePlanTools(
+                service = { runCatching { learningPlan() }.getOrNull() },
+                workflow = { if (::planWorkflowStore.isInitialized) planWorkflowStore else null },
+                research = { researchTools },
+                clock = clock,
+                dispatch = { name, args ->
+                    legacyPlanTools[name]?.call(args)
+                        ?: ToolResult("内部缺少工具 $name，这次没动数据。", isError = true)
+                },
+                onChanged = { refreshPlan() },
+                dbError = { planDbError },
+                docStore = { if (::planDocStore.isInitialized) planDocStore else null },
             )
             // 跨会话记忆也是手：用户说出长期目标/偏好时写进管家日志，要回忆过去时再检索。
             // 和管家仪式共用同一份 append-only 记忆 —— 目标不该只有晨/夜仪式才有机会落盘。
@@ -2869,7 +2875,7 @@ class AppRuntime private constructor() {
             }
             val allTools = tools.all + screenToolList + layoutTools.all + styleTools.all +
                 workflowTools.all + bilibiliTools.all + taskTools.all +
-                planEditTools.all +
+                planEditTools.all + createPlanTools.all +
                 diagnosticsTools.all + memoryTools.all +
                 goalTools.all
             val memorySection = memoryBlock()
@@ -2914,6 +2920,7 @@ class AppRuntime private constructor() {
                 "\n\n" + workflowTools.guidance + "\n\n" + bilibiliTools.guidance +
                 "\n\n" + taskTools.guidance +
                 "\n\n" + planEditTools.guidance +
+                "\n\n" + createPlanTools.guidance +
                 "\n\n" + diagnosticsTools.guidance + "\n\n" + memoryTools.guidance +
                 "\n\n" + goalTools.guidance + "\n\n" + expandGuidance
             // 跨会话记忆块只随记忆内容变化，接在 guidance 最末尾：两条路径（普通 / 管家）
@@ -4113,6 +4120,14 @@ class AppRuntime private constructor() {
     var planDays by mutableStateOf<List<WeekDay>>(emptyList())
         private set
 
+    /** 当前选中周的队列（queue 模式）：节点不排到天，列表里做完一个就从这里消失。 */
+    var planQueueUnits by mutableStateOf<List<dev.trellis.domain.plan.CommitmentUnitView>>(emptyList())
+        private set
+
+    /** day = 铺到天；queue = 周队列。 */
+    var planScheduleMode by mutableStateOf("day")
+        private set
+
     var planSelectedWeek by mutableStateOf<String?>(null)
     /** 上一次刷新时「今天」所在的 ISO 周：用来判断是否自然跨周（含调试 +1 周）。 */
     private var lastPlanTodayWeek: String? = null
@@ -4148,9 +4163,12 @@ class AppRuntime private constructor() {
 
     // ---------------------------------------------------------------- 计划文档
     // 「想法」层：先在文档里写目标、按周条目、待安排，再确认落进计划库。
-    // 文档在 <home>/plans/docs/<planId>.md；计划库仍是执行真相，两边不实时双向同步。
+    // 2026-11-15 起文档存在计划库同一张 SQLite 的 plan_doc 表（旧的 plans/docs 只做一次性导入），
+    // 文档和节点是同一份真相；知识库里的计划文档页只读渲染。
 
     internal lateinit var planDocStore: PlanDocStore
+    /** 建计划工作流的状态（job/job_step），跟计划库同一个 SQLite。 */
+    internal lateinit var planWorkflowStore: PlanWorkflowStore
     internal lateinit var planSessionStore: PlanSessionStore
 
     /** 知识库里「计划文档」二级页当前打开的计划；非空时知识库页整页显示它。 */
@@ -4544,6 +4562,8 @@ class AppRuntime private constructor() {
                 planTitle = null
                 planWeekCards = emptyList()
                 planDays = emptyList()
+                planQueueUnits = emptyList()
+                planScheduleMode = "day"
                 planDayView = null
                 planPool = emptyList()
                 planRhythmReport = null
@@ -4620,6 +4640,8 @@ class AppRuntime private constructor() {
             if (week != null) {
                 val weekView = service.week(planId, week)
                 val days = weekView.days
+                planScheduleMode = state.scheduleMode
+                planQueueUnits = if (state.scheduleMode == "queue") weekView.commitment.units else emptyList()
                 planDays = days
                 val day = planSelectedDay?.takeIf { d -> days.any { it.day == d } }
                     ?: days.firstOrNull { it.today }?.day
@@ -4634,6 +4656,7 @@ class AppRuntime private constructor() {
                 // 周/天状态必须全部清空，否则页面会沿用上一份计划的天数据——
                 // 表现成「头部写 0 周、周一却还挂着 6 件」，点开又说「这一天还没有排内容」。
                 planDays = emptyList()
+                planQueueUnits = emptyList()
                 planSelectedWeek = null
                 planSelectedDay = null
                 planDayView = null
@@ -4648,14 +4671,20 @@ class AppRuntime private constructor() {
                 }
                 val currentView = service.week(planId, state.week)
                 val items = currentView.days.flatMap { it.items }
+                val units = currentView.commitment.units
                 val index = map.weeks.indexOfFirst { it.week == state.week }
+                val queueMode = state.scheduleMode == "queue"
                 WeekProgress(
                     label = if (index >= 0) "第 " + (index + 1) + " 周" else "本周",
-                    done = items.count { it.status == "done" },
-                    total = items.size,
+                    done = if (queueMode) units.count { it.state == "done" } else items.count { it.status == "done" },
+                    total = if (queueMode) units.size else items.size,
                     allDone = allDone,
                     allTotal = allTotal,
-                    plannedMinutes = items.filter { it.status == "done" }.sumOf { it.minutes },
+                    plannedMinutes = if (queueMode) {
+                        units.filter { it.state == "done" }.sumOf { it.estimateMinutes }
+                    } else {
+                        items.filter { it.status == "done" }.sumOf { it.minutes }
+                    },
                 )
             }.getOrNull()
             planMessage = null
@@ -4840,6 +4869,23 @@ class AppRuntime private constructor() {
         }
         runCatching { store.save(planId, markdown) }
             .onFailure { appendAppLog("计划文档自动生成失败：" + it.message) }
+    }
+
+    /** queue 模式：勾掉周队列里的一个节点，系统把它记到当天（不预先排期）。 */
+    fun completePlanUnit(unitId: String) {
+        val service = learningPlan() ?: return
+        val planId = learningPlanId ?: return
+        val result = runCatching { service.completeUnit(uiCommand(planId), planId, unitId) }
+            .getOrElse {
+                planMessage = "这次没记上：" + (it.message ?: "未知原因")
+                return
+            }
+        if (!result.ok) {
+            reportPlanProblem(result.error?.message ?: "这次没记上。")
+            return
+        }
+        planMessage = "已记到今天。"
+        refreshPlan()
     }
 
     fun selectPlanDay(day: String) {
@@ -6603,6 +6649,7 @@ class AppRuntime private constructor() {
             runtime.pluginStyleStore = PluginStyleStore(home)
             runtime.pluginCardStyles = runtime.pluginStyleStore.load()
             runtime.planDocStore = PlanDocStore(home)
+            runtime.planWorkflowStore = PlanWorkflowStore(home)
             runtime.chatStore = ChatStore(home) { line -> runtime.appendAppLog(line) }
             runtime.planSessionStore = PlanSessionStore(home)
             runtime.knowledgeStore = KnowledgeStore(home, runtime.clock)

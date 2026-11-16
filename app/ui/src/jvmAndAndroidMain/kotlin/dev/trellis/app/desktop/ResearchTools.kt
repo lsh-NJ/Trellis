@@ -123,113 +123,19 @@ class ResearchTools(
                 "false", "0", "no" -> false
                 else -> true
             }
-            onProgress(
-                if (research != null) {
-                    "联网查资料：" + goal.take(40)
-                } else {
-                    "没有联网调研，直接按目标拆阶段"
-                },
-            )
-            val sources = research?.let { gateway ->
-                withTimeoutOrNull(RESEARCH_TIMEOUT_MS) {
-                    runCatching { gateway.gather(goal) }.getOrNull()
-                }
+            val outcome = when (
+                val draft = draftShellOnly(goal, deadlineArg, arguments["dailyMinutes"]?.jsonPrimitive?.intOrNull, onProgress)
+            ) {
+                is DraftResult.Fail -> return ToolResult(draft.message, isError = true)
+                is DraftResult.Ok -> draft.outcome
             }
-            onProgress(
-                if (sources != null) {
-                    "查到 " + sources.hits.size + " 条资料，开始拆阶段"
-                } else {
-                    "资料没拿到，按目标拆阶段"
-                },
-            )
-            val raw = withTimeoutOrNull(PLAN_TIMEOUT_MS) {
-                llm.complete(
-                    listOf(
-                        LlmMessage(LlmRole.System, shellSystemPrompt(thisWeek, deadline, dailySuggestion, sources != null)),
-                        LlmMessage(LlmRole.User, shellUserPrompt(goal, today.toString(), thisWeek, deadline, sources?.render())),
-                    ),
-                )
-            } ?: return ToolResult(
-                "调研模型没在 " + (PLAN_TIMEOUT_MS / 1000) + " 秒内回话，这次没写成。可以稍后重试，或改用 create_learning_plan 手写大纲。",
-                isError = true,
-            )
-            val deadlineWeek = deadline?.let { isoWeekOf(LocalDate.parse(it)) }
-            var draft = parseShell(raw, thisWeek, deadlineWeek, fallbackTitle = goal.take(16))
-            if (draft == null) {
-                // 一次解析失败很常见（模型带了解释/代码块/半截 JSON）。补一句「只要 JSON」再问一次，
-                // 比直接让用户重来更省事；第二次还不行才报错。
-                val retryRaw = withTimeoutOrNull(PLAN_TIMEOUT_MS) {
-                    llm.complete(
-                        listOf(
-                            LlmMessage(LlmRole.System, shellSystemPrompt(thisWeek, deadline, dailySuggestion, sources != null)),
-                            LlmMessage(LlmRole.User, shellUserPrompt(goal, today.toString(), thisWeek, deadline, sources?.render())),
-                            LlmMessage(LlmRole.Assistant, raw.take(4000)),
-                            LlmMessage(LlmRole.User, "上面的输出不是可解析的 JSON。请只输出一个 JSON 对象（不要 markdown 代码块、不要解释），字段与示例完全一致：title / dailyMinutes / stages[{name, weeks, focus, deliverable, acceptance, resources}]。"),
-                        ),
-                    )
-                }
-                draft = retryRaw?.let { parseShell(it, thisWeek, deadlineWeek, fallbackTitle = goal.take(16)) }
-            }
-            val resolved = draft
-                ?: return ToolResult(
-                    "调研结果没解析成阶段表（模型可能没说 JSON）。这次没建计划；可以重试，或改用 create_learning_plan 手写。",
-                    isError = true,
-                )
-            onProgress("拆出 " + resolved.stages.size + " 个阶段，建计划…")
-            val created = plan.createShell(
-                env(null, "plan.research"),
-                title = resolved.title,
-                goal = goal,
-                deadline = deadline,
-            )
-            val planId = created.value?.planId
-                ?: return ToolResult("建计划失败：" + (created.error?.message ?: "未知原因"), isError = true)
-
-            // 阶段区间先写进计划：每周的单元铺进去之前就要有阶段（有承诺周后阶段区间会被校验），
-            // 所以这一步必须早于下面的第一周排期。写失败不影响计划本身（大纲文档里还有一份阶段表）。
-            onProgress("计划建好了，写阶段和里程碑…")
-            val stageDrafts = stageDraftsFor(draft, thisWeek)
-            val stagesWritten = stageDrafts.isNotEmpty() && runCatching {
-                plan.setStages(env(planId, "plan.stages"), planId, stageDrafts).ok
-            }.getOrElse {
-                appendFailedLog("阶段区间写入失败：" + it.message)
-                false
-            }
-
-            // 目标 + 里程碑：失败不影响计划本身（计划已经建好了）。
-            val goalRef = runCatching {
-                plan.createGoal(
-                    env(planId, "plan.goal"),
-                    title = goal.take(80),
-                    kind = "goal",
-                    intent = goal,
-                    success = "按阶段推进并完成每个里程碑",
-                    deadline = deadline,
-                )
-            }.getOrNull()?.value
-            goalRef?.let { ref ->
-                runCatching { plan.linkPlanToGoal(env(planId, "plan.goal_link"), planId, ref.goalId) }
-                resolved.stages.forEach { stage ->
-                    runCatching {
-                        plan.addMilestone(env(planId, "plan.milestone"), ref.goalId, stage.name + "（约 " + stage.weeks + " 周）")
-                    }
-                }
-            }
-
-            onProgress("写大纲文档…")
-            planDocStore()?.let { store ->
-                runCatching { store.save(planId, buildOutline(goal, draft, stageDrafts)) }
-                    .onFailure { appendFailedLog("计划文档写入失败：" + it.message) }
-            }
-
-            // 节奏与本周安排都只做「被要求的事」：
-            // - 模型显式传了 dailyMinutes → 写进节奏（这是用户在对话里说清的时长，属数据写入）；
-            // - 模型显式 scheduleFirstWeek=true → 排本周；时长优先用传入值，没有就用建议值
-            //   （建议值只用于排周，不写进节奏）。
-            if (explicitDaily != null) {
-                runCatching { plan.setPlanDailyMinutes(env(planId, "plan.pace"), planId, explicitDaily) }
-                    .onFailure { appendFailedLog("节奏写入失败：" + it.message) }
-            }
+            val sources = outcome.sources
+            val resolved = outcome.resolved
+            val applied = applyShell(plan, outcome, explicitDaily, onProgress)
+                ?: return ToolResult("建计划失败：计划库没有返回计划 id。", isError = true)
+            val planId = applied.planId
+            // 本周安排只做「被要求的事」：模型显式 scheduleFirstWeek=true 才排；
+            // 时长优先用传入值，没有就用建议值（建议值只用于排周，不写进节奏）。
             val scheduledMinutes = explicitDaily ?: resolved.dailyMinutes
             val firstWeek = if (scheduleFirstWeek) {
                 onProgress("排本周（" + thisWeek + "）…")
@@ -261,20 +167,9 @@ class ResearchTools(
             }
             val stageResourceCount = resolved.stages.sumOf { it.resources.size }
 
-            val totalWeeks = resolved.stages.sumOf { it.weeks }
             return ToolResult(
                 buildString {
-                    append("计划「").append(resolved.title).append("」已建好（空壳 + 大纲）：").append(resolved.stages.size).append(" 个阶段、共约 ")
-                    append(totalWeeks).append(" 周")
-                    deadline?.let { append("，覆盖到 ").append(it).append(" 的截止日") }
-                    append("。")
-                    append("计划文档和每个阶段的里程碑都写好了。")
-                    if (stagesWritten) append("阶段区间也写进计划了（").append(stageDrafts.size).append(" 个阶段，计划页能看到进度）。")
-                    if (explicitDaily != null) {
-                        append("每天投入已按你说的 ").append(explicitDaily).append(" 分钟写进节奏。")
-                    } else {
-                        append("每天投入目前只是建议值（约 ").append(resolved.dailyMinutes).append(" 分钟/天），还没写进节奏。")
-                    }
+                    append(applied.receipt)
                     when {
                         firstWeek != null && firstWeek.error == null -> {
                             append("第一周（").append(thisWeek).append("）排好了：").append(firstWeek.placed).append(" 条，按每天 ")
@@ -309,6 +204,197 @@ class ResearchTools(
             )
         }
     }
+
+    // ---------------------------------------------------------------- 建计划的两段（供 create_plan 分步复用）
+
+    internal class DraftOutcome(
+        val goal: String,
+        val resolved: ShellDraft,
+        val sources: ResearchSources?,
+        val raw: String,
+        val deadline: String?,
+        val thisWeek: String,
+    )
+
+    internal sealed class DraftResult {
+        class Ok(val outcome: DraftOutcome) : DraftResult()
+        class Fail(val message: String) : DraftResult()
+    }
+
+    internal class ApplyResult(
+        val planId: String,
+        val stagesWritten: Boolean,
+        val stageCount: Int,
+        val receipt: String,
+    )
+
+    /**
+     * 只做「调研 + 出阶段表」，**不写任何计划数据**。
+     *
+     * create_plan 的第一步就停在这里，让用户先看资料和阶段表；旧 research_plan 也走这一段，
+     * 保证两边的提示词、超时、JSON 重试只有一份实现。
+     */
+    internal suspend fun draftShellOnly(
+        goal: String,
+        deadlineArg: String,
+        dailyArg: Int?,
+        onProgress: (String) -> Unit,
+    ): DraftResult {
+        if (goal.isEmpty()) return DraftResult.Fail("要写一句目标（goal），例如「我想当 AI 应用工程师」。")
+        val today = clock.today()
+        val deadline: String? = when {
+            deadlineArg.isEmpty() -> null
+            else -> {
+                val parsed = runCatching { LocalDate.parse(deadlineArg) }.getOrNull()
+                    ?: return DraftResult.Fail("deadline 要写成 YYYY-MM-DD，现在是「$deadlineArg」。")
+                // 模型偶尔会自己编一个过期日期；过去就按「没给截止日」处理，别让整轮调研白跑。
+                parsed.takeIf { !it.isBefore(today) }?.toString()
+            }
+        }
+        val thisWeek = isoWeekOf(today)
+        // 每天投入：只有模型显式传了时长才写进节奏；没传只算一个建议值（用于排周/回执）。
+        val explicitDaily = dailyArg?.coerceIn(30, 240)
+        val dailySuggestion = (explicitDaily ?: weeklyCapacity()?.div(7) ?: 60).coerceIn(30, 240)
+        onProgress(
+            if (research != null) "联网查资料：" + goal.take(40) else "没有联网调研，直接按目标拆阶段",
+        )
+        val sources = research?.let { gateway ->
+            withTimeoutOrNull(RESEARCH_TIMEOUT_MS) {
+                runCatching { gateway.gather(goal) }.getOrNull()
+            }
+        }
+        onProgress(
+            if (sources != null) "查到 " + sources.hits.size + " 条资料，开始拆阶段" else "资料没拿到，按目标拆阶段",
+        )
+        val raw = withTimeoutOrNull(PLAN_TIMEOUT_MS) {
+            llm.complete(
+                listOf(
+                    LlmMessage(LlmRole.System, shellSystemPrompt(thisWeek, deadline, dailySuggestion, sources != null)),
+                    LlmMessage(LlmRole.User, shellUserPrompt(goal, today.toString(), thisWeek, deadline, sources?.render())),
+                ),
+            )
+        } ?: return DraftResult.Fail(
+            "调研模型没在 " + (PLAN_TIMEOUT_MS / 1000) + " 秒内回话，这次没写成。可以稍后重试，或改用 create_learning_plan 手写大纲。",
+        )
+        val deadlineWeek = deadline?.let { isoWeekOf(LocalDate.parse(it)) }
+        var usedRaw = raw
+        var draft = parseShell(raw, thisWeek, deadlineWeek, fallbackTitle = goal.take(16))
+        if (draft == null) {
+            // 一次解析失败很常见（模型带了解释/代码块/半截 JSON）。补一句「只要 JSON」再问一次，
+            // 比直接让用户重来更省事；第二次还不行才报错。
+            val retryRaw = withTimeoutOrNull(PLAN_TIMEOUT_MS) {
+                llm.complete(
+                    listOf(
+                        LlmMessage(LlmRole.System, shellSystemPrompt(thisWeek, deadline, dailySuggestion, sources != null)),
+                        LlmMessage(LlmRole.User, shellUserPrompt(goal, today.toString(), thisWeek, deadline, sources?.render())),
+                        LlmMessage(LlmRole.Assistant, raw.take(4000)),
+                        LlmMessage(LlmRole.User, "上面的输出不是可解析的 JSON。请只输出一个 JSON 对象（不要 markdown 代码块、不要解释），字段与示例完全一致：title / dailyMinutes / stages[{name, weeks, focus, deliverable, acceptance, resources}]。"),
+                    ),
+                )
+            }
+            draft = retryRaw?.let { parseShell(it, thisWeek, deadlineWeek, fallbackTitle = goal.take(16)) }
+            if (retryRaw != null && draft != null) usedRaw = retryRaw
+        }
+        val resolved = draft
+            ?: return DraftResult.Fail("调研结果没解析成阶段表（模型可能没说 JSON）。这次没建计划；可以重试，或改用 create_learning_plan 手写。")
+        onProgress("拆出 " + resolved.stages.size + " 个阶段")
+        return DraftResult.Ok(DraftOutcome(goal, resolved, sources, usedRaw, deadline, thisWeek))
+    }
+
+    /**
+     * 把阶段表落成「空壳计划 + 阶段 + 目标/里程碑 + 总文档（+ 节奏）」。
+     *
+     * 这是 create_plan 的第二步，也是旧 research_plan 的后半段；唯一的不可逆写在这里，
+     * 但只写文档与空壳，不追加单元、不铺天。
+     */
+    internal suspend fun applyShell(
+        plan: LearningPlanService,
+        outcome: DraftOutcome,
+        explicitDaily: Int?,
+        onProgress: (String) -> Unit,
+    ): ApplyResult? {
+        val resolved = outcome.resolved
+        onProgress("建计划…")
+        val created = plan.createShell(
+            env(null, "plan.research"),
+            title = resolved.title,
+            goal = outcome.goal,
+            deadline = outcome.deadline,
+        )
+        val planId = created.value?.planId ?: return null
+
+        // 阶段区间先写进计划：每周的单元铺进去之前就要有阶段（有承诺周后阶段区间会被校验），
+        // 所以这一步必须早于下面的第一周排期。写失败不影响计划本身（大纲文档里还有一份阶段表）。
+        onProgress("计划建好了，写阶段和里程碑…")
+        val stageDrafts = stageDraftsFor(resolved, outcome.thisWeek)
+        val stagesWritten = stageDrafts.isNotEmpty() && runCatching {
+            plan.setStages(env(planId, "plan.stages"), planId, stageDrafts).ok
+        }.getOrElse {
+            appendFailedLog("阶段区间写入失败：" + it.message)
+            false
+        }
+
+        // 目标 + 里程碑：失败不影响计划本身（计划已经建好了）。
+        val goalRef = runCatching {
+            plan.createGoal(
+                env(planId, "plan.goal"),
+                title = outcome.goal.take(80),
+                kind = "goal",
+                intent = outcome.goal,
+                success = "按阶段推进并完成每个里程碑",
+                deadline = outcome.deadline,
+            )
+        }.getOrNull()?.value
+        goalRef?.let { ref ->
+            runCatching { plan.linkPlanToGoal(env(planId, "plan.goal_link"), planId, ref.goalId) }
+            resolved.stages.forEach { stage ->
+                runCatching {
+                    plan.addMilestone(env(planId, "plan.milestone"), ref.goalId, stage.name + "（约 " + stage.weeks + " 周）")
+                }
+            }
+        }
+
+        onProgress("写大纲文档…")
+        planDocStore()?.let { store ->
+            runCatching { store.save(planId, buildOutline(outcome.goal, resolved, stageDrafts)) }
+                .onFailure { appendFailedLog("计划文档写入失败：" + it.message) }
+        }
+
+        // 节奏只做「被要求的事」：模型显式传了 dailyMinutes 才写进节奏。
+        if (explicitDaily != null) {
+            runCatching { plan.setPlanDailyMinutes(env(planId, "plan.pace"), planId, explicitDaily) }
+                .onFailure { appendFailedLog("节奏写入失败：" + it.message) }
+        }
+
+        val totalWeeks = resolved.stages.sumOf { it.weeks }
+        val receipt = buildString {
+            append("计划「").append(resolved.title).append("」已建好（空壳 + 大纲）：")
+                .append(resolved.stages.size).append(" 个阶段、共约 ").append(totalWeeks).append(" 周")
+            outcome.deadline?.let { append("，覆盖到 ").append(it).append(" 的截止日") }
+            append("。计划文档和每个阶段的里程碑都写好了。")
+            if (stagesWritten) append("阶段区间也写进计划了（").append(stageDrafts.size).append(" 个阶段，计划页能看到进度）。")
+            if (explicitDaily != null) {
+                append("每天投入已按你说的 ").append(explicitDaily).append(" 分钟写进节奏。")
+            } else {
+                append("每天投入目前只是建议值（约 ").append(resolved.dailyMinutes).append(" 分钟/天），还没写进节奏。")
+            }
+        }
+        return ApplyResult(planId, stagesWritten, stageDrafts.size, receipt)
+    }
+
+    /**
+     * 从 job.payload 里存下来的原始 JSON 还原阶段表（跨轮续步用）。
+     *
+     * 只重新解析、不调模型：用户在第一步看到的阶段表，第二步落库的必须是同一份。
+     */
+    internal fun restoreDraft(goal: String, deadline: String?, raw: String): DraftOutcome? {
+        val thisWeek = isoWeekOf(clock.today())
+        val deadlineWeek = deadline?.let { runCatching { isoWeekOf(LocalDate.parse(it)) }.getOrNull() }
+        val resolved = parseShell(raw, thisWeek, deadlineWeek, fallbackTitle = goal.take(16)) ?: return null
+        return DraftOutcome(goal, resolved, null, raw, deadline, thisWeek)
+    }
+
+    // ---------------------------------------------------------------- 建计划的两段结束
 
     private fun env(planId: String?, origin: String) = CommandEnvelope(
         commandId = "cmd_" + UUID.randomUUID(),
@@ -450,8 +536,7 @@ class ResearchTools(
             }
             if (stage.focus.isNotBlank()) append("：").append(stage.focus)
             appendLine()
-            append("  - 交付物：").appendLine(stage.deliverable.ifBlank { fallbackDeliverable(index) })
-            append("  - 过关标准：").appendLine(stage.acceptance.ifBlank { fallbackAcceptance() })
+
             if (stage.resources.isNotEmpty()) {
                 appendLine("  - 资源：")
                 stage.resources.forEach { resource ->
@@ -489,8 +574,7 @@ class ResearchTools(
             if (deadline != null) appendLine("用户给了截止日期 " + deadline + "，总周数要能覆盖到那个日期之前。")
             appendLine("阶段要覆盖从入门到能做出东西的完整路线：通识/理论学习在前，动手实践（写代码、做项目）后置。")
             appendLine("写法要求（很重要）：")
-            appendLine("1. 每个阶段必须有可交付物（能运行/能展示/能给别人看的东西）和可自测的过关标准；")
-            appendLine("   不要用「掌握 / 熟悉 / 了解 / 跑通」这类无法验收的词当交付物。")
+            appendLine("1. 阶段只写名称、周数、聚焦和资源；不要写交付物、过关标准或验收方式——这个应用现在不做交付与判定。")
             appendLine("2. name / focus / deliverable / acceptance 里不要出现来源站点名或括号标注（如「（Zpedu）」「(GitHub)」「（阿里云）」）；")
             appendLine("   来源只在正文里参考，不要写进这四段文案。")
             appendLine("3. 不要写任何内部工具名（如 plan_week / research_plan / sync_plan_week），用户看不到这些。")
@@ -518,7 +602,7 @@ class ResearchTools(
         appendLine("请按上述 JSON 格式输出阶段表。")
     }
 
-    private data class ShellStage(
+    internal data class ShellStage(
         val name: String,
         val weeks: Int,
         val focus: String = "",
@@ -528,7 +612,7 @@ class ResearchTools(
         val resources: List<DocResource> = emptyList(),
     )
 
-    private data class ShellDraft(val title: String, val dailyMinutes: Int, val stages: List<ShellStage>)
+    internal data class ShellDraft(val title: String, val dailyMinutes: Int, val stages: List<ShellStage>)
 
     private companion object {
         /** 括号里带拉丁字母的，基本是来源站点标注：写作「（Zpedu）」或「(GitHub)」。 */

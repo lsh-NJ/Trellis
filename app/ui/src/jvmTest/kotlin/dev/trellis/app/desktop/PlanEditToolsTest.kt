@@ -9,6 +9,7 @@ import dev.trellis.domain.plan.LearningPlanService
 import dev.trellis.domain.plan.UnitDraft
 import dev.trellis.feature.learning.LearningPlanStore
 import dev.trellis.feature.learning.PlanDocStore
+import java.io.File
 import java.nio.file.Files
 import java.time.LocalDate
 import java.time.ZoneId
@@ -75,7 +76,7 @@ class PlanEditToolsTest {
     private suspend fun harness(): Harness {
         val home = Files.createTempDirectory("plan-edit-tools").toFile()
         val clock = FixedClock(today, zone)
-        val service = LearningPlanStore.inMemory({ clock.nowMs() }, zone)
+        val service = LearningPlanStore.open(File(File(home, "plans"), "plan.db").toPath(), { clock.nowMs() }, zone)
         val created = service.createProcess(env(), "RAG 服务化", "把 RAG 封装成服务", weeklyCapacityMinutes = 7 * 60)
         assertTrue(created.ok, "建计划失败：" + created.error?.message)
         val planId = created.value!!.planId

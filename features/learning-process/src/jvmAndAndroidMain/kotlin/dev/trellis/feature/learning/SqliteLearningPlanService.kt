@@ -13,6 +13,8 @@ import dev.trellis.domain.plan.PlanStateView
 import dev.trellis.domain.plan.LearningPlanInfo
 import dev.trellis.domain.plan.OpenNode
 import dev.trellis.domain.plan.OverdueView
+import dev.trellis.domain.plan.PlanResourceDraft
+import dev.trellis.domain.plan.PlanResourceView
 import dev.trellis.domain.plan.PoolUnit
 import dev.trellis.domain.plan.ResourceDraft
 import dev.trellis.domain.plan.StageDraft
@@ -271,6 +273,15 @@ internal class SqliteLearningPlanService(
             ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
         }
 
+    /** 排程模式：day / queue；计划不存在时按 day。 */
+    internal fun scheduleModeOf(planId: String): String =
+        connection.prepareStatement(
+            "SELECT pr.schedule_mode FROM process pr JOIN plan p ON p.process_id = pr.id WHERE p.id = ?",
+        ).use { ps ->
+            ps.setString(1, planId)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) ?: "day" else "day" }
+        }
+
     internal fun planTitle(planId: String): String =
         connection.prepareStatement(
             "SELECT p.title FROM process p JOIN plan pl ON pl.process_id = p.id WHERE pl.id = ?",
@@ -281,7 +292,7 @@ internal class SqliteLearningPlanService(
 
     internal fun occurrenceRow(id: String): OccurrenceRow? =
         connection.prepareStatement(
-            "SELECT o.id, o.commitment_id, o.unit_id, o.todo_id, o.day, o.estimate_minutes, o.mode, " +
+            "SELECT o.id, o.commitment_id, o.unit_id, o.todo_id, o.day, o.start_minute, o.estimate_minutes, o.mode, " +
                 "o.status, o.note, o.moved_from, o.carried_from, o.created_at, o.completed_at, " +
                 "pv.plan_id, c.week FROM occurrence o " +
                 "LEFT JOIN commitment c ON c.id = o.commitment_id " +
@@ -325,22 +336,25 @@ internal class SqliteLearningPlanService(
         mode: String,
         movedFrom: String? = null,
         carriedFrom: String? = null,
+        startMinute: Int? = null,
     ): String {
         val id = Ids.next("occ_")
+        val start = startMinute?.takeIf { it in 0..1439 }
         connection.prepareStatement(
-            "INSERT INTO occurrence(id,commitment_id,unit_id,todo_id,day,estimate_minutes,mode,status," +
-                "moved_from,carried_from,created_at) VALUES(?,?,?,?,?,?,?, 'planned',?,?,?)",
+            "INSERT INTO occurrence(id,commitment_id,unit_id,todo_id,day,start_minute,estimate_minutes,mode,status," +
+                "moved_from,carried_from,created_at) VALUES(?,?,?,?,?,?,?,?, 'planned',?,?,?)",
         ).use { ps ->
             ps.setString(1, id)
             ps.setString(2, commitmentId)
             ps.setString(3, unitId)
             ps.setString(4, todoId)
             ps.setString(5, day)
-            ps.setInt(6, minutes)
-            ps.setString(7, mode)
-            ps.setString(8, movedFrom)
-            ps.setString(9, carriedFrom)
-            ps.setString(10, nowIso())
+            if (start == null) ps.setNull(6, java.sql.Types.INTEGER) else ps.setInt(6, start)
+            ps.setInt(7, minutes)
+            ps.setString(8, mode)
+            ps.setString(9, movedFrom)
+            ps.setString(10, carriedFrom)
+            ps.setString(11, nowIso())
             ps.executeUpdate()
         }
         return id
@@ -427,6 +441,16 @@ internal class SqliteLearningPlanService(
         cmdUncompleteMilestone(env, milestoneId)
 
     override fun removeMilestone(env: CommandEnvelope, milestoneId: String) = cmdRemoveMilestone(env, milestoneId)
+
+    override fun resources(planId: String, includeDropped: Boolean): List<PlanResourceView> =
+        buildResources(planId, includeDropped)
+
+    override fun upsertResources(
+        env: CommandEnvelope, planId: String, drafts: List<PlanResourceDraft>,
+    ) = cmdUpsertResources(env, planId, drafts)
+
+    override fun setResourceStatus(env: CommandEnvelope, resourceId: String, status: String) =
+        cmdSetResourceStatus(env, resourceId, status)
 
     override fun linkPlanToGoal(env: CommandEnvelope, planId: String, goalId: String?) =
         cmdLinkPlanToGoal(env, planId, goalId)
@@ -536,11 +560,19 @@ internal class SqliteLearningPlanService(
         cmdScheduleUnit(env, commitmentId, unitId, day)
 
     override fun placeUnit(
-        env: CommandEnvelope, planId: String, week: String, unitId: String, day: String,
-    ) = cmdPlaceUnit(env, planId, week, unitId, day)
+        env: CommandEnvelope, planId: String, week: String, unitId: String, day: String, startMinute: Int?,
+    ) = cmdPlaceUnit(env, planId, week, unitId, day, startMinute)
+
+    override fun enqueueUnits(
+        env: CommandEnvelope, planId: String, week: String, unitIds: List<String>,
+    ) = cmdEnqueueUnits(env, planId, week, unitIds)
 
     override fun moveOccurrence(env: CommandEnvelope, occurrenceId: String, toDay: String, reason: String?) =
         cmdMoveOccurrence(env, occurrenceId, toDay, reason)
+
+    override fun setOccurrenceStart(
+        env: CommandEnvelope, occurrenceId: String, startMinute: Int?,
+    ) = cmdSetOccurrenceStart(env, occurrenceId, startMinute)
 
     override fun splitOccurrence(
         env: CommandEnvelope, occurrenceId: String, parts: List<dev.trellis.domain.plan.SplitPart>,
@@ -554,6 +586,12 @@ internal class SqliteLearningPlanService(
 
     override fun completeOccurrence(env: CommandEnvelope, occurrenceId: String, note: String?) =
         cmdCompleteOccurrence(env, occurrenceId, note)
+
+    override fun completeUnit(env: CommandEnvelope, planId: String, unitId: String, note: String?) =
+        cmdCompleteUnit(env, planId, unitId, note)
+
+    override fun setScheduleMode(env: CommandEnvelope, planId: String, mode: String) =
+        cmdSetScheduleMode(env, planId, mode)
 
     override fun uncompleteOccurrence(env: CommandEnvelope, occurrenceId: String) =
         cmdUncompleteOccurrence(env, occurrenceId)
@@ -671,6 +709,7 @@ internal data class OccurrenceRow(
     val unitId: String?,
     val todoId: String?,
     val day: String,
+    val startMinute: Int?,
     val minutes: Int,
     val mode: String,
     val status: String,
@@ -708,16 +747,17 @@ internal fun ResultSet.toOccurrence(): OccurrenceRow = OccurrenceRow(
     unitId = getString(3),
     todoId = getString(4),
     day = getString(5),
-    minutes = getInt(6),
-    mode = getString(7),
-    status = getString(8),
-    note = getString(9),
-    movedFrom = getString(10),
-    carriedFrom = getString(11),
-    createdAt = getString(12),
-    completedAt = getString(13),
-    planId = getString(14),
-    week = getString(15),
+    startMinute = getInt(6).takeIf { !wasNull() },
+    minutes = getInt(7),
+    mode = getString(8),
+    status = getString(9),
+    note = getString(10),
+    movedFrom = getString(11),
+    carriedFrom = getString(12),
+    createdAt = getString(13),
+    completedAt = getString(14),
+    planId = getString(15),
+    week = getString(16),
 )
 
 internal fun CommandResult<*>.errorMessage(): String? = error?.message

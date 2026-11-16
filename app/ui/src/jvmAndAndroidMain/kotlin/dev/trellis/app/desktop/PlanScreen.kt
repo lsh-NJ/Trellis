@@ -895,8 +895,78 @@ private fun PendingDetail(runtime: AppRuntime) {
 private fun WeekDetail(runtime: AppRuntime, controller: PlanDragController) {
     PlanCard {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            PlanDayAccordion(runtime, controller)
+            if (runtime.planScheduleMode == "queue") PlanWeekQueueCard(runtime)
+            PlanDayAccordion(runtime, controller, onlyCompleted = runtime.planScheduleMode == "queue")
             PlanReviewSection(runtime)
+        }
+    }
+}
+
+/**
+ * queue 模式的本周节点：只列还没完成的，前 5 个常驻，其余展开。
+ *
+ * 勾掉之后节点从列表消失、落到当天的完成记录里（日折叠卡），不再有「排到某天」这一步。
+ */
+@Composable
+private fun PlanWeekQueueCard(runtime: AppRuntime) {
+    val tokens = LocalTrellisTokens.current
+    val remaining = runtime.planQueueUnits.filter { it.state != "done" }
+    val doneCount = runtime.planQueueUnits.size - remaining.size
+    var expanded by remember(runtime.planSelectedWeek) { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("本周节点", style = tokens.type.meta, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.weight(1f))
+            Text(
+                if (runtime.planQueueUnits.isEmpty()) "" else "$doneCount/" + runtime.planQueueUnits.size + " 已完成",
+                style = tokens.type.caption,
+                fontFamily = AppFonts.mono,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (runtime.planQueueUnits.isEmpty()) {
+            Text(
+                "这一周还没有节点；在对话里让 AGENT 排本周，或先看别的周。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return@Column
+        }
+        if (remaining.isEmpty()) {
+            Text(
+                "这一周的节点都完成了。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return@Column
+        }
+        val visible = if (expanded) remaining else remaining.take(5)
+        visible.forEach { unit ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                ChromeCheckbox(checked = false, onCheckedChange = { runtime.completePlanUnit(unit.id) })
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(unit.title, style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        buildString {
+                            if (unit.chapter.isNotBlank()) append(unit.chapter).append(" · ")
+                            append(unit.estimateMinutes).append(" 分钟")
+                            append(" · ").append(unitKindLabel(unit.kind))
+                        },
+                        style = tokens.type.meta,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        if (remaining.size > 5) {
+            ChromeTextLink(
+                if (expanded) "收起" else "还有 " + (remaining.size - 5) + " 个 · 展开",
+                onClick = { expanded = !expanded },
+            )
         }
     }
 }

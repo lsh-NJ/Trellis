@@ -91,7 +91,7 @@ class PlanCompletedGuardTest {
     private suspend fun completedHarness(): Harness {
         val home = Files.createTempDirectory("plan-completed-guard").toFile().apply { deleteOnExit() }
         val clock = FixedClock(today, zone)
-        val svc = LearningPlanStore.inMemory({ clock.nowMs() }, zone)
+        val svc = LearningPlanStore.open(File(File(home, "plans"), "plan.db").toPath(), { clock.nowMs() }, zone)
         val created = svc.createProcess(
             env(),
             "操作系统速通",

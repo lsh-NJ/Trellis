@@ -51,6 +51,8 @@ internal val PLAN_SCHEMA_V1: List<String> = listOf(
         "goal_id TEXT NULL REFERENCES goal(id), " +
         "weekly_capacity_minutes INTEGER NULL CHECK (weekly_capacity_minutes IS NULL OR " +
         "weekly_capacity_minutes BETWEEN 30 AND 3000), " +
+        // 排程模式：day = 旧行为（周承诺铺到具体天）；queue = 周队列（节点不排天，完成时落当天）。
+        "schedule_mode TEXT NOT NULL DEFAULT 'day' CHECK (schedule_mode IN ('day','queue')), " +
         "status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','ended')), " +
         "created_at TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS plan (" +
@@ -80,7 +82,18 @@ internal val PLAN_SCHEMA_V1: List<String> = listOf(
         "kind TEXT NOT NULL CHECK (kind IN ('bilibili','web','doc','other')), " +
         "title TEXT NOT NULL CHECK (length(title) >= 1), " +
         "url TEXT NOT NULL DEFAULT '', locator TEXT NOT NULL DEFAULT '', " +
-        "source TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)",
+        "source TEXT NOT NULL DEFAULT '', resource_id TEXT NULL, created_at TEXT NOT NULL)",
+    // 计划级资源池：课程 → 分集两级；分集本身不是节点，只是可被周节点引用的材料。
+    "CREATE TABLE IF NOT EXISTS plan_resource (" +
+        "id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plan(id), " +
+        "parent_id TEXT NULL REFERENCES plan_resource(id), " +
+        "kind TEXT NOT NULL CHECK (kind IN ('course','part','article','wiki','book','exercise','other')), " +
+        "title TEXT NOT NULL CHECK (length(title) >= 1), " +
+        "url TEXT NOT NULL DEFAULT '', locator TEXT NOT NULL DEFAULT '', " +
+        "minutes INTEGER NULL, note TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', " +
+        "status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','suggested','dropped')), " +
+        "sort_order INTEGER NOT NULL, created_at TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_plan_resource_plan ON plan_resource(plan_id, parent_id, sort_order)",
     "CREATE INDEX IF NOT EXISTS idx_unit_resource_unit ON unit_resource(unit_id)",
     "CREATE TABLE IF NOT EXISTS commitment (" +
         "id TEXT PRIMARY KEY, plan_version_id TEXT NOT NULL REFERENCES plan_version(id), " +
@@ -99,12 +112,23 @@ internal val PLAN_SCHEMA_V1: List<String> = listOf(
         "week_end TEXT NOT NULL CHECK (week_end GLOB '[0-9][0-9][0-9][0-9]-W[0-9][0-9]'), " +
         "focus TEXT NOT NULL DEFAULT '', sort_order INTEGER NOT NULL, created_at TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS idx_plan_stage_version ON plan_stage(plan_version_id, sort_order)",
+    // 计划文档：总文档（kind=overview，week=''）与周文档（kind=week，week=2026-W46）。
+    // 以前是 plans/docs/*.md 文件，和计划库分成两个真相；进库后一次事务就能把「建计划 + 写文档」写完。
+    "CREATE TABLE IF NOT EXISTS plan_doc (" +
+        "id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plan(id), " +
+        "kind TEXT NOT NULL CHECK (kind IN ('overview','week')), " +
+        "week TEXT NOT NULL DEFAULT '' CHECK (week = '' OR week GLOB '[0-9][0-9][0-9][0-9]-W[0-9][0-9]'), " +
+        "markdown TEXT NOT NULL, updated_at TEXT NOT NULL, " +
+        "UNIQUE (plan_id, kind, week))",
     "CREATE TABLE IF NOT EXISTS occurrence (" +
         "id TEXT PRIMARY KEY, " +
         "commitment_id TEXT NULL REFERENCES commitment(id), " +
         "unit_id TEXT NULL REFERENCES plan_unit(id), " +
         "todo_id TEXT NULL REFERENCES todo(id), " +
         "day TEXT NOT NULL CHECK (day GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'), " +
+        // 钟点：当天第几分钟（0 = 00:00，600 = 10:00）。NULL = 只知道哪天、不知道几点。
+        // 不加 NOT NULL：旧数据、批量排周都不该被迫编一个时间出来。
+        "start_minute INTEGER NULL CHECK (start_minute IS NULL OR (start_minute BETWEEN 0 AND 1439)), " +
         "estimate_minutes INTEGER NOT NULL CHECK (estimate_minutes BETWEEN 5 AND 60), " +
         "mode TEXT NOT NULL DEFAULT 'full' CHECK (mode IN ('full','minimal')), " +
         "status TEXT NOT NULL DEFAULT 'planned' CHECK (status IN ('planned','done','missed','skipped','superseded')), " +
@@ -199,7 +223,7 @@ internal val PLAN_SCHEMA_V1: List<String> = listOf(
     "CREATE TRIGGER IF NOT EXISTS session_no_rewrite_when_closed BEFORE UPDATE ON session " +
         "WHEN OLD.ended_at IS NOT NULL BEGIN SELECT RAISE(ABORT, 'closed session is immutable'); END",
     "CREATE VIEW IF NOT EXISTS v_occurrence_detail AS SELECT " +
-        "o.id, o.day, o.status, o.mode, o.estimate_minutes, o.note, o.moved_from, o.carried_from, " +
+        "o.id, o.day, o.start_minute, o.status, o.mode, o.estimate_minutes, o.note, o.moved_from, o.carried_from, " +
         "o.superseded_by, o.todo_id, o.unit_id, o.commitment_id, o.created_at, " +
         "u.title AS unit_title, u.chapter, u.min_version_minutes, u.kind AS unit_kind, " +
         "c.week, pv.plan_id, pv.id AS plan_version_id, t.title AS todo_title " +

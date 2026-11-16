@@ -16,7 +16,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
 /**
- * 计划文档的 AI 之手：读 / 写 `<home>/plans/docs/<planId>.md`，并把某一周的条目**确认后**追加成计划单元。
+ * 计划文档的 AI 之手：读 / 写计划库 `plan_doc` 表，并把某一周的条目**确认后**追加成计划单元。
  *
  * 为什么先有文档再落库：
  * - 文档是「想法」层：AI 可以先写目标、按周拆条目、把没想清楚的丢进「待安排」，用户改起来就是一篇文章；
@@ -148,11 +148,11 @@ class PlanDocTools(
                 )
             }
             val parsed = runCatching { store.parse(markdown) }.getOrNull()
-            val file = store.save(planId, markdown)
+            store.save(planId, markdown)
             onChanged()
             ToolResult(
                 buildString {
-                    append("已保存计划文档（").append(markdown.length).append(" 字）：").append(file.name)
+                    append("已保存计划文档（").append(markdown.length).append(" 字）")
                     if (parsed != null) {
                         append("。目标 ").append(parsed.targets.size).append(" 条、按周 ").append(parsed.weeks.keys.size)
                             .append(" 个、待安排 ").append(parsed.unscheduled.size).append(" 条。")

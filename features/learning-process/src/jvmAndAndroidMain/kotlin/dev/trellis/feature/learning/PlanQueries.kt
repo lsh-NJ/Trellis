@@ -19,6 +19,7 @@ import dev.trellis.domain.plan.MinimalVersion
 import dev.trellis.domain.plan.OpenNode
 import dev.trellis.domain.plan.OriginLabel
 import dev.trellis.domain.plan.PlanDiff
+import dev.trellis.domain.plan.PlanResourceView
 import dev.trellis.domain.plan.PlanStateView
 import dev.trellis.domain.plan.ReviewView
 import dev.trellis.domain.plan.StageView
@@ -57,7 +58,10 @@ internal fun SqliteLearningPlanService.buildDayView(planId: String?, day: String
     // 看的可能不是今天（周卡片可以点未来的周），别把「今天」当成所有日子的代词。
     val isToday = date == todayDate()
     val word = if (isToday) "今天" else "这天"
+    val queueMode = scheduleModeOf(planId) == "queue"
     val headline = when {
+        queueMode && completed.isNotEmpty() -> "${word}完成 ${completed.size} 件。"
+        queueMode -> "${word}还没有完成记录。"
         occurrences.size == 1 -> "${word}一件事：${occurrences.first().title} · ${occurrences.first().minutes} 分钟。"
         occurrences.size > 1 -> "${word} ${occurrences.size} 件事，先做${occurrences.first().title}。"
         completed.isNotEmpty() -> "${word}已经做完了。"
@@ -77,12 +81,14 @@ internal fun SqliteLearningPlanService.buildDayView(planId: String?, day: String
 private fun SqliteLearningPlanService.plannedOccurrences(planId: String, day: String): List<DayOccurrence> {
     val raw = connection.prepareStatement(
         "SELECT d.id, d.unit_title, d.chapter, d.estimate_minutes, d.mode, d.status, d.min_version_minutes, " +
-            "d.moved_from, d.carried_from, d.todo_title, d.unit_id, d.unit_kind FROM v_occurrence_detail d " +
+            "d.moved_from, d.carried_from, d.todo_title, d.unit_id, d.unit_kind, d.start_minute " +
+            "FROM v_occurrence_detail d " +
             "LEFT JOIN plan_unit pu ON pu.id = d.unit_id " +
             "WHERE d.plan_id = ? AND d.day = ? AND d.status = 'planned' " +
-            // 排期顺序 = 路线顺序（plan_unit.sort_order），同一天里靠前的单元先出现；
+            // 定了钟点的按时间排最前（今天按顺序往下过），没定时间的仍按路线顺序排在后面；
             // 待办没有 sort_order，用 created_at 兜底放到最后。
-            "ORDER BY COALESCE(pu.sort_order, 2147483647), d.created_at",
+            "ORDER BY CASE WHEN d.start_minute IS NULL THEN 1 ELSE 0 END, d.start_minute, " +
+            "COALESCE(pu.sort_order, 2147483647), d.created_at",
     ).use { ps ->
         ps.setString(1, planId)
         ps.setString(2, day)
@@ -110,6 +116,7 @@ private fun SqliteLearningPlanService.plannedOccurrences(planId: String, day: St
                             actions = listOf("complete", "move", "split", "shorten", "skip"),
                             unitId = rs.getString(11),
                             kind = rs.getString(12) ?: "study",
+                            startMinute = rs.getInt(13).takeIf { !rs.wasNull() },
                         ),
                     )
                 }
@@ -119,6 +126,39 @@ private fun SqliteLearningPlanService.plannedOccurrences(planId: String, day: St
     // 资料按单元一次批量取（IN 查询），不在这里逐条查库。
     val resources = resourcesOf(raw.mapNotNull { it.unitId }.distinct())
     return raw.map { it.copy(resources = resources[it.unitId].orEmpty()) }
+}
+
+/**
+ * 计划资源池：课程在前（parent_id 为空），分集等子项紧跟其后。
+ * 默认不返回 dropped（卖课集只在「显示已剔除」时可见）。
+ */
+internal fun SqliteLearningPlanService.buildResources(planId: String, includeDropped: Boolean): List<PlanResourceView> {
+    val sql = "SELECT id,parent_id,kind,title,url,locator,minutes,note,source,status FROM plan_resource " +
+        "WHERE plan_id = ?" + if (includeDropped) "" else " AND status <> 'dropped'" +
+        " ORDER BY CASE WHEN parent_id IS NULL THEN 0 ELSE 1 END, sort_order"
+    return connection.prepareStatement(sql).use { ps ->
+        ps.setString(1, planId)
+        ps.executeQuery().use { rs ->
+            buildList {
+                while (rs.next()) {
+                    add(
+                        PlanResourceView(
+                            id = rs.getString(1),
+                            parentId = rs.getString(2),
+                            kind = rs.getString(3),
+                            title = rs.getString(4),
+                            url = rs.getString(5) ?: "",
+                            locator = rs.getString(6) ?: "",
+                            minutes = rs.getInt(7).takeIf { !rs.wasNull() },
+                            note = rs.getString(8) ?: "",
+                            source = rs.getString(9) ?: "",
+                            status = rs.getString(10) ?: "active",
+                        ),
+                    )
+                }
+            }
+        }
+    }
 }
 
 /**
@@ -217,7 +257,8 @@ internal fun SqliteLearningPlanService.buildWeekView(planId: String, week: Strin
     val reviewed = reviewExists(planId, week)
     // 周日当天本周也算「到期」：这一天就给生成入口，不用等到下周一。
     val reviewOpen = weekEnded || (week == currentWeek() && PlanTime.isWeekEnd(today))
-    val scheduled = days.any { it.items.isNotEmpty() } ||
+    val scheduled = scheduleModeOf(planId) == "queue" && commitmentUnits.isNotEmpty() ||
+        days.any { it.items.isNotEmpty() } ||
         connection.prepareStatement(
             "SELECT 1 FROM occurrence o JOIN commitment c ON c.id = o.commitment_id " +
                 "WHERE c.plan_version_id = (SELECT current_version_id FROM plan WHERE id = ?) " +
@@ -371,11 +412,13 @@ internal fun SqliteLearningPlanService.actualMinutesByOccurrenceOf(
 
 private fun SqliteLearningPlanService.dayItems(planId: String, day: String): List<WeekDayItem> {
     val pairs = connection.prepareStatement(
-        "SELECT d.id, COALESCE(d.unit_title, d.todo_title), d.status, d.estimate_minutes, d.carried_from, d.unit_kind, d.unit_id " +
+        "SELECT d.id, COALESCE(d.unit_title, d.todo_title), d.status, d.estimate_minutes, d.carried_from, " +
+            "d.unit_kind, d.unit_id, d.start_minute " +
             "FROM v_occurrence_detail d LEFT JOIN plan_unit pu ON pu.id = d.unit_id " +
             "WHERE d.plan_id = ? AND d.day = ? AND d.status <> 'superseded' " +
-            // 同上：天条里的顺序也按路线顺序，保证「索引靠前的节点排在当天前面」。
-            "ORDER BY COALESCE(pu.sort_order, 2147483647), d.created_at",
+            // 同上：有钟点的按时间排，其余按路线顺序，保证「索引靠前的节点排在当天前面」。
+            "ORDER BY CASE WHEN d.start_minute IS NULL THEN 1 ELSE 0 END, d.start_minute, " +
+            "COALESCE(pu.sort_order, 2147483647), d.created_at",
     ).use { ps ->
         ps.setString(1, planId)
         ps.setString(2, day)
@@ -390,6 +433,7 @@ private fun SqliteLearningPlanService.dayItems(planId: String, day: String): Lis
                             minutes = rs.getInt(4),
                             carried = rs.getString(5) != null,
                             kind = rs.getString(6) ?: "study",
+                            startMinute = rs.getInt(8).takeIf { !rs.wasNull() },
                         ) to rs.getString(7),
                     )
                 }
@@ -557,6 +601,7 @@ internal fun SqliteLearningPlanService.buildPlanState(planId: String): PlanState
         carryPending = carryPending,
         title = planTitle(planId),
         dailyMinutes = dailyMinutes,
+        scheduleMode = scheduleModeOf(planId),
     )
 }
 

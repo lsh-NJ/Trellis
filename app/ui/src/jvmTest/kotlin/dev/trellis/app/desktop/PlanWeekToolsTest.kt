@@ -92,12 +92,13 @@ class PlanWeekToolsTest {
             week: String,
             unitId: String,
             day: String,
+            startMinute: Int?,
         ): CommandResult<OccurrenceRef> {
             if (calls.none { it.startsWith("placeUnit") }) {
                 docAtFirstPlace = docStore.readWeek(this.planId, this.week)
             }
             calls += "placeUnit:$day"
-            return delegate.placeUnit(env, planId, week, unitId, day)
+            return delegate.placeUnit(env, planId, week, unitId, day, startMinute)
         }
     }
 
@@ -122,8 +123,8 @@ class PlanWeekToolsTest {
     ): Harness {
         val home = Files.createTempDirectory("plan-week-tools").toFile()
         val clock = FixedClock(today, zone)
-        // 计划库用内存实现；周文档要落盘，给它一个临时 home。
-        val base = LearningPlanStore.inMemory({ clock.nowMs() }, zone)
+        // 计划库和周文档现在在同一个 SQLite 里（plan.db）：临时 home 下开一份真库。
+        val base = LearningPlanStore.open(File(File(home, "plans"), "plan.db").toPath(), { clock.nowMs() }, zone)
         val created = base.createShell(env(), "操作系统速通", "两周围绕进程与调度")
         assertTrue(created.ok, "建空壳计划失败：" + created.error?.message)
         val planId = created.value!!.planId

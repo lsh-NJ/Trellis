@@ -1,8 +1,10 @@
 package dev.trellis.feature.learning
 
+import dev.trellis.domain.plan.Actor
+import dev.trellis.domain.plan.CommandEnvelope
 import java.io.File
-import java.io.IOException
 import java.nio.file.Files
+import java.util.UUID
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -12,15 +14,30 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** 计划文档存储：`<home>/plans/docs/<planId>.md` 的读写与容错解析。 */
+/** 计划文档存储：文档在 `plan_doc` 表里（与计划库同一个 SQLite），解析仍是纯函数。 */
 class PlanDocStoreTest {
 
     private val home: File = Files.createTempDirectory("trellis-plan-doc").toFile()
+    private val service = LearningPlanStore.open(File(File(home, "plans"), "plan.db").toPath())
     private val store = PlanDocStore(home)
 
     @AfterTest
     fun tearDown() {
+        store.close()
+        service.close()
         home.deleteRecursively()
+    }
+
+    private fun env(): CommandEnvelope = CommandEnvelope(
+        commandId = "cmd_test_" + UUID.randomUUID(),
+        actor = Actor.USER,
+        origin = "test",
+    )
+
+    private fun newPlan(title: String = "测试计划"): String {
+        val created = service.createShell(env(), title, "把这件事做完")
+        assertTrue(created.ok, "建计划失败：" + created.error?.message)
+        return created.value!!.planId
     }
 
     private val sample = """
@@ -43,42 +60,82 @@ class PlanDocStoreTest {
 
     @Test
     fun saveThenReadRoundTripsTheMarkdown() {
+        val planId = newPlan()
         val markdown = "# 目标与验收\n- 目标A：学完\n"
-        val file = store.save("pln_test1", markdown)
+        store.save(planId, markdown)
 
-        assertEquals(File(File(File(home, "plans"), "docs"), "pln_test1.md"), file)
-        assertTrue(file.isFile)
-        assertEquals(markdown, store.read("pln_test1"))
-        assertNotNull(store.load("pln_test1"))
-    }
-
-    @Test
-    fun aDocumentPathIsGuardedAgainstDirectoryTraversal() {
-        assertEquals(
-            File(File(File(home, "plans"), "docs"), "pln_abc.md"),
-            store.fileFor("pln_abc"),
-        )
-        assertFailsWith<IllegalArgumentException> { store.fileFor("../evil") }
-        assertFailsWith<IllegalArgumentException> { store.fileFor("a/b") }
-        assertNull(store.read("../evil"))
-        assertNull(store.load("../evil"))
+        assertEquals(markdown, store.read(planId))
+        assertNotNull(store.load(planId))
+        assertTrue(planId in store.planIds())
     }
 
     @Test
     fun aMissingDocumentReadsAsNull() {
-        assertNull(store.read("pln_nothing"))
-        assertNull(store.load("pln_nothing"))
-        assertFalse(File(File(home, "plans"), "docs").exists())
+        val planId = newPlan()
+        assertNull(store.read(planId))
+        assertNull(store.load(planId))
+        assertTrue(store.weeks(planId).isEmpty())
     }
 
     @Test
-    fun saveCreatesTheDocsDirectoryAndReplacesTheOldDocument() {
-        store.save("pln_test1", "第一版")
-        assertEquals("第一版", store.read("pln_test1"))
+    fun saveReplacesTheOldDocument() {
+        val planId = newPlan()
+        store.save(planId, "第一版")
+        assertEquals("第一版", store.read(planId))
 
-        store.save("pln_test1", "第二版")
-        assertEquals("第二版", store.read("pln_test1"))
-        assertEquals(listOf("pln_test1.md"), File(File(home, "plans"), "docs").list()!!.toList())
+        store.save(planId, "第二版")
+        assertEquals("第二版", store.read(planId))
+    }
+
+    @Test
+    fun anInvalidPlanIdIsRejectedInsteadOfTouchingAnotherRow() {
+        assertNull(store.read("../evil"))
+        assertNull(store.load("../evil"))
+        assertFailsWith<IllegalArgumentException> { store.save("../evil", "内容") }
+    }
+
+    @Test
+    fun savingADocumentForAnUnknownPlanFails() {
+        assertFailsWith<IllegalArgumentException> { store.save("pln_missing", "内容") }
+        assertFailsWith<IllegalArgumentException> { store.saveWeek("pln_missing", "2026-W45", "内容") }
+    }
+
+    @Test
+    fun weekDocumentsRoundTripNewestFirst() {
+        val planId = newPlan()
+        store.saveWeek(planId, "2026-W45", "## 2026-W45\n- 条目一")
+        store.saveWeek(planId, "2026-W46", "## 2026-W46\n- 条目二")
+
+        assertEquals(listOf("2026-W46", "2026-W45"), store.weeks(planId))
+        assertEquals("## 2026-W45\n- 条目一", store.readWeek(planId, "2026-W45"))
+        assertFailsWith<IllegalArgumentException> { store.saveWeek(planId, "第45周", "内容") }
+    }
+
+    @Test
+    fun legacyMarkdownFilesAreImportedOnceAndNeverOverwrite() {
+        val planId = newPlan("旧文档计划")
+        val docs = File(File(home, "plans"), "docs")
+        File(docs, planId).mkdirs()
+        assertTrue(docs.mkdirs() || docs.isDirectory)
+        File(docs, "$planId.md").writeText("# 目标与验收\n- 旧的目标\n", Charsets.UTF_8)
+        File(File(docs, planId), "2026-W45.md").writeText("## 2026-W45\n- 旧条目\n", Charsets.UTF_8)
+
+        // 新开一个 store 会触发迁移；已有行不覆盖。
+        val reopened = PlanDocStore(home)
+        try {
+            assertEquals("# 目标与验收\n- 旧的目标\n", reopened.read(planId))
+            assertEquals("## 2026-W45\n- 旧条目\n", reopened.readWeek(planId, "2026-W45"))
+
+            File(docs, "$planId.md").writeText("后来改过的文件", Charsets.UTF_8)
+            val third = PlanDocStore(home)
+            try {
+                assertEquals("# 目标与验收\n- 旧的目标\n", third.read(planId))
+            } finally {
+                third.close()
+            }
+        } finally {
+            reopened.close()
+        }
     }
 
     @Test
@@ -179,17 +236,6 @@ class PlanDocStoreTest {
     }
 
     @Test
-    fun aCorruptFileReadsAsNullInsteadOfThrowing() {
-        val file = store.fileFor("pln_broken")
-        file.parentFile.mkdirs()
-        // 非法 UTF-8 字节：0xC3 后面必须是续字节，0x28 不是。
-        file.writeBytes(byteArrayOf(0x23, 0x20, 0xC3.toByte(), 0x28, 0x0A))
-
-        assertNull(store.read("pln_broken"))
-        assertNull(store.load("pln_broken"))
-    }
-
-    @Test
     fun parseReadsStagesWithWeekRangesAndResources() {
         val doc = store.parse(
             """
@@ -261,8 +307,9 @@ class PlanDocStoreTest {
 
     @Test
     fun stageForWeekMatchesTheWeekRangeAndSkipsStagesWithoutOne() {
+        val planId = newPlan("阶段计划")
         store.save(
-            "pln_stage_week",
+            planId,
             """
             ## 阶段
             ### 阶段 1 · 基础语法（2026-W45 – 2026-W46）
@@ -272,18 +319,26 @@ class PlanDocStoreTest {
             """.trimIndent(),
         )
 
-        assertEquals("基础语法", store.stageForWeek("pln_stage_week", "2026-W45")?.name)
-        assertEquals("基础语法", store.stageForWeek("pln_stage_week", "2026-W46")?.name)
-        assertNull(store.stageForWeek("pln_stage_week", "2026-W47"))
+        assertEquals("基础语法", store.stageForWeek(planId, "2026-W45")?.name)
+        assertEquals("基础语法", store.stageForWeek(planId, "2026-W46")?.name)
+        assertNull(store.stageForWeek(planId, "2026-W47"))
         assertNull(store.stageForWeek("pln_missing", "2026-W45"))
     }
 
     @Test
-    fun saveFailsWithAPlainMessageWhenTheDirectoryCannotBeCreated() {
-        val blocked = File(home, "blocked")
-        blocked.writeText("这里是个文件，不是目录")
-        val failing = PlanDocStore(blocked)
+    fun aCorruptLegacyFileIsSkippedInsteadOfCrashingTheStore() {
+        val planId = newPlan("坏文档计划")
+        val docs = File(File(home, "plans"), "docs")
+        docs.mkdirs()
+        // 非法 UTF-8 字节：0xC3 后面必须是续字节，0x28 不是。
+        File(docs, "$planId.md").writeBytes(byteArrayOf(0x23, 0x20, 0xC3.toByte(), 0x28, 0x0A))
 
-        assertFailsWith<IOException> { failing.save("pln_test1", "内容") }
+        val reopened = PlanDocStore(home)
+        try {
+            assertNull(reopened.read(planId))
+        } finally {
+            reopened.close()
+        }
     }
+
 }

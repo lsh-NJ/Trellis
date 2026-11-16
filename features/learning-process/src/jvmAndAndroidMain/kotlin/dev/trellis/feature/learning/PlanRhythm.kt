@@ -44,6 +44,81 @@ internal fun SqliteLearningPlanService.cmdSettleWeek(
             )
         }
 
+        // queue 模式：这一周没完成的节点整队顺延到下一周，不标 missed、不建 occurrence。
+        if (scheduleModeOf(planId) == "queue") {
+            val version = currentVersion(planId)
+                ?: return@write fail(ErrorCode.E_STATE, "这个计划还没有生效的版本。")
+            val weekCommitment = connection.prepareStatement(
+                "SELECT id FROM commitment WHERE plan_version_id = ? AND week = ?",
+            ).use { ps ->
+                ps.setString(1, version); ps.setString(2, week)
+                ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+            }
+            if (weekCommitment == null) {
+                appendEvent(
+                    type = "plan.settled", entity = "plan", entityId = planId, planId = planId,
+                    payload = eventJson(
+                        "week" to JsonPrimitive(week), "missed" to JsonPrimitive(0),
+                        "carried" to JsonPrimitive(0), "pending" to JsonPrimitive(0),
+                    ),
+                    actor = dev.trellis.domain.plan.Actor.SYSTEM, commandId = env.commandId,
+                )
+                return@write ok(SettleResult(week, missedCount = 0, carriedCount = 0, pendingCarry = 0))
+            }
+            val unfinished = mutableListOf<String>()
+            connection.prepareStatement(
+                "SELECT cu.unit_id FROM commitment_unit cu WHERE cu.commitment_id = ? " +
+                    "AND NOT EXISTS (SELECT 1 FROM occurrence o WHERE o.unit_id = cu.unit_id AND o.status = 'done') " +
+                    "ORDER BY cu.sort_order",
+            ).use { ps ->
+                ps.setString(1, weekCommitment)
+                ps.executeQuery().use { rs -> while (rs.next()) unfinished += rs.getString(1) }
+            }
+            val carryWeek = maxOf(PlanTime.nextWeek(week), currentWeek())
+            var carryCommitment = connection.prepareStatement(
+                "SELECT id FROM commitment WHERE plan_version_id = ? AND week = ?",
+            ).use { ps ->
+                ps.setString(1, version); ps.setString(2, carryWeek)
+                ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+            }
+            if (carryCommitment == null) {
+                carryCommitment = Ids.next("cm_")
+                connection.prepareStatement(
+                    "INSERT INTO commitment(id,plan_version_id,week,created_at) VALUES(?,?,?,?)",
+                ).use { ps ->
+                    ps.setString(1, carryCommitment); ps.setString(2, version)
+                    ps.setString(3, carryWeek); ps.setString(4, nowIso())
+                    ps.executeUpdate()
+                }
+            }
+            var sort = connection.prepareStatement(
+                "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM commitment_unit WHERE commitment_id = ?",
+            ).use { ps ->
+                ps.setString(1, carryCommitment)
+                ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+            }
+            var carried = 0
+            unfinished.forEach { unitId ->
+                val added = connection.prepareStatement(
+                    "INSERT OR IGNORE INTO commitment_unit(commitment_id,unit_id,sort_order) VALUES(?,?,?)",
+                ).use { ps ->
+                    ps.setString(1, carryCommitment); ps.setString(2, unitId); ps.setInt(3, sort)
+                    ps.executeUpdate()
+                }
+                if (added > 0) { carried++; sort++ }
+            }
+            appendEvent(
+                type = "plan.settled", entity = "plan", entityId = planId, planId = planId,
+                payload = eventJson(
+                    "week" to JsonPrimitive(week), "missed" to JsonPrimitive(0),
+                    "carried" to JsonPrimitive(carried), "pending" to JsonPrimitive(0),
+                    "mode" to JsonPrimitive("queue"),
+                ),
+                actor = dev.trellis.domain.plan.Actor.SYSTEM, commandId = env.commandId,
+            )
+            return@write ok(SettleResult(week, missedCount = 0, carriedCount = carried, pendingCarry = 0))
+        }
+
         val missed = mutableListOf<OccurrenceRow>()
         connection.prepareStatement(
             "SELECT o.id FROM occurrence o JOIN commitment c ON c.id = o.commitment_id " +

@@ -6,6 +6,7 @@ import dev.trellis.domain.plan.Actor
 import dev.trellis.domain.plan.CommandEnvelope
 import dev.trellis.domain.plan.CommitmentUnitView
 import dev.trellis.domain.plan.LearningPlanService
+import dev.trellis.domain.plan.PlanResourceDraft
 import dev.trellis.domain.plan.ResourceDraft
 import dev.trellis.domain.plan.StageDraft
 import dev.trellis.domain.plan.UnitDraft
@@ -52,8 +53,8 @@ internal class PlanEditTools(
 
     val guidance: String = listOf(
         "<how_to_edit_plan>",
-        "1. 计划域只留两个工具：read_plan 读、update_plan 写。不要再找 get_learning_plan / plan_week /",
-        "   create_learning_plan / write_plan_doc 这些旧名字——它们已经收进 update_plan 的 op 里。",
+        "1. 计划域只有三个入口：read_plan 读、update_plan 改、create_plan 三步新建（调研→总文档→本周队列）。",
+        "   不要再找 get_learning_plan / plan_week / create_learning_plan / write_plan_doc 这些旧名字——它们已经收进 op 里。",
         "2. 动手前先 read_plan：拿到 planId、阶段、本周节点（occurrenceId）、待安排池和总文档。",
         "3. 写操作一律先给用户方案、拿到明确同意，再带 confirmed=true 调 update_plan；",
         "   不确定就先 ask_choices。没 confirmed 时工具会拒绝，并告诉你去问用户。",
@@ -126,12 +127,25 @@ internal class PlanEditTools(
                     append("周 ").append(target).append("：")
                     if (view == null) {
                         appendLine("（读不到）")
+                    } else if (runCatching { svc.planState(planId).scheduleMode }.getOrDefault("day") == "queue") {
+                        appendLine()
+                        appendLine("本周队列（完成一个记到当天）：")
+                        if (view.commitment.units.isEmpty()) {
+                            appendLine("  （这一周还没有节点）")
+                        } else {
+                            view.commitment.units.forEach { unit ->
+                                appendLine("  - [").append(unit.id).append("] ").append(unit.title)
+                                    .append(" · ").append(unit.estimateMinutes).append(" 分钟 · ").append(unit.stateLabel)
+                            }
+                        }
                     } else {
                         appendLine()
                         view.days.filter { it.items.isNotEmpty() }.forEach { day ->
                             appendLine("  ").append(day.label).append("：")
                             day.items.forEach { item ->
-                                appendLine("    - [").append(item.occurrenceId).append("] ").append(item.title)
+                                appendLine("    - [").append(item.occurrenceId).append("] ")
+                                    .append(item.startMinute?.let { hhmm(it) + " " } ?: "")
+                                    .append(item.title)
                                     .append(" · ").append(item.minutes).append(" 分钟 · ").append(item.status)
                                     .append(if (item.resources.isEmpty()) "" else " · 资源 " + item.resources.size + " 条")
                             }
@@ -167,6 +181,25 @@ internal class PlanEditTools(
                     appendLine("逾期与重排：")
                     append(buildOverdueText(svc, planId, arguments.int("rearrangeExtraMinutes")))
                 }
+                if ("resources" in include) {
+                    val resources = runCatching { svc.resources(planId) }.getOrDefault(emptyList())
+                    appendLine()
+                    appendLine("资源池（${resources.size} 条）：")
+                    if (resources.isEmpty()) {
+                        appendLine("  （还没有资源；insert resources 或 create_plan 带 bvid/urls 入库）")
+                    } else {
+                        resources.forEach { resource ->
+                            append("  - [").append(resource.id).append("] ")
+                                .append(if (resource.parentId == null) "" else "  ")
+                                .append(resource.title)
+                                .append(" · ").append(resource.kind)
+                            if (resource.minutes != null) append(" · ").append(resource.minutes).append(" 分钟")
+                            if (resource.locator.isNotBlank()) append(" · ").append(resource.locator)
+                            if (resource.status != "active") append(" · ").append(resource.status)
+                            appendLine()
+                        }
+                    }
+                }
                 if ("doc" in include) {
                     val doc = docStore()?.read(planId)
                     appendLine()
@@ -197,8 +230,9 @@ internal class PlanEditTools(
               {"op":"insert","into":"units","week":"2026-W46","units":[{"title","chapter","minutes","kind","day"}]}
               {"op":"update","target":"plan","set":{"dailyMinutes":90}}
               {"op":"update","target":"stages","match":{"name":"..."},"set":{"name","weekStart","weekEnd","focus"}}
-              {"op":"update","target":"units","match":{"title":"..."},"week":"可选","set":{"day":"2026-11-09","status":"done","resources":[{"title","url","kind","locator"}]}}
-              {"op":"update","target":"units","match":{"occurrenceId":"occ_..."},"set":{"day":"2026-11-11"}}
+              {"op":"update","target":"units","match":{"title":"..."},"week":"可选","set":{"day":"2026-11-09","startTime":"09:30","status":"done","resources":[{"title","url","kind","locator"}]}}
+              {"op":"update","target":"units","match":{"occurrenceId":"occ_..."},"set":{"day":"2026-11-11","startTime":"14:00"}}
+              // startTime 写 "HH:MM" 或 0–1439 的分钟数；null = 清掉钟点
               {"op":"schedule_week","week":"2026-W46","dailyMinutes":90,"replan":false}
               {"op":"rearrange","extraMinutes":30,"fromDay":"2026-11-10"}  // 逾期插最前、今天原有整块后移
               {"op":"write_doc","markdown":"# 目标与验收..."}
@@ -257,17 +291,19 @@ internal class PlanEditTools(
                 "plan" -> insertPlan(svc, op, dryRun)
                 "stages" -> insertStages(svc, op, dryRun, planId)
                 "units" -> insertUnits(svc, op, dryRun, planId)
-                else -> OpResult("insert 的 into 只能是 plan / stages / units。", isError = true)
+                "resources" -> insertResources(svc, op, dryRun, planId)
+                else -> OpResult("insert 的 into 只能是 plan / stages / units / resources。", isError = true)
             }
             "update" -> when (op.str("target")) {
                 "plan" -> updatePlan(svc, op, dryRun, planId)
                 "stages" -> updateStage(svc, op, dryRun, planId)
                 "units" -> updateUnit(svc, op, dryRun, planId)
-                else -> OpResult("update 的 target 只能是 plan / stages / units。", isError = true)
+                "resources" -> updateResource(svc, op, dryRun, planId)
+                else -> OpResult("update 的 target 只能是 plan / stages / units / resources。", isError = true)
             }
             "schedule_week" -> scheduleWeek(svc, op, dryRun, planId)
             "rearrange" -> rearrange(svc, op, dryRun, planId)
-            "write_doc" -> writeDoc(op, dryRun, planId)
+            "write_doc" -> writeDoc(svc, op, dryRun, planId)
             else -> OpResult("不认识的 op：$verb。可用 insert / update / schedule_week / rearrange / write_doc。", isError = true)
         }
     }
@@ -275,6 +311,12 @@ internal class PlanEditTools(
     // ---------------------------------------------------------------- insert
 
     private suspend fun insertPlan(svc: LearningPlanService, op: JsonObject, dryRun: Boolean): OpResult {
+        // create_learning_plan 已下线：新建计划统一走 create_plan（调研 → 总文档 → 本周队列）。
+        return OpResult(
+            "新建计划请用 create_plan（三步：调研 → 总文档 → 本周队列）；update_plan 只改已有计划。",
+            isError = true,
+        )
+        @Suppress("UNREACHABLE_CODE")
         val mode = op.str("mode") ?: if (op.str("goal") != null && op.arr("units").isEmpty()) "research" else "units"
         if (dryRun) return OpResult("（dryRun）会新建一份计划（$mode）")
         val before = runCatching { svc.plans().map { it.id }.toSet() }.getOrDefault(emptySet())
@@ -425,12 +467,35 @@ internal class PlanEditTools(
         val id = requirePlanId(planId) ?: return OpResult("没有选中计划，update plan 需要 planId。", isError = true)
         val set = op.obj("set") ?: return OpResult("update plan 缺 set。", isError = true)
         val daily = set.int("dailyMinutes")
-        if (daily == null) return OpResult("update plan 目前只支持 set.dailyMinutes。", isError = true)
-        if (dryRun) return OpResult("（dryRun）会把每天投入改成 $daily 分钟")
-        val result = runCatching { svc.setPlanDailyMinutes(env(id, "tool.plan.edit.pace"), id, daily.coerceIn(15, 240)) }
-            .getOrElse { return OpResult("改每天投入失败：${it.message ?: it}", isError = true) }
-        if (!result.ok) return OpResult("改每天投入失败：${result.error?.message ?: "未知错误"}", isError = true)
-        return OpResult("每天投入已改成 $daily 分钟。", planId = id)
+        val mode = set.str("scheduleMode")
+        if (daily == null && mode == null) {
+            return OpResult("update plan 支持 set.dailyMinutes / set.scheduleMode。", isError = true)
+        }
+        val done = mutableListOf<String>()
+        if (daily != null) {
+            if (dryRun) {
+                done += "（dryRun）会把每天投入改成 $daily 分钟"
+            } else {
+                val result = runCatching { svc.setPlanDailyMinutes(env(id, "tool.plan.edit.pace"), id, daily.coerceIn(15, 240)) }
+                    .getOrElse { return OpResult("改每天投入失败：${it.message ?: it}", isError = true) }
+                if (!result.ok) return OpResult("改每天投入失败：${result.error?.message ?: "未知错误"}", isError = true)
+                done += "每天投入已改成 $daily 分钟"
+            }
+        }
+        if (mode != null) {
+            if (mode != "day" && mode != "queue") {
+                return OpResult("set.scheduleMode 只能是 day（排到天）或 queue（只进周队列）。", isError = true)
+            }
+            if (dryRun) {
+                done += "（dryRun）会把排程模式改成 $mode"
+            } else {
+                val result = runCatching { svc.setScheduleMode(env(id, "tool.plan.edit.mode"), id, mode) }
+                    .getOrElse { return OpResult("改排程模式失败：${it.message ?: it}", isError = true) }
+                if (!result.ok) return OpResult("改排程模式失败：${result.error?.message ?: "未知错误"}", isError = true)
+                done += if (mode == "queue") "已改成周队列模式（节点不排到天）" else "已改回按天排程"
+            }
+        }
+        return OpResult(done.joinToString("；"), planId = id)
     }
 
     private suspend fun updateStage(
@@ -508,6 +573,7 @@ internal class PlanEditTools(
         }
 
         val day = set.str("day")
+        var placedOccurrenceId: String? = null
         if (day != null) {
             if (dryRun) {
                 done += "（dryRun）会把 $unitId 排到 $day"
@@ -515,7 +581,24 @@ internal class PlanEditTools(
                 val result = runCatching { svc.placeUnit(env(id, "tool.plan.edit.day"), id, week, unitId, day) }
                     .getOrElse { return OpResult("排到天失败：${it.message ?: it}", isError = true) }
                 if (!result.ok) return OpResult("排到天失败：${result.error?.message ?: "未知错误"}", isError = true)
+                placedOccurrenceId = result.value?.occurrenceId
                 done += "已排到 $day"
+            }
+        }
+
+        val start = readStartMinute(set)
+        if (start.invalid) return OpResult("set.startTime 要写成 \"09:30\" 或 0–1439 的分钟数；清掉时间传 null。", isError = true)
+        if (start.given) {
+            val occurrenceId = placedOccurrenceId ?: findWeekItem(svc, id, week, unitId)?.occurrenceId
+            if (occurrenceId == null) return OpResult("「$unitId」还没排到天，先 set.day 再定时间。", isError = true)
+            if (dryRun) {
+                done += "（dryRun）会把时间" + (start.minute?.let { "改成 " + hhmm(it) } ?: "清掉")
+            } else {
+                val result = runCatching {
+                    svc.setOccurrenceStart(env(id, "tool.plan.edit.time"), occurrenceId, start.minute)
+                }.getOrElse { return OpResult("改时间失败：${it.message ?: it}", isError = true) }
+                if (!result.ok) return OpResult("改时间失败：${result.error?.message ?: "未知错误"}", isError = true)
+                done += start.minute?.let { "时间已改成 " + hhmm(it) } ?: "已清掉时间"
             }
         }
 
@@ -539,11 +622,60 @@ internal class PlanEditTools(
             }
         }
 
-        if (done.isEmpty()) return OpResult("这次 update 没有可执行的字段（支持 day / status / resources）。", isError = true)
+        if (done.isEmpty()) return OpResult("这次 update 没有可执行的字段（支持 day / startTime / status / resources）。", isError = true)
         return OpResult(done.joinToString("；"), planId = id)
     }
 
     // ---------------------------------------------------------------- schedule / doc
+
+    private suspend fun insertResources(
+        svc: LearningPlanService,
+        op: JsonObject,
+        dryRun: Boolean,
+        planId: String?,
+    ): OpResult {
+        val id = requirePlanId(planId) ?: return OpResult("没有选中计划，insert resources 需要 planId。", isError = true)
+        val items = op.arr("resources")
+        if (items.isEmpty()) return OpResult("resources 是空的：每项至少要有 title。", isError = true)
+        val drafts = items.mapNotNull { r ->
+            val title = r.str("title") ?: return@mapNotNull null
+            PlanResourceDraft(
+                kind = r.str("kind") ?: "other",
+                title = title,
+                url = r.str("url").orEmpty(),
+                locator = r.str("locator").orEmpty(),
+                minutes = r.int("minutes"),
+                note = r.str("note").orEmpty(),
+                source = "agent",
+                status = r.str("status") ?: "active",
+                parentId = r.str("parentId"),
+            )
+        }
+        if (drafts.isEmpty()) return OpResult("resources 里没有可用的 title。", isError = true)
+        if (dryRun) return OpResult("（dryRun）会写入 ${drafts.size} 条资源", planId = id)
+        val result = runCatching { svc.upsertResources(env(id, "tool.plan.edit.resources"), id, drafts) }
+            .getOrElse { return OpResult("写资源失败：${it.message ?: it}", isError = true) }
+        if (!result.ok) return OpResult("写资源失败：${result.error?.message ?: "未知错误"}", isError = true)
+        return OpResult("资源池已写入 ${result.value?.size ?: drafts.size} 条。", planId = id)
+    }
+
+    private suspend fun updateResource(
+        svc: LearningPlanService,
+        op: JsonObject,
+        dryRun: Boolean,
+        planId: String?,
+    ): OpResult {
+        val id = requirePlanId(planId) ?: return OpResult("没有选中计划，update resources 需要 planId。", isError = true)
+        val resourceId = op.obj("match")?.str("id")
+            ?: return OpResult("update resources 需要 match.id（read_plan include=resources 能拿到）。", isError = true)
+        val status = op.obj("set")?.str("status")
+            ?: return OpResult("update resources 目前只支持 set.status（active/suggested/dropped）。", isError = true)
+        if (dryRun) return OpResult("（dryRun）会把资源 $resourceId 改成 $status", planId = id)
+        val result = runCatching { svc.setResourceStatus(env(id, "tool.plan.edit.resources"), resourceId, status) }
+            .getOrElse { return OpResult("改资源状态失败：${it.message ?: it}", isError = true) }
+        if (!result.ok) return OpResult("改资源状态失败：${result.error?.message ?: "未知错误"}", isError = true)
+        return OpResult("资源状态已改成 $status。", planId = id)
+    }
 
     private suspend fun scheduleWeek(
         svc: LearningPlanService,
@@ -569,19 +701,21 @@ internal class PlanEditTools(
         )
     }
 
-    private suspend fun writeDoc(op: JsonObject, dryRun: Boolean, planId: String?): OpResult {
+    private fun writeDoc(svc: LearningPlanService, op: JsonObject, dryRun: Boolean, planId: String?): OpResult {
         val id = requirePlanId(planId) ?: return OpResult("没有选中计划，write_doc 需要 planId。", isError = true)
         val markdown = op.str("markdown") ?: return OpResult("write_doc 需要 markdown。", isError = true)
         if (dryRun) return OpResult("（dryRun）会覆盖总文档（${markdown.length} 字）")
-        val result = dispatch(
-            "write_plan_doc",
-            buildJsonObject {
-                put("planId", id)
-                put("markdown", markdown)
-                put("confirmed", true)
-            },
-        )
-        return if (result.isError) OpResult(result.content, isError = true) else OpResult(result.content, planId = id)
+        // 直接写这份计划的文档：旧 write_plan_doc 只认「当前活跃计划」，
+        // 流程里刚建的计划不一定是活跃计划，走它会写错地方。
+        if (runCatching { svc.planState(id) }.getOrNull() == null) {
+            return OpResult("找不到计划「$id」，这次没写文档。", isError = true)
+        }
+        val store = docStore() ?: return OpResult("计划文档存储没准备好，这次没写。", isError = true)
+        val saved = runCatching { store.save(id, markdown) }
+        if (saved.isFailure) {
+            return OpResult("写文档失败：" + (saved.exceptionOrNull()?.message ?: "未知原因"), isError = true)
+        }
+        return OpResult("已保存计划文档（${markdown.length} 字）。", planId = id)
     }
 
 
@@ -805,6 +939,7 @@ internal class PlanEditTools(
                 done += "已挂 ${drafts.size} 条资源"
             }
         }
+        var effectiveId = occurrenceId
         set.str("day")?.let { day ->
             if (dryRun) {
                 done += "（dryRun）会把「${hit.title}」从 ${hit.day} 挪到 $day"
@@ -812,7 +947,22 @@ internal class PlanEditTools(
                 val result = runCatching { svc.moveOccurrence(env(planId, "tool.plan.edit.move"), occurrenceId, day, "AI 重排微调") }
                     .getOrElse { return OpResult("挪动失败：${it.message ?: it}", isError = true) }
                 if (!result.ok) return OpResult("挪动失败：${result.error?.message ?: "未知错误"}", isError = true)
+                result.value?.occurrenceId?.let { effectiveId = it }
                 done += "已挪到 $day"
+            }
+        }
+
+        val start = readStartMinute(set)
+        if (start.invalid) return OpResult("set.startTime 要写成 \"09:30\" 或 0–1439 的分钟数；清掉时间传 null。", isError = true)
+        if (start.given) {
+            if (dryRun) {
+                done += "（dryRun）会把「${hit.title}」的时间" + (start.minute?.let { "改成 " + hhmm(it) } ?: "清掉")
+            } else {
+                val result = runCatching {
+                    svc.setOccurrenceStart(env(planId, "tool.plan.edit.time"), effectiveId, start.minute)
+                }.getOrElse { return OpResult("改时间失败：${it.message ?: it}", isError = true) }
+                if (!result.ok) return OpResult("改时间失败：${result.error?.message ?: "未知错误"}", isError = true)
+                done += start.minute?.let { "时间已改成 " + hhmm(it) } ?: "已清掉时间"
             }
         }
         if (set.str("status") != null) {
@@ -831,7 +981,7 @@ internal class PlanEditTools(
                 done += "已标完成：" + result.content
             }
         }
-        if (done.isEmpty()) return OpResult("这次 update 没有可执行的字段（支持 day / status / resources）。", isError = true)
+        if (done.isEmpty()) return OpResult("这次 update 没有可执行的字段（支持 day / startTime / status / resources）。", isError = true)
         return OpResult(done.joinToString("；"), planId = planId)
     }
 
@@ -926,8 +1076,7 @@ internal class PlanEditTools(
         stages.forEachIndexed { index, stage ->
             appendLine("### 阶段 ${index + 1} · ${stage.name}（${stage.weekStart} – ${stage.weekEnd}）")
             if (stage.focus.isNotBlank()) appendLine("- 聚焦：${stage.focus}")
-            if (stage.deliverable.isNotBlank()) appendLine("- 交付物：${stage.deliverable}")
-            if (stage.acceptance.isNotBlank()) appendLine("- 过关标准：${stage.acceptance}")
+
             if (stage.resources.isNotEmpty()) {
                 appendLine("- 资源：")
                 stage.resources.forEach { resource ->
@@ -1027,6 +1176,33 @@ internal class PlanEditTools(
         url.contains("bilibili.com") -> "bilibili"
         url.isBlank() -> "other"
         else -> "web"
+    }
+
+    /** 0–1439 → "09:30"（只用于显示；存库仍是分钟数）。 */
+    private fun hhmm(minute: Int): String = "%02d:%02d".format(minute / 60, minute % 60)
+
+    /**
+     * set.startTime 的三种写法：`"09:30"` / 540（当天第几分钟）/ null（清掉）。
+     * [given]=false 表示这次没提这个字段，不要动已有时间。
+     */
+    private data class StartMinute(val given: Boolean, val minute: Int?, val invalid: Boolean = false)
+
+    private fun readStartMinute(set: JsonObject): StartMinute {
+        if (!set.containsKey("startTime")) return StartMinute(false, null)
+        val text = (set["startTime"] as? JsonPrimitive)?.contentOrNull?.trim()
+        if (text.isNullOrEmpty() || text.equals("null", ignoreCase = true)) return StartMinute(true, null)
+        if (text.contains(':')) {
+            val parts = text.split(':')
+            val hour = parts.getOrNull(0)?.toIntOrNull()
+            val minute = parts.getOrNull(1)?.toIntOrNull()
+            if (hour == null || minute == null || hour !in 0..23 || minute !in 0..59) {
+                return StartMinute(true, null, invalid = true)
+            }
+            return StartMinute(true, hour * 60 + minute)
+        }
+        val value = text.toIntOrNull()
+        if (value == null || value !in 0..1439) return StartMinute(true, null, invalid = true)
+        return StartMinute(true, value)
     }
 
     // ---------------------------------------------------------------- JSON 小件

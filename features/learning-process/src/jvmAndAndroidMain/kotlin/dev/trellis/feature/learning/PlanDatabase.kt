@@ -57,7 +57,21 @@ internal class PlanDatabase private constructor(val connection: Connection) : Au
             "kind",
             "ALTER TABLE plan_unit ADD COLUMN kind TEXT NOT NULL DEFAULT 'study'",
         )
-        if (addedUnitKind) {
+        // 单元资源 → 资源池的溯源（旧行为空）。
+        ensureColumn("unit_resource", "resource_id", "ALTER TABLE unit_resource ADD COLUMN resource_id TEXT NULL")
+        // 排程模式：默认 day，保持旧计划行为；create_plan 建的新计划显式切成 queue。
+        ensureColumn(
+            "process",
+            "schedule_mode",
+            "ALTER TABLE process ADD COLUMN schedule_mode TEXT NOT NULL DEFAULT 'day'",
+        )
+        // 钟点：旧库没有这一列，补上（不带头 CHECK —— SQLite 加列改不了约束，写入侧夹 0..1439）。
+        val addedStartMinute = ensureColumn(
+            "occurrence",
+            "start_minute",
+            "ALTER TABLE occurrence ADD COLUMN start_minute INTEGER NULL",
+        )
+        if (addedUnitKind || addedStartMinute) {
             // 视图是在建库时按当时的表结构生成的：旧库补了列之后必须重建视图，
             // 否则 v_occurrence_detail / v_week_commitment 里会少一列，查询直接报错。
             connection.createStatement().use { st ->

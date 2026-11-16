@@ -8,6 +8,8 @@ import dev.trellis.ai.tool.ToolResult
 import dev.trellis.domain.plan.Actor
 import dev.trellis.domain.plan.CommandEnvelope
 import dev.trellis.domain.plan.LearningPlanService
+import dev.trellis.domain.plan.PlanResourceView
+import dev.trellis.domain.plan.ResourceDraft
 import dev.trellis.domain.plan.UnitDraft
 import dev.trellis.domain.plan.UnitProgress
 import dev.trellis.feature.learning.PlanDocStore
@@ -17,6 +19,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
@@ -182,7 +185,14 @@ class PlanWeekTools(
 // ---------------------------------------------------------------------------
 
 /** 模型给的一条周计划条目。 */
-internal data class PlannedItem(val title: String, val minutes: Int, val kind: String, val chapter: String)
+internal data class PlannedItem(
+    val title: String,
+    val minutes: Int,
+    val kind: String,
+    val chapter: String,
+    /** 资源池 id（可选，最多 3 条）；节点名仍写内容/知识点。 */
+    val resources: List<String> = emptyList(),
+)
 
 /** 模型给的整周安排：这周重点 + 条目。 */
 internal data class ParsedWeek(val focus: String = "", val items: List<PlannedItem> = emptyList())
@@ -258,9 +268,11 @@ internal suspend fun planOneWeek(
     // 单元从 9 涨到 24、待安排池从 2 涨到 15，当天分钟数也从 60 加到 130。
     // 默认直接退回，调整交给计划页拖拽或 PlanAdminTools；模型明确 replan=true 时才继续，
     // 后面的去重/容量逻辑保证只补空位、不重复追加。
-    val plannedAlready = runCatching { plan.week(planId, week) }
-        .getOrNull()?.days?.flatMap { day -> day.items }.orEmpty()
-    if (plannedAlready.isNotEmpty() && !replan) {
+    val existingWeek = runCatching { plan.week(planId, week) }.getOrNull()
+    val plannedAlready = existingWeek?.days?.flatMap { day -> day.items }.orEmpty()
+    // queue 模式没有天条，判「排过没有」要看本周队列里有没有节点。
+    val queuedAlready = existingWeek?.commitment?.units.orEmpty()
+    if ((plannedAlready.isNotEmpty() || queuedAlready.isNotEmpty()) && !replan) {
         return WeekPlanResult(
             week = week,
             note = "这一周已经排过了（" + plannedAlready.size + " 条）；要调整就直接在计划页拖节点，或告诉我把哪几条改到哪天。",
@@ -268,6 +280,12 @@ internal suspend fun planOneWeek(
     }
 
     val outline = planDocStore?.read(planId).orEmpty()
+    // 资源切片：课程容器不直接引用，只把分集/文章等材料给模型；最多 120 条。
+    val resourceSlice = runCatching { plan.resources(planId) }
+        .getOrDefault(emptyList())
+        .filter { it.kind != "course" && it.status == "active" }
+        .take(120)
+    val validResourceIds = resourceSlice.map { it.id }.toSet()
     val lastWeek = previousWeekOf(week)
     val lastWeekState = runCatching { plan.week(planId, lastWeek) }.getOrNull()
     val lastSummary = lastWeekState?.commitment?.units.orEmpty()
@@ -277,7 +295,10 @@ internal suspend fun planOneWeek(
         llm.complete(
             listOf(
                 LlmMessage(LlmRole.System, weekSystemPrompt(week, dailyMinutes)),
-                LlmMessage(LlmRole.User, weekUserPrompt(today.toString(), outline, lastWeek, lastSummary, stageFocus)),
+                LlmMessage(
+                    LlmRole.User,
+                    weekUserPrompt(today.toString(), outline, lastWeek, lastSummary, stageFocus, resourceSlice),
+                ),
             ),
         )
     } ?: return WeekPlanResult(week, error = "排周计划的模型没在 " + (TIMEOUT_MS / 1000) + " 秒内回话，没排成。")
@@ -306,6 +327,9 @@ internal suspend fun planOneWeek(
         val duplicate = existingTitles.any { isSameTitle(it, norm) } || acceptedTitles.any { isSameTitle(it, norm) }
         if (!duplicate) acceptedTitles += norm
         !duplicate
+    }.map { item ->
+        // 只保留本次切片里真实存在、且 active 的资源 id。
+        item.copy(resources = item.resources.filter { it in validResourceIds }.distinct())
     }
     val dropped = parsed.items.size - deduped.size
     // 周文档里的「本周重点」：模型自己给的最贴切，没有就用阶段焦点（research_plan 传进来的）。
@@ -324,6 +348,58 @@ internal suspend fun planOneWeek(
             note = "这一周的条目都已经在计划里了，没有重复排；要调整就直接拖节点。",
         )
     }
+
+    // queue 模式：只进本周队列，不铺到天。完成时由 completeUnit 记到当天。
+    if (runCatching { plan.planState(planId).scheduleMode }.getOrDefault("day") == "queue") {
+        var queueDocWritten = false
+        if (planDocStore != null) {
+            val saved = runCatching { planDocStore.saveWeek(planId, week, weekQueueDoc(week, focus, deduped)) }
+            if (saved.isFailure) {
+                val reason = saved.exceptionOrNull()?.message?.takeIf { it.isNotBlank() } ?: "未知原因"
+                return WeekPlanResult(week, error = "周文档没写成（$reason），这一周没有排。")
+            }
+            queueDocWritten = true
+        }
+        val drafts = deduped.map { item ->
+            UnitDraft(
+                chapter = item.chapter.ifBlank { "本周" },
+                title = item.title,
+                estimateMinutes = item.minutes.coerceIn(10, 45),
+                kind = item.kind,
+            )
+        }
+        val appended = plan.appendUnits(commandEnv(planId, "plan.week"), planId, drafts)
+        if (!appended.ok) {
+            return WeekPlanResult(
+                week,
+                items = deduped,
+                docWritten = queueDocWritten,
+                error = "周文档已经写了并保留着，但追加节点失败：" + (appended.error?.message ?: "未知原因"),
+            )
+        }
+        val queued = plan.enqueueUnits(
+            commandEnv(planId, "plan.week"), planId, week, appended.value.orEmpty(),
+        )
+        if (!queued.ok) {
+            return WeekPlanResult(
+                week,
+                items = deduped,
+                docWritten = queueDocWritten,
+                error = "节点建好了，但放进本周队列失败：" + (queued.error?.message ?: "未知原因") +
+                    "；可以重试，或手动拖到这一周。",
+            )
+        }
+        attachResourcesToUnits(plan, planId, appended.value.orEmpty(), deduped, resourceSlice)
+        return WeekPlanResult(
+            week = week,
+            items = deduped,
+            docWritten = queueDocWritten,
+            appended = true,
+            placed = 0,
+            note = "这一周进了队列（" + deduped.size + " 个节点），没有排到具体天；做完一个就记到当天。",
+        )
+    }
+
     val dayOfItem = assignDays(deduped, start, weekEnd, dailyMinutes, existingMinutesByDay)
     val plannedByDay = linkedMapOf<String, MutableList<PlannedItem>>()
     dayOfItem.forEachIndexed { index, day ->
@@ -389,6 +465,8 @@ internal suspend fun planOneWeek(
         val placed = plan.placeUnit(commandEnv(planId, "plan.week"), planId, week, unitIds[index], day)
         if (placed.ok) placedCount++
     }
+    attachResourcesToUnits(plan, planId, unitIds, deduped, resourceSlice)
+
     // ---- 第四步：把导师补的前置知识也追加进计划库，并按算好的「依赖条目之前」铺到天 ----
     var prereqPlaced = 0
     if (prerequisites.isNotEmpty()) {
@@ -482,7 +560,13 @@ private fun parseWeekItems(raw: String): ParsedWeek? {
             else -> "study"
         }
         val chapter = obj["chapter"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-        PlannedItem(title = title, minutes = minutes, kind = normalized, chapter = chapter)
+        val resources = (obj["resources"] as? JsonArray)
+            ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { id -> id.isNotEmpty() } }
+            .orEmpty()
+        PlannedItem(
+            title = title, minutes = minutes, kind = normalized, chapter = chapter,
+            resources = resources.distinct().take(3),
+        )
     }
     if (items.isEmpty()) return null
     val focus = root["focus"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
@@ -556,8 +640,10 @@ private fun normalizeTitle(raw: String): String =
 
 private fun weekSystemPrompt(week: String, dailyMinutes: Int): String = buildString {
     appendLine("你是学习规划师，正在给 " + week + " 这一周排具体内容。只输出一个 JSON 对象，不要 markdown、不要解释：")
-    appendLine("{\"focus\":\"这周重点（≤20 字）\",\"items\":[{\"title\":\"条目标题（≤20 字）\",\"chapter\":\"章节或主题\",\"kind\":\"study|practice|review\",\"minutes\":30}]}")
+    appendLine("{\"focus\":\"这周重点（≤20 字）\",\"items\":[{\"title\":\"条目标题（≤20 字）\",\"chapter\":\"章节或主题\",\"kind\":\"study|practice|review\",\"minutes\":30,\"resources\":[\"res_x\"]}]}")
     appendLine("参考：本周每天投入约 " + dailyMinutes + " 分钟（只是参考，内容多可以多排、整体延期也行，不必卡死）；条目 3–14 个；每条 10–45 分钟。")
+    appendLine("resources 可选：从下面「可用资源」里挑 0–3 个 id 挂在节点后面；资源只是参考资料，不是任务，不要把资源标题当节点名。")
+    appendLine("命名规则：title 写具体内容/知识点（名词短语，例如「TCP 三次握手」「RAG 的召回与重排」），不写「手写/读完/掌握/理解」这类动作或指标，不写集号/来源标签，也不要直接照抄资料标题。")
     appendLine("内容规则：看视频/看书算 study；动手写代码、做项目、做题算 practice；复盘/重做错题/回顾算 review。")
     appendLine("交付物整理规则：整理 README/文档/提交历史/仓库结构这类收尾工作算 practice，只在阶段收尾周出现一次，不要每周都排。")
     appendLine("前几周通识偏 study，专业技术路线要给 practice（写出能被运行/看到的东西）；复习安排在阶段收尾。")
@@ -569,13 +655,75 @@ private fun weekUserPrompt(
     lastWeek: String,
     lastSummary: String,
     stageFocus: String,
+    resources: List<PlanResourceView> = emptyList(),
 ): String = buildString {
     appendLine("今天：" + today)
     appendLine("上周（" + lastWeek + "）的条目：" + (lastSummary.ifBlank { "没有记录" }))
     if (stageFocus.isNotBlank()) appendLine("本周所属阶段的焦点：" + stageFocus)
     appendLine("计划文档（大纲）：")
     appendLine(outline.ifBlank { "（还没有文档）" })
+    if (resources.isNotEmpty()) {
+        appendLine("可用资源（只是参考，不是任务）：")
+        resources.forEach { resource ->
+            append("[").append(resource.id).append("] ").append(resource.title)
+            resource.minutes?.let { append("（").append(it).append(" 分钟）") }
+            if (resource.locator.isNotBlank()) append(" · ").append(resource.locator)
+            appendLine()
+        }
+    }
     appendLine("请只排这一周的具体条目。")
+}
+
+/**
+ * 把节点引用的资源写进 unit_resource。
+ *
+ * 只认切片里的 id（前面已过滤）；失败不拖垮整周，最多少几条资料。
+ */
+private suspend fun attachResourcesToUnits(
+    plan: LearningPlanService,
+    planId: String,
+    unitIds: List<String>,
+    items: List<PlannedItem>,
+    slice: List<PlanResourceView>,
+) {
+    if (slice.isEmpty()) return
+    val byId = slice.associateBy { it.id }
+    unitIds.forEachIndexed { index, unitId ->
+        val refs = items.getOrNull(index)?.resources.orEmpty().mapNotNull { byId[it] }.distinctBy { it.id }
+        if (refs.isEmpty()) return@forEachIndexed
+        val drafts = refs.map { resource ->
+            ResourceDraft(
+                kind = when (resource.kind) {
+                    "part" -> "bilibili"
+                    "article", "wiki" -> "web"
+                    "book" -> "doc"
+                    else -> "other"
+                },
+                title = resource.title,
+                url = resource.url,
+                locator = resource.locator,
+                source = resource.source.ifBlank { "plan_week" },
+            )
+        }
+        runCatching {
+            plan.setUnitResources(commandEnv(planId, "plan.week.resources"), planId, unitId, drafts)
+        }
+    }
+}
+
+/** queue 模式的周文档：只有本周重点和节点清单，不写「哪天做」。 */
+private fun weekQueueDoc(week: String, focus: String, items: List<PlannedItem>): String = buildString {
+    appendLine("# " + week + " 本周计划")
+    if (focus.isNotBlank()) {
+        appendLine()
+        appendLine("## 本周重点")
+        appendLine("- " + focus)
+    }
+    appendLine()
+    appendLine("## 节点")
+    items.forEach { item ->
+        appendLine("- " + item.title + "（" + kindLabel(item.kind) + " · 约 " + item.minutes + " 分钟）")
+    }
 }
 
 private fun weekDoc(

@@ -1,9 +1,6 @@
 package dev.trellis.feature.learning
 
 import java.io.File
-import java.io.IOException
-import java.nio.ByteBuffer
-import java.nio.charset.CodingErrorAction
 
 /**
  * 计划文档里的一条条目（周计划 / 待安排）。
@@ -146,7 +143,9 @@ private class StageBuilder(
 }
 
 /**
- * 计划文档（Markdown）的落盘与解析：`<trellis home>/plans/docs/<planId>.md`。
+ * 计划文档（Markdown）的存取与解析：存在 `<home>/plans/plan.db` 的 `plan_doc` 表里。
+ *
+ * 2026-11-15 之前是 `plans/docs` 下的 Markdown 文件，现在只作为一次性导入来源保留。
  *
  * 文档是「想法」层：用户 / AI 先把条目写进文档，再由上层把条目变成计划的单元
  * （`appendUnits`）。它不是计划库的副本 —— 计划库里没有的条目，这里也可能先有。
@@ -176,113 +175,155 @@ private class StageBuilder(
  *
  * 分钟提示认「（约 90 分钟）」「(90分钟)」「约90分钟」几种写法，取不到就是 null。
  * 解析是容错的：非 bullet 行、未知标题、坏行都跳过，不抛异常；
- * 读文件也容错：不存在 / id 不合法 / 坏字节一律当「没有文档」。
+ * 读库也容错：没有文档 / id 不合法 / 表还没建都当「没有文档」。
  */
-class PlanDocStore(private val home: File) {
-
-    /** `<home>/plans/docs`。 */
-    val directory: File = File(File(home, "plans"), "docs")
+class PlanDocStore(home: File) : AutoCloseable {
 
     /**
-     * 某个计划的文档文件。
+     * 文档存在计划库同一张 SQLite 里（`<home>/plans/plan.db` 的 `plan_doc` 表）。
      *
-     * 计划 id 只允许字母 / 数字 / 下划线 / 中划线 —— 文档路径由 id 拼出来，
-     * 不校验就能用 `../` 写出目录。
+     * 与计划库共用一个文件、各自一条连接：SQLite 的写锁 + busy_timeout 负责串行化，
+     * 写文档和写节点不再分成两个真相。旧的 `plans/docs` 下的 Markdown 在第一次打开时导入。
      */
-    fun fileFor(planId: String): File {
-        require(PLAN_ID_PATTERN.matches(planId)) { "计划 id 不合法：$planId" }
-        return File(directory, "$planId.md")
-    }
+    private val database = PlanDatabase.open(File(File(home, "plans"), "plan.db").toPath())
+    private val connection get() = database.connection
 
-    /** 某个计划的周文档文件：`<home>/plans/docs/<planId>/<week>.md`。 */
-    fun weekFile(planId: String, week: String): File {
-        require(PLAN_ID_PATTERN.matches(planId)) { "计划 id 不合法：$planId" }
-        require(WEEK_PATTERN.matches(week)) { "周格式不合法：$week" }
-        return File(weekDirectory(planId), "$week.md")
-    }
-
-    private fun weekDirectory(planId: String): File {
-        require(PLAN_ID_PATTERN.matches(planId)) { "计划 id 不合法：$planId" }
-        return File(directory, planId)
+    init {
+        // 旧版本把文档写成 plans/docs/*.md；搬进库里（只补没有的行，不覆盖已有文档）。
+        runCatching { importLegacyDocs(home) }
     }
 
     /** 已经有总文档的计划 id（按 id 排序）。 */
     fun planIds(): List<String> = try {
-        directory.listFiles()
-            ?.filter { it.isFile && it.name.endsWith(".md") }
-            ?.map { it.name.removeSuffix(".md") }
-            ?.filter { PLAN_ID_PATTERN.matches(it) }
-            ?.sorted()
-            .orEmpty()
+        connection.prepareStatement(
+            "SELECT DISTINCT plan_id FROM plan_doc ORDER BY plan_id",
+        ).use { ps ->
+            ps.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } }
+        }
     } catch (_: RuntimeException) {
         emptyList()
     }
 
     /** 某个计划已经写过的周文档（新的在前）。 */
-    fun weeks(planId: String): List<String> = try {
-        weekDirectory(planId).listFiles()
-            ?.filter { it.isFile && WEEK_PATTERN.matches(it.name.removeSuffix(".md")) }
-            ?.map { it.name.removeSuffix(".md") }
-            ?.sortedDescending()
-            .orEmpty()
-    } catch (_: RuntimeException) {
-        emptyList()
+    fun weeks(planId: String): List<String> {
+        if (!PLAN_ID_PATTERN.matches(planId)) return emptyList()
+        return try {
+            connection.prepareStatement(
+                "SELECT week FROM plan_doc WHERE plan_id = ? AND kind = 'week' ORDER BY week DESC",
+            ).use { ps ->
+                ps.setString(1, planId)
+                ps.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } }
+            }
+        } catch (_: RuntimeException) {
+            emptyList()
+        }
     }
 
-    /** 读 Markdown；文件不存在、id 不合法、读坏（非 UTF-8 等）都返回 null，不抛。 */
-    fun read(planId: String): String? {
-        val file = try {
-            fileFor(planId)
-        } catch (_: IllegalArgumentException) {
-            return null
-        }
-        return readFile(file)
-    }
+    /** 读总文档；没有或 id 不合法都返回 null，不抛。 */
+    fun read(planId: String): String? = readDoc(planId, "overview", "")
 
     /** 读某一周的计划文档；没有就返回 null。 */
     fun readWeek(planId: String, week: String): String? {
-        val file = try {
-            weekFile(planId, week)
-        } catch (_: IllegalArgumentException) {
-            return null
-        }
-        return readFile(file)
+        if (!WEEK_PATTERN.matches(week)) return null
+        return readDoc(planId, "week", week)
     }
 
-    private fun readFile(file: File): String? {
-        if (!file.isFile) return null
+    private fun readDoc(planId: String, kind: String, week: String): String? {
+        if (!PLAN_ID_PATTERN.matches(planId)) return null
         return try {
-            decodeUtf8(file.readBytes())
-        } catch (_: IOException) {
-            null
+            connection.prepareStatement(
+                "SELECT markdown FROM plan_doc WHERE plan_id = ? AND kind = ? AND week = ?",
+            ).use { ps ->
+                ps.setString(1, planId)
+                ps.setString(2, kind)
+                ps.setString(3, week)
+                ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+            }
         } catch (_: RuntimeException) {
             null
         }
     }
 
-    /** 写某一周的计划文档（每周排计划时写），返回落盘的文件。 */
-    fun saveWeek(planId: String, week: String, markdown: String): File = writeFile(weekFile(planId, week), markdown)
+    /** 写某一周的计划文档（每周排计划时写）。计划不存在时抛 IllegalArgumentException。 */
+    fun saveWeek(planId: String, week: String, markdown: String) {
+        require(WEEK_PATTERN.matches(week)) { "周格式不合法：$week" }
+        saveDoc(planId, "week", week, markdown)
+    }
 
-    /** 写 Markdown（UTF-8，目录不存在就建），返回落盘的文件。 */
-    fun save(planId: String, markdown: String): File = writeFile(fileFor(planId), markdown)
+    /** 写总文档。计划不存在时抛 IllegalArgumentException（写不进孤儿文档）。 */
+    fun save(planId: String, markdown: String) = saveDoc(planId, "overview", "", markdown)
 
-    private fun writeFile(file: File, markdown: String): File {
-        val parent = file.parentFile
-        if (!parent.isDirectory && !parent.mkdirs() && !parent.isDirectory) {
-            throw IOException("建不了计划文档目录：$parent")
+    private fun saveDoc(planId: String, kind: String, week: String, markdown: String) {
+        require(PLAN_ID_PATTERN.matches(planId)) { "计划 id 不合法：$planId" }
+        if (!planExists(planId)) throw IllegalArgumentException("找不到这个计划：$planId")
+        val now = java.time.Instant.now().toString()
+        val updated = connection.prepareStatement(
+            "UPDATE plan_doc SET markdown = ?, updated_at = ? WHERE plan_id = ? AND kind = ? AND week = ?",
+        ).use { ps ->
+            ps.setString(1, markdown)
+            ps.setString(2, now)
+            ps.setString(3, planId)
+            ps.setString(4, kind)
+            ps.setString(5, week)
+            ps.executeUpdate()
         }
-        // 先写临时文件再换名：写到一半崩掉不会留下半份文档。
-        val tmp = File(parent, file.name + ".tmp")
-        tmp.writeText(markdown, Charsets.UTF_8)
-        if (!tmp.renameTo(file)) {
-            // 有的文件系统不让 rename 覆盖已存在的文件：删掉目标再换一次。
-            if (!file.delete() || !tmp.renameTo(file)) {
-                tmp.delete()
-                throw IOException("计划文档写不进去：$file")
+        if (updated > 0) return
+        connection.prepareStatement(
+            "INSERT INTO plan_doc(id,plan_id,kind,week,markdown,updated_at) VALUES(?,?,?,?,?,?)",
+        ).use { ps ->
+            ps.setString(1, Ids.next("doc_"))
+            ps.setString(2, planId)
+            ps.setString(3, kind)
+            ps.setString(4, week)
+            ps.setString(5, markdown)
+            ps.setString(6, now)
+            ps.executeUpdate()
+        }
+    }
+
+    private fun planExists(planId: String): Boolean =
+        connection.prepareStatement("SELECT 1 FROM plan WHERE id = ? LIMIT 1").use { ps ->
+            ps.setString(1, planId)
+            ps.executeQuery().use { it.next() }
+        }
+
+    /**
+     * 一次性迁移：`plans/docs/<planId>.md` 与 `plans/docs/<planId>/<week>.md` 导入 plan_doc。
+     * 已有行不覆盖；计划不存在 / id 不合法 / 读坏的文件跳过。
+     */
+    private fun importLegacyDocs(home: File) {
+        val dir = File(File(home, "plans"), "docs")
+        if (!dir.isDirectory) return
+        for (entry in dir.listFiles().orEmpty()) {
+            if (entry.isFile && entry.name.endsWith(".md")) {
+                val planId = entry.name.removeSuffix(".md")
+                if (!PLAN_ID_PATTERN.matches(planId) || !planExists(planId) || read(planId) != null) continue
+                readLegacyFile(entry)?.let { markdown -> runCatching { save(planId, markdown) } }
+                continue
+            }
+            if (!entry.isDirectory || !PLAN_ID_PATTERN.matches(entry.name)) continue
+            val planId = entry.name
+            if (!planExists(planId)) continue
+            for (weekFile in entry.listFiles().orEmpty()) {
+                val week = weekFile.name.removeSuffix(".md")
+                if (!weekFile.isFile || !WEEK_PATTERN.matches(week) || readWeek(planId, week) != null) continue
+                readLegacyFile(weekFile)?.let { markdown -> runCatching { saveWeek(planId, week, markdown) } }
             }
         }
-        return file
     }
+
+    /** 旧文件可能带 BOM 或坏字节：读坏（非 UTF-8）返回 null，跳过这一份，不中断整次迁移。 */
+    private fun readLegacyFile(file: File): String? {
+        val bytes = runCatching { file.readBytes() }.getOrNull() ?: return null
+        val decoder = Charsets.UTF_8.newDecoder()
+            .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+            .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+        return runCatching {
+            decoder.decode(java.nio.ByteBuffer.wrap(bytes)).toString().removePrefix("\uFEFF")
+        }.getOrNull()?.takeIf { it.isNotBlank() }
+    }
+
+    override fun close() = database.close()
 
     /** 读取并解析；没有文档或文档读坏时返回 null。 */
     fun load(planId: String): PlanDoc? = read(planId)?.let(::parse)
@@ -395,13 +436,6 @@ class PlanDocStore(private val home: File) {
             .trim()
             .trimEnd('，', ',', '；', ';', '、')
             .trim()
-
-    private fun decodeUtf8(bytes: ByteArray): String {
-        val decoder = Charsets.UTF_8.newDecoder()
-            .onMalformedInput(CodingErrorAction.REPORT)
-            .onUnmappableCharacter(CodingErrorAction.REPORT)
-        return decoder.decode(ByteBuffer.wrap(bytes)).toString().removePrefix("\uFEFF")
-    }
 
     private enum class Section { NONE, TARGETS, STAGES, WEEK, UNSCHEDULED }
 
