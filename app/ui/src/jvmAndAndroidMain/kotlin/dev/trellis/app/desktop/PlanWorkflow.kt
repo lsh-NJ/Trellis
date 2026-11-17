@@ -8,6 +8,7 @@ import dev.trellis.ai.tool.ToolResult
 import dev.trellis.domain.plan.Actor
 import dev.trellis.domain.plan.CommandEnvelope
 import dev.trellis.domain.plan.LearningPlanService
+import dev.trellis.domain.plan.StageDraft
 import dev.trellis.domain.plan.UnitDraft
 import dev.trellis.feature.learning.PlanDocStore
 import dev.trellis.feature.learning.PlanWorkflowStore
@@ -15,7 +16,6 @@ import java.time.LocalDate
 import java.util.UUID
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -25,83 +25,81 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 /**
- * 计划工作流：把「计划创建」从管理员手里剥出来，做成一条固定的三段流水线。
+ * 计划工作流：三段「文档 → 文档」的转换，不是三个任务。
  *
- * 为什么单独一个模块：管理员负责「这一轮该不该动手」，计划则是一次跨多轮的固定流程 ——
- * 调研 + 资源聚合 → 总计划 → 计划本体 + 周文档 → 本周节点。流程推进不交给模型猜，
- * 每一步的产物都落盘（job/job_step + 计划文档），哪一步等确认、下一步做什么由宿主决定。
+ *   调研结果    → 总计划文档
+ *   总计划文档  → 周文档（本周）
+ *   周文档      → 计划节点（只有要学的知识点）
  *
- * 三个节点（用户定）：
- * 1. 调研 + 资源聚合 + 总计划：一次做完，出总计划文档（知识库「计划文档」里的草稿）并等确认；
- * 2. 计划本体 + 周计划文档：建空壳计划、绑定目标/里程碑、草稿落成正式总文档、写本周文档；
- * 3. 安排本周节点：把周文档里的条目追加成节点、进本周队列（不排到天）。
+ * 为什么这么切：每一段的输入和输出都是文件（[PlanDocStore]），中间没有「模型自己记着」的
+ * 状态 —— 上一段的产物就是下一段的输入，所以换一轮对话、关一次应用都能接着走（状态在
+ * job / job_step 两张表里），用户也能直接打开文档看。
  *
- * 资源策略：网络资源重点关照 CSDN / 知乎 / 博客园 / 阿里云开发者 / 腾讯云 / GitHub，
- * B 站单独走检索接口（按播放量 + 分集数挑）。候选项按类型分组后再交给模型，模型只能从
- * 候选项里挑 —— 编不出 URL，也编不出不存在的课程。
+ * 工具面刻意很小：管理员（Manager）只看见**一个**工具（plan_workflow）。调研、写文档、
+ * 写节点都是这段流程内部的宿主代码 + 三次独立的 LLM 调用，不注册成工具 ——
+ * 管理员的上下文里不会多出一整套计划工具；反过来，流程内部也用不到管理员的任何工具。
+ *
+ * 推进权在宿主：每段跑完，宿主自己摆「开始下一步 / 我要改 / 先不建」三个选项并停下；
+ * 只有用户真的点了「开始下一步」，[consumeConsent] 才会放行 advance。
+ * 模型自己写 confirmed=true 已经没用了 —— 那个参数被删掉了。
  */
 internal class PlanWorkflow(
     private val service: () -> LearningPlanService?,
     private val workflow: () -> PlanWorkflowStore?,
     private val docStore: () -> PlanDocStore?,
-    private val research: () -> ResearchTools?,
     private val clock: TrellisClock,
     private val llm: LlmClient,
     private val gateway: () -> ResearchGateway?,
     private val onChanged: () -> Unit,
     private val dbError: () -> String? = { null },
+    /** 清单（右栏执行清单）状态：段序号 + start / running / awaiting / done / failed / cancel。 */
     private val onChecklist: (phase: Int, state: String) -> Unit = { _, _ -> },
+    /** 这一段产出的文档：id 可以是草稿 id 或计划 id，回复里会挂成可点链接。 */
     private val onDocLink: (id: String, label: String) -> Unit = { _, _ -> },
+    /** 让用户拍板是否进入下一段：宿主负责摆选项（不是模型自己问）。 */
+    private val onAskConfirm: (jobId: String, phase: String, question: String, options: List<String>) -> Unit =
+        { _, _, _, _ -> },
+    /** 用户是否真的点了「开始下一步」；每段只能放行一次。 */
+    private val consumeConsent: (jobId: String, phase: String) -> Boolean = { _, _ -> false },
     private val bilibili: BilibiliClient = BilibiliClient(),
 ) {
 
-    val guidance: String = listOf(
-        "<how_to_plan_workflow>",
-        "1. 用户要「定计划 / 学一门课 / 备考 / 安排学习」时，别自己拆阶段也别自己建计划，调 plan_workflow 接手。",
-        "   第一次 action=start（goal 一句话；用户说清 deadline / 每天投入才传 dailyMinutes）；之后一步一次 action=confirm + confirmed=true。",
-        "2. 这个流程固定三段：调研+资源+总计划 → 计划本体+周文档 → 安排本周节点。每段跑完都会返回结果和「下一步」，",
-        "   你要把结果讲给用户看，然后**停下来等用户确认**（用 ask_choices 给「按这个建 / 我要改 / 先不建」），用户点了才调 confirm。",
-        "3. 用户要改当前这一步：action=revise + feedback，不要自己调 update_plan 绕过去。",
-        "4. 每一步都会更新右侧执行清单；清单必须看到「等待确认」才算停住。",
-        "5. 用户中途不要了：action=cancel。",
-        "</how_to_plan_workflow>",
-    ).joinToString("\n")
+    /** 三段：显示名、清单、状态、提示词共用这一份，改名只改这里。 */
+    internal val phases: List<String> = listOf("master", "week", "units")
 
-    val all: List<AgentTool> = listOf(Tool())
-
-    private val phases: List<String> = listOf("research", "plan", "week")
-
-    private fun phaseLabel(phase: String): String = when (phase) {
-        "research" -> "调研 + 资源聚合 + 总计划"
-        "plan" -> "创建计划本体 + 周计划文档"
-        "week" -> "安排本周节点"
+    internal fun phaseLabel(phase: String): String = when (phase) {
+        "master" -> "调研结果 → 总计划文档"
+        "week" -> "总计划文档 → 周文档"
+        "units" -> "周文档 → 计划节点"
         else -> phase
     }
+
+    val all: List<AgentTool> = listOf(Tool())
 
     private inner class Tool : AgentTool {
         override val name: String = "plan_workflow"
         override val description: String =
-            "接一段计划：固定三段（调研+资源+总计划 → 计划本体+周文档 → 安排本周节点），每段都停下来等用户确认。" +
-                "第一次 action=start（带 goal）；之后 action=confirm + confirmed=true 推进一步；要改当前段用 action=revise + feedback。"
+            "建学习计划：把目标交给这条固定流程 —— 调研出总计划文档 → 周文档 → 本周要学的知识点。" +
+                "第一次 action=start 带 goal；之后每段的推进由宿主摆按钮给用户点，用户点了才调 action=advance；" +
+                "用户要改当前这段用 action=revise + feedback。不要用它之外的写工具另建计划。"
         override val parameters: String = """
-            action: start | confirm | revise | status | cancel（默认 start）
-            goal: start 时必填，一句话目标（例：两个月后期末考试，复习操作系统）
+            action: start | advance | revise | status | cancel（默认 start）
+            goal: start 必填，一句话目标（例：两个月后期末考试，复习操作系统）
             deadline: 可选，YYYY-MM-DD（用户说了才传，按今天换算）
             dailyMinutes: 可选，30–240（用户说清每天投入才传）
-            feedback: revise 时用，用户对当前这一步的修改意见
-            confirmed: confirm 必须为 true（用户已明确同意进入下一步）
-            jobId: 可选，不传就用最近一个没结束的计划流程
+            feedback: revise 用，用户对当前这段的修改意见
+            jobId: 可选，不传就用最近一段没结束的计划流程
         """.trimIndent()
 
         override suspend fun call(arguments: JsonObject): ToolResult = runCatching {
             val wf = workflow() ?: return@runCatching ToolResult("计划库打不开，这次没开始。", isError = true)
             when (val action = arguments.str("action") ?: "start") {
                 "start" -> start(wf, arguments)
-                "confirm" -> confirm(wf, arguments)
+                "advance" -> advance(wf, arguments)
                 "revise" -> revise(wf, arguments)
                 "status" -> status(wf, arguments)
                 "cancel" -> cancel(wf, arguments)
-                else -> ToolResult("action 只能是 start / confirm / revise / status / cancel。", isError = true)
+                else -> ToolResult("action 只能是 start / advance / revise / status / cancel。", isError = true)
             }
         }.getOrElse { ToolResult("计划流程出错：" + (it.message ?: it), isError = true) }
     }
@@ -110,49 +108,54 @@ internal class PlanWorkflow(
 
     private suspend fun start(wf: PlanWorkflowStore, arguments: JsonObject): ToolResult {
         wf.latestOpen("plan_flow")?.let { open ->
+            val current = open.steps.firstOrNull { it.state == "running" }?.let { phaseLabel(it.step) } ?: "进行中"
             return ToolResult(
-                "已经有一段计划流程在进行中（jobId=" + open.id + "，当前：" +
-                    (open.steps.firstOrNull { it.state == "running" }?.let { phaseLabel(it.step) } ?: "进行中") +
-                    "）。先推进或取消它，再开新的。",
+                "已经有一段计划流程在进行中（jobId=" + open.id + "，当前：" + current + "）。先推进或取消它，再开新的。",
                 isError = true,
             )
         }
         val goal = arguments.str("goal")?.trim().orEmpty()
         if (goal.isEmpty()) return ToolResult("start 需要 goal（一句话目标）。", isError = true)
-        val deadline = normalizeDeadline(arguments.str("deadline"))
-        val daily = arguments.int("dailyMinutes")?.coerceIn(30, 240)
         val payload = buildJsonObject {
             put("goal", goal)
-            put("deadline", deadline)
-            daily?.let { put("dailyMinutes", it) }
+            put("deadline", normalizeDeadline(arguments.str("deadline")))
+            arguments.int("dailyMinutes")?.let { put("dailyMinutes", it.coerceIn(30, 240)) }
         }.toString()
         val jobId = wf.create("plan_flow", payload, phases)
         onChecklist(-1, "start")
-        return runPhase(wf, wf.load(jobId)!!, "research", feedback = null)
+        return runPhase(wf, wf.load(jobId)!!, "master", feedback = null)
     }
 
-    private suspend fun confirm(wf: PlanWorkflowStore, arguments: JsonObject): ToolResult {
-        if (arguments.bool("confirmed") != true) {
+    /**
+     * 用户点了「开始下一步」之后才允许推进。
+     *
+     * [consumeConsent] 是宿主记的一次性凭据：只有真的点了那个选项才为 true。
+     * 模型自己调 advance（没凭据）会被挡住，并被告知去摆选项 —— 推进权不在模型手里。
+     */
+    private suspend fun advance(wf: PlanWorkflowStore, arguments: JsonObject): ToolResult {
+        val job = resolveJob(wf, arguments) ?: return ToolResult("没有进行中的计划流程；先 action=start。", isError = true)
+        if (job.state != "awaiting_user") {
             return ToolResult(
-                "这次没有往下走：进入下一段之前要让用户明确同意。先把这一步的结果讲给用户听，问一句要不要继续；" +
-                    "用户说「继续 / 可以」之后再带 confirmed=true。",
+                "这段流程现在不在等确认（状态：" + job.state + "）。用 action=status 看进度。",
                 isError = true,
             )
         }
-        val job = resolveJob(wf, arguments) ?: return ToolResult("没有进行中的计划流程；先 action=start。", isError = true)
-        if (job.state != "awaiting_user") {
-            return ToolResult("这段流程现在不在等确认（状态：" + job.state + "）。用 action=status 看进度。", isError = true)
-        }
         val current = job.steps.firstOrNull { it.state == "running" }
             ?: return ToolResult("流程状态不完整，用 action=status 看一下。", isError = true)
+        if (!consumeConsent(job.id, current.step)) {
+            return ToolResult(
+                "这次没有往下走：用户还没点「" + ADVANCE_LABEL + "」。先把这一段的产出讲清楚；" +
+                    "用户点了那个选项之后，再调 action=advance。",
+                isError = true,
+            )
+        }
         val index = phases.indexOf(current.step)
         if (index < 0) return ToolResult("不认识的阶段：" + current.step, isError = true)
-        // 用户确认 = 这一段验收通过：清单打勾，再跑下一段。
         wf.setStep(job.id, current.step, "done")
         onChecklist(index, "done")
         if (index == phases.lastIndex) {
             wf.setJobState(job.id, "done")
-            return ToolResult("三段都完成了：计划本体、总计划文档和本周节点都建好了。")
+            return ToolResult("三段都完成了：总计划文档、周文档和本周计划节点都建好了。")
         }
         return runPhase(wf, job, phases[index + 1], feedback = null)
     }
@@ -161,15 +164,9 @@ internal class PlanWorkflow(
         val job = resolveJob(wf, arguments) ?: return ToolResult("没有进行中的计划流程；先 action=start。", isError = true)
         val current = job.steps.lastOrNull { it.state == "running" || it.state == "failed" }
             ?: return ToolResult("这段流程没有可重做的阶段。", isError = true)
+        // 三段都是「文档 → 文档」：哪一段都能按用户意见重做，重做只覆盖这一段的产物。
         val feedback = arguments.str("feedback")?.trim()
-        // 只有第一段能整体重做（调研结果就是总计划）；后两段要改请说明改什么，走 update_plan。
-        if (current.step != "research") {
-            return ToolResult(
-                "「" + phaseLabel(current.step) + "」已经产出，不能整段重跑；要改计划内容直接跟用户确认改哪里，" +
-                    "然后用 update_plan 改（或告诉用户到计划页拖）。",
-                isError = true,
-            )
-        }
+        if (feedback.isNullOrBlank()) return ToolResult("revise 需要 feedback：用户想改什么。", isError = true)
         return runPhase(wf, job, current.step, feedback)
     }
 
@@ -182,14 +179,15 @@ internal class PlanWorkflow(
                     appendLine(
                         "  " + (index + 1) + ". " + phaseLabel(step.step) + " — " + when (step.state) {
                             "done" -> "已完成"
-                            "failed" -> "失败" + (step.error?.let { "：" + it } ?: "")
+                            "failed" -> "失败" + (step.error?.let { e -> "：" + e } ?: "")
                             "running" -> if (job.state == "awaiting_user") "等待确认" else "进行中"
                             else -> "还没开始"
                         },
                     )
                 }
+                job.payload.stringField("title")?.let { appendLine("计划标题：" + it) }
                 job.payload.stringField("planId")?.let { appendLine("计划：" + it) }
-                job.payload.stringField("draftId")?.let { appendLine("总计划文档：" + it) }
+                job.payload.stringField("week")?.let { appendLine("本周：" + it) }
             }.trimEnd(),
         )
     }
@@ -198,11 +196,11 @@ internal class PlanWorkflow(
         val job = resolveJob(wf, arguments) ?: return ToolResult("现在没有进行中的计划流程。", isError = true)
         wf.setJobState(job.id, "cancelled")
         onChecklist(-1, "cancel")
-        // 草稿和空壳计划都保留：草稿是总计划，计划本体可能已经建好，删不删交给用户。
-        return ToolResult("已取消这段计划流程。已经写好的计划/文档不会自动删；要删计划去计划页。")
+        // 已经写好的文档/计划都保留：文档是用户的资产，删不删交给用户。
+        return ToolResult("已取消这段计划流程。已经写好的文档和计划不会自动删；要删计划去计划页。")
     }
 
-    // ---------------------------------------------------------------- 三段
+    // ---------------------------------------------------------------- 三段执行
 
     private suspend fun runPhase(
         wf: PlanWorkflowStore,
@@ -211,9 +209,9 @@ internal class PlanWorkflow(
         feedback: String?,
     ): ToolResult {
         val result = when (phase) {
-            "research" -> runResearch(wf, job, feedback)
-            "plan" -> runPlan(wf, job)
-            "week" -> runWeek(wf, job)
+            "master" -> runMaster(wf, job, feedback)
+            "week" -> runWeek(wf, job, feedback)
+            "units" -> runUnits(wf, job, feedback)
             else -> ToolResult("不认识的阶段：" + phase, isError = true)
         }
         if (result.isError) {
@@ -228,21 +226,28 @@ internal class PlanWorkflow(
         if (isLast) {
             wf.setJobState(job.id, "done")
             onChecklist(index, "done")
-            return ToolResult(result.content + "\n三段都完成了。")
+            return ToolResult(result.content)
         }
         wf.setJobState(job.id, "awaiting_user")
         onChecklist(index, "awaiting")
         val next = phases[index + 1]
+        // 选项由宿主摆：模型不能替用户决定要不要往下走。
+        onAskConfirm(
+            job.id,
+            phase,
+            "「" + phaseLabel(next) + "」还没做，要现在开始吗？",
+            listOf(ADVANCE_LABEL, "我要改一下", "先不建"),
+        )
         return ToolResult(
-            result.content + "\n\n下一步（" + phaseLabel(next) + "）还没做。先把上面的结果讲给用户看，" +
-                "问一句要不要继续（ask_choices 给「按这个建 / 我要改 / 先不建」）；" +
-                "用户同意后再调 plan_workflow：action=confirm，jobId=" + job.id + "，confirmed=true。",
+            result.content + "\n\n下一步（" + phaseLabel(next) + "）还没做。选项已经摆在对话里，" +
+                "把这一段的产出讲给用户听，等用户点；用户点了「" + ADVANCE_LABEL + "」之后你才能调 action=advance。",
         )
     }
 
-    // ---- 第一段：调研 + 资源聚合 + 总计划
 
-    private suspend fun runResearch(
+    // ---- 第一段：调研结果 → 总计划文档
+
+    private suspend fun runMaster(
         wf: PlanWorkflowStore,
         job: PlanWorkflowStore.Job,
         feedback: String?,
@@ -250,67 +255,67 @@ internal class PlanWorkflow(
         val goal = job.payload.stringField("goal").orEmpty()
         val deadline = job.payload.stringField("deadline").orEmpty()
         val daily = job.payload.stringField("dailyMinutes")?.toIntOrNull() ?: 60
-        val effectiveGoal = if (feedback.isNullOrBlank()) goal else goal + "\n用户补充要求：" + feedback
-
-        val candidates = scout(effectiveGoal)
-        val raw = generateMasterPlan(effectiveGoal, deadline, daily, candidates)
-            ?: return ToolResult("调研模型没回上来（或超时），这次没写成。可以重试。", isError = true)
-        val rt = research() ?: return ToolResult("调研工具没准备好，这次没开始。", isError = true)
-        val outcome = rt.restoreDraft(goal, deadline.takeIf { it.isNotBlank() }, raw)
-            ?: return ToolResult("调研结果没解析成阶段表（模型可能没说 JSON），这次没写成；可以 revise 重做这一步。", isError = true)
+        // 调研结果 = 宿主检索到的候选资源 + 用户的补充要求（revise 时带上）。
+        val candidates = scout(goal)
+        val draft = draftMasterDoc(goal, deadline, daily, candidates, feedback)
+            ?: return ToolResult("调研模型没回上来（或超时），这次没写成。可以 revise 重做这一段。", isError = true)
         val store = docStore() ?: return ToolResult("计划文档存储没准备好，这次没写成。", isError = true)
         val draftId = "draft_" + UUID.randomUUID().toString().replace("-", "").take(16)
-        val week = isoWeekOf(clock.today())
-        val markdown = masterDoc(effectiveGoal, deadline, outcome.resolved, candidates, week)
-        runCatching { store.saveDraft(draftId, markdown) }
+        runCatching { store.saveDraft(draftId, draft.markdown) }
             .onFailure { return ToolResult("总计划文档没写成：" + (it.message ?: "未知原因"), isError = true) }
-
-        val summary = renderMaster(outcome.resolved, candidates, markdown.length)
         wf.updatePayload(
             job.id,
             payloadWith(
                 job.payload,
-                "raw" to JsonPrimitive(raw),
+                "title" to JsonPrimitive(draft.title),
                 "draftId" to JsonPrimitive(draftId),
-                "summary" to JsonPrimitive(summary),
-                "goal" to JsonPrimitive(effectiveGoal),
+                "summary" to JsonPrimitive(draft.summary),
             ),
         )
         onDocLink(draftId, "总计划文档")
-        return ToolResult(summary)
+        return ToolResult(draft.summary)
     }
 
-    // ---- 第二段：计划本体 + 周文档
+    // ---- 第二段：总计划文档 → 周文档
 
-    private suspend fun runPlan(wf: PlanWorkflowStore, job: PlanWorkflowStore.Job): ToolResult {
+    private suspend fun runWeek(
+        wf: PlanWorkflowStore,
+        job: PlanWorkflowStore.Job,
+        feedback: String?,
+    ): ToolResult {
         val svc = service() ?: return ToolResult(noService(), isError = true)
-        val rt = research() ?: return ToolResult("调研工具没准备好。", isError = true)
+        val store = docStore() ?: return ToolResult("计划文档存储没准备好，这次没写成。", isError = true)
+        val draftId = job.payload.stringField("draftId")
+            ?: return ToolResult("流程里没有总计划文档（第一段没完成），先 revise 重做第一段。", isError = true)
+        // 草稿在第二段成功后会被收养（落成正式总文档并删除）；重做这一段时从正式文档读回来。
+        val existingPlanId = job.payload.stringField("planId")
+        val master = store.readDraft(draftId) ?: existingPlanId?.let { store.read(it) }
+            ?: return ToolResult("总计划文档读不到了（草稿可能被删），先 revise 重做第一段。", isError = true)
+        val title = job.payload.stringField("title") ?: "学习计划"
         val goal = job.payload.stringField("goal").orEmpty()
         val deadline = job.payload.stringField("deadline")?.takeIf { it.isNotBlank() }
-        val raw = job.payload.stringField("raw")
-            ?: return ToolResult("流程里没有调研结果（第一步可能没完成），先 revise 重做第一步。", isError = true)
-        val outcome = rt.restoreDraft(goal, deadline, raw)
-            ?: return ToolResult("调研结果读不回来了（可能被截断），先 revise 重做第一步。", isError = true)
-        val daily = job.payload.stringField("dailyMinutes")?.toIntOrNull()
-        val applied = rt.applyShell(svc, outcome, daily) {}
-            ?: return ToolResult("建计划失败：计划库没有返回计划 id。", isError = true)
-        val planId = applied.planId
-        // 新计划走周队列：节点不排到天，完成时记到当天。
-        runCatching { svc.setScheduleMode(env(planId, "plan.workflow.queue"), planId, "queue") }
-        // 草稿落成正式总文档（覆盖 applyShell 生成的大纲，保留资源清单）。
-        val store = docStore()
-        val draftId = job.payload.stringField("draftId")
-        if (store != null && draftId != null) {
-            runCatching { store.adoptDraft(draftId, planId) }
-                .onFailure { return ToolResult("总计划文档没落成正式文档：" + (it.message ?: "未知原因"), isError = true) }
-        }
+        val daily = job.payload.stringField("dailyMinutes")?.toIntOrNull() ?: 60
         val week = job.payload.stringField("week") ?: isoWeekOf(clock.today())
-        // 周文档：先用模型生成这一周的条目（不建节点），第三步再落到计划库。
-        val items = generateWeekItems(goal, outcome.resolved, week, daily ?: 60)
-        if (store != null && items.isNotEmpty()) {
-            runCatching { store.saveWeek(planId, week, weekDoc(week, outcome.resolved.stages.firstOrNull()?.focus.orEmpty(), items)) }
-                .onFailure { return ToolResult("周计划文档没写成：" + (it.message ?: "未知原因"), isError = true) }
+
+        // 计划本体在这段建：周文档要按 planId 存，周文档也必须挂在某个计划下。
+        val planId = job.payload.stringField("planId") ?: run {
+            val applied = svc.createShell(env("plan.workflow.shell"), title, goal, deadline)
+            val id = applied.value?.planId
+                ?: return ToolResult("建计划失败：" + (applied.error?.message ?: "未知原因"), isError = true)
+            // 新计划走周队列：节点不排到天，完成时记到当天。
+            runCatching { svc.setScheduleMode(env("plan.workflow.queue"), id, "queue") }
+            runCatching { store.adoptDraft(draftId, id) }
+                .onFailure { return ToolResult("总计划文档没落成正式文档：" + (it.message ?: "未知原因"), isError = true) }
+            // 阶段从总计划文档里解析（格式见 PlanDocStore）；解析不到就只留空壳。
+            runCatching { svc.setStages(env("plan.workflow.stages"), id, stageDraftsOf(store, master)) }
+            onChanged()
+            id
         }
+
+        val weekDoc = buildWeekDoc(week, goal, master, daily, feedback)
+            ?: return ToolResult("周文档没生成出来（模型超时或输出不可用）。可以 revise 重做这一段。", isError = true)
+        runCatching { store.saveWeek(planId, week, weekDoc.markdown) }
+            .onFailure { return ToolResult("周文档没写成：" + (it.message ?: "未知原因"), isError = true) }
         wf.updatePayload(
             job.id,
             payloadWith(job.payload, "planId" to JsonPrimitive(planId), "week" to JsonPrimitive(week)),
@@ -319,52 +324,231 @@ internal class PlanWorkflow(
         onChanged()
         return ToolResult(
             buildString {
-                append("计划「").append(outcome.resolved.title).append("」已建好：")
-                append(outcome.resolved.stages.size).append(" 个阶段、共约 ")
-                append(outcome.resolved.stages.sumOf { it.weeks }).append(" 周。")
-                if (items.isNotEmpty()) append("本周（").append(week).append("）的周计划文档也写好了，共 ").append(items.size).append(" 条。")
-                append("这一步只建计划和文档，还没往计划库塞节点。")
+                appendLine("周文档写好了（" + week + "，共 " + weekDoc.items + " 条）：")
+                appendLine(preview(weekDoc.markdown))
+                append("计划「").append(title).append("」也建好了（周队列）：节点还没进计划库，等下一步。")
             },
         )
     }
 
-    // ---- 第三段：把周文档条目变成本周节点
+    // ---- 第三段：周文档 → 计划节点
 
-    private suspend fun runWeek(wf: PlanWorkflowStore, job: PlanWorkflowStore.Job): ToolResult {
+    private suspend fun runUnits(
+        wf: PlanWorkflowStore,
+        job: PlanWorkflowStore.Job,
+        feedback: String?,
+    ): ToolResult {
         val svc = service() ?: return ToolResult(noService(), isError = true)
+        val store = docStore() ?: return ToolResult("计划文档存储没准备好。", isError = true)
         val planId = job.payload.stringField("planId")
-            ?: return ToolResult("流程里没有计划 id，先完成第二步。", isError = true)
+            ?: return ToolResult("流程里没有计划 id（第二段没完成），先 revise 重做第二段。", isError = true)
         val week = job.payload.stringField("week") ?: isoWeekOf(clock.today())
-        // 周文档是单独一行（kind=week），不能从总文档的 load() 里找；先读这一周再解析。
-        val store = docStore()
-        val weekText = store?.readWeek(planId, week).orEmpty()
-        val items = if (weekText.isBlank()) emptyList() else store?.parse(weekText)?.weeks?.get(week).orEmpty()
-        if (items.isEmpty()) {
-            return ToolResult("周计划文档里没有 " + week + " 的条目（第二步可能没写成），先 revise 第一步重来。", isError = true)
+        // 节点已经进过队列就不重做这一段：再次 append 会重复建一批节点。
+        if (!feedback.isNullOrBlank()) {
+            val queued = runCatching { svc.week(planId, week) }.getOrNull()?.commitment?.units.orEmpty()
+            if (queued.isNotEmpty()) {
+                return ToolResult(
+                    "这周的节点已经建好了（" + queued.size + " 条），不能再整段重做（会重复建）。" +
+                        "要改就在计划页拖/删节点，或告诉我要改哪一条。",
+                    isError = true,
+                )
+            }
         }
-        val chapter = store?.stageForWeek(planId, week)?.name ?: "本周"
+        val weekText = store.readWeek(planId, week).orEmpty()
+        val items = store.parse(weekText).weeks[week].orEmpty()
+        if (items.isEmpty()) {
+            return ToolResult("周文档里没有 " + week + " 的条目（第二段可能没写成），先 revise 重做第二段。", isError = true)
+        }
+        val chapter = store.stageForWeek(planId, week)?.name ?: "本周"
+        // 节点只装「要学的点」：kind 一律 study，不生成复习/实践类条目。
         val drafts = items.map { item ->
             UnitDraft(
                 chapter = chapter,
                 title = item.text.take(60),
                 estimateMinutes = (item.minutesHint ?: 30).coerceIn(10, 45),
-                kind = inferKind(item.text),
+                kind = "study",
             )
         }
-        val appended = svc.appendUnits(env(planId, "plan.workflow.nodes"), planId, drafts)
-        if (!appended.ok) return ToolResult("追加节点失败：" + (appended.error?.message ?: "未知原因"), isError = true)
+        val appended = svc.appendUnits(env("plan.workflow.nodes"), planId, drafts)
+        if (!appended.ok) return ToolResult("写计划节点失败：" + (appended.error?.message ?: "未知原因"), isError = true)
         val ids = appended.value.orEmpty()
-        val queued = runCatching { svc.enqueueUnits(env(planId, "plan.workflow.queue"), planId, week, ids) }
-            .getOrElse { return ToolResult("节点已追加，但进本周队列失败：" + (it.message ?: "未知原因"), isError = true) }
-        if (!queued.ok) return ToolResult("节点已追加，但进本周队列失败：" + (queued.error?.message ?: "未知原因"), isError = true)
+        val queued = runCatching { svc.enqueueUnits(env("plan.workflow.queue"), planId, week, ids) }
+            .getOrElse { return ToolResult("节点已写入，但进本周队列失败：" + (it.message ?: "未知原因"), isError = true) }
+        if (!queued.ok) return ToolResult("节点已写入，但进本周队列失败：" + (queued.error?.message ?: "未知原因"), isError = true)
         onChanged()
         return ToolResult(
-            "本周（" + week + "）安排了 " + drafts.size + " 个节点（进本周队列，不排到具体天）：" +
-                drafts.joinToString("、") { it.title } + "。完成后系统会记到当天。",
+            "本周（" + week + "）要学的点已经进队列，共 " + drafts.size + " 条：" +
+                drafts.joinToString("、") { it.title } + "。完成后记到当天。",
         )
     }
 
-    // ---------------------------------------------------------------- 资源聚合
+
+    // ---------------------------------------------------------------- 三段产物的生成
+
+    private data class MasterDraft(val title: String, val markdown: String, val summary: String)
+
+    private suspend fun draftMasterDoc(
+        goal: String,
+        deadline: String,
+        daily: Int,
+        candidates: List<Candidate>,
+        feedback: String?,
+    ): MasterDraft? {
+        val today = clock.today()
+        val thisWeek = isoWeekOf(today)
+        val system = buildString {
+            appendLine("你是学习规划师。输入是一句目标和一批候选学习资源，输出一份总计划文档。")
+            appendLine("只输出一个 JSON 对象，不要代码块、不要解释：")
+            appendLine("{\"title\":\"计划标题（≤16 字）\",\"doc\":\"整份总计划 Markdown\"}")
+            appendLine("doc 必须严格是这个结构（解析器只认这几个标题）：")
+            appendLine("# 目标与验收")
+            appendLine("- 目标：<一句目标>")
+            if (deadline.isNotBlank()) appendLine("- 截止：<" + deadline + ">")
+            appendLine("- 验收：<怎么算学完，可自测>")
+            appendLine("## 阶段")
+            appendLine("- 阶段 1 · <名称>（<起始周> – <结束周>，约 N 周）：<这一阶段聚焦什么>")
+            appendLine("  - 资源：")
+            appendLine("    - [<资源名>](<url>) — <一句话说明>")
+            appendLine("（阶段 2、3… 同样写法，共 3–8 个；周用 " + thisWeek + " 这种 ISO 周格式，从 " + thisWeek + " 开始，各阶段首尾相接）")
+            appendLine("## 资源清单")
+            appendLine("### <类型：视频/文章/仓库/文档/问答>")
+            appendLine("- [<资源名>](<url>) — <来源>")
+            appendLine()
+            appendLine("约束：")
+            appendLine("1. 阶段只写名称、周数、聚焦和资源；不要写交付物、过关标准。")
+            appendLine("2. 资源只能从用户消息里的 <resource_candidates> 里挑，url 必须逐字照抄；每个阶段 1–3 条。")
+            appendLine("   概念/系统课优先视频；查阅/术语优先文档；动手练优先仓库；经验/考点优先文章或问答。")
+            appendLine("3. 同一份资源最多出现在两个阶段；资源清单按类型分组列全。")
+            appendLine("4. 不编造资料里没有的链接；不写内部工具名。")
+        }
+        val user = buildString {
+            appendLine("目标：" + goal)
+            appendLine("今天：" + today + "，本周：" + thisWeek)
+            if (deadline.isNotBlank()) appendLine("截止日期：" + deadline)
+            appendLine("每天投入：" + daily + " 分钟")
+            if (!feedback.isNullOrBlank()) appendLine("用户对上一版的修改意见：" + feedback)
+            appendLine()
+            appendLine("<resource_candidates>")
+            if (candidates.isEmpty()) {
+                appendLine("（这次没检索到可用资源：阶段资源给空，不要编造链接；资源清单可以省略。）")
+            } else {
+                candidates.forEachIndexed { index, candidate ->
+                    append("[").append(index + 1).append("] [").append(candidate.type).append("] ")
+                    append(candidate.title).append(" | ").append(candidate.url)
+                    if (candidate.source.isNotBlank()) append(" | ").append(candidate.source)
+                    if (candidate.note.isNotBlank()) append(" | ").append(candidate.note)
+                    appendLine()
+                }
+            }
+            appendLine("</resource_candidates>")
+            append("请输出 JSON：title 和 doc。")
+        }
+        val raw = withTimeoutOrNull(MASTER_TIMEOUT_MS) {
+            llm.complete(listOf(LlmMessage(LlmRole.System, system), LlmMessage(LlmRole.User, user)))
+        } ?: return null
+        val root = runCatching {
+            Json.parseToJsonElement(extractJsonObject(raw).orEmpty()) as? JsonObject
+        }.getOrNull() ?: return null
+        val title = root["title"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty().take(24)
+            .ifBlank { goal.take(16) }
+        val markdown = root["doc"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        if (markdown.isBlank()) return null
+        val stageCount = docStore()?.parse(markdown)?.stages?.size ?: 0
+        return MasterDraft(
+            title = title,
+            markdown = markdown,
+            summary = buildString {
+                appendLine("总计划文档写好了：计划「" + title + "」" +
+                    (if (stageCount > 0) "，共 " + stageCount + " 个阶段" else "") + "。")
+                appendLine(preview(markdown))
+                append("文档可以在知识库「计划文档」里打开；下一步是把它变成本周的周文档。")
+            },
+        )
+    }
+
+    private data class WeekDoc(val markdown: String, val items: Int)
+
+    private suspend fun buildWeekDoc(
+        week: String,
+        goal: String,
+        master: String,
+        daily: Int,
+        feedback: String?,
+    ): WeekDoc? {
+        val system = buildString {
+            appendLine("你是学习规划师。输入是一份总计划文档，输出这一周的周文档。")
+            appendLine("只输出周文档 Markdown 本身（不要代码块、不要解释），结构严格如下：")
+            appendLine("# " + week + " 周计划")
+            appendLine("- 本周重点：<一句话>")
+            appendLine("## " + week)
+            appendLine("- <要学的知识点>（约 N 分钟）")
+            appendLine("（再列 4–9 行，同样写法）")
+            appendLine()
+            appendLine("约束：")
+            appendLine("1. 只列这一周要学的知识点/内容（如「进程调度算法」「页面置换计算」），标题不超过 24 个字；")
+            appendLine("   不要写复习、练习、实验、做题、复盘这类动作条目 —— 计划节点只装要学的内容。")
+            appendLine("2. 每条 10–45 分钟；整周总量按每天 " + daily + " 分钟摊开；条目数 5–10 条。")
+            appendLine("3. 内容必须落在总计划文档里本周所处的阶段（按阶段周区间判断），不要提前学后面的阶段。")
+        }
+        val user = buildString {
+            appendLine("目标：" + goal)
+            appendLine("本周：" + week)
+            if (!feedback.isNullOrBlank()) appendLine("用户对上一版的修改意见：" + feedback)
+            appendLine()
+            appendLine("<master_doc>")
+            appendLine(master)
+            appendLine("</master_doc>")
+        }
+        val markdown = withTimeoutOrNull(WEEK_TIMEOUT_MS) {
+            llm.completeText(listOf(LlmMessage(LlmRole.System, system), LlmMessage(LlmRole.User, user)))
+        } ?: return null
+        val doc = normalizeWeekDoc(week, markdown)
+        val items = docStore()?.parse(doc)?.weeks?.get(week).orEmpty()
+        if (items.isEmpty()) return null
+        return WeekDoc(doc, items.size)
+    }
+
+    /** 周文档只保留「标题 + 本周重点 + 周标题下的条目」，模型多写的段落一律丢掉。 */
+    private fun normalizeWeekDoc(week: String, raw: String): String {
+        val items = mutableListOf<String>()
+        var focus = ""
+        var inWeek = false
+        raw.lineSequence().forEach { line ->
+            val trimmed = line.trim()
+            when {
+                trimmed.startsWith("# ") -> Unit
+                trimmed.startsWith("- 本周重点") ->
+                    focus = trimmed.removePrefix("- 本周重点").trim().trimStart('：', ':').trim()
+                WEEK_HEADING.matches(trimmed) -> inWeek = true
+                trimmed.startsWith("## ") -> inWeek = false
+                inWeek && BULLET.matches(trimmed) -> items += trimmed.removePrefix("- ").trim()
+            }
+        }
+        return buildString {
+            appendLine("# " + week + " 周计划")
+            if (focus.isNotBlank()) appendLine("- 本周重点：" + focus)
+            appendLine()
+            appendLine("## " + week)
+            items.forEach { appendLine("- " + it) }
+        }.trimEnd()
+    }
+
+    /** 从总计划文档解析阶段 → 计划库的阶段区间（解析不到周区间就跳过）。 */
+    private fun stageDraftsOf(store: PlanDocStore, master: String): List<StageDraft> =
+        store.parse(master).stages.mapIndexedNotNull { index, stage ->
+            val start = stage.weekStart ?: return@mapIndexedNotNull null
+            val end = stage.weekEnd ?: return@mapIndexedNotNull null
+            StageDraft(
+                name = stage.name,
+                weekStart = start,
+                weekEnd = end,
+                focus = stage.focus,
+                sortOrder = index,
+            )
+        }
+
+
+    // ---------------------------------------------------------------- 资源聚合（调研）
 
     /** 一条候选资源。模型只能从这些里挑，所以类型和来源是宿主标好的。 */
     internal data class Candidate(
@@ -409,8 +593,7 @@ internal class PlanWorkflow(
         }
         // B 站：单独检索（搜索接口按播放量排序，分集数就是天然大纲）。
         runCatching {
-            val keyword = searchKeyword(goal)
-            bilibili.search(keyword, "click", 5).forEach { video ->
+            bilibili.search(searchKeyword(goal), "click", 5).forEach { video ->
                 hits += Candidate(
                     title = video.title,
                     url = "https://www.bilibili.com/video/" + video.bvid,
@@ -462,202 +645,14 @@ internal class PlanWorkflow(
         return cleaned.split(" ").filter { it.isNotBlank() }.take(3).joinToString(" ").ifBlank { goal.take(12) }
     }
 
-    private suspend fun generateMasterPlan(
-        goal: String,
-        deadline: String,
-        daily: Int,
-        candidates: List<Candidate>,
-    ): String? {
-        val today = clock.today()
-        val week = isoWeekOf(today)
-        val deadlineWeek = deadline.takeIf { it.isNotBlank() }?.let {
-            runCatching { isoWeekOf(LocalDate.parse(it)) }.getOrNull()
-        }
-        val system = buildString {
-            appendLine("你是学习规划师。用户只有一句目标，你要先做全局规划：把目标拆成阶段、估算每阶段周数，再从给定资源里挑最有用的。")
-            appendLine("只输出一个 JSON 对象，不要 markdown、不要解释：")
-            appendLine("{\"title\":\"计划标题（≤16 字）\",\"dailyMinutes\":" + daily + ",\"stages\":[{\"name\":\"阶段名（≤16 字）\",\"weeks\":2,\"focus\":\"聚焦什么（≤30 字）\",\"resources\":[{\"title\":\"资源名\",\"url\":\"https://…\",\"note\":\"一句话说明\"}]}]}")
-            appendLine("约束：阶段 1–8 个，每个阶段 1–12 周，总周数 ≤ 40；这个计划从 " + week + " 这一周开始。")
-            if (deadlineWeek != null) appendLine("用户给了截止日期（" + deadline + "，即 " + deadlineWeek + "），总周数必须覆盖到那之前。")
-            appendLine("写法要求：")
-            appendLine("1. 阶段只写名称、周数、聚焦和资源；不要写交付物、过关标准。")
-            appendLine("2. resources 只能从下面给出的候选项里挑（url 必须逐字照抄），每个阶段 1–3 条；优先选：")
-            appendLine("   - 概念/系统课 → 视频；查阅/术语 → 文档；动手练 → 仓库；经验/考点 → 文章或问答。")
-            appendLine("3. 不同阶段尽量用不同资源；同一门课最多出现在两个阶段。")
-            appendLine("4. 不要写来源站点名、内部工具名。")
-        }
-        val user = buildString {
-            appendLine("目标：" + goal)
-            appendLine("今天：" + today + "，本周：" + week)
-            if (deadline.isNotBlank()) appendLine("截止日期：" + deadline)
-            appendLine("每天投入：" + daily + " 分钟")
-            appendLine()
-            appendLine("<resource_candidates>")
-            if (candidates.isEmpty()) {
-                appendLine("（这次没有检索到可用资源；resources 给空数组，不要编造。）")
-            } else {
-                candidates.forEachIndexed { index, candidate ->
-                    append("[").append(index + 1).append("] [").append(candidate.type).append("] ")
-                    append(candidate.title).append(" | ").append(candidate.url)
-                    if (candidate.source.isNotBlank()) append(" | ").append(candidate.source)
-                    if (candidate.note.isNotBlank()) append(" | ").append(candidate.note)
-                    appendLine()
-                }
-            }
-            appendLine("</resource_candidates>")
-            appendLine("请按上述 JSON 格式输出阶段表。")
-        }
-        return withTimeoutOrNull(PLAN_TIMEOUT_MS) {
-            llm.complete(
-                listOf(
-                    LlmMessage(LlmRole.System, system),
-                    LlmMessage(LlmRole.User, user),
-                ),
-            )
-        }
-    }
+    // ---------------------------------------------------------------- 小件
 
-    private suspend fun generateWeekItems(
-        goal: String,
-        draft: ResearchTools.ShellDraft,
-        week: String,
-        daily: Int,
-    ): List<WeekItem> {
-        val system = buildString {
-            appendLine("你是学习规划师。现在只排这一周的具体学习条目（不是整份计划）。")
-            appendLine("只输出 JSON：{\"items\":[{\"title\":\"条目（具体内容/知识点，≤24 字）\",\"minutes\":30,\"kind\":\"study|practice|review\"}]}")
-            appendLine("约束：5–12 条；每条 10–45 分钟；本周总时长约 " + (daily * 7) + " 分钟，按 " + daily + " 分钟/天摊；")
-            appendLine("标题写具体内容或知识点（如「进程调度算法」「页面置换计算」），不要写「学习/复习/了解」这种动作词。")
-        }
-        val user = buildString {
-            appendLine("目标：" + goal)
-            appendLine("本周：" + week)
-            appendLine("总计划阶段：")
-            draft.stages.forEach { stage ->
-                append("- ").append(stage.name).append("（约 ").append(stage.weeks).append(" 周）")
-                if (stage.focus.isNotBlank()) append("：").append(stage.focus)
-                appendLine()
-            }
-            appendLine("请只排本周的条目。")
-        }
-        val raw = withTimeoutOrNull(PLAN_TIMEOUT_MS) {
-            llm.complete(listOf(LlmMessage(LlmRole.System, system), LlmMessage(LlmRole.User, user)))
-        } ?: return emptyList()
-        return parseWeekItems(raw)
-    }
-
-    // ---------------------------------------------------------------- 文档与格式
-
-    private fun masterDoc(
-        goal: String,
-        deadline: String,
-        draft: ResearchTools.ShellDraft,
-        candidates: List<Candidate>,
-        thisWeek: String,
-    ): String = buildString {
-        appendLine("# 目标与验收")
-        appendLine("- 目标：" + goal)
-        if (deadline.isNotBlank()) appendLine("- 截止：" + deadline)
-        appendLine("- 验收：按阶段推进；每阶段结束时能用自己的话讲清重点并完成对应练习。")
-        appendLine()
-        appendLine("## 阶段")
-        var cursor = isoWeekStart(thisWeek)
-        draft.stages.forEachIndexed { index, stage ->
-            val start = cursor
-            val end = start?.plusWeeks(stage.weeks.toLong())?.minusDays(1)
-            append("- 阶段 ").append(index + 1).append(" · ").append(stage.name)
-            if (start != null && end != null) {
-                append("（").append(isoWeekOf(start)).append(" – ").append(isoWeekOf(end)).append("，约 ").append(stage.weeks).append(" 周）")
-            } else {
-                append("（约 ").append(stage.weeks).append(" 周）")
-            }
-            if (stage.focus.isNotBlank()) append("：").append(stage.focus)
-            appendLine()
-            if (stage.resources.isNotEmpty()) {
-                appendLine("  - 资源：")
-                stage.resources.forEach { resource ->
-                    append("    - [").append(resource.title).append("](").append(resource.url).append(")")
-                    if (resource.note.isNotBlank()) append(" — ").append(resource.note)
-                    appendLine()
-                }
-            }
-            if (start != null) cursor = start.plusWeeks(stage.weeks.toLong())
-        }
-        if (candidates.isNotEmpty()) {
-            appendLine()
-            appendLine("## 资源清单")
-            appendLine("下面是这次调研聚合到的候选资源，可按需补充：")
-            candidates.groupBy { it.type }.forEach { (type, list) ->
-                appendLine()
-                appendLine("### " + type)
-                list.forEach { candidate ->
-                    append("- [").append(candidate.title).append("](").append(candidate.url).append(")")
-                    if (candidate.source.isNotBlank()) append(" — ").append(candidate.source)
-                    appendLine()
-                }
-            }
-        }
-    }
-
-    private fun renderMaster(draft: ResearchTools.ShellDraft, candidates: List<Candidate>, chars: Int): String = buildString {
-        appendLine("调研完成：计划「" + draft.title + "」，共 " + draft.stages.size + " 个阶段，约 " + draft.stages.sumOf { it.weeks } + " 周。")
-        draft.stages.forEachIndexed { index, stage ->
-            append((index + 1).toString()).append(". ").append(stage.name).append("（约 ").append(stage.weeks).append(" 周）")
-            if (stage.focus.isNotBlank()) append("：").append(stage.focus)
-            appendLine()
-            if (stage.resources.isNotEmpty()) {
-                appendLine("   资源：" + stage.resources.joinToString("；") { it.title })
-            }
-        }
-        if (candidates.isNotEmpty()) {
-            appendLine("这次聚合到 " + candidates.size + " 条候选资源（" + candidates.groupBy { it.type }.entries.joinToString("、") { it.key + " " + it.value.size } + "）。")
-        } else {
-            appendLine("这次没有检索到可用资源；资源先空着，不编造链接。")
-        }
-        append("总计划文档已生成（" + chars + " 字），可在知识库「计划文档」里查看和修改意见。")
-    }
-
-    private data class WeekItem(val title: String, val minutes: Int, val kind: String)
-
-    private fun parseWeekItems(raw: String): List<WeekItem> {
-        val jsonText = extractJsonObject(raw) ?: return emptyList()
-        val root = runCatching { Json.parseToJsonElement(jsonText) as? JsonObject }.getOrNull() ?: return emptyList()
-        val array = root["items"] as? JsonArray ?: return emptyList()
-        return array.mapNotNull { element ->
-            val obj = element as? JsonObject ?: return@mapNotNull null
-            val title = obj["title"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-            if (title.isEmpty()) return@mapNotNull null
-            WeekItem(
-                title = title.take(60),
-                minutes = (obj["minutes"]?.jsonPrimitive?.intOrNull ?: 30).coerceIn(10, 45),
-                kind = when (obj["kind"]?.jsonPrimitive?.contentOrNull) {
-                    "practice" -> "practice"
-                    "review" -> "review"
-                    else -> "study"
-                },
-            )
-        }.take(12)
-    }
-
-    private fun weekDoc(week: String, focus: String, items: List<WeekItem>): String = buildString {
-        appendLine("# " + week + " 周计划")
-        if (focus.isNotBlank()) appendLine("- 本周重点：" + focus)
-        appendLine()
-        appendLine("## " + week)
-        items.forEach { item ->
-            append("- ").append(item.title)
-            if (item.kind == "practice") append("（练习）")
-            if (item.kind == "review") append("（复习）")
-            append("（约 ").append(item.minutes).append(" 分钟）")
-            appendLine()
-        }
-    }
-
-    private fun inferKind(text: String): String = when {
-        text.contains("复习") || text.contains("回顾") -> "review"
-        text.contains("练习") || text.contains("题") || text.contains("实验") -> "practice"
-        else -> "study"
-    }
+    /** 给用户看的摘要：去掉 Markdown 标题符号，只留前几行，免得把整份文档糊进对话。 */
+    private fun preview(markdown: String): String =
+        markdown.lineSequence()
+            .filter { it.isNotBlank() }
+            .take(8)
+            .joinToString("\n") { line -> line.trim().trimStart('#', '-', ' ').trim() }
 
     private fun extractJsonObject(raw: String): String? {
         val fence = FENCE
@@ -684,8 +679,6 @@ internal class PlanWorkflow(
         return null
     }
 
-    // ---------------------------------------------------------------- 小件
-
     private fun normalizeDeadline(raw: String?): String {
         val text = raw?.trim().orEmpty()
         if (text.isEmpty()) return ""
@@ -700,13 +693,12 @@ internal class PlanWorkflow(
 
     private fun noService(): String {
         val reason = dbError()?.takeIf { it.isNotBlank() }
-        return "计划库打不开，这次没写任何东西。" + (reason?.let { "具体原因：$it。" } ?: "")
+        return "计划库打不开，这次没写任何东西。" + (reason?.let { r -> "具体原因：" + r + "。" } ?: "")
     }
 
-    private fun env(planId: String, origin: String) = CommandEnvelope(
+    private fun env(origin: String) = CommandEnvelope(
         commandId = "cmd_" + UUID.randomUUID().toString().replace("-", ""),
         actor = Actor.AGENT,
-        planId = planId,
         origin = origin,
     )
 
@@ -714,10 +706,6 @@ internal class PlanWorkflow(
         this[key]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
 
     private fun JsonObject.int(key: String): Int? = this[key]?.jsonPrimitive?.intOrNull
-
-    private fun JsonObject.bool(key: String): Boolean? = this[key]?.jsonPrimitive?.let {
-        it.content.toBooleanStrictOrNull()
-    }
 
     private fun String.stringField(key: String): String? {
         val root = runCatching { Json.parseToJsonElement(this) as? JsonObject }.getOrNull() ?: return null
@@ -729,9 +717,16 @@ internal class PlanWorkflow(
         return JsonObject(root + pairs.toMap()).toString()
     }
 
-    private companion object {
+    internal companion object {
+        /** 「开始下一步」是宿主摆的固定选项；只有点了它才放行 advance。 */
+        const val ADVANCE_LABEL: String = "开始下一步"
+
         const val SCOUT_TIMEOUT_MS = 45_000L
-        const val PLAN_TIMEOUT_MS = 45_000L
+        const val MASTER_TIMEOUT_MS = 60_000L
+        const val WEEK_TIMEOUT_MS = 60_000L
         val FENCE: String = String(CharArray(3) { Char(96) })
+        val WEEK_HEADING = Regex("^##\\s*\\d{4}-W\\d{2}\\s*$")
+        val BULLET = Regex("^(?:[-*+]|\\d+[.)])\\s+.+$")
     }
 }
+

@@ -22,14 +22,15 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * 计划工作流的三段：调研+总计划 → 计划本体+周文档 → 本周节点。
+ * 计划工作流 = 三段文档转换：
  *
- * 这里钉住三件事：
- * 1. 第一段只产出草稿文档，不写计划库；
- * 2. 第二段才建计划本体 + 周文档，而且**不建节点**；
- * 3. 第三段才把周文档的条目变成本周队列里的节点。
+ *   调研结果   → 总计划文档（只写草稿，不动计划库）
+ *   总计划文档 → 周文档（建计划本体 + 写周文档，不建节点）
+ *   周文档     → 计划节点（只有要学的点，kind 一律 study）
  *
- * 每段结束都必须停在 awaiting_user —— 「一步出结果」就是从这漏出去的。
+ * 这里钉住两件容易回归的事：
+ * 1. 每段结束都停在 awaiting，**没点「开始下一步」不能推进**（consent 由宿主发）；
+ * 2. 节点只装知识点：周文档里不出现复习/练习，落库的 kind 只有 study。
  */
 class PlanWorkflowTest {
 
@@ -71,17 +72,32 @@ class PlanWorkflowTest {
         val llm: FakeLlm,
         val checklists: MutableList<String>,
         val docLinks: MutableList<String>,
+        val gates: MutableList<Pair<String, String>>,
+        /** true = 模拟「用户点了开始下一步」；false = 用户没点，advance 应该被拒。 */
+        var autoConsent: Boolean = true,
     )
 
-    private fun masterJson(): String =
-        """{"title":"操作系统备考","dailyMinutes":60,"stages":[""" +
-            """{"name":"基础","weeks":1,"focus":"中断与系统调用"},{"name":"进程与内存","weeks":2,"focus":"调度与分页","resources":[]}""" +
-            """]}"""
+    private fun masterJson(): String {
+        val doc = listOf(
+            "# 目标与验收",
+            "- 目标：两个月后期末考试，复习操作系统",
+            "- 验收：每章能自己复述并做出例题",
+            "## 阶段",
+            "- 阶段 1 · 基础（2026-W45 – 2026-W45，约 1 周）：中断与系统调用",
+            "- 阶段 2 · 进程（2026-W46 – 2026-W47，约 2 周）：调度与同步",
+        ).joinToString("\n")
+        return "{\"title\":\"操作系统备考\",\"doc\":\"" + doc.replace("\n", "\\n") + "\"}"
+    }
 
-    private fun weekJson(): String =
-        """{"items":[{"title":"中断与系统调用","minutes":30,"kind":"study"},""" +
-            """{"title":"进程调度算法","minutes":25,"kind":"study"},""" +
-            """{"title":"页面置换计算","minutes":40,"kind":"practice"}]}"""
+    private fun weekDoc(): String = listOf(
+        "# " + thisWeek + " 周计划",
+        "- 本周重点：中断与系统调用",
+        "",
+        "## " + thisWeek,
+        "- 中断与系统调用（约 30 分钟）",
+        "- 进程调度算法（约 25 分钟）",
+        "- 页面置换计算（约 40 分钟）",
+    ).joinToString("\n")
 
     private var harnessRef: Harness? = null
 
@@ -91,30 +107,31 @@ class PlanWorkflowTest {
         val service = LearningPlanStore.open(File(home, "plans/plan.db").toPath(), { clock.nowMs() }, zone)
         val docStore = PlanDocStore(home)
         val workflow = PlanWorkflowStore(home)
-        val llm = FakeLlm(listOf(masterJson(), weekJson()))
-        val research = ResearchTools(
-            service = { service },
-            planDocStore = { docStore },
-            weeklyCapacity = { 60 * 7 },
-            clock = clock,
-            llm = llm,
-            research = null,
-        )
+        val llm = FakeLlm(listOf(masterJson(), weekDoc()))
         val checklists = mutableListOf<String>()
         val docLinks = mutableListOf<String>()
+        val gates = mutableListOf<Pair<String, String>>()
+        val consents = mutableSetOf<Pair<String, String>>()
+        lateinit var h: Harness
         val flow = PlanWorkflow(
             service = { service },
             workflow = { workflow },
             docStore = { docStore },
-            research = { research },
             clock = clock,
             llm = llm,
             gateway = { NoopResearch() },
             onChanged = {},
             onChecklist = { phase, state -> checklists += phase.toString() + ":" + state },
             onDocLink = { id, _ -> docLinks += id },
+            onAskConfirm = { jobId, phase, _, _ ->
+                gates += jobId to phase
+                // 测试里默认模拟「用户点了继续」：凭据备好，advance 才能过。
+                // 需要验证「没点不能推进」的用例把 autoConsent 关掉。
+                if (h.autoConsent) consents += jobId to phase
+            },
+            consumeConsent = { jobId, phase -> consents.remove(jobId to phase) },
         )
-        val h = Harness(home, service, docStore, workflow, flow.all.single(), llm, checklists, docLinks)
+        h = Harness(home, service, docStore, workflow, flow.all.single(), llm, checklists, docLinks, gates)
         harnessRef = h
         return h
     }
@@ -141,64 +158,74 @@ class PlanWorkflowTest {
         return h.workflow.latestOpen("plan_flow")?.id ?: error("没有建出流程")
     }
 
-    private suspend fun confirm(h: Harness) {
-        val result = h.tool.call(
-            buildJsonObject {
-                put("action", "confirm")
-                put("confirmed", true)
-            },
-        )
+    private suspend fun advance(h: Harness) {
+        val result = h.tool.call(buildJsonObject { put("action", "advance") })
         assertTrue(!result.isError, result.content)
     }
 
     @Test
-    fun researchPhaseOnlyWritesADraftDocAndWaits() = runTest {
+    fun masterPhaseOnlyWritesDraftAndWaits() = runTest {
         val h = harness()
         val jobId = start(h)
 
         val job = assertNotNull(h.workflow.load(jobId))
         assertEquals("awaiting_user", job.state)
-        assertEquals("running", job.steps.first { it.step == "research" }.state)
-        // 第一段只出草稿：计划库还没有计划，文档在草稿目录。
+        assertEquals("running", job.steps.first { it.step == "master" }.state)
+        // 第一段只出文档：计划库还没有计划，文档在草稿目录。
         assertTrue(h.service.plans().isEmpty())
         assertTrue(h.docStore.draftIds().isNotEmpty())
         assertTrue(h.docLinks.single().startsWith("draft_"))
         assertTrue(h.checklists.contains("0:awaiting"), h.checklists.toString())
+        // 宿主摆了「开始下一步」这一个按钮（推进不由模型决定）。
+        assertTrue(h.gates.single().second == "master", h.gates.toString())
     }
 
     @Test
-    fun planPhaseCreatesPlanAndWeekDocButNoNodes() = runTest {
+    fun advanceWithoutUserClickIsRejected() = runTest {
+        val h = harness()
+        h.autoConsent = false
+        start(h)
+        // 用户没点「开始下一步」：模型自己调 advance 必须被拒，流程停在原地。
+        val rejected = h.tool.call(buildJsonObject { put("action", "advance") })
+        assertTrue(rejected.isError, rejected.content)
+        assertTrue(rejected.content.contains("还没点"), rejected.content)
+        assertEquals("awaiting_user", assertNotNull(h.workflow.latestOpen("plan_flow")).state)
+    }
+
+    @Test
+    fun weekPhaseCreatesPlanAndWeekDocButNoNodes() = runTest {
         val h = harness()
         val jobId = start(h)
-        confirm(h)
+        advance(h)
 
-        // 第二段：计划本体 + 周文档，节点还没进计划库。
         val plans = h.service.plans()
         assertEquals(1, plans.size, plans.toString())
         val planId = plans.first().id
         assertEquals("awaiting_user", assertNotNull(h.workflow.load(jobId)).state)
         val weekText = h.docStore.readWeek(planId, thisWeek).orEmpty()
-        val weekDoc = h.docStore.parse(weekText).weeks[thisWeek].orEmpty()
-        assertEquals(3, weekDoc.size, weekDoc.joinToString { it.text })
-
+        assertTrue(weekText.contains("进程调度算法"), weekText)
+        // 第一段草稿已经落成正式总文档。
+        assertTrue(h.docStore.read(planId).orEmpty().contains("## 阶段"))
+        // 第二段只写文档，节点还没进计划库。
         val week = assertNotNull(h.service.week(planId, thisWeek))
         assertTrue(week.commitment?.units.isNullOrEmpty(), "第二段不该建节点")
     }
 
     @Test
-    fun weekPhaseTurnsWeekDocIntoQueuedNodes() = runTest {
+    fun unitsPhaseTurnsWeekDocIntoStudyOnlyNodes() = runTest {
         val h = harness()
         val jobId = start(h)
-        confirm(h)
-        confirm(h)
+        advance(h)
+        advance(h)
 
         val planId = h.service.plans().first().id
-        val job = assertNotNull(h.workflow.load(jobId))
-        assertEquals("done", job.state)
-        val week = assertNotNull(h.service.week(planId, thisWeek))
-        val units = week.commitment?.units.orEmpty()
+        assertEquals("done", assertNotNull(h.workflow.load(jobId)).state)
+        val units = assertNotNull(h.service.week(planId, thisWeek)).commitment?.units.orEmpty()
         assertEquals(3, units.size, units.joinToString { it.title })
         assertTrue(units.any { it.title.contains("页面置换") }, units.joinToString { it.title })
+        // 节点只装要学的点：没有复习/练习类条目，kind 一律 study。
+        assertTrue(units.all { it.kind == "study" }, units.joinToString { it.kind })
+        assertTrue(units.none { it.title.contains("复习") || it.title.contains("练习") })
         assertTrue(h.checklists.contains("2:done"), h.checklists.toString())
     }
 

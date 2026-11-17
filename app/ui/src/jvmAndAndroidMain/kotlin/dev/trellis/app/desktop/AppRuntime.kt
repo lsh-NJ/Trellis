@@ -1528,6 +1528,9 @@ class AppRuntime private constructor() {
         // 这一轮还在跑（工具循环没结束）时先别接：`ask()` 有 chatBusy 门闩会直接返回，
         // 提问卡却已经清空 —— 等于把这一问白丢了。卡本身也要等收尾后才显示可点。
         if (chatBusy) return
+        // 计划工作流的「开始下一步」是宿主摆的按钮：点它就记下一次性凭据，
+        // 工具只有拿到凭据才允许推进（模型自己调的 advance 过不去）。
+        markPlanAdvanceConsent(choice.text)
         chatAsk = null
         ask(choice.text)
     }
@@ -2413,9 +2416,9 @@ class AppRuntime private constructor() {
         when (state) {
             "start" -> beginPlanSpecs(
                 listOf(
-                    PlanStepSpec("调研 + 资源聚合 + 总计划", impact = "生成总计划文档，等用户确认"),
-                    PlanStepSpec("创建计划本体 + 周计划文档"),
-                    PlanStepSpec("安排本周节点"),
+                    PlanStepSpec("调研结果 → 总计划文档", impact = "写完文档停下来，等用户确认"),
+                    PlanStepSpec("总计划文档 → 周文档", impact = "建计划本体并生成本周周文档"),
+                    PlanStepSpec("周文档 → 计划节点", impact = "把要学的知识点放进本周队列"),
                 ),
             )
             "running" -> markPlanStepState(phase, PlanStepState.Running)
@@ -2446,9 +2449,9 @@ class AppRuntime private constructor() {
 
     /** 计划工作流三段的显示名（用于提示词里的「当前段」）。 */
     private fun workflowPhaseLabel(phase: String): String = when (phase) {
-        "research" -> "调研 + 资源聚合 + 总计划"
-        "plan" -> "创建计划本体 + 周计划文档"
-        "week" -> "安排本周节点"
+        "master" -> "调研结果 → 总计划文档"
+        "week" -> "总计划文档 → 周文档"
+        "units" -> "周文档 → 计划节点"
         else -> "进行中"
     }
 
@@ -2867,7 +2870,7 @@ class AppRuntime private constructor() {
             val diagnosticsTools = DiagnosticsTools { diagnosticsReport() }
             // 计划域收成一读一写两个入口：旧的建/排/读/写工具仍作为内部实现被 op 调用，
             // 但不再单独注册给模型 —— 模型只需要知道「读计划」和「改计划」两件事。
-            // create_learning_plan 已下线（bvid 旧路径）：新建计划统一走 create_plan。
+            // create_learning_plan 已下线（bvid 旧路径）：新建计划统一走 plan_workflow。
             val legacyPlanTools = (planAdminTools.all + planDocTools.all +
                 researchTools.all + planWeekTools.all).associateBy { it.name }
             val planEditTools = PlanEditTools(
@@ -2886,7 +2889,6 @@ class AppRuntime private constructor() {
                 service = { runCatching { learningPlan() }.getOrNull() },
                 workflow = { if (::planWorkflowStore.isInitialized) planWorkflowStore else null },
                 docStore = { if (::planDocStore.isInitialized) planDocStore else null },
-                research = { researchTools },
                 clock = clock,
                 llm = llm,
                 gateway = { researchGateway },
@@ -2897,6 +2899,12 @@ class AppRuntime private constructor() {
                     turnDocLinkId = id
                     turnDocLinkLabel = label
                 },
+                // 段间确认由宿主摆选项：用户点了「开始下一步」，才把一次性凭据交给工具。
+                onAskConfirm = { jobId, phase, question, options ->
+                    planAdvanceGate = jobId to phase
+                    offerChoices(question, options)
+                },
+                consumeConsent = { jobId, phase -> consumePlanAdvanceConsent(jobId, phase) },
             )
             // 跨会话记忆也是手：用户说出长期目标/偏好时写进管家日志，要回忆过去时再检索。
             // 和管家仪式共用同一份 append-only 记忆 —— 目标不该只有晨/夜仪式才有机会落盘。
@@ -2975,7 +2983,6 @@ class AppRuntime private constructor() {
                 "\n\n" + workflowTools.guidance + "\n\n" + bilibiliTools.guidance +
                 "\n\n" + taskTools.guidance +
                 "\n\n" + planEditTools.guidance +
-                "\n\n" + planWorkflow.guidance +
                 "\n\n" + diagnosticsTools.guidance + "\n\n" + memoryTools.guidance +
                 "\n\n" + goalTools.guidance + "\n\n" + expandGuidance
             // 跨会话记忆块只随记忆内容变化，接在 guidance 最末尾：两条路径（普通 / 管家）
@@ -2994,15 +3001,16 @@ class AppRuntime private constructor() {
                     appendLine("<plan_workflow_mode>")
                     appendLine("用户已经进入一段计划流程，这一段正停在「等待确认」。")
                     appendLine("当前段：" + workflowPhaseLabel(current) + "（jobId=" + openFlow.id + "）。")
-                    appendLine("这一轮只能做这些：把上一段的结果讲清楚、回答用户的修改意见、用 ask_choices 问要不要进入下一段；")
-                    appendLine("用户明确同意后才调 plan_workflow(action=confirm, confirmed=true)；要改已有的计划/文档内容用 update_plan，不要另开一段计划流程。")
+                    appendLine("这一轮只做三件事：把上一段的产出讲清楚、按用户意见调 plan_workflow(action=revise, feedback=…)、")
+                    appendLine("用户点了「" + PlanWorkflow.ADVANCE_LABEL + "」之后再调 action=advance。推进由宿主按钮控制，你不能自己决定往下走。")
+                    appendLine("要改已有的计划/文档内容用 update_plan；不要另开一段计划流程。")
                     appendLine("</plan_workflow_mode>")
                 }
                 val flowTools = allTools.filter {
                     it.name == "plan_workflow" || it.name == "ask_choices" ||
                         it.name == "read_plan" || it.name == "update_plan"
                 }
-                return ChatRig(catalog, tools, flowTools, planWorkflow.guidance + "\n\n" + modeGuidance)
+                return ChatRig(catalog, tools, flowTools, modeGuidance)
             }
             return ChatRig(catalog, tools, allTools, promptGuidance)
     }
@@ -3348,6 +3356,8 @@ class AppRuntime private constructor() {
             }
             persistChat()
             chatBusy = false
+            // 计划推进凭据只对这一轮有效：用户点了继续但模型没推进，下轮要重新点。
+            planAdvanceConsented = null
             // 完成事件可能在这一轮跑的期间又攒下一件：现在这一轮收尾了，接着开自主检查。
             if (pendingAutonomy != null) launchAutonomyTurn()
         }
@@ -4266,6 +4276,7 @@ class AppRuntime private constructor() {
 
     /** 知识库里「计划文档」二级页当前打开的计划；非空时知识库页整页显示它。 */
     var planDocBrowseId by mutableStateOf<String?>(null)
+        private set
 
     /**
      * 这一轮计划工作流要挂到回复上的文档链接（工具回调填，收尾时贴到这一轮的回复行）。
@@ -4275,7 +4286,31 @@ class AppRuntime private constructor() {
      */
     private var turnDocLinkId: String? = null
     private var turnDocLinkLabel: String? = null
-        private set
+
+    /**
+     * 计划工作流停在哪一段等确认（jobId to phase）。
+     *
+     * 只有 [consumePlanAdvanceConsent] 会读它 —— 用户点了「开始下一步」才把凭据交给工具，
+     * 模型自己调 advance 是过不去的（见 PlanWorkflow.advance）。
+     */
+    private var planAdvanceGate: Pair<String, String>? = null
+    private var planAdvanceConsented: Pair<String, String>? = null
+
+    /** 用户点了继续：记下一次性凭据，等工具来领。 */
+    private fun markPlanAdvanceConsent(choiceText: String) {
+        val gate = planAdvanceGate ?: return
+        if (choiceText.trim() == PlanWorkflow.ADVANCE_LABEL) planAdvanceConsented = gate
+    }
+
+    /** 工具来领凭据：只放行一次，领完就清掉。 */
+    private fun consumePlanAdvanceConsent(jobId: String, phase: String): Boolean {
+        val ok = planAdvanceConsented == (jobId to phase)
+        if (ok) {
+            planAdvanceConsented = null
+            planAdvanceGate = null
+        }
+        return ok
+    }
 
     /**
      * 计划库打不开的**具体原因**（比 [planMessage] 短、给工具/诊断用）。

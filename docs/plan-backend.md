@@ -372,14 +372,19 @@
 
 ---
 
-## 21 2026-11-17：计划工作流（plan_workflow 三段）+ 计划文档进知识库
+## 21 2026-11-17：计划工作流（plan_workflow）+ 计划文档进知识库
 
-- **计划文档改存文件**：`<home>/knowledge/plan-docs/<planId>/总览.md` 与 `<YYYY-Www>.md`；草稿在 `_drafts/<draftId>.md`。旧 `plan_doc` 表 / `plans/docs` 只做一次性导入（只补缺失、不覆盖）。知识库左栏多一个「计划文档」分类，计划和草稿都能直接只读打开；计划页跳转仍然可用。
-- **计划创建从管理员剥成固定流程**：模型不再自己拆步骤，调 `plan_workflow` 接手。三段：1）调研 + 资源聚合 + 总计划（写草稿文档就停）；2）计划本体 + 周计划文档（建空壳、绑目标/里程碑、草稿落成正式总文档、写本周条目文档，**不建节点**）；3）本周节点（把周文档条目 `appendUnits` + `enqueueUnits` 进本周队列，不排到天）。每段结束都落 `job.state=awaiting_user`，等用户确认；推进走 `action=confirm`。流程状态在 `job`/`job_step`（kind=`plan_flow`），跨轮/重启可续。
+- **计划文档改存文件**：`<home>/knowledge/plan-docs/<planId>/总览.md` 与 `<YYYY-Www>.md`；草稿在 `_drafts/<draftId>.md`。旧 `plan_doc` 表 / `plans/docs` 只做一次性导入（只补缺失、不覆盖）。知识库左栏多一个「计划文档」分类，计划和草稿都能直接只读打开（笔记同款三栏：左栏列表 + 正文 + 右栏目录；无编辑、无 AI 整理、无概念）。
+- **计划创建是「文档 → 文档」的三段**（`PlanWorkflow`，一个内部模块）：
+  1. 调研结果 → 总计划文档：宿主检索资源（见下）+ 一次 LLM 调用出整份总计划 Markdown，**只写草稿文档，不动计划库**；
+  2. 总计划文档 → 周文档：建计划空壳（`createShell`）、切周队列、草稿落成正式总文档、解析阶段写 `plan_stage`、再由一次 LLM 调用出本周周文档；**不建节点**；
+  3. 周文档 → 计划节点：解析周文档条目 `appendUnits` + `enqueueUnits` 进本周队列（不排到天）。节点 `kind` 一律 `study` —— 只装要学的知识点，不再生成复习/实践条目。
+  每段都是「上一段的产物就是下一段的输入」，状态在 `job`/`job_step`（kind=`plan_flow`），跨轮/重启可续。
+- **工具面分离**：管理员只看见一个工具 `plan_workflow`（start / advance / revise / status / cancel），提示词里不再有工作流说明块；调研、写文档、写节点都是流程内部的宿主代码 + 独立 LLM 调用，不注册成工具。存在 `awaiting_user` 的流程时，这一轮工具再收窄到 `plan_workflow` / `ask_choices` / `read_plan` / `update_plan`。
+- **推进权在宿主**：每段跑完由宿主 `offerChoices` 摆「开始下一步 / 我要改一下 / 先不建」，并落 `job.state=awaiting_user`；只有用户真的点了「开始下一步」，`applyChoice` 才记一次性凭据，`advance` 才放行（`PlanWorkflow.consumeConsent`）。模型自己调 `advance` 会被拒；`confirmed` 参数已删除。
+- **执行清单**：新增 `PlanStepState.Awaiting`；每段状态由宿主写（「等待你确认」），用户点继续后才变完成。
 - **资源聚合**（`PlanWorkflow.scout`）：DeepSeek 搜索按站点检索 CSDN / 知乎 / 博客园 / 阿里云开发者 / 腾讯云 / GitHub，B 站单独走 `BilibiliClient.search`（按播放量 + 分集数）；宿主按类型分层（视频/文档/仓库/文章/问答，每类 2–3 条、总 12 条）后交给模型，模型只能从候选项里挑 URL。
-- **执行清单**：新增 `PlanStepState.Awaiting`；工作流每段跑完由宿主把清单这一步标成「等待确认」，用户点继续后才变完成。模型不用调 `step_done`。
-- **转接**：存在 `awaiting_user` 的流程时，这一轮工具收窄到 `plan_workflow` / `ask_choices` / `read_plan` / `update_plan`，其他写工具不装，避免模型绕过流程另建一份计划。
-- **待补**：第二、三段只支持 `update_plan` 局部改，不能整段重跑；资源候选还没有缓存。
+- **待补**：资源候选没有缓存（每次 start/revise 都重搜）；第三段生成后不支持整段重做（会重复建节点，只允许 `update_plan` 局部改）。
 
 
 

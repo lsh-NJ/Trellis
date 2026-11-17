@@ -18,7 +18,6 @@ class PlanWorkflowResourceTest {
         service = { null },
         workflow = { null },
         docStore = { null },
-        research = { null },
         clock = SystemTrellisClock(),
         llm = object : LlmClient {
             override suspend fun complete(messages: List<LlmMessage>): String = ""

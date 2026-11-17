@@ -205,7 +205,7 @@ class ResearchTools(
         }
     }
 
-    // ---------------------------------------------------------------- 建计划的两段（供 create_plan 分步复用）
+    // ---------------------------------------------------------------- 建计划的两段（旧 research_plan 内部还在用）
 
     internal class DraftOutcome(
         val goal: String,
@@ -231,7 +231,7 @@ class ResearchTools(
     /**
      * 只做「调研 + 出阶段表」，**不写任何计划数据**。
      *
-     * create_plan 的第一步就停在这里，让用户先看资料和阶段表；旧 research_plan 也走这一段，
+     * 旧 research_plan 走这一段（新的 PlanWorkflow 自己出总计划文档，不再用这里），
      * 保证两边的提示词、超时、JSON 重试只有一份实现。
      */
     internal suspend fun draftShellOnly(
@@ -304,7 +304,7 @@ class ResearchTools(
     /**
      * 把阶段表落成「空壳计划 + 阶段 + 目标/里程碑 + 总文档（+ 节奏）」。
      *
-     * 这是 create_plan 的第二步，也是旧 research_plan 的后半段；唯一的不可逆写在这里，
+     * 这是旧 research_plan 的后半段；唯一的不可逆写在这里，
      * 但只写文档与空壳，不追加单元、不铺天。
      */
     internal suspend fun applyShell(

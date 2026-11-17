@@ -53,7 +53,7 @@ internal class PlanEditTools(
 
     val guidance: String = listOf(
         "<how_to_edit_plan>",
-        "1. 计划域只有三个入口：read_plan 读、update_plan 改、plan_workflow 三段新建（调研+资源+总计划 → 计划本体+周文档 → 本周节点）。",
+        "1. 计划域只有三个入口：read_plan 读、update_plan 改、plan_workflow 三段新建（调研结果→总计划文档→周文档→计划节点）。",
         "   不要再找 get_learning_plan / plan_week / create_learning_plan / write_plan_doc / create_plan 这些旧名字——它们已经收进 op / plan_workflow 里。",
         "2. 动手前先 read_plan：拿到 planId、阶段、本周节点（occurrenceId）、待安排池和总文档。",
         "3. 写操作一律先给用户方案、拿到明确同意，再带 confirmed=true 调 update_plan；",
@@ -186,7 +186,7 @@ internal class PlanEditTools(
                     appendLine()
                     appendLine("资源池（${resources.size} 条）：")
                     if (resources.isEmpty()) {
-                        appendLine("  （还没有资源；insert resources 或 create_plan 带 bvid/urls 入库）")
+                        appendLine("  （还没有资源；update_plan insert resources 可以后补）")
                     } else {
                         resources.forEach { resource ->
                             append("  - [").append(resource.id).append("] ")
@@ -311,9 +311,9 @@ internal class PlanEditTools(
     // ---------------------------------------------------------------- insert
 
     private suspend fun insertPlan(svc: LearningPlanService, op: JsonObject, dryRun: Boolean): OpResult {
-        // create_learning_plan 已下线：新建计划统一走 create_plan（调研 → 总文档 → 本周队列）。
+        // create_learning_plan 已下线：新建计划统一走 plan_workflow（总计划文档 → 周文档 → 节点）。
         return OpResult(
-            "新建计划请用 create_plan（三步：调研 → 总文档 → 本周队列）；update_plan 只改已有计划。",
+            "新建计划请用 plan_workflow（调研结果 → 总计划文档 → 周文档 → 节点）；update_plan 只改已有计划。",
             isError = true,
         )
         @Suppress("UNREACHABLE_CODE")

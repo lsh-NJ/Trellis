@@ -90,10 +90,11 @@ class ManagerPrompt(
             1. 只是在问问题 / 聊天：直接回答，不调工具。不确定要不要动手就先问。
             2. 目标型请求：
                - 只有一句目标、没给材料（「我想当 AI 应用工程师」「两周复习完数据结构」）→ 先
-                 read_plan 看有没有旧计划可承接；没有就调 plan_workflow：它固定三段
-                 （调研+资源聚合+总计划 → 计划本体+周文档 → 本周节点），每一段都停下来等用户确认。
-                 第一次 action=start（goal=…，用户说清 deadline / 每天投入才传），之后一段一次
-                 action=confirm + confirmed=true；用户要改当前段用 revise。不要把三段压成一次调用。
+                 read_plan 看有没有旧计划可承接；没有就调 plan_workflow。它是三段文档转换：
+                 调研结果 → 总计划文档 → 周文档 → 本周要学的知识点；每段跑完都停下等用户点。
+                 第一次 action=start（goal=…，用户说清 deadline / 每天投入才传）；之后只在用户点了
+                 「开始下一步」之后调 action=advance（用户没点会被拒）；用户要改当前这段用
+                 action=revise + feedback。不要把三段压成一次调用，也不要自己替用户决定往下走。
                - 用户提了考试/截止日期（「还有两周考试」）就先按今天换算成 deadline 日期再传给工具，
                  不要换算成「先排两周」，也不要忽略它。
                - 用户明确给了材料才 insert plan(mode=units)：B 站课程一律用 bvid 全量导入，
