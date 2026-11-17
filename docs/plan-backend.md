@@ -401,6 +401,18 @@
 - 判定「失效」：payload 里的 `planId` 不在 `plans()` 里，或 status 不是 `active`；只有草稿时看草稿文件还在不在。
 - 测试：`staleFlowDoesNotBlockNewStartAfterPlanDeleted`、`staleFlowDoesNotBlockNewStartAfterPlanAbandoned`、`cancelOpenForPlanOnlyTouchesBoundJobs`。
 
+### 21.3 2026-11-17 晚：节点时长改成体量档（真实观感暴露）
+
+- **现象**：周文档十条节点全是「（约 42 分钟）」。根因不是估歪，是提示词里写着「整周总量按每天 60 分钟摊开」——模型做的是 420 ÷ 10 = 42，把周预算伪装成了逐条估计。
+- **口径**（用户定的）：计划阶段放弃「每条一个精确分钟数」，时长分三层，可靠性完全不同：周级投入预算（宿主按设置算，事实）、条目体量档（按内容多少选，粗但有区分度）、真实时长（计时器 / 屏幕使用事后测量，唯一准的数据）。三层混在一起就会产生假精度。
+- **实现**：
+  - `PlanUnitBand`（`features/learning-process/.../PlanDocStore.kt`）：小 / 中 / 大 = 15 / 30 / 45 分钟，提供 `minutesOf` / `labelOf` / `describe` / `docSuffix` / `clamp`。上限仍取计划库既有 CHECK（`plan_unit.estimate_minutes` 只收 10–45），一块超过 45 分钟就该拆成两条。
+  - 周文档条目写「（中 · 约 30 分钟）」；`PlanDocStore.parse` 先认体量档（`BAND_PAREN`，只有档位也行），再认老格式的裸分钟数（「（约 90 分钟）」，老文档不破）。
+  - 「本周投入参考：约 7 小时（每天 60 分钟，可多可少）」由宿主 `weeklyBudgetLine` 写进周文档；周文档的模型提示词里**不再出现预算数字**，并明确禁止「为了凑满预算把条目摊平」。
+  - `runUnits` / `PlanWeekTools` / `PlanDocTools` 统一走 `PlanUnitBand.clamp`；计划页队列卡和待安排池显示「中（约 30 分钟）」。
+- **测试**：`parseUnderstandsSizeBands`（体量档与老格式共存、「（大 O 表示）」不会被当成档位）；`unitsPhaseTurnsWeekDocIntoStudyOnlyNodes` 断言落库时长是 30 / 15 / 45，周文档含投入参考行。
+- **没做**（等真实数据）：用 `session` 的实际时长中位数反哺档位默认值。当前 `session` 表 0 条记录，还没有可校准的基础。
+
 
 
 

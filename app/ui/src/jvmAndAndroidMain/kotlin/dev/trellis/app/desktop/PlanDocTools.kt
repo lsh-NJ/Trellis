@@ -7,6 +7,7 @@ import dev.trellis.domain.plan.CommandEnvelope
 import dev.trellis.domain.plan.LearningPlanService
 import dev.trellis.domain.plan.UnitDraft
 import dev.trellis.feature.learning.PlanDocStore
+import dev.trellis.feature.learning.PlanUnitBand
 import java.time.LocalDate
 import java.time.temporal.IsoFields
 import java.util.UUID
@@ -198,7 +199,7 @@ class PlanDocTools(
                 UnitDraft(
                     chapter = "计划文档",
                     title = item.text,
-                    estimateMinutes = (item.minutesHint ?: 25).coerceIn(10, 45),
+                    estimateMinutes = PlanUnitBand.clamp(item.minutesHint ?: 25),
                 )
             }
             val result = svc.appendUnits(env(planId, "chat.plan.doc"), planId, drafts)

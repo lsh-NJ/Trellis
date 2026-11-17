@@ -13,6 +13,7 @@ import dev.trellis.domain.plan.ResourceDraft
 import dev.trellis.domain.plan.UnitDraft
 import dev.trellis.domain.plan.UnitProgress
 import dev.trellis.feature.learning.PlanDocStore
+import dev.trellis.feature.learning.PlanUnitBand
 import java.time.LocalDate
 import java.util.UUID
 import kotlinx.coroutines.withTimeoutOrNull
@@ -382,7 +383,7 @@ internal suspend fun planOneWeek(
             UnitDraft(
                 chapter = item.chapter.ifBlank { "本周" },
                 title = item.title,
-                estimateMinutes = item.minutes.coerceIn(10, 45),
+                estimateMinutes = PlanUnitBand.clamp(item.minutes),
                 // 队列模式只装「要学的点」：不再按模型的 practice/review 分类落库。
                 kind = "study",
             )
@@ -463,7 +464,7 @@ internal suspend fun planOneWeek(
         UnitDraft(
             chapter = item.chapter.ifBlank { "本周" },
             title = item.title,
-            estimateMinutes = item.minutes.coerceIn(10, 45),
+            estimateMinutes = PlanUnitBand.clamp(item.minutes),
             kind = item.kind,
         )
     }
@@ -493,7 +494,7 @@ internal suspend fun planOneWeek(
             UnitDraft(
                 chapter = prereq.chapter.ifBlank { "前置知识" },
                 title = prereq.title,
-                estimateMinutes = prereq.minutes.coerceIn(10, 45),
+                estimateMinutes = PlanUnitBand.clamp(prereq.minutes),
                 kind = prereq.kind,
             )
         }
@@ -661,6 +662,7 @@ private fun weekSystemPrompt(week: String, dailyMinutes: Int): String = buildStr
     appendLine("你是学习规划师，正在给 " + week + " 这一周排具体内容。只输出一个 JSON 对象，不要 markdown、不要解释：")
     appendLine("{\"focus\":\"这周重点（≤20 字）\",\"items\":[{\"title\":\"条目标题（≤20 字）\",\"chapter\":\"章节或主题\",\"kind\":\"study|practice|review\",\"minutes\":30,\"resources\":[\"res_x\"]}]}")
     appendLine("参考：本周每天投入约 " + dailyMinutes + " 分钟（只是参考，内容多可以多排、整体延期也行，不必卡死）；条目 3–14 个；每条 10–45 分钟。")
+    appendLine("时长按内容多少估，不要拿每天投入去除以条目数 —— 那会得到一串一模一样的数字，没有信息量。")
     appendLine("resources 可选：从下面「可用资源」里挑 0–3 个 id 挂在节点后面；资源只是参考资料，不是任务，不要把资源标题当节点名。")
     appendLine("命名规则：title 写具体内容/知识点（名词短语，例如「TCP 三次握手」「RAG 的召回与重排」），不写「手写/读完/掌握/理解」这类动作或指标，不写集号/来源标签，也不要直接照抄资料标题。")
     appendLine("内容规则：看视频/看书算 study；动手写代码、做项目、做题算 practice；复盘/重做错题/回顾算 review。")
@@ -875,7 +877,7 @@ private suspend fun tutorPrerequisites(
         accepted += PrereqTarget(
             title = candidate.title,
             chapter = candidate.chapter,
-            minutes = candidate.minutes.coerceIn(10, 45),
+            minutes = PlanUnitBand.clamp(candidate.minutes),
             kind = candidate.kind,
             day = day,
             beforeTitle = candidate.before.ifBlank { "本周内容" },

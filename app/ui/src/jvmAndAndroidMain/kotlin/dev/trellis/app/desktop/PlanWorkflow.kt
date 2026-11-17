@@ -11,6 +11,7 @@ import dev.trellis.domain.plan.LearningPlanService
 import dev.trellis.domain.plan.StageDraft
 import dev.trellis.domain.plan.UnitDraft
 import dev.trellis.feature.learning.PlanDocStore
+import dev.trellis.feature.learning.PlanUnitBand
 import dev.trellis.feature.learning.PlanWorkflowStore
 import java.time.LocalDate
 import java.util.UUID
@@ -395,7 +396,8 @@ internal class PlanWorkflow(
             UnitDraft(
                 chapter = chapter,
                 title = item.text.take(60),
-                estimateMinutes = (item.minutesHint ?: 30).coerceIn(10, 45),
+                // 周文档里的体量档（小/中/大）已经换算成分钟；老文档的裸分钟数也照用。
+                estimateMinutes = PlanUnitBand.clamp(item.minutesHint ?: PlanUnitBand.DEFAULT),
                 kind = "study",
             )
         }
@@ -511,14 +513,17 @@ internal class PlanWorkflow(
             appendLine("# " + week + " 周计划")
             appendLine("- 本周重点：<一句话>")
             appendLine("## " + week)
-            appendLine("- <要学的知识点>（约 N 分钟）")
-            appendLine("（再列 4–9 行，同样写法）")
+            appendLine("- <要学的知识点>（<小|中|大> · 约 N 分钟）")
+            appendLine("（再列 2–8 行，同样写法）")
             appendLine()
             appendLine("约束：")
             appendLine("1. 只列这一周要学的知识点/内容（如「进程调度算法」「页面置换计算」），标题不超过 24 个字；")
             appendLine("   不要写复习、练习、实验、做题、复盘这类动作条目 —— 计划节点只装要学的内容。")
-            appendLine("2. 每条 10–45 分钟；整周总量按每天 " + daily + " 分钟摊开；条目数 5–10 条。")
-            appendLine("3. 内容必须落在总计划文档里本周所处的阶段（按阶段周区间判断），不要提前学后面的阶段。")
+            appendLine("2. 每条按内容多少标一个体量档：小 ≈ 15 分钟、中 ≈ 30 分钟、大 ≈ 45 分钟。")
+            appendLine("   45 分钟是单块上限，内容再多就拆成两条；分钟数就写档位对应的那个数，不要自己另编。")
+            appendLine("3. 不要为了凑满一周的投入预算把条目摊平：条目数由内容决定（3–9 条），宁可少写；")
+            appendLine("   一周填不满参考时长是正常的。投入参考由宿主写在文档里，不用你算。")
+            appendLine("4. 内容必须落在总计划文档里本周所处的阶段（按阶段周区间判断），不要提前学后面的阶段。")
         }
         val user = buildString {
             appendLine("目标：" + goal)
@@ -532,14 +537,19 @@ internal class PlanWorkflow(
         val markdown = withTimeoutOrNull(WEEK_TIMEOUT_MS) {
             llm.completeText(listOf(LlmMessage(LlmRole.System, system), LlmMessage(LlmRole.User, user)))
         } ?: return null
-        val doc = normalizeWeekDoc(week, markdown)
+        val doc = normalizeWeekDoc(week, markdown, daily)
         val items = docStore()?.parse(doc)?.weeks?.get(week).orEmpty()
         if (items.isEmpty()) return null
         return WeekDoc(doc, items.size)
     }
 
-    /** 周文档只保留「标题 + 本周重点 + 周标题下的条目」，模型多写的段落一律丢掉。 */
-    private fun normalizeWeekDoc(week: String, raw: String): String {
+    /**
+     * 周文档只保留「标题 + 本周重点 + 投入参考 + 周标题下的条目」，模型多写的段落一律丢掉。
+     *
+     * 投入参考这一行由宿主按设置里的每天投入算，不让模型写：模型一旦拿到预算就会把它
+     * 除以条数，变成一串一模一样的分钟数。
+     */
+    private fun normalizeWeekDoc(week: String, raw: String, dailyMinutes: Int = 0): String {
         val items = mutableListOf<String>()
         var focus = ""
         var inWeek = false
@@ -557,10 +567,25 @@ internal class PlanWorkflow(
         return buildString {
             appendLine("# " + week + " 周计划")
             if (focus.isNotBlank()) appendLine("- 本周重点：" + focus)
+            weeklyBudgetLine(dailyMinutes)?.let { appendLine(it) }
             appendLine()
             appendLine("## " + week)
             items.forEach { appendLine("- " + it) }
         }.trimEnd()
+    }
+
+    /** 周级投入参考：约 7 小时（每天 60 分钟，可多可少）；没设每天投入就不写。 */
+    private fun weeklyBudgetLine(dailyMinutes: Int): String? {
+        if (dailyMinutes <= 0) return null
+        val total = dailyMinutes * 7
+        val hours = total / 60
+        val rest = total % 60
+        val text = when {
+            rest == 0 -> "约 " + hours + " 小时"
+            hours == 0 -> "约 " + total + " 分钟"
+            else -> "约 " + hours + " 小时 " + rest + " 分钟"
+        }
+        return "- 本周投入参考：" + text + "（每天 " + dailyMinutes + " 分钟，可多可少）"
     }
 
     /** 从总计划文档解析阶段 → 计划库的阶段区间（解析不到周区间就跳过）。 */

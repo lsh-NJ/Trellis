@@ -95,9 +95,10 @@ class PlanWorkflowTest {
         "- 本周重点：中断与系统调用",
         "",
         "## " + thisWeek,
-        "- 中断与系统调用（约 30 分钟）",
-        "- 进程调度算法（约 25 分钟）",
-        "- 页面置换计算（约 40 分钟）",
+        // 2026-11-17 起条目只标体量档（小/中/大 = 15/30/45），不再写由预算摊出来的分钟数。
+        "- 中断与系统调用（中 · 约 30 分钟）",
+        "- 进程调度算法（小 · 约 15 分钟）",
+        "- 页面置换计算（大 · 约 45 分钟）",
     ).joinToString("\n")
 
     private var harnessRef: Harness? = null
@@ -205,6 +206,9 @@ class PlanWorkflowTest {
         assertEquals("awaiting_user", assertNotNull(h.workflow.load(jobId)).state)
         val weekText = h.docStore.readWeek(planId, thisWeek).orEmpty()
         assertTrue(weekText.contains("进程调度算法"), weekText)
+        // 投入参考由宿主按每天投入算（60 × 7 = 7 小时），不摊到条目上。
+        assertTrue(weekText.contains("本周投入参考：约 7 小时"), weekText)
+        assertFalse(weekText.contains("每天投入："), weekText)
         // 第一段草稿已经落成正式总文档。
         assertTrue(h.docStore.read(planId).orEmpty().contains("## 阶段"))
         // 第二段只写文档，节点还没进计划库。
@@ -227,6 +231,12 @@ class PlanWorkflowTest {
         // 节点只装要学的点：没有复习/练习类条目，kind 一律 study。
         assertTrue(units.all { it.kind == "study" }, units.joinToString { it.kind })
         assertTrue(units.none { it.title.contains("复习") || it.title.contains("练习") })
+        // 时长按体量档落库：小 15 / 中 30 / 大 45，不同条目不再被摊成同一个数。
+        assertEquals(
+            listOf(30, 15, 45),
+            units.map { it.estimateMinutes },
+            units.joinToString { it.title + "=" + it.estimateMinutes },
+        )
         // 周文档链接要指到「那一周」，不是总文档；标签也不能再是「总计划文档」。
         val weekLink = h.docLinks.last()
         assertEquals(thisWeek, weekLink.third, weekLink.toString())

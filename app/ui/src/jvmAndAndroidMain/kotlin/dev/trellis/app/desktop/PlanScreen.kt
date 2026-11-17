@@ -58,6 +58,7 @@ import java.time.LocalDate
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.trellis.domain.plan.LearningPlanInfo
+import dev.trellis.feature.learning.PlanUnitBand
 import dev.trellis.ui.LocalCardStyle
 import kotlinx.coroutines.launch
 
@@ -878,7 +879,7 @@ private fun PendingDetail(runtime: AppRuntime) {
                         )
                         Text(unit.title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                         Text(
-                            unit.estimateMinutes.toString() + " 分钟 · " + unitKindLabel(unit.kind),
+                            PlanUnitBand.describe(unit.estimateMinutes) + " · " + unitKindLabel(unit.kind),
                             style = tokens.type.caption,
                             fontFamily = AppFonts.mono,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -953,7 +954,7 @@ private fun PlanWeekQueueCard(runtime: AppRuntime) {
                     Text(
                         buildString {
                             if (unit.chapter.isNotBlank()) append(unit.chapter).append(" · ")
-                            append(unit.estimateMinutes).append(" 分钟")
+                            append(PlanUnitBand.describe(unit.estimateMinutes))
                             append(" · ").append(unitKindLabel(unit.kind))
                         },
                         style = tokens.type.meta,

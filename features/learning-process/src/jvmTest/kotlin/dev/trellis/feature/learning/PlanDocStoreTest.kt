@@ -379,6 +379,37 @@ class PlanDocStoreTest {
         )
     }
 
+    /**
+     * 2026-11-17 起周文档的条目用体量档标时长（小/中/大 = 15/30/45），不再写由预算
+     * 摊出来的分钟数；但老文档的裸分钟数还得继续认，两者不能互相打架。
+     */
+    @Test
+    fun parseUnderstandsSizeBands() {
+        val doc = store.parse(
+            """
+            ## 2026-W45
+            - 甲（中 · 约 30 分钟）
+            - 乙（大）
+            - 丙（小·15分钟）
+            - 丁（大 O 表示）
+            - 戊（约 90 分钟）
+            """.trimIndent(),
+        )
+
+        assertEquals(
+            listOf(
+                PlanDocItem("甲", 30),
+                PlanDocItem("乙", 45),
+                PlanDocItem("丙", 15),
+                // 括号里的「大 O 表示」不是档位：不能把说明文字吃进时长。
+                PlanDocItem("丁（大 O 表示）", null),
+                // 老格式照旧。
+                PlanDocItem("戊", 90),
+            ),
+            doc.weeks["2026-W45"],
+        )
+    }
+
     @Test
     fun parseToleratesJunkLinesAndUnknownSections() {
         val doc = store.parse(

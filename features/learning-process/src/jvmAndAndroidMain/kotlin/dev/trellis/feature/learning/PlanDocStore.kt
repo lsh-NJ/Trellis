@@ -3,10 +3,60 @@ package dev.trellis.feature.learning
 import java.io.File
 
 /**
+ * 计划节点（要学的知识点）的体量档：小 / 中 / 大 → 15 / 30 / 45 分钟。
+ *
+ * 为什么不给每条编一个精确分钟数（2026-11-17 用户定的）：周预算是「每天投入 × 7」，
+ * 让模型「按周预算摊开」时它只会做除法——十条一模一样的「约 42 分钟」，看着像测量
+ * 结果，其实是预算除以条数，没有信息量。计划粒度的时长本来也估不准（规划谬误）。
+ *
+ * 所以条目时长只分三档、按内容多少选，具体分钟数由档位决定（不同条目自然不同）；
+ * 周级只给一行由宿主从设置算出来的投入参考，不摊到条目上。真实时长靠计时器 /
+ * 屏幕使用记录事后测量，那才是能准的数据。
+ *
+ * 上限 45 分钟是计划库的既有约束（`plan_unit.estimate_minutes` 只收 10–45）：
+ * 一块超过 45 分钟就该拆成两条，而不是把档位抬上去。
+ */
+object PlanUnitBand {
+    const val SMALL = 15
+    const val MEDIUM = 30
+    const val LARGE = 45
+
+    /** 模型没写档位时用的默认档（中）。 */
+    const val DEFAULT = MEDIUM
+
+    /** 计划库接受的分钟范围，见 `plan_unit` 的 CHECK 约束。 */
+    const val MIN_MINUTES = 10
+    const val MAX_MINUTES = 45
+
+    /** 档位标签 → 分钟；认不出返回 null。 */
+    fun minutesOf(label: String): Int? = when (label.trim()) {
+        "小" -> SMALL
+        "中" -> MEDIUM
+        "大" -> LARGE
+        else -> null
+    }
+
+    /** 分钟 → 档位标签（老文档只写了分钟数时用这个回推）。 */
+    fun labelOf(minutes: Int): String = when {
+        minutes <= 20 -> "小"
+        minutes <= 35 -> "中"
+        else -> "大"
+    }
+
+    /** 界面上一行说明：`中（约 30 分钟）`。 */
+    fun describe(minutes: Int): String = labelOf(minutes) + "（约 " + minutes + " 分钟）"
+
+    /** 落库前的钳制：计划库只收 10–45。 */
+    fun clamp(minutes: Int): Int = minutes.coerceIn(MIN_MINUTES, MAX_MINUTES)
+}
+
+/**
  * 计划文档里的一条条目（周计划 / 待安排）。
  *
- * [minutesHint] 是从条目文字里读出来的分钟提示（「计算机网络 3 节（约 90 分钟）」→ 90），
- * 取不到就是 null。它只是提示，真正落库的时长仍由 `appendUnits` 按列约束夹。
+ * [minutesHint] 是从条目文字里读出来的时长：新格式读体量档
+ * （「（中 · 约 30 分钟）」→ 30，只有档位「（大）」也行），老格式读分钟数
+ * （「计算机网络 3 节（约 90 分钟）」→ 90）；取不到就是 null。
+ * 它只是提示，真正落库的时长仍由 `appendUnits` 按列约束夹。
  */
 data class PlanDocItem(
     val text: String,
@@ -183,8 +233,8 @@ private data class LegacyDocRow(
  * - 资源：
  *   - [TypeScript 官方手册](https://www.typescriptlang.org/docs/) — 前 4 章
  * ## 2026-W45
- * - 计算机网络 3 节（约 90 分钟）
- * - 物理 2 节
+ * - 中断与系统调用（中 · 约 30 分钟）
+ * - 物理 2 节（约 90 分钟）
  * ## 待安排
  * - 数据结构实验
  * ```
@@ -193,7 +243,8 @@ private data class LegacyDocRow(
  * `- 阶段 N · 名称（约 N 周）：聚焦` bullet；资源写在 `- 资源：` 后，
  * 每行一条 `[名称](url)`（可带 `— 备注`）。
  *
- * 分钟提示认「（约 90 分钟）」「(90分钟)」「约90分钟」几种写法，取不到就是 null。
+ * 时长提示认两种：体量档「（中 · 约 30 分钟）」「（大）」（见 [PlanUnitBand]），
+ * 以及老格式的分钟数「（约 90 分钟）」「(90分钟)」「约90分钟」；都取不到就是 null。
  * 解析是容错的：非 bullet 行、未知标题、坏行都跳过，不抛异常；
  * 读文件也容错：没有文档 / id 不合法 / 文件读坏都当「没有文档」。
  */
@@ -530,9 +581,19 @@ class PlanDocStore(home: File) : AutoCloseable {
             start != null && end != null && week in start..end
         }
 
-    /** 一条 bullet 文字 → 条目（把「（约 90 分钟）」之类的提示剥出来）。 */
+    /**
+     * 一条 bullet 文字 → 条目（把「（中 · 约 30 分钟）」这类时长标注剥出来）。
+     *
+     * 先认体量档（只有档位、或档位 + 分钟都行），再认老格式的裸分钟数；
+     * 档位和分钟都没有就只当文字。
+     */
     private fun itemOf(raw: String): PlanDocItem? {
         val text = raw.trim().takeIf { it.isNotEmpty() } ?: return null
+        BAND_PAREN.find(text)?.let { bandMatch ->
+            val explicit = bandMatch.groupValues[2].toIntOrNull()?.takeIf { it in 1..MAX_HINT_MINUTES }
+            val minutes = explicit ?: PlanUnitBand.minutesOf(bandMatch.groupValues[1])
+            if (minutes != null) return PlanDocItem(cleanItemText(text, bandMatch.range), minutes)
+        }
         val match = PAREN_MINUTES.find(text) ?: BARE_MINUTES.find(text) ?: return PlanDocItem(text)
         val minutes = match.groupValues[1].toIntOrNull()?.takeIf { it in 1..MAX_HINT_MINUTES }
             ?: return PlanDocItem(text) // 数字坏 / 太离谱：当没写提示
@@ -569,6 +630,9 @@ class PlanDocStore(home: File) : AutoCloseable {
         val WEEK_HEADING = Regex("^##\\s*(\\d{4}-W\\d{2})\\s*$")
         val UNSCHEDULED_HEADING = Regex("^##\\s*待安排\\s*$")
         val BULLET = Regex("^(?:[-*+]|\\d+[.)])\\s+(.+)$")
+
+        /** 体量档标注：`（中 · 约 30 分钟）`、`（大）`、`(小·15分钟)`。 */
+        val BAND_PAREN = Regex("[（(]\\s*([小中大])\\s*(?:[·,，、]\\s*(?:约\\s*)?(\\d+)\\s*分钟)?\\s*[）)]")
 
         /** 括起来的分钟提示：`（约 90 分钟）`、`(90分钟)`。 */
         val PAREN_MINUTES = Regex("[（(]\\s*约?\\s*(\\d+)\\s*分钟?\\s*[）)]")
