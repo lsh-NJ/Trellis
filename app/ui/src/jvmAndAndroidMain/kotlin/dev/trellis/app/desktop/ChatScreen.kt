@@ -977,7 +977,7 @@ private fun RoundView(
             Spacer(Modifier.height(8.dp))
             ChromeTextLink(
                 round.reply?.docLinkLabel?.takeIf { it.isNotBlank() } ?: "打开计划文档",
-                onClick = { runtime.openPlanDocs(docLinkId) },
+                onClick = { runtime.openPlanDocs(docLinkId, round.reply?.docLinkWeek?.takeIf { it.isNotBlank() }) },
             )
         }
 

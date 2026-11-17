@@ -2354,6 +2354,10 @@ class AppRuntime private constructor() {
         val at = chat.indexOfFirst { it.id == id }
         if (at < 0) return "清单已经不在了（可能开了一轮新对话）"
         val line = chat[at]
+        // 流程清单不接受模型勾选：它的状态来自 job_step，模型一勾就会把真状态盖掉。
+        if (line.workflowJobId.isNotBlank()) {
+            return "这段清单由计划流程自己维护，不能用 step_done 勾；等用户点「继续」或调 plan_workflow。"
+        }
         val plan = line.plan
         if (index !in plan.indices) {
             return "清单里没有第 " + (index + 1) + " 步（共 " + plan.size + " 步，index 从 0 开始）"
@@ -2412,20 +2416,48 @@ class AppRuntime private constructor() {
      * 用户定的规则是「清单必须显示等待确认」：这一段跑完、等用户点头时，
      * 清单上这一行要停在 [PlanStepState.Awaiting]，而不是悄悄变成「已完成」。
      */
-    private fun planWorkflowChecklist(phase: Int, state: String) {
-        when (state) {
-            "start" -> beginPlanSpecs(
-                listOf(
-                    PlanStepSpec("调研结果 → 总计划文档", impact = "写完文档停下来，等用户确认"),
-                    PlanStepSpec("总计划文档 → 周文档", impact = "建计划本体并生成本周周文档"),
-                    PlanStepSpec("周文档 → 计划节点", impact = "把要学的知识点放进本周队列"),
-                ),
+    private fun planWorkflowChecklist(jobId: String) {
+        val store = if (::planWorkflowStore.isInitialized) planWorkflowStore else return
+        val job = runCatching { store.load(jobId) }.getOrNull() ?: return
+        val steps = job.steps
+        if (steps.isEmpty()) return
+        val now = System.currentTimeMillis()
+        // 清单状态**完全由 job_step 推导**（映射见 workflowChecklistSteps），
+        // 不看 activePlanId、不靠模型调 step_done：跨轮、跨重启、换会话都不会和流程真状态脱节。
+        val plan = workflowChecklistSteps(
+            jobState = job.state,
+            phases = steps.map { step -> WorkflowPhaseSnapshot(step.step, step.state, step.error) },
+        ).map { step ->
+            PlanStep(
+                text = step.text,
+                state = step.state,
+                note = step.note,
+                impact = step.impact,
+                startedMs = if (step.state == PlanStepState.Running || step.state == PlanStepState.Awaiting) now else 0L,
             )
-            "running" -> markPlanStepState(phase, PlanStepState.Running)
-            "awaiting" -> markPlanStepState(phase, PlanStepState.Awaiting)
-            "done" -> finishPlanStep(phase, ok = true)
-            "failed" -> finishPlanStep(phase, ok = false, note = "这一段没跑成")
         }
+        val settled = workflowChecklistSettled(job.state)
+        val existing = chat.indexOfFirst { it.workflowJobId == jobId }
+        if (existing >= 0) {
+            chat[existing] = chat[existing].copy(
+                plan = plan,
+                planFinishedMs = if (settled) now else 0L,
+            )
+        } else {
+            val line = ChatLine(
+                id = nextChatLineId++,
+                role = ChatRole.Plan,
+                text = "",
+                atMs = now,
+                plan = plan,
+                planStartedMs = now,
+                planFinishedMs = if (settled) now else 0L,
+                workflowJobId = jobId,
+            )
+            val userAt = chat.indexOfLast { it.role == ChatRole.User }
+            chat.add(if (userAt >= 0) userAt + 1 else chat.size, line)
+        }
+        persistChat()
     }
 
     /** 直接改清单上某一步的状态；越界/已完成的不动。 */
@@ -2434,6 +2466,8 @@ class AppRuntime private constructor() {
         val at = chat.indexOfFirst { it.id == id }
         if (at < 0) return
         val line = chat[at]
+        // 流程清单由 planWorkflowChecklist 从 job_step 同步，模型侧的状态写不许碰它。
+        if (line.workflowJobId.isNotBlank()) return
         if (index !in line.plan.indices) return
         val step = line.plan[index]
         if (step.state == PlanStepState.Done || step.state == PlanStepState.Failed || step.state == PlanStepState.Skipped) return
@@ -2464,6 +2498,7 @@ class AppRuntime private constructor() {
         val id = activePlanId ?: return
         val at = chat.indexOfFirst { it.id == id }
         if (at < 0) return
+        if (chat[at].workflowJobId.isNotBlank()) return
         val plan = chat[at].plan
         if (plan.any { it.state == PlanStepState.Running }) return
         val nextPending = plan.indexOfFirst { it.state == PlanStepState.Pending }
@@ -2479,7 +2514,10 @@ class AppRuntime private constructor() {
     }
 
     /** 当前会话最后一份清单（含刚结束的那份），给右栏与输入框上方的常驻条用。 */
-    fun latestPlanLine(): ChatLine? = chat.lastOrNull { it.role == ChatRole.Plan && it.plan.isNotEmpty() }
+    fun latestPlanLine(): ChatLine? =
+        // 计划流程的清单优先：它是「正在进行的流程」，比模型零散的行动清单更该占着右栏。
+        chat.lastOrNull { it.workflowJobId.isNotBlank() && it.plan.isNotEmpty() }
+            ?: chat.lastOrNull { it.role == ChatRole.Plan && it.plan.isNotEmpty() }
 
     /**
      * 一轮结束时收尾清单。
@@ -2494,6 +2532,8 @@ class AppRuntime private constructor() {
         val at = chat.indexOfFirst { it.id == id }
         if (at < 0) return
         val line = chat[at]
+        // 流程清单的收尾由 planWorkflowChecklist 按 job 终态写，这里不管。
+        if (line.workflowJobId.isNotBlank()) return
         if (line.plan.isEmpty() || line.planFinishedMs != 0L) return
         // 计划工作流停在「等待确认」时不算收尾：清单要一直挂着这一步，等用户点。
         if (line.plan.any { it.state == PlanStepState.Awaiting }) return
@@ -2526,6 +2566,9 @@ class AppRuntime private constructor() {
      * 前缀缓存命中不受影响，模型看到的又永远是最新事实。
      */
     private suspend fun managerState(): String = buildString {
+        // 今天/本周必须在这里：否则模型为了把「还有两个月考试」换算成 deadline，
+        // 会去 describe_screen / get_diagnostics 里翻日期（2026-11-17 的实际浪费）。
+        appendLine("今天：" + clock.today() + "，本周：" + clock.isoWeek())
         appendLine("内核：" + kernel.currentState)
         val live = kernel.liveCatalog()
         appendLine("已装插件：" + live.size + " 个")
@@ -2894,10 +2937,11 @@ class AppRuntime private constructor() {
                 gateway = { researchGateway },
                 onChanged = { refreshPlan() },
                 dbError = { planDbError },
-                onChecklist = { phase, state -> planWorkflowChecklist(phase, state) },
-                onDocLink = { id, label ->
+                onChecklist = { jobId -> planWorkflowChecklist(jobId) },
+                onDocLink = { id, label, week ->
                     turnDocLinkId = id
                     turnDocLinkLabel = label
+                    turnDocLinkWeek = week.orEmpty()
                 },
                 // 段间确认由宿主摆选项：用户点了「开始下一步」，才把一次性凭据交给工具。
                 onAskConfirm = { jobId, phase, question, options ->
@@ -3074,6 +3118,7 @@ class AppRuntime private constructor() {
         chatAsk = null
         turnDocLinkId = null
         turnDocLinkLabel = null
+        turnDocLinkWeek = ""
         if (!hidden) {
             addChatLine(ChatRole.User, text)
             rememberRound(chat.last().id)
@@ -3280,10 +3325,12 @@ class AppRuntime private constructor() {
                     chat[at] = chat[at].copy(
                         docLinkId = docId,
                         docLinkLabel = turnDocLinkLabel?.takeIf { it.isNotBlank() } ?: "计划文档",
+                        docLinkWeek = turnDocLinkWeek,
                     )
                 }
                 turnDocLinkId = null
                 turnDocLinkLabel = null
+                turnDocLinkWeek = ""
             }
 
             // 清单不能一直挂在「进行中」：这一轮结束（成功/没做成）都要收尾。
@@ -4286,6 +4333,7 @@ class AppRuntime private constructor() {
      */
     private var turnDocLinkId: String? = null
     private var turnDocLinkLabel: String? = null
+    private var turnDocLinkWeek: String = ""
 
     /**
      * 计划工作流停在哪一段等确认（jobId to phase）。
@@ -4953,13 +5001,18 @@ class AppRuntime private constructor() {
 
     // ---------------------------------------------------------------- 计划文档
 
-    /** 计划页只做跳转：打开知识库并定位到这份计划的文档（草稿 id 也能直接打开）。 */
-    internal fun openPlanDocs(planId: String? = null) {
+    /** 知识库里「计划文档」二级页当前要翻到哪一周；空 = 总文档。 */
+    var planDocBrowseWeek by mutableStateOf("")
+        private set
+
+    /** 计划页只做跳转：打开知识库并定位到这份计划的文档（草稿 id 也能直接打开；week 非空翻到那一周）。 */
+    internal fun openPlanDocs(planId: String? = null, week: String? = null) {
         // 草稿不是计划：计划本体还没建时也会有草稿，不能拿 learningPlan() 的 id 校验把它挡掉。
         // 判据与知识库页一致：前缀 `draft_`，或 store 里确实有这份草稿。
         val draftStore = if (::planDocStore.isInitialized) planDocStore else null
         if (planId != null && (planId.startsWith(PLAN_DOC_DRAFT_PREFIX) || draftStore?.readDraft(planId) != null)) {
             planDocBrowseId = planId
+            planDocBrowseWeek = week.orEmpty()
             currentTab = TAB_KNOWLEDGE
             return
         }
@@ -4970,11 +5023,13 @@ class AppRuntime private constructor() {
             return
         }
         planDocBrowseId = target
+        planDocBrowseWeek = week.orEmpty()
         currentTab = TAB_KNOWLEDGE
     }
 
     internal fun closePlanDocs() {
         planDocBrowseId = null
+        planDocBrowseWeek = ""
     }
 
     /**

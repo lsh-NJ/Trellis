@@ -55,7 +55,13 @@ internal const val PLAN_DOC_DRAFT_PREFIX: String = "draft_"
  * 第 n 个 Heading 块上（见 [headingBlockIndexes]），据此把滚动位置推到那个标题。
  */
 @Composable
-internal fun PlanDocPage(runtime: AppRuntime, planId: String, onClose: () -> Unit) {
+internal fun PlanDocPage(
+    runtime: AppRuntime,
+    planId: String,
+    onClose: () -> Unit,
+    /** 从「周文档」链接跳进来时要直接翻到那一周；空 = 总文档。 */
+    initialWeek: String? = null,
+) {
     val store = runtime.planDocStore
     LaunchedEffect(Unit) { if (runtime.planAll.isEmpty()) runtime.refreshPlan() }
     val plans = runtime.planAll
@@ -91,7 +97,7 @@ internal fun PlanDocPage(runtime: AppRuntime, planId: String, onClose: () -> Uni
         return
     }
 
-    var week by remember(planId) { mutableStateOf<String?>(null) }
+    var week by remember(planId) { mutableStateOf(initialWeek?.takeIf { it.isNotBlank() }) }
     val weeks = remember(planId, week) { runCatching { store.weeks(planId) }.getOrDefault(emptyList()) }
     val overallDoc = remember(planId, week) { runCatching { store.read(planId) }.getOrNull() }
     val weekDoc = week?.let { current ->

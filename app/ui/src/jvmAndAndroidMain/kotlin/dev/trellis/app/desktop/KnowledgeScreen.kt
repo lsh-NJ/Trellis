@@ -76,7 +76,7 @@ private data class PendingReveal(val noteId: String, val start: Int, val end: In
 internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     // 计划页「计划文档」跳过来时，知识库整页让给只读的计划文档。
     runtime.planDocBrowseId?.let { planId ->
-        PlanDocPage(runtime, planId) { runtime.closePlanDocs() }
+        PlanDocPage(runtime, planId, { runtime.closePlanDocs() }, runtime.planDocBrowseWeek)
         return
     }
     // 「计划文档」分类：计划与草稿都能在知识库左栏直接只读打开（原来只能从计划页跳进来）。

@@ -71,7 +71,7 @@ class PlanWorkflowTest {
         val tool: dev.trellis.ai.tool.AgentTool,
         val llm: FakeLlm,
         val checklists: MutableList<String>,
-        val docLinks: MutableList<String>,
+        val docLinks: MutableList<Triple<String, String, String?>>,
         val gates: MutableList<Pair<String, String>>,
         /** true = 模拟「用户点了开始下一步」；false = 用户没点，advance 应该被拒。 */
         var autoConsent: Boolean = true,
@@ -109,7 +109,7 @@ class PlanWorkflowTest {
         val workflow = PlanWorkflowStore(home)
         val llm = FakeLlm(listOf(masterJson(), weekDoc()))
         val checklists = mutableListOf<String>()
-        val docLinks = mutableListOf<String>()
+        val docLinks = mutableListOf<Triple<String, String, String?>>()
         val gates = mutableListOf<Pair<String, String>>()
         val consents = mutableSetOf<Pair<String, String>>()
         lateinit var h: Harness
@@ -121,8 +121,8 @@ class PlanWorkflowTest {
             llm = llm,
             gateway = { NoopResearch() },
             onChanged = {},
-            onChecklist = { phase, state -> checklists += phase.toString() + ":" + state },
-            onDocLink = { id, _ -> docLinks += id },
+            onChecklist = { jobId -> checklists += jobId },
+            onDocLink = { id, label, week -> docLinks += Triple(id, label, week) },
             onAskConfirm = { jobId, phase, _, _ ->
                 gates += jobId to phase
                 // 测试里默认模拟「用户点了继续」：凭据备好，advance 才能过。
@@ -174,8 +174,8 @@ class PlanWorkflowTest {
         // 第一段只出文档：计划库还没有计划，文档在草稿目录。
         assertTrue(h.service.plans().isEmpty())
         assertTrue(h.docStore.draftIds().isNotEmpty())
-        assertTrue(h.docLinks.single().startsWith("draft_"))
-        assertTrue(h.checklists.contains("0:awaiting"), h.checklists.toString())
+        assertTrue(h.docLinks.single().first.startsWith("draft_"))
+        assertTrue(h.checklists.isNotEmpty(), h.checklists.toString())
         // 宿主摆了「开始下一步」这一个按钮（推进不由模型决定）。
         assertTrue(h.gates.single().second == "master", h.gates.toString())
     }
@@ -226,7 +226,10 @@ class PlanWorkflowTest {
         // 节点只装要学的点：没有复习/练习类条目，kind 一律 study。
         assertTrue(units.all { it.kind == "study" }, units.joinToString { it.kind })
         assertTrue(units.none { it.title.contains("复习") || it.title.contains("练习") })
-        assertTrue(h.checklists.contains("2:done"), h.checklists.toString())
+        // 周文档链接要指到「那一周」，不是总文档；标签也不能再是「总计划文档」。
+        val weekLink = h.docLinks.last()
+        assertEquals(thisWeek, weekLink.third, weekLink.toString())
+        assertTrue(weekLink.second.contains("周文档"), weekLink.second)
     }
 
     @Test

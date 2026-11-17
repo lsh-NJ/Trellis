@@ -165,6 +165,14 @@ class PlanWeekTools(
                             append(result.week).append(" ").append(result.note.ifBlank { "这一周没有需要新排的条目。" }).append("；")
                             return@forEach
                         }
+                        // 队列模式没有「排到天」：写成「进了队列」，否则「排好了 0 条」自相矛盾，
+                        // 模型会以为失败又去重排（2026-11-17 重复节点的起因之一）。
+                        if (result.placed == 0 && result.note.contains("队列")) {
+                            append(result.week).append(" 周文档写好了，").append(items.size).append(" 个节点已进本周队列。")
+                            if (result.note.isNotBlank()) append(result.note)
+                            if (results.size > 1) append("；")
+                            return@forEach
+                        }
                         append(result.week).append(" 排好了：").append(result.placed).append(" 条，按每天 ").append(daily).append(" 分钟铺开")
                         append("（学习 ").append(items.count { it.kind == "study" })
                         append(" · 实践 ").append(items.count { it.kind == "practice" })
@@ -272,6 +280,16 @@ internal suspend fun planOneWeek(
     val plannedAlready = existingWeek?.days?.flatMap { day -> day.items }.orEmpty()
     // queue 模式没有天条，判「排过没有」要看本周队列里有没有节点。
     val queuedAlready = existingWeek?.commitment?.units.orEmpty()
+    val queueMode = runCatching { plan.planState(planId).scheduleMode }.getOrDefault("day") == "queue"
+    if (queueMode && queuedAlready.isNotEmpty()) {
+        // 队列模式下 replan 只会再追加一批节点（2026-11-17 的重复 20 条就是这么来的），
+        // 所以这里硬拒：要改内容改周文档/单元，要删节点去计划页。
+        return WeekPlanResult(
+            week = week,
+            note = "这一周的队列里已经有 " + queuedAlready.size + " 个节点，队列模式不能重排（会重复建节点）。" +
+                "要调整就改周文档或单元，或到计划页删掉不要的节点。",
+        )
+    }
     if ((plannedAlready.isNotEmpty() || queuedAlready.isNotEmpty()) && !replan) {
         return WeekPlanResult(
             week = week,
@@ -365,7 +383,8 @@ internal suspend fun planOneWeek(
                 chapter = item.chapter.ifBlank { "本周" },
                 title = item.title,
                 estimateMinutes = item.minutes.coerceIn(10, 45),
-                kind = item.kind,
+                // 队列模式只装「要学的点」：不再按模型的 practice/review 分类落库。
+                kind = "study",
             )
         }
         val appended = plan.appendUnits(commandEnv(planId, "plan.week"), planId, drafts)

@@ -156,6 +156,8 @@ internal class ChatStore(home: File, private val log: (String) -> Unit = {}) {
                 },
                 docLinkId = line["docLinkId"]?.jsonPrimitive?.content ?: "",
                 docLinkLabel = line["docLinkLabel"]?.jsonPrimitive?.content ?: "",
+                docLinkWeek = line["docLinkWeek"]?.jsonPrimitive?.content ?: "",
+                workflowJobId = line["workflowJobId"]?.jsonPrimitive?.content ?: "",
             )
         } ?: emptyList()
         ChatSession(
@@ -280,7 +282,9 @@ internal class ChatStore(home: File, private val log: (String) -> Unit = {}) {
                         if (line.docLinkId.isNotBlank()) {
                             put("docLinkId", line.docLinkId)
                             put("docLinkLabel", line.docLinkLabel)
+                            if (line.docLinkWeek.isNotBlank()) put("docLinkWeek", line.docLinkWeek)
                         }
+                        if (line.workflowJobId.isNotBlank()) put("workflowJobId", line.workflowJobId)
                         line.tool?.let { trace ->
                             put(
                                 "tool",

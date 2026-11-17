@@ -55,6 +55,7 @@ internal class PlanEditTools(
         "<how_to_edit_plan>",
         "1. 计划域只有三个入口：read_plan 读、update_plan 改、plan_workflow 三段新建（调研结果→总计划文档→周文档→计划节点）。",
         "   不要再找 get_learning_plan / plan_week / create_learning_plan / write_plan_doc / create_plan 这些旧名字——它们已经收进 op / plan_workflow 里。",
+        "   新建计划是周队列模式：节点只进本周队列、不排到天（read_plan 里显示成 unit=pu_…），完成即记当天；不要用 schedule_week 或 occurrence 路径排天。",
         "2. 动手前先 read_plan：拿到 planId、阶段、本周节点（occurrenceId）、待安排池和总文档。",
         "3. 写操作一律先给用户方案、拿到明确同意，再带 confirmed=true 调 update_plan；",
         "   不确定就先 ask_choices。没 confirmed 时工具会拒绝，并告诉你去问用户。",
@@ -129,12 +130,14 @@ internal class PlanEditTools(
                         appendLine("（读不到）")
                     } else if (runCatching { svc.planState(planId).scheduleMode }.getOrDefault("day") == "queue") {
                         appendLine()
-                        appendLine("本周队列（完成一个记到当天）：")
+                        // queue 模式的节点是 unit（pu_…），不是 occurrence —— 这里必须写清楚，
+                        // 否则模型会拿它去 match.occurrenceId / set.day，撞「找不到 occurrence」。
+                        appendLine("本周队列（完成一个记到当天；这些是 unit id，不是 occurrence，不能排到天）：")
                         if (view.commitment.units.isEmpty()) {
                             appendLine("  （这一周还没有节点）")
                         } else {
                             view.commitment.units.forEach { unit ->
-                                appendLine("  - [").append(unit.id).append("] ").append(unit.title)
+                                appendLine("  - unit=").append(unit.id).append(" ").append(unit.title)
                                     .append(" · ").append(unit.estimateMinutes).append(" 分钟 · ").append(unit.stateLabel)
                             }
                         }
@@ -218,8 +221,9 @@ internal class PlanEditTools(
     private inner class UpdatePlan : AgentTool {
         override val name: String = "update_plan"
         override val description: String =
-            "改学习计划：建计划（手写条目或调研生成）、定/改阶段、加单元、排某一周、改单元/某条 occurrence 的资源/日子/" +
-                "完成状态、按逾期做整体重排、改每天投入、写总文档。一次传一组 op，按顺序执行；写操作必须 confirmed=true（用户同意后）。"
+            "改学习计划：定/改阶段、加单元、改单元标题/时长/资源、改每天投入、写总文档、完成队列节点。" +
+                "**周队列模式的计划不要排到天**：不要用 schedule_week / set.day / set.startTime / match.occurrenceId，" +
+                "队列节点的 id 是 unit（pu_…），完成它走 complete_plan_node。一次传一组 op；写操作必须 confirmed=true（用户同意后）。"
         override val parameters: String = """
             planId: 可选，默认当前选中计划
             confirmed: 用户已明确同意时才传 true

@@ -52,10 +52,14 @@ internal class PlanWorkflow(
     private val gateway: () -> ResearchGateway?,
     private val onChanged: () -> Unit,
     private val dbError: () -> String? = { null },
-    /** 清单（右栏执行清单）状态：段序号 + start / running / awaiting / done / failed / cancel。 */
-    private val onChecklist: (phase: Int, state: String) -> Unit = { _, _ -> },
-    /** 这一段产出的文档：id 可以是草稿 id 或计划 id，回复里会挂成可点链接。 */
-    private val onDocLink: (id: String, label: String) -> Unit = { _, _ -> },
+    /**
+     * 流程状态变了（段推进 / 等确认 / 结束）：宿主据此把右栏清单从 job_step 同步一遍。
+     *
+     * 只传 jobId 不传段序号和状态 —— 清单必须由 job 的真状态推导，不能由调用点各写一份。
+     */
+    private val onChecklist: (jobId: String) -> Unit = {},
+    /** 这一段产出的文档：id 是草稿或计划 id，week 非空表示要直接翻到那一周。 */
+    private val onDocLink: (id: String, label: String, week: String?) -> Unit = { _, _, _ -> },
     /** 让用户拍板是否进入下一段：宿主负责摆选项（不是模型自己问）。 */
     private val onAskConfirm: (jobId: String, phase: String, question: String, options: List<String>) -> Unit =
         { _, _, _, _ -> },
@@ -122,7 +126,7 @@ internal class PlanWorkflow(
             arguments.int("dailyMinutes")?.let { put("dailyMinutes", it.coerceIn(30, 240)) }
         }.toString()
         val jobId = wf.create("plan_flow", payload, phases)
-        onChecklist(-1, "start")
+        onChecklist(jobId)
         return runPhase(wf, wf.load(jobId)!!, "master", feedback = null)
     }
 
@@ -152,11 +156,12 @@ internal class PlanWorkflow(
         val index = phases.indexOf(current.step)
         if (index < 0) return ToolResult("不认识的阶段：" + current.step, isError = true)
         wf.setStep(job.id, current.step, "done")
-        onChecklist(index, "done")
         if (index == phases.lastIndex) {
             wf.setJobState(job.id, "done")
+            onChecklist(job.id)
             return ToolResult("三段都完成了：总计划文档、周文档和本周计划节点都建好了。")
         }
+        onChecklist(job.id)
         return runPhase(wf, job, phases[index + 1], feedback = null)
     }
 
@@ -195,7 +200,7 @@ internal class PlanWorkflow(
     private fun cancel(wf: PlanWorkflowStore, arguments: JsonObject): ToolResult {
         val job = resolveJob(wf, arguments) ?: return ToolResult("现在没有进行中的计划流程。", isError = true)
         wf.setJobState(job.id, "cancelled")
-        onChecklist(-1, "cancel")
+        onChecklist(job.id)
         // 已经写好的文档/计划都保留：文档是用户的资产，删不删交给用户。
         return ToolResult("已取消这段计划流程。已经写好的文档和计划不会自动删；要删计划去计划页。")
     }
@@ -217,7 +222,7 @@ internal class PlanWorkflow(
         if (result.isError) {
             wf.setStep(job.id, phase, "failed", error = result.content)
             wf.setJobState(job.id, "running")
-            onChecklist(phases.indexOf(phase), "failed")
+            onChecklist(job.id)
             return result
         }
         val index = phases.indexOf(phase)
@@ -225,11 +230,14 @@ internal class PlanWorkflow(
         wf.setStep(job.id, phase, if (isLast) "done" else "running", output = result.content)
         if (isLast) {
             wf.setJobState(job.id, "done")
-            onChecklist(index, "done")
-            return ToolResult(result.content)
+            onChecklist(job.id)
+            return ToolResult(
+                result.content + "\n三段都完成了：总计划文档、周文档、本周知识点都已就绪。" +
+                    "本周节点进的是队列，完成一个就记到当天；不需要再排到具体日期。",
+            )
         }
         wf.setJobState(job.id, "awaiting_user")
-        onChecklist(index, "awaiting")
+        onChecklist(job.id)
         val next = phases[index + 1]
         // 选项由宿主摆：模型不能替用户决定要不要往下走。
         onAskConfirm(
@@ -272,7 +280,7 @@ internal class PlanWorkflow(
                 "summary" to JsonPrimitive(draft.summary),
             ),
         )
-        onDocLink(draftId, "总计划文档")
+        onDocLink(draftId, "总计划文档", null)
         return ToolResult(draft.summary)
     }
 
@@ -320,7 +328,7 @@ internal class PlanWorkflow(
             job.id,
             payloadWith(job.payload, "planId" to JsonPrimitive(planId), "week" to JsonPrimitive(week)),
         )
-        onDocLink(planId, "总计划文档")
+        onDocLink(planId, "本周周文档（" + week + "）", week)
         onChanged()
         return ToolResult(
             buildString {

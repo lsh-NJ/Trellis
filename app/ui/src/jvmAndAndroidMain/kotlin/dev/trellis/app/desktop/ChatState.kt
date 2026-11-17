@@ -118,6 +118,15 @@ data class ChatLine(
      */
     val docLinkId: String = "",
     val docLinkLabel: String = "",
+    /** 文档链接要落到哪一周（周文档）；空 = 总文档。 */
+    val docLinkWeek: String = "",
+    /**
+     * 这条清单属于哪一段计划工作流（`plan_flow` jobId）；空 = 模型自己列的行动清单。
+     *
+     * 为什么要分开：流程的清单由宿主按 `job_step` 同步，模型自己的 `set_plan`/`step_done`
+     * 绝不能改到它 —— 之前两者共用同一条行，模型一勾就把流程状态勾错了。
+     */
+    val workflowJobId: String = "",
 )
 
 /**

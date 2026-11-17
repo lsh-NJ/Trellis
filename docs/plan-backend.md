@@ -386,6 +386,14 @@
 - **资源聚合**（`PlanWorkflow.scout`）：DeepSeek 搜索按站点检索 CSDN / 知乎 / 博客园 / 阿里云开发者 / 腾讯云 / GitHub，B 站单独走 `BilibiliClient.search`（按播放量 + 分集数）；宿主按类型分层（视频/文档/仓库/文章/问答，每类 2–3 条、总 12 条）后交给模型，模型只能从候选项里挑 URL。
 - **待补**：资源候选没有缓存（每次 start/revise 都重搜）；第三段生成后不支持整段重做（会重复建节点，只允许 `update_plan` 局部改）。
 
+### 21.1 2026-11-17 晚：清单/链接/队列语义三处修正（真实使用暴露）
+
+- **清单不再受「每轮清空」与模型勾选影响**：`ChatLine.workflowJobId` 标记流程清单，`PlanWorkflowChecklist` 从 `job`/`job_step` 纯函数推导（`workflowChecklistSteps`/`workflowChecklistSettled`）；模型侧 `set_plan`/`step_done`/`markPlanRunning`/`settlePlanAfterRound` 一律跳过流程清单。根因：以前清单靠每轮开头的 `activePlanId`，第 2/3 轮更新全是空操作，且模型 `step_done` 会把流程步骤提前勾掉。
+- **周文档链接**：`onDocLink(id, label, week)`；第二段产出带 `week`，点击 `openPlanDocs(planId, week)` 直接翻到那一周（`PlanDocPage(initialWeek)`）；标签改成「本周周文档（2026-Wxx）」。旧草稿链接在收养后失效，属预期（草稿已删）。
+- **队列模式不再教模型排到天**：`ManagerPrompt` 第 2/3 条与 `update_plan` 描述改成队列语义；`read_plan` 队列分支打印 `unit=pu_…` 并注明「不是 occurrence，不能排到天」；`PlanWeekTools` 在 queue 模式且本周队列已有节点时直接拒绝 replan（此前每次 replan 会再 `appendUnits` 10 条，产生重复节点），队列条目 `kind` 强制 study；`schedule_week` 的队列回执改为「周文档写好了，N 个节点已进队列」，不再出现「排好了：0 条」。
+- **上下文带日期**：`managerState()` 增加「今天 / 本周」，模型不必再为了换算 deadline 去 `describe_screen`/`get_diagnostics`。
+- **流程终点**：第三段完成时工具回执明确写「本周节点进的是队列，完成即记当天，不需要再排具体日期」。
+
 
 
 

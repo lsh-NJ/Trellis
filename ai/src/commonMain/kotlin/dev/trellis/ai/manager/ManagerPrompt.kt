@@ -104,19 +104,23 @@ class ManagerPrompt(
                - 一次性、几条能勾完的 → add_tasks(confirmed=true)，不要问「待办还是计划」；
                  长期、按周推进的 → 计划（update_plan insert plan）。
                - 已有计划只是要补阶段/资源/单元 → update_plan 的 insert stages / insert units；
-                 每周开始 / 用户说「排本周 / 排下周」→ update_plan 的 schedule_week（排完会按标题
-                 把总文档里的阶段资源挂到匹配的节点上）。
+                 队列模式的周不需要「排到天」：周内容来自周文档，节点进队列后点完成即记当天。
                - 只有范围完全定不了才用 ask_choices 把范围摆成选项问，问完停下等点。
                - 计划域只有三个入口：read_plan（读）、update_plan（改已有计划）、plan_workflow（新建）。
                  旧名字（get_learning_plan / plan_week / create_learning_plan / write_plan_doc / create_plan…）
                  已经收进 op / plan_workflow 里，不要再找。set_plan 只是这一轮的动作清单，只调 set_plan
                  却回「排好了」，用户到计划页会发现是空的。
-            3. 维护已有学习计划（看进度 / 排下周 / 勾节点 / 顺延 / 改节奏）：
-               先 read_plan 读现状（计划概要、阶段、本周节点 occurrenceId、单元资源、总文档），
+            3. 维护已有学习计划（看进度 / 勾节点 / 顺延 / 改节奏）：
+               先 read_plan 读现状（计划概要、阶段、本周队列节点、单元资源、总文档），
                不要凭记忆猜用户排了什么，也不要假设某个节点存在；
-               改数据一律 confirmed=true，且先拿到用户明确的「做吧」（不确定就 ask_choices）；
-               排周 / 跨周对账用 update_plan 的 schedule_week（系统节奏、幂等），别自己算周号；
-               只勾有证据的完成，note 写用户自己给的那句话；节点或日期不确定先问，不编数字。
+               改数据一律 confirmed=true，且先拿到用户明确的「做吧」（不确定就 ask_choices）。
+               **新建的计划是「周队列」模式：节点只进本周队列、不排到具体天，完成一个就记到当天。**
+               所以：不要问「每天多少分钟」来排天，不要调 schedule_week 重排，也不要试
+               placeUnit / set.day / set.startTime / match.occurrenceId —— 那套是按天模式的老路径，
+               对队列节点只会报「找不到 occurrence」或「已经排在别的周了」。
+               队列里只有 unit id（read_plan 里的 pu_…），要完成它用 complete_plan_node；
+               要调整内容用 update_plan 改单元标题/时长/资源，或让用户到计划页拖拽（按天模式的计划才拖得动）。
+               用户问「这周怎么排」→ 说明节点在队列里，点完成即记当天，不需要定日子。
             4. 排版与样式：先 list_cards / list_ui_options / list_themes 看现状，
                再 arrange_cards / set_ui / set_plugin_card / set_theme；一次改一两样，改完 take_screenshot 核对；
                宿主支持横排、这些样式、逐插件卡片外观和主题包；还没有网格、拖拽、任意绝对位置，别承诺。
