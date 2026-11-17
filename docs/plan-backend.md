@@ -413,6 +413,14 @@
 - **测试**：`parseUnderstandsSizeBands`（体量档与老格式共存、「（大 O 表示）」不会被当成档位）；`unitsPhaseTurnsWeekDocIntoStudyOnlyNodes` 断言落库时长是 30 / 15 / 45，周文档含投入参考行。
 - **没做**（等真实数据）：用 `session` 的实际时长中位数反哺档位默认值。当前 `session` 表 0 条记录，还没有可校准的基础。
 
+### 21.4 2026-11-17 晚：真跑 8 个目标验收（临时 harness，未入库）+ 两处修硬
+
+- 验法：临时 JVM 测试（真 `HttpLlmClient` + 真 `DeepSeekWebResearch`，临时 `TRELLIS_HOME`）跑完整三段，目标覆盖期末复习（操作系统 / 考研数学）、工程技能（Kotlin CLI / TypeScript 全栈 / React 面试）、语言（英语口语）、数据分析、以及一句很空的目标（「我想学好编程」）；每天投入取 30 / 40 / 45 / 60 / 75 / 90 分钟各一档。
+- **结果**：8 个目标、12 次完整三段全部跑通（含同一目标连跑 3 次）。条目数 5–8，时长都是 15 / 30 / 45 混合，没有一条「十条同数」；投入参考按每天投入算出 3 小时 30 分 / 4 小时 40 分 / 5 小时 15 分 / 7 小时 / 8 小时 45 分 / 10 小时 30 分；节点 `kind` 全 `study`。
+- **修硬 1：开思考会把输出预算吃光**。真跑时第一次 `start` 偶发失败：模型输出只有 572 字、JSON 截断，流程报「调研模型没回上来」。根因是 DeepSeek 的 `thinking` 默认开，reasoning token 也算在 8192 输出上限里。修法：`PlanWorkflow` 新增可选 `structuredLlm: () -> LlmClient?`，AppRuntime 传一个 `config.copy(thinking = false)` 的客户端，写总计划 / 周文档的两次调用改走它；同时 `structuredCall(timeoutMs, retryHint, accept, call)` 在输出不可用（JSON 不合法 / 周文档解析不出条目）时**重试一次**，并明确告诉模型「上一次被截断了」。修后同一目标连跑 3 次全过，单次三段从 ~50s 降到 ~15s。
+- **修硬 2：周文档混进「元内容」**。真跑发现模型会把「八周阶段划分与前后依赖顺序」「复习路线排序」「每日时间块配比」「知识框架默写与对照」写成节点——这些是「怎么安排学习」，不是「要学什么」。提示词第 1 条补一句：也不要写规划 / 盘点 / 排序 / 排期 / 分配时间这类元内容，条目回答「要学什么」。
+- **测试**：`masterRetriesOnceWhenTheJsonIsTruncated`、`weekRetriesWhenTheDocIsUnusable`（假模型第一次返回截断 JSON / 不成形周文档，断言重试一次后流程继续）。
+
 
 
 

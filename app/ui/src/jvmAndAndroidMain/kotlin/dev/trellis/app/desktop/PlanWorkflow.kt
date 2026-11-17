@@ -50,6 +50,14 @@ internal class PlanWorkflow(
     private val docStore: () -> PlanDocStore?,
     private val clock: TrellisClock,
     private val llm: LlmClient,
+    /**
+     * 写文档用的模型客户端（可选）：关掉思考的同一个模型。
+     *
+     * 总计划文档 / 周文档都是结构化输出，思考过程只会吃掉输出预算 —— 实测
+     * （2026-11-17）开思考时模型把 8192 token 里的绝大部分花在推理上，正文只剩
+     * 572 字、JSON 被截断，整段流程失败。这里退化成 [llm] 时行为不变（测试注入假模型）。
+     */
+    private val structuredLlm: () -> LlmClient? = { null },
     private val gateway: () -> ResearchGateway?,
     private val onChanged: () -> Unit,
     private val dbError: () -> String? = { null },
@@ -80,6 +88,32 @@ internal class PlanWorkflow(
     }
 
     val all: List<AgentTool> = listOf(Tool())
+
+    /** 写文档用的客户端：优先用关思考的那个，没配就退回主客户端（测试注入假模型时走这条）。 */
+    private val docLlm: LlmClient by lazy { structuredLlm() ?: llm }
+
+    /**
+     * 结构化输出的调用 + 一次重试。
+     *
+     * [accept] 判断这次输出能不能用；不能用时再要一次，并明确告诉模型「上一次不可用」。
+     * 超时 / 异常都算这次失败；两次都不行就返回 null，由调用方给出人话错误。
+     */
+    private suspend fun structuredCall(
+        timeoutMs: Long,
+        retryHint: String,
+        accept: (String) -> Boolean,
+        call: suspend (extra: String) -> String,
+    ): String? {
+        var extra = ""
+        repeat(2) { attempt ->
+            val raw = withTimeoutOrNull(timeoutMs) {
+                runCatching { call(extra) }.getOrNull()
+            } ?: return null
+            if (accept(raw)) return raw
+            if (attempt == 0) extra = "\n\n" + retryHint
+        }
+        return null
+    }
 
     private inner class Tool : AgentTool {
         override val name: String = "plan_workflow"
@@ -289,7 +323,11 @@ internal class PlanWorkflow(
         // 调研结果 = 宿主检索到的候选资源 + 用户的补充要求（revise 时带上）。
         val candidates = scout(goal)
         val draft = draftMasterDoc(goal, deadline, daily, candidates, feedback)
-            ?: return ToolResult("调研模型没回上来（或超时），这次没写成。可以 revise 重做这一段。", isError = true)
+            ?: return ToolResult(
+                "总计划文档没生成出来（模型超时，或两次输出都不是合法 JSON —— 常见是被截断）。" +
+                    "这次没写成，可以 revise 重做这一段。",
+                isError = true,
+            )
         val store = docStore() ?: return ToolResult("计划文档存储没准备好，这次没写成。", isError = true)
         val draftId = "draft_" + UUID.randomUUID().toString().replace("-", "").take(16)
         runCatching { store.saveDraft(draftId, draft.markdown) }
@@ -344,7 +382,10 @@ internal class PlanWorkflow(
         }
 
         val weekDoc = buildWeekDoc(week, goal, master, daily, feedback)
-            ?: return ToolResult("周文档没生成出来（模型超时或输出不可用）。可以 revise 重做这一段。", isError = true)
+            ?: return ToolResult(
+                "周文档没生成出来（模型超时，或两次输出都不成形的 Markdown）。可以 revise 重做这一段。",
+                isError = true,
+            )
         runCatching { store.saveWeek(planId, week, weekDoc.markdown) }
             .onFailure { return ToolResult("周文档没写成：" + (it.message ?: "未知原因"), isError = true) }
         wf.updatePayload(
@@ -475,12 +516,20 @@ internal class PlanWorkflow(
             appendLine("</resource_candidates>")
             append("请输出 JSON：title 和 doc。")
         }
-        val raw = withTimeoutOrNull(MASTER_TIMEOUT_MS) {
-            llm.complete(listOf(LlmMessage(LlmRole.System, system), LlmMessage(LlmRole.User, user)))
+        fun parseRoot(text: String): JsonObject? = runCatching {
+            Json.parseToJsonElement(extractJsonObject(text).orEmpty()) as? JsonObject
+        }.getOrNull()
+        val raw = structuredCall(
+            timeoutMs = MASTER_TIMEOUT_MS,
+            retryHint = "上一次的输出不是可用的 JSON（可能被截断）。这次只输出一个 JSON 对象，" +
+                "不要代码块；doc 控制在 60 行以内，先保证 JSON 完整。",
+            accept = { text ->
+                parseRoot(text)?.get("doc")?.jsonPrimitive?.contentOrNull?.trim().isNullOrBlank().not()
+            },
+        ) { extra ->
+            docLlm.complete(listOf(LlmMessage(LlmRole.System, system), LlmMessage(LlmRole.User, user + extra)))
         } ?: return null
-        val root = runCatching {
-            Json.parseToJsonElement(extractJsonObject(raw).orEmpty()) as? JsonObject
-        }.getOrNull() ?: return null
+        val root = parseRoot(raw) ?: return null
         val title = root["title"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty().take(24)
             .ifBlank { goal.take(16) }
         val markdown = root["doc"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
@@ -517,8 +566,14 @@ internal class PlanWorkflow(
             appendLine("（再列 2–8 行，同样写法）")
             appendLine()
             appendLine("约束：")
-            appendLine("1. 只列这一周要学的知识点/内容（如「进程调度算法」「页面置换计算」），标题不超过 24 个字；")
+            appendLine("1. 只列这一周要学的知识点 —— 具体的知识/技能主题（名词短语，如「进程调度算法」")
+            appendLine("   「页面置换计算」「闭包与作用域链」），标题不超过 24 个字。")
             appendLine("   不要写复习、练习、实验、做题、复盘这类动作条目 —— 计划节点只装要学的内容。")
+            appendLine("   也不要写「…范围划分 / …盘点 / …排序 / …排期 / …自评 / …框架搭建 / …方法与诀窍 /")
+            appendLine("   …时间分配」这类元内容：它们回答「怎么安排学习」，不是「学什么」。")
+            appendLine("   如果这一周只想到元内容，就把这周真正要学的第一个具体知识点写出来。")
+            appendLine("   例：「前端面试四大板块构成」→「事件循环与宏微任务机制」；")
+            appendLine("   「自学编程的入门顺序」→「变量、函数与程序执行流程」。")
             appendLine("2. 每条按内容多少标一个体量档：小 ≈ 15 分钟、中 ≈ 30 分钟、大 ≈ 45 分钟。")
             appendLine("   45 分钟是单块上限，内容再多就拆成两条；分钟数就写档位对应的那个数，不要自己另编。")
             appendLine("3. 不要为了凑满一周的投入预算把条目摊平：条目数由内容决定（3–9 条），宁可少写；")
@@ -534,8 +589,18 @@ internal class PlanWorkflow(
             appendLine(master)
             appendLine("</master_doc>")
         }
-        val markdown = withTimeoutOrNull(WEEK_TIMEOUT_MS) {
-            llm.completeText(listOf(LlmMessage(LlmRole.System, system), LlmMessage(LlmRole.User, user)))
+        val store = docStore()
+        val markdown = structuredCall(
+            timeoutMs = WEEK_TIMEOUT_MS,
+            retryHint = "上一次的输出不是可用的周文档（可能被截断）。这次只输出周文档 Markdown 本身，" +
+                "不要代码块、不要解释；条目控制在 8 条以内。",
+            accept = { text ->
+                val normalized = normalizeWeekDoc(week, text)
+                if (store == null) normalized.isNotBlank()
+                else store.parse(normalized).weeks[week].orEmpty().isNotEmpty()
+            },
+        ) { extra ->
+            docLlm.completeText(listOf(LlmMessage(LlmRole.System, system), LlmMessage(LlmRole.User, user + extra)))
         } ?: return null
         val doc = normalizeWeekDoc(week, markdown, daily)
         val items = docStore()?.parse(doc)?.weeks?.get(week).orEmpty()

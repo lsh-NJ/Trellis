@@ -103,13 +103,13 @@ class PlanWorkflowTest {
 
     private var harnessRef: Harness? = null
 
-    private fun harness(): Harness {
+    private fun harness(replies: List<String> = listOf(masterJson(), weekDoc(), masterJson())): Harness {
         val home = Files.createTempDirectory("plan-workflow").toFile()
         val clock = FixedClock(wednesday, zone)
         val service = LearningPlanStore.open(File(home, "plans/plan.db").toPath(), { clock.nowMs() }, zone)
         val docStore = PlanDocStore(home)
         val workflow = PlanWorkflowStore(home)
-        val llm = FakeLlm(listOf(masterJson(), weekDoc(), masterJson()))
+        val llm = FakeLlm(replies)
         val checklists = mutableListOf<String>()
         val docLinks = mutableListOf<Triple<String, String, String?>>()
         val gates = mutableListOf<Pair<String, String>>()
@@ -316,6 +316,31 @@ class PlanWorkflowTest {
         h.workflow.updatePayload(job, "{\"planId\":\"pln_bound\"}")
         assertEquals(1, h.workflow.cancelOpenForPlan("pln_bound"))
         assertEquals("cancelled", assertNotNull(h.workflow.load(job)).state)
+    }
+
+    /**
+     * 真实事故（2026-11-17 真跑）：开思考时模型把输出预算全花在推理上，总计划文档的
+     * JSON 被截断（正文只剩 572 字），流程直接报「模型没回上来」。现在结构化输出会重试一次。
+     */
+    @Test
+    fun masterRetriesOnceWhenTheJsonIsTruncated() = runTest {
+        val h = harness(listOf("{\"title\":\"操作系统备考\",\"doc\":\"# 目标与验收", masterJson(), weekDoc()))
+        val jobId = start(h)
+        assertEquals(2, h.llm.calls, "第一段应该重试一次")
+        assertEquals("awaiting_user", assertNotNull(h.workflow.load(jobId)).state)
+        assertTrue(h.docStore.draftIds().isNotEmpty(), "重试后草稿应该写出来")
+    }
+
+    /** 周文档被截断时同样重试；重试成功后周文档照常落盘。 */
+    @Test
+    fun weekRetriesWhenTheDocIsUnusable() = runTest {
+        val h = harness(listOf(masterJson(), "这是周计划，但格式不对。", weekDoc()))
+        val jobId = start(h)
+        advance(h)
+        assertEquals(3, h.llm.calls, "第二段应该重试一次")
+        assertEquals("awaiting_user", assertNotNull(h.workflow.load(jobId)).state)
+        val planId = h.service.plans().single().id
+        assertTrue(h.docStore.readWeek(planId, thisWeek).orEmpty().contains("进程调度算法"))
     }
 
     @Test

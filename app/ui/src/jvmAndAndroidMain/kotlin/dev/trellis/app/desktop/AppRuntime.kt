@@ -3002,6 +3002,11 @@ class AppRuntime private constructor() {
                 docStore = { if (::planDocStore.isInitialized) planDocStore else null },
                 clock = clock,
                 llm = llm,
+                // 写文档的调用关掉思考：思考会吃掉输出预算，JSON 容易被截断。
+                structuredLlm = {
+                    if (llmOverride != null) null
+                    else LlmConfigLoader.load(home)?.let { config -> HttpLlmClient(config.copy(thinking = false)) }
+                },
                 gateway = { researchGateway },
                 onChanged = { refreshPlan() },
                 dbError = { planDbError },
