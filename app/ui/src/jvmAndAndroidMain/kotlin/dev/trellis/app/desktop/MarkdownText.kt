@@ -656,6 +656,18 @@ private fun MarkdownInlineText(
 /** 链接颜色在这里硬编码会绕开主题；用「主色文本」的近似值，暗色下也读得清。 */
 private val ColorLink = Color(0xFF2E5AAC)
 
+/**
+ * 只读预览的目录跳转：把「正文里第 n 个标题」映射成渲染块下标。
+ *
+ * [parseOutline] 与 [parseMarkdown] 都按文档顺序走，所以第 n 个标题必然落在第 n 个
+ * Heading 块上 —— 有了这个映射，[MarkdownText] 的 `onBlockLayout` 报的 y 就能用来滚到
+ * 某个标题（计划文档预览用；编辑器态跳转仍走光标，不需要它）。
+ */
+internal fun headingBlockIndexes(text: String): List<Int> =
+    parseMarkdown(text).mapIndexedNotNull { index, block ->
+        index.takeIf { block is MdBlock.Heading }
+    }
+
 @Composable
 internal fun MarkdownText(
     text: String,
