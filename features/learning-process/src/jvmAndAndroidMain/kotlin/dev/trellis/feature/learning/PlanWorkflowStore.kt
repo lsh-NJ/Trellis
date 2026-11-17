@@ -103,6 +103,48 @@ class PlanWorkflowStore(home: File) : AutoCloseable {
         return load(id)
     }
 
+    /** 所有未结束的工作流（按创建时间倒序）。 */
+    fun openJobs(kind: String? = null): List<Job> {
+        val sql = if (kind == null) {
+            "SELECT id FROM job WHERE state NOT IN ('done','failed','cancelled') ORDER BY created_at DESC, rowid DESC"
+        } else {
+            "SELECT id FROM job WHERE kind = ? AND state NOT IN ('done','failed','cancelled') " +
+                "ORDER BY created_at DESC, rowid DESC"
+        }
+        val ids = connection.prepareStatement(sql).use { ps ->
+            if (kind != null) ps.setString(1, kind)
+            ps.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } }
+        }
+        return ids.mapNotNull { load(it) }
+    }
+
+    /**
+     * 计划被删/放弃之后，把绑在这份计划上的未结流程取消。
+     *
+     * 为什么需要：流程把 planId 存在 payload 里，计划删掉了流程还「开着」，
+     * 下次 plan_workflow start 会被「已经有一段流程在进行中」挡死（2026-11-17 真实事故）。
+     * 只按 payload 里出现过的 planId 精确匹配，不误伤别的计划。
+     */
+    fun cancelOpenForPlan(planId: String): Int {
+        if (planId.isBlank()) return 0
+        val ids = connection.prepareStatement(
+            "SELECT id FROM job WHERE state NOT IN ('done','failed','cancelled') " +
+                "AND payload_json LIKE ? ORDER BY created_at DESC, rowid DESC",
+        ).use { ps ->
+            ps.setString(1, "%\"planId\":\"" + planId + "\"%")
+            ps.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } }
+        }
+        val now = Instant.now().toString()
+        ids.forEach { id ->
+            connection.prepareStatement("UPDATE job SET state = 'cancelled', updated_at = ? WHERE id = ?").use { ps ->
+                ps.setString(1, now)
+                ps.setString(2, id)
+                ps.executeUpdate()
+            }
+        }
+        return ids.size
+    }
+
     private fun stepsOf(jobId: String): List<JobStep> =
         connection.prepareStatement(
             "SELECT step,state,output_ref,error,updated_at FROM job_step WHERE job_id = ? ORDER BY rowid",

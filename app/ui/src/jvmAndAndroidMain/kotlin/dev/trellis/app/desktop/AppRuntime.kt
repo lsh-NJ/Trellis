@@ -82,6 +82,7 @@ import dev.trellis.activity.RangeSummary
 import dev.trellis.activity.Segment
 import dev.trellis.activity.TaskTime
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
@@ -1566,6 +1567,8 @@ class AppRuntime private constructor() {
         chat.clear()
         chat += session.lines
         chatAsk = null
+        // 历史会话里的流程清单可能停在旧状态（流程被取消、计划被删）：打开时对齐一次。
+        reconcileWorkflowChecklists()
         // 只升不降：从任意一段历史会话切过来，新行都不能复用别的会话已有的 id。
         nextChatLineId = maxOf(nextChatLineId, (session.lines.maxOfOrNull { it.id } ?: 0L) + 1)
         chatHistory.clear()
@@ -2418,7 +2421,22 @@ class AppRuntime private constructor() {
      */
     private fun planWorkflowChecklist(jobId: String) {
         val store = if (::planWorkflowStore.isInitialized) planWorkflowStore else return
-        val job = runCatching { store.load(jobId) }.getOrNull() ?: return
+        val job = runCatching { store.load(jobId) }.getOrNull()
+        if (job == null) {
+            // 流程记录没了（库被换过/清理过）：把清单收尾成「已失效」，别让它永远挂着等待确认。
+            val at = chat.indexOfFirst { it.workflowJobId == jobId }
+            if (at >= 0) {
+                val now = System.currentTimeMillis()
+                chat[at] = chat[at].copy(
+                    plan = chat[at].plan.map { step ->
+                        step.copy(state = PlanStepState.Skipped, note = "流程已失效")
+                    },
+                    planFinishedMs = now,
+                )
+                persistChat()
+            }
+            return
+        }
         val steps = job.steps
         if (steps.isEmpty()) return
         val now = System.currentTimeMillis()
@@ -2479,6 +2497,56 @@ class AppRuntime private constructor() {
         )
         chat[at] = line.copy(plan = updated, planFinishedMs = 0L)
         persistChat()
+    }
+
+    /**
+     * 计划流程是否已经失效：它绑的计划被删了、或草稿没了。
+     *
+     * 失效流程不能继续，也不能挡住新的 start —— 用户删掉计划后流程还「开着」，
+     * 下次建计划会被「已经有一段流程在进行中」挡死（2026-11-17 真实事故）。
+     */
+    private fun planFlowStale(job: PlanWorkflowStore.Job): Boolean {
+        val root = runCatching { Json.parseToJsonElement(job.payload) as? JsonObject }.getOrNull() ?: return false
+        val planId = root["planId"]?.jsonPrimitive?.contentOrNull
+        if (!planId.isNullOrBlank()) {
+            val svc = runCatching { learningPlan() }.getOrNull() ?: return false
+            // 软删的计划还在库里（planState 仍能读到），要用列表判断它还在不在、还活不活。
+            return runCatching {
+                svc.plans().firstOrNull { it.id == planId }?.status != "active"
+            }.getOrDefault(false)
+        }
+        val draftId = root["draftId"]?.jsonPrimitive?.contentOrNull
+        if (draftId.isNullOrBlank()) return false
+        if (!::planDocStore.isInitialized) return false
+        return runCatching { planDocStore.readDraft(draftId) }.getOrNull() == null
+    }
+
+    /** 把失效的流程取消并收尾清单；每轮建 rig 前跑一次，用户删了计划也不会卡住。 */
+    private fun cancelStalePlanFlows() {
+        if (!::planWorkflowStore.isInitialized) return
+        val open = runCatching { planWorkflowStore.openJobs("plan_flow") }.getOrDefault(emptyList())
+        open.filter { planFlowStale(it) }.forEach { job ->
+            runCatching { planWorkflowStore.setJobState(job.id, "cancelled") }
+            planWorkflowChecklist(job.id)
+            appendAppLog("计划流程已失效，自动取消：" + job.id)
+        }
+    }
+
+    /** 按当前会话里的流程清单行，把清单和 job 真实状态对齐（打开旧会话时用）。 */
+    private fun reconcileWorkflowChecklists() {
+        chat.mapNotNull { line -> line.workflowJobId.takeIf { it.isNotBlank() } }
+            .distinct()
+            .forEach { jobId -> planWorkflowChecklist(jobId) }
+    }
+
+    /** 计划被放弃/删除后，取消绑在它上面的未结流程（清单也随之收尾）。 */
+    private fun cancelPlanFlowsFor(planId: String) {
+        if (!::planWorkflowStore.isInitialized) return
+        val cancelled = runCatching { planWorkflowStore.cancelOpenForPlan(planId) }.getOrDefault(0)
+        if (cancelled > 0) {
+            reconcileWorkflowChecklists()
+            appendAppLog("计划 " + planId + " 被删除/放弃，已取消 " + cancelled + " 段未结计划流程")
+        }
     }
 
     /** 计划工作流三段的显示名（用于提示词里的「当前段」）。 */
@@ -3034,6 +3102,8 @@ class AppRuntime private constructor() {
             val promptGuidance = if (memorySection.isBlank()) guidance else guidance + "\n\n" + memorySection
             // 计划工作流转接：有一段流程正等用户确认时，这一轮只给它这段流程该用的手。
             // 不靠提示词自觉 —— 能改计划的其他工具这一轮一个都不装，模型想绕也绕不过去。
+            // 先把失效流程（计划被删、草稿没了）取消掉，别让它们卡住新的 start。
+            cancelStalePlanFlows()
             val openFlow = if (::planWorkflowStore.isInitialized) {
                 runCatching { planWorkflowStore.latestOpen("plan_flow") }.getOrNull()
             } else {
@@ -5628,6 +5698,8 @@ class AppRuntime private constructor() {
             planSelectedDay = null
             planPendingSelected = false
         }
+        // 流程绑着这份计划的话，放弃后它也不能再续了。
+        cancelPlanFlowsFor(planId)
         refreshPlan()
         planMessage = "已放弃这个计划；在左栏点它可以回来看，但它不会再排期。"
         tick += 1
@@ -5658,6 +5730,8 @@ class AppRuntime private constructor() {
             planSelectedDay = null
             planPendingSelected = false
         }
+        // 删掉计划后，绑在它上面的未结流程必须一起取消，否则下次 start 会被它挡住。
+        cancelPlanFlowsFor(planId)
         refreshPlan()
         // 删计划可能连带软删目标（或解绑），目标页的状态要跟着更新。
         refreshGoals()

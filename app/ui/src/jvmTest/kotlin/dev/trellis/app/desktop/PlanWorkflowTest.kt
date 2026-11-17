@@ -18,6 +18,7 @@ import kotlinx.serialization.json.put
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -107,7 +108,7 @@ class PlanWorkflowTest {
         val service = LearningPlanStore.open(File(home, "plans/plan.db").toPath(), { clock.nowMs() }, zone)
         val docStore = PlanDocStore(home)
         val workflow = PlanWorkflowStore(home)
-        val llm = FakeLlm(listOf(masterJson(), weekDoc()))
+        val llm = FakeLlm(listOf(masterJson(), weekDoc(), masterJson()))
         val checklists = mutableListOf<String>()
         val docLinks = mutableListOf<Triple<String, String, String?>>()
         val gates = mutableListOf<Pair<String, String>>()
@@ -230,6 +231,81 @@ class PlanWorkflowTest {
         val weekLink = h.docLinks.last()
         assertEquals(thisWeek, weekLink.third, weekLink.toString())
         assertTrue(weekLink.second.contains("周文档"), weekLink.second)
+    }
+
+    /**
+     * 真实事故（2026-11-17）：计划没建完、用户把计划删了，流程还「开着」，
+     * 再开新对话 start 会被「已经有一段计划流程在进行中」挡住。
+     * 期望：删计划后旧流程自动作废，start 能继续。
+     */
+    @Test
+    fun staleFlowDoesNotBlockNewStartAfterPlanDeleted() = runTest {
+        val h = harness()
+        val oldJob = start(h)
+        advance(h) // 第二段建出计划本体
+        val planId = h.service.plans().single().id
+
+        // 放弃并删除这份计划（和界面上的「放弃 → 删除」同一条路）。
+        // 注意命令要各用各的 commandId：同一个 id 会被幂等层当成「已经执行过」直接回放。
+        fun cmd(origin: String) = dev.trellis.domain.plan.CommandEnvelope(
+            commandId = "cmd_test_" + origin + "_" + planId,
+            actor = dev.trellis.domain.plan.Actor.USER,
+            planId = planId,
+            origin = origin,
+        )
+        assertTrue(h.service.abandonPlan(cmd("test.abandon"), planId).ok, "放弃失败")
+        assertTrue(h.service.deletePlan(cmd("test.delete"), planId).ok, "删除失败")
+        assertTrue(h.service.plans().none { it.id == planId }, "计划应已从列表消失")
+
+        // 新的 start 不能被旧流程挡住；旧流程要被取消。
+        val result = h.tool.call(
+            buildJsonObject {
+                put("action", "start")
+                put("goal", "重新开始复习操作系统")
+            },
+        )
+        assertFalse(result.content.contains("已经有一段计划流程在进行中"), result.content)
+        val open = assertNotNull(h.workflow.latestOpen("plan_flow"))
+        assertTrue(open.id != oldJob, "应该是一段新流程")
+        assertEquals("cancelled", assertNotNull(h.workflow.load(oldJob)).state)
+    }
+
+    /** 只「放弃」不删除也要能让流程作废：否则 start 同样被挡。 */
+    @Test
+    fun staleFlowDoesNotBlockNewStartAfterPlanAbandoned() = runTest {
+        val h = harness()
+        val oldJob = start(h)
+        advance(h)
+        val planId = h.service.plans().single().id
+        val env = dev.trellis.domain.plan.CommandEnvelope(
+            commandId = "cmd_test_abandon_" + planId,
+            actor = dev.trellis.domain.plan.Actor.USER,
+            planId = planId,
+            origin = "test.abandon",
+        )
+        assertTrue(h.service.abandonPlan(env, planId).ok, "放弃失败")
+
+        val result = h.tool.call(
+            buildJsonObject {
+                put("action", "start")
+                put("goal", "换一份计划重新开始")
+            },
+        )
+        assertFalse(result.content.contains("已经有一段计划流程在进行中"), result.content)
+        assertEquals("cancelled", assertNotNull(h.workflow.load(oldJob)).state)
+    }
+
+    /** 计划删除后清理 hook：cancelOpenForPlan 只取消绑在这份计划上的流程。 */
+    @Test
+    fun cancelOpenForPlanOnlyTouchesBoundJobs() = runTest {
+        val h = harness()
+        val job = start(h)
+        assertEquals(0, h.workflow.cancelOpenForPlan("pln_other"))
+        assertEquals(0, h.workflow.cancelOpenForPlan("prc_not_bound_either"))
+        assertEquals("awaiting_user", assertNotNull(h.workflow.load(job)).state)
+        h.workflow.updatePayload(job, "{\"planId\":\"pln_bound\"}")
+        assertEquals(1, h.workflow.cancelOpenForPlan("pln_bound"))
+        assertEquals("cancelled", assertNotNull(h.workflow.load(job)).state)
     }
 
     @Test

@@ -112,11 +112,17 @@ internal class PlanWorkflow(
 
     private suspend fun start(wf: PlanWorkflowStore, arguments: JsonObject): ToolResult {
         wf.latestOpen("plan_flow")?.let { open ->
-            val current = open.steps.firstOrNull { it.state == "running" }?.let { phaseLabel(it.step) } ?: "进行中"
-            return ToolResult(
-                "已经有一段计划流程在进行中（jobId=" + open.id + "，当前：" + current + "）。先推进或取消它，再开新的。",
-                isError = true,
-            )
+            if (flowStale(open)) {
+                // 计划被删、草稿没了：这段流程已经续不下去，自动取消后允许开新的。
+                wf.setJobState(open.id, "cancelled")
+                onChecklist(open.id)
+            } else {
+                val current = open.steps.firstOrNull { it.state == "running" }?.let { phaseLabel(it.step) } ?: "进行中"
+                return ToolResult(
+                    "已经有一段计划流程在进行中（jobId=" + open.id + "，当前：" + current + "）。先推进或取消它，再开新的。",
+                    isError = true,
+                )
+            }
         }
         val goal = arguments.str("goal")?.trim().orEmpty()
         if (goal.isEmpty()) return ToolResult("start 需要 goal（一句话目标）。", isError = true)
@@ -163,6 +169,22 @@ internal class PlanWorkflow(
         }
         onChecklist(job.id)
         return runPhase(wf, job, phases[index + 1], feedback = null)
+    }
+
+    /** 流程绑的计划被删、或第一段的草稿没了 —— 这段流程已经续不下去。 */
+    private fun flowStale(job: PlanWorkflowStore.Job): Boolean {
+        val planId = job.payload.stringField("planId")
+        if (planId != null) {
+            val svc = service() ?: return false
+            // 用 plans() 而不是 planState()：软删的计划还在库里，只是列表里不出现。
+            // 已被放弃/结束（status != active）的计划也续不下去 —— 流程该作废。
+            return runCatching {
+                svc.plans().firstOrNull { it.id == planId }?.status != "active"
+            }.getOrDefault(false)
+        }
+        val draftId = job.payload.stringField("draftId") ?: return false
+        val store = docStore() ?: return false
+        return runCatching { store.readDraft(draftId) }.getOrNull() == null
     }
 
     private suspend fun revise(wf: PlanWorkflowStore, arguments: JsonObject): ToolResult {

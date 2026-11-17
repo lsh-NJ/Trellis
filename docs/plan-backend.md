@@ -394,6 +394,13 @@
 - **上下文带日期**：`managerState()` 增加「今天 / 本周」，模型不必再为了换算 deadline 去 `describe_screen`/`get_diagnostics`。
 - **流程终点**：第三段完成时工具回执明确写「本周节点进的是队列，完成即记当天，不需要再排具体日期」。
 
+### 21.2 2026-11-17 晚：计划删了之后流程卡住（真实事故）
+
+- 现象：计划没建完就删掉，再开新对话 `plan_workflow start` 被「已经有一段计划流程在进行中」挡住。根因：流程把 `planId` 存在 `job.payload_json` 里，删计划时没有任何人取消这段 job。
+- 修法：`PlanWorkflowStore.openJobs(kind)` / `cancelOpenForPlan(planId)`；`AppRuntime` 在「放弃计划」「删除计划」成功后调 `cancelPlanFlowsFor`，每轮建 rig 前 `cancelStalePlanFlows()` 把绑着已删/已放弃/已结束计划的流程取消，打开旧会话时 `reconcileWorkflowChecklists()` 把清单对齐；`plan_workflow.start` 自己也会在发现流程失效时自动取消再继续。
+- 判定「失效」：payload 里的 `planId` 不在 `plans()` 里，或 status 不是 `active`；只有草稿时看草稿文件还在不在。
+- 测试：`staleFlowDoesNotBlockNewStartAfterPlanDeleted`、`staleFlowDoesNotBlockNewStartAfterPlanAbandoned`、`cancelOpenForPlanOnlyTouchesBoundJobs`。
+
 
 
 
