@@ -39,7 +39,7 @@ internal object WebEditorHarness {
 
     private const val FIXTURE_RESOURCE_DIR = "/web-editor/fixtures"
 
-    data class Fixture(val name: String, val markdown: String)
+    data class Fixture(val name: String, val markdown: String, val expected: String? = null)
 
     data class FixtureResult(val input: String, val markdown: String, val html: String)
 
@@ -70,6 +70,8 @@ internal object WebEditorHarness {
         }
 
         val results = LinkedHashMap<String, FixtureResult>()
+        val mismatches = ArrayList<String>()
+        var symbolFlags = ""
         try {
             awaitEditorReady(host) || error("页面 30 秒内没有就绪（window.editorReady != true）")
 
@@ -80,6 +82,10 @@ internal object WebEditorHarness {
                 val html = onFx { host.view.engine.executeScript("window.getHTML()") as? String ?: "" }
                 results[fixture.name] = FixtureResult(fixture.markdown, markdown, html)
                 println(summaryLine(fixture.name, fixture.markdown, markdown))
+                if (fixture.expected != null && markdown != fixture.expected) {
+                    mismatches += fixture.name
+                    println("[web-editor-harness] " + fixture.name + " 与预期不一致（全角符号归一）")
+                }
                 if (index == 0) {
                     // 截图只取第一个夹具：留一点时间让 WebView 完成重排/字体落位。
                     Thread.sleep(SETTLE_BEFORE_SCREENSHOT_MS)
@@ -143,6 +149,66 @@ internal object WebEditorHarness {
                 Thread.sleep(400)
                 saveScreenshot(host, File(outDir, "list-keys.png"))
             }
+            // 全角符号输入探针：逐字符模拟输入（走 ProseMirror 的 handleTextInput，等同真实键盘），
+            // 确认真实输入规则也吃全角：概念 ［［］］、＃ 标题、－ 列表、＞ 引用、１． 有序、｛｛｝｝、：：：ai、｀｀｀。
+            val symbolScript = """
+                (function () {
+                  const e = window.__trellisEditor
+                  const type = (text) => {
+                    for (const ch of text) {
+                      const sel = e.state.selection
+                      const from = sel.from
+                      const to = sel.to
+                      const handled = e.view.someProp('handleTextInput', (fn) => fn(e.view, from, to, ch))
+                      if (!handled) e.view.dispatch(e.state.tr.insertText(ch, from, to))
+                    }
+                  }
+                  const reset = () => {
+                    window.setMarkdown('')
+                    e.commands.focus('end')
+                  }
+                  const flags = []
+                  const check = (name, ok) => flags.push(name + '=' + (ok ? '1' : '0'))
+
+                  reset()
+                  type('［［线性代数］］')
+                  check('concept', /class="concept"/.test(window.getHTML()) && window.getMarkdown().includes('[[线性代数]]'))
+
+                  reset()
+                  type('＃ 全角标题')
+                  check('heading', /<h1[ >]/.test(window.getHTML()))
+
+                  reset()
+                  type('－ 列表项')
+                  check('bullet', /<ul[ >]/.test(window.getHTML()))
+
+                  reset()
+                  type('＞ 引用')
+                  check('quote', /<blockquote[ >]/.test(window.getHTML()))
+
+                  reset()
+                  type('１． 有序项')
+                  check('ordered', /<ol[ >]/.test(window.getHTML()))
+
+                  reset()
+                  type('｛｛AI 内容｝｝')
+                  check('aiInline', /class="ai"/.test(window.getHTML()))
+
+                  reset()
+                  type('：：：ai')
+                  check('aiBlock', /ai-block/.test(window.getHTML()))
+
+                  reset()
+                  type('｀｀｀')
+                  check('code', /<pre[ >]/.test(window.getHTML()))
+
+                  return flags.join(' ')
+                })()
+            """.trimIndent()
+            symbolFlags = onFx { host.view.engine.executeScript(symbolScript) as? String ?: "" }
+            println("[web-editor-harness] symbols: " + symbolFlags)
+            Thread.sleep(400)
+            saveScreenshot(host, File(outDir, "fullwidth-symbols.png"))
             // 滚动条截图：长文档滚到中间，确认是低调的胶囊而不是系统大滑条。
             runCatching {
                 onFx { host.view.engine.executeScript("window.hideShortcutMenu()") }
@@ -166,6 +232,14 @@ internal object WebEditorHarness {
         writeJson(jsonFile, results)
         println("[web-editor-harness] 写出 ${results.size} 个夹具 → ${jsonFile.absolutePath}")
         if (pngFile.isFile) println("[web-editor-harness] 截图 → ${pngFile.absolutePath}")
+        if (mismatches.isNotEmpty()) {
+            error("全角归一结果与预期不一致：" + mismatches.joinToString())
+        }
+        for (name in listOf("concept", "heading", "bullet", "quote", "ordered", "aiInline", "aiBlock", "code")) {
+            check(symbolFlags.contains(name + "=1")) {
+                "全角输入规则没生效：" + name + "（" + symbolFlags + "）"
+            }
+        }
         return Report(results.size, jsonFile, pngFile)
     }
 
@@ -207,9 +281,14 @@ internal object WebEditorHarness {
 
     private fun loadFixtures(): List<Fixture> {
         val dir = fixtureDir()
-        return (dir.listFiles { f -> f.isFile && f.name.endsWith(".md") } ?: emptyArray())
+        return (dir.listFiles { f -> f.isFile && f.name.endsWith(".md") && !f.name.endsWith(".expected.md") } ?: emptyArray())
             .sortedBy { it.name }
-            .map { Fixture(it.nameWithoutExtension, it.readText(Charsets.UTF_8)) }
+            .map { file ->
+                val expected = dir.resolve(file.nameWithoutExtension + ".expected.md")
+                    .takeIf { it.isFile }
+                    ?.readText(Charsets.UTF_8)
+                Fixture(file.nameWithoutExtension, file.readText(Charsets.UTF_8), expected)
+            }
     }
 
     private fun fixtureDir(): File {

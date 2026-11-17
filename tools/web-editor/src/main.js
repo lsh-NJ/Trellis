@@ -25,6 +25,7 @@ import { AiMark } from './extensions/ai.js'
 import { AiBlock } from './extensions/ai-block.js'
 import { Gutter } from './extensions/gutter.js'
 import { EditorKeys, backspaceInList, enterInList } from './extensions/keys.js'
+import { FullwidthInput } from './extensions/fullwidth.js'
 import { createOverlays } from './ui/overlays.js'
 import { markdownToHtml, htmlToMarkdown } from './markdown.js'
 import { applyTheme } from './theme.js'
@@ -61,6 +62,7 @@ const editor = new Editor({
     AiBlock,
     Gutter,
     EditorKeys,
+    FullwidthInput,
   ],
   content: '<p></p>',
   editorProps: {

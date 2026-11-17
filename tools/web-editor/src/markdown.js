@@ -16,6 +16,26 @@ import { gfm } from 'turndown-plugin-gfm'
 const AI_BLOCK_OPEN = ':::ai'
 const AI_BLOCK_CLOSE = ':::'
 
+/**
+ * 「看起来一样」的语法符号：全角也认（中英文输入法一致，2026-11-16 用户要求）。
+ *
+ * 只在这些符号**处在语法位置**时接受全角；正文里的全角标点（「（见［1］）」）不动。
+ * 手动转义写法（反斜杠夹在两个方括号之间）天然匹配不到，因为两个方括号不相邻。
+ */
+
+/** 行内概念标注 [[…]]；全角 ［［…］］（U+FF3B/U+FF3D）同样认。 */
+const CONCEPT_INLINE_RE = /[\uFF3B\[]{2}([^\[\]\uFF3B\uFF3D\n]*?)[\uFF3D\]]{2}/g
+
+/** 行内 AI 内容 {{…}}；全角 ｛｛…｝｝（U+FF5B/U+FF5D）同样认。 */
+const AI_INLINE_RE = /[\uFF5B{]{2}([^{}\uFF5B\uFF5D\n]*?)[\uFF5D}]{2}/g
+
+/** 概念标注里的映射分隔符：=>、→、⇒、全角 ＝＞ 都认（解析后统一）。 */
+const CONCEPT_SEPARATOR_RE = /\s*(?:=>|→|⇒|＝＞)\s*/
+
+/** :::ai / ::: 行：全角冒号 ：：： 同样认。 */
+const AI_BLOCK_OPEN_RE = /^[：:]{3}ai$/
+const AI_BLOCK_CLOSE_RE = /^[：:]{3}$/
+
 function escapeHtml(text) {
   return String(text)
     .replace(/&/g, '&amp;')
@@ -60,18 +80,19 @@ function rewriteInline(line) {
         if (/^[\d.,\s]+$/.test(inner)) return all
         return prefix + inlineMathHtml(inner)
       })
-      // [[原文 => 概念名]]：原文照显示，概念名进 data-target
-      text = text.replace(/\[\[([^\]\n]*?)\]\]/g, (all, inner) => {
-        const sep = inner.indexOf('=>')
-        if (sep >= 0) {
-          const shown = inner.slice(0, sep).trim()
-          const target = inner.slice(sep + 2).trim()
+      // [[原文 => 概念名]]：原文照显示，概念名进 data-target。
+      // 全角方括号/全角映射符同样认（中英文输入法一致），输出统一成半角类名。
+      text = text.replace(CONCEPT_INLINE_RE, (all, inner) => {
+        const sep = CONCEPT_SEPARATOR_RE.exec(inner)
+        if (sep) {
+          const shown = inner.slice(0, sep.index).trim()
+          const target = inner.slice(sep.index + sep[0].length).trim()
           return '<span class="concept" data-target="' + escapeHtml(target) + '">' + escapeHtml(shown) + '</span>'
         }
         return '<span class="concept">' + escapeHtml(inner.trim()) + '</span>'
       })
-      // {{AI 补全内容}}
-      text = text.replace(/\{\{([\s\S]*?)\}\}/g, (all, inner) => {
+      // {{AI 补全内容}}（全角花括号同样认）
+      text = text.replace(AI_INLINE_RE, (all, inner) => {
         return '<span class="ai">' + escapeHtml(inner) + '</span>'
       })
       return text
@@ -79,6 +100,78 @@ function rewriteInline(line) {
     .join('')
 }
 
+
+/**
+ * 行首块级标记的全角写法归一（中英文输入法一致）。
+ *
+ * 只认「行首 + 标记 + 空白」这种明确的块级位置：正文里的全角破折号/星号不动。
+ * 返回的行直接喂给 marked；序列化时一律写半角，文件收敛成同一套符号。
+ */
+function normalizeBlockLine(line) {
+  const lead = /^[ \t]*/.exec(line)[0]
+  const rest = line.slice(lead.length)
+  // 标题：＃＃ 标题
+  let match = /^([＃]{1,6})([ \t　]+)/.exec(rest)
+  if (match) return lead + '#'.repeat(match[1].length) + ' ' + rest.slice(match[0].length)
+  // 无序列表：－ ＊ ＋
+  match = /^([－＊＋])([ \t　]+)/.exec(rest)
+  if (match) return lead + '-' + ' ' + rest.slice(match[0].length)
+  // 引用：＞
+  match = /^([＞])([ \t　]+)/.exec(rest)
+  if (match) return lead + '> ' + rest.slice(match[0].length)
+  // 有序列表：１２． / １２ 后跟全角点
+  match = /^([0-9０-９]{1,9})([．.])([ \t　]+)/.exec(rest)
+  if (match) {
+    const digits = match[1].replace(/[０-９]/g, (char) => String(char.charCodeAt(0) - 0xff10))
+    return lead + digits + '. ' + rest.slice(match[0].length)
+  }
+  return line
+}
+
+/**
+ * 全角围栏/：：：ai 标记归一，并保证围栏代码块里的内容一个字符都不动。
+ * 概念/AI 行内语法不在这里改（由 [rewriteInline] 的正则同时认全角）。
+ */
+function normalizeSyntaxLines(lines) {
+  const out = []
+  let inFence = false
+  let inAi = false
+  for (const line of lines) {
+    const trimmed = line.trimStart()
+    if (inFence) {
+      if (/^[｀`]{3,}/.test(trimmed)) {
+        inFence = false
+        out.push(line.replace(/｀/g, '`'))
+      } else {
+        out.push(line)
+      }
+      continue
+    }
+    if (inAi) {
+      if (AI_BLOCK_CLOSE_RE.test(trimmed)) {
+        inAi = false
+        const lead = line.slice(0, line.length - trimmed.length)
+        out.push(lead + AI_BLOCK_CLOSE)
+      } else {
+        out.push(line)
+      }
+      continue
+    }
+    if (/^[｀`]{3,}/.test(trimmed)) {
+      inFence = true
+      out.push(normalizeBlockLine(line).replace(/｀/g, '`'))
+      continue
+    }
+    if (AI_BLOCK_OPEN_RE.test(trimmed)) {
+      inAi = true
+      const lead = line.slice(0, line.length - trimmed.length)
+      out.push(lead + AI_BLOCK_OPEN)
+      continue
+    }
+    out.push(normalizeBlockLine(line))
+  }
+  return out
+}
 
 /**
  * 修正「缩进不足」的嵌套列表。
@@ -139,11 +232,33 @@ function normalizeListIndent(lines) {
 }
 
 /**
- * 去掉 turndown 的过度转义。
+ * 序列化转义策略（2026-11-16 用户定的）。
  *
- * turndown 对每个文本节点单独转义，所以「行内代码后面跟一个连字符」会被写成 `\-`、
- * 空格之间的下划线会被写成 `\_`——语义没变，但每改一个字整篇笔记就多出几十处 diff。
- * 行首的转义是语法（`-` 开头会被当列表、`#` 开头会被当标题），必须保留；只清理行内。
+ * - **程序不主动加多余的反斜杠**：`[草稿]`、`2*3` 这类正文原样写；
+ * - 只有「不转义、下次载入就会变成语法」的地方才写反斜杠：自定义方言的 `\[\[…\]\]`、
+ *   `{{…}}`，以及行首会被当成标题/列表/引用的标记。这是保住字面意思的最小转义；
+ * - 用户想显示字面的 `\[\[…\]\]`，保存时原样保留——保留的是用户自己敲的转义，不是程序新加的。
+ */
+function escapeMarkdownText(text) {
+  return String(text)
+    .replace(/\[\[/g, '\\[\\[')
+    .replace(/\]\]/g, '\\]\\]')
+    .replace(/\{\{/g, '\\{\\{')
+    .replace(/\}\}/g, '\\}\\}')
+    // 行首块级标记：text node 开头是这些字符时，不转义会在下次载入变成块结构。
+    .replace(/^([-+>*])/, '\\$1')
+    .replace(/^(#{1,6}) /, '\\$1 ')
+    .replace(/^(~{3,})/, '\\$1')
+    .replace(/^(=+)$/, '\\$1')
+    .replace(/^(\d{1,9})\. /, '$1\\. ')
+}
+
+/**
+ * 清理 turndown 留下、但语义上没必要保留的行内转义。
+ *
+ * turndown 是按 text node 转义的：「行内代码后面跟一个连字符」也会写成 `\-`，
+ * 语义没变，但每改一个字整篇笔记就多出几十处 diff。行首的转义是语法，必须保留；
+ * 行内的只留自定义方言那几种（`\[\[` 不在清理列表里）。
  */
 function tidyEscapes(markdown) {
   let inFence = false
@@ -156,19 +271,27 @@ function tidyEscapes(markdown) {
       }
       if (inFence) return line
       // 行内代码里是原文（turndown 不转义它），拆出来跳过。
+      let first = true
       return line
         .split(/(`[^`]*`)/)
         .map((part, index) => {
           if (index % 2 === 1) return part
-          const leading = /^[ \t]*/.exec(part)[0]
-          const body = part.slice(leading.length)
-          // 行首转义是语法（列表/标题/引用），保留；但「行内代码后面的片段」不是行首，
-          // 它的 `\-` 只是 turndown 对文本节点开头的过度转义，要清掉。
-          if (index === 0 && (/^\\[-+>#]/.test(body) || /^\\\d/.test(body))) return part
-          return leading + body
-            .replace(/\\([-_+])/g, '$1')
-            // 数学/LaTeX 里的反斜杠会被再转义一次（\int → \\int），这里还原。
-            .replace(/\\\\/g, '\\')
+          let body = part
+          let prefix = ''
+          if (first) {
+            first = false
+            // 行首转义是语法（列表/标题/引用/围栏），保留。
+            const kept = /^([ \t]*)(\\[-+>*#]|\\~{3,}|\\=+|\\\d{1,9}\. )/.exec(body)
+            if (kept) {
+              prefix = kept[0]
+              body = body.slice(prefix.length)
+            }
+          }
+          // 行内过度转义：语义没变就清掉（自定义方言的 \[\[ 不在列表里，保留）。
+          body = body
+            .replace(/\\([-_+*>#=])/g, '$1')
+            .replace(/(\d{1,9})\\. /g, '$1. ')
+          return prefix + body
         })
         .join('')
     })
@@ -177,7 +300,7 @@ function tidyEscapes(markdown) {
 /** Markdown → HTML（给 editor.setContent 用）。 */
 export function markdownToHtml(markdown) {
   const rawLines = String(markdown == null ? '' : markdown).replace(/\r\n/g, '\n').split('\n')
-  const lines = normalizeListIndent(rawLines)
+  const lines = normalizeListIndent(normalizeSyntaxLines(rawLines))
   const out = []
   let inFence = false
   let aiBlock = null
@@ -190,7 +313,7 @@ export function markdownToHtml(markdown) {
       continue
     }
     if (aiBlock !== null) {
-      if (trimmed === AI_BLOCK_CLOSE) {
+      if (AI_BLOCK_CLOSE_RE.test(trimmed)) {
         // 块内按普通 markdown 渲染（AI 内容里可能有段落/列表），再整体包进 ai-block。
         out.push('<div class="ai-block">' + marked.parse(aiBlock.join('\n'), { gfm: true, breaks: true }) + '</div>')
         aiBlock = null
@@ -204,7 +327,7 @@ export function markdownToHtml(markdown) {
       out.push(line)
       continue
     }
-    if (trimmed === AI_BLOCK_OPEN) {
+    if (AI_BLOCK_OPEN_RE.test(trimmed)) {
       aiBlock = []
       continue
     }
@@ -301,6 +424,8 @@ function turndownService() {
     },
   })
   service.use(gfm)
+  // 转义策略见 [escapeMarkdownText]：程序不再见符号就加反斜杠。
+  service.escape = escapeMarkdownText
 
   // 删除线：gfm 插件输出单波浪线（~x~），Markdown 惯例/Compose 都是 ~~x~~。
   service.addRule('trellisStrike', {

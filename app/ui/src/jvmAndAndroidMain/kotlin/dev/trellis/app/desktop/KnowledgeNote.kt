@@ -284,6 +284,8 @@ internal fun parseNoteMarkdown(id: String, raw: String, zone: ZoneId, fallbackMs
     // frontmatter 之后惯常有一个空行；它属于格式，不属于正文。
     var body = lines.drop(bodyStart).joinToString("\n")
     if (bodyStart > 0 && body.startsWith("\n")) body = body.removePrefix("\n")
+    // 语法位置上的全角符号先归一半角：与输入法无关，parseConceptAnnotations/编辑器都拿到同一套写法。
+    body = normalizeSyntaxSymbols(body)
 
     val title = fields["title"]?.takeIf { it.isNotBlank() }
         ?: body.lineSequence().map { it.trim() }.firstOrNull { headingPattern.matches(it) }
@@ -306,6 +308,138 @@ internal fun parseNoteMarkdown(id: String, raw: String, zone: ZoneId, fallbackMs
         removedConcepts = removedConcepts,
         extras = extras,
     )
+}
+
+// ---- 语法符号的全角/半角归一（中英文输入法一致，见 docs/markdown-editor-review-2026-11-12.md §7.10） ----
+
+/** 行内概念标注 [[…]]；全角 ［［…］］ 与混写都认（内容里不含方括号）。 */
+private val conceptSymbolPattern = Regex("[\\[［]{2}([^\\[\\]［］\\n]*?)[\\]］]{2}")
+
+/** 行内 AI 内容 {{…}}；全角 ｛｛…｝｝ 同样认。 */
+private val aiInlineSymbolPattern = Regex("[{｛]{2}([^{}｛｝\\n]*?)[}｝]{2}")
+
+/** 全角映射符：语义与 -> 相同，归一成半角 => 后解析。 */
+private const val FULLWIDTH_CONCEPT_ARROW: String = "＝＞"
+
+private val fullwidthHeadingPattern = Regex("^([＃]{1,6})([ \\t　]+)")
+private val fullwidthBulletPattern = Regex("^([－＊＋])([ \\t　]+)")
+private val fullwidthQuotePattern = Regex("^([＞])([ \\t　]+)")
+private val fullwidthOrderedPattern = Regex("^([0-9０-９]{1,9})([．.])([ \\t　]+)")
+private val aiBlockStartSymbolPattern = Regex("^[：:]{3}ai$")
+private val aiBlockEndSymbolPattern = Regex("^[：:]{3}$")
+
+/**
+ * 把**语法位置**上的全角符号归一成半角——只动语法，不动正文标点。
+ *
+ * 用户要的是「看起来一样的符号，中英文输入法下行为一样」：中文输入法打出 ［［ 概念 ］］、
+ * ｛｛AI 内容｝｝、＃ 标题、－ 列表、：：：ai，效果必须和半角一致；写回文件时统一成半角，
+ * 同一份笔记不会因为输入法不同出现两套符号。正文里的单个全角标点（「（见［1］）」）原样保留。
+ *
+ * 围栏代码块、:::ai 块内一个字符都不动；行内代码里的内容也不动。
+ */
+internal fun normalizeSyntaxSymbols(body: String): String {
+    if (body.isEmpty()) return body
+    val lines = body.replace("\r\n", "\n").split('\n')
+    val out = ArrayList<String>(lines.size)
+    var inFence = false
+    var inAiBlock = false
+    for (line in lines) {
+        val trimmed = line.trimStart()
+        val lead = line.substring(0, line.length - trimmed.length)
+        if (inFence) {
+            if (isFenceLine(trimmed)) {
+                inFence = false
+                out += lead + normalizedFence(trimmed)
+            } else {
+                out += line
+            }
+            continue
+        }
+        if (inAiBlock) {
+            if (aiBlockEndSymbolPattern.matches(trimmed)) {
+                inAiBlock = false
+                out += lead + AI_BLOCK_END
+            } else {
+                out += line
+            }
+            continue
+        }
+        if (isFenceLine(trimmed)) {
+            inFence = true
+            out += lead + normalizedFence(trimmed)
+            continue
+        }
+        if (aiBlockStartSymbolPattern.matches(trimmed)) {
+            inAiBlock = true
+            out += lead + AI_BLOCK_START
+            continue
+        }
+        out += lead + normalizeBlockSymbols(trimmed)
+    }
+    return out.joinToString("\n")
+}
+
+private fun isFenceLine(trimmed: String): Boolean =
+    trimmed.startsWith("```") || trimmed.startsWith("｀｀｀")
+
+/** 围栏行只把全角反引号换成半角，info string 保留。 */
+private fun normalizedFence(trimmed: String): String {
+    val ticks = trimmed.takeWhile { it == '｀' || it == '`' }
+    return "`".repeat(ticks.length) + trimmed.drop(ticks.length)
+}
+
+/** 行首块级标记归一；没有标记的行走行内归一。 */
+private fun normalizeBlockSymbols(rest: String): String {
+    fullwidthHeadingPattern.find(rest)?.let { match ->
+        return "#".repeat(match.groupValues[1].length) + " " + rest.substring(match.range.last + 1)
+    }
+    fullwidthBulletPattern.find(rest)?.let { match ->
+        return "- " + rest.substring(match.range.last + 1)
+    }
+    fullwidthQuotePattern.find(rest)?.let { match ->
+        return "> " + rest.substring(match.range.last + 1)
+    }
+    fullwidthOrderedPattern.find(rest)?.let { match ->
+        val digits = match.groupValues[1].map { char ->
+            if (char in '０'..'９') '0' + (char - '０') else char
+        }.joinToString("")
+        return digits + ". " + rest.substring(match.range.last + 1)
+    }
+    return normalizeInlineSymbols(rest)
+}
+
+/** 行内归一：行内代码（反引号之间）保持原文。 */
+private fun normalizeInlineSymbols(text: String): String {
+    if (!text.contains('｛') && !text.contains('［') && !text.contains(FULLWIDTH_CONCEPT_ARROW)) return text
+    val builder = StringBuilder(text.length)
+    val segment = StringBuilder()
+    var inCode = false
+    fun flush() {
+        if (segment.isEmpty()) return
+        builder.append(if (inCode) segment.toString() else normalizeInlineSegment(segment.toString()))
+        segment.clear()
+    }
+    for (char in text) {
+        if (char == '`') {
+            flush()
+            inCode = !inCode
+            builder.append(char)
+        } else {
+            segment.append(char)
+        }
+    }
+    flush()
+    return builder.toString()
+}
+
+private fun normalizeInlineSegment(segment: String): String {
+    var result = conceptSymbolPattern.replace(segment) { match ->
+        "[[" + match.groupValues[1].replace(FULLWIDTH_CONCEPT_ARROW, "=>") + "]]"
+    }
+    result = aiInlineSymbolPattern.replace(result) { match ->
+        "{{" + match.groupValues[1] + "}}"
+    }
+    return result
 }
 
 // ---- AI 补全槽位与 AI 内容标记（约定见 `docs/knowledge-base-draft.md` §11） ----

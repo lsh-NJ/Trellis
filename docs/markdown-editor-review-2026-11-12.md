@@ -410,6 +410,47 @@ internal fun markdownShortcutHints(bindings: List<MarkdownBinding>): List<Shortc
 `<p>c</p> → Enter → <li><p></p></li> → 退格 → <p>c<br></p> → 再退格 → <p>c</p>`，与用户三张截图一致。
 （JavaFX 里合成的 KeyboardEvent 触发不了 ProseMirror keymap，所以探针走 `window.__trellisKey` 这个调试入口；
 真实键盘事件仍然由 ProseMirror 分发给同一套函数。）
+### 7.10 全角/半角符号一致 + 转义收敛（2026-11-16 晚）
+
+用户要求（原话）：「我希望看起来相同的符号在中英文下都能保证一致性」；「程序不要自行加转义符，
+用户要解决少见的符号解析问题自己加转义符」。
+
+**问题**：中文输入法下敲 `[[概念]]` 得到的是 `［［概念］］`（U+FF3B/U+FF3D），看起来一样但不算语法；
+`＃` 标题、`－` 列表、`＞` 引用、`：：：ai`、`／` 斜杠菜单同理。另一头，序列化沿用 turndown 默认转义，
+正文里随便一个 `[` `*` `_` 都会被写成 `\[` `\*` `\_`，用户打开 .md 看到一堆不是自己敲的反斜杠。
+
+**设计三原则**：
+
+1. **只在语法位置归一**：全角符号只有落在「标记位」（`［［…］］`、行首 `＃ `、`：：：ai` 整行等）才算语法；
+   正文里的单个全角标点（「（见［1］）」）一个字符都不动。
+2. **写回永远是半角**：同一篇笔记不会因为输入法不同出现两套符号；文件里只有一套用户看得懂的写法。
+3. **不主动加转义**：序列化只保留「最小必要转义」——自定义方言 `[[`/`]]`/`{{`/`}}`（不转义下次载入会变成语法），
+   以及行首会被当成列表/标题/引用的块级标记；用户手写的 `\[\[…\]\]` 原样保留（那是用户自己敲的转义）。
+
+**落地分层**：
+
+| 层 | 文件 | 做了什么 |
+|---|---|---|
+| Kotlin 载入 | `KnowledgeNote.kt` | 新增 `normalizeSyntaxSymbols()`（概念/AI 行内、`：：：ai`、`＃`/`－＊＋`/`＞`/`１．`/全角围栏；围栏代码块、`:::ai` 块、行内代码里一字不动），`parseNoteMarkdown` 解析完 frontmatter 后调用；因此编辑缓冲、概念 chips、Compose 退路都拿到同一套半角写法 |
+| JS 载入 | `markdown.js` | `normalizeSyntaxLines()` 归一全角行首标记/围栏/`：：：ai`；概念与 AI 行内正则改成宽字符版；新增 `escapeMarkdownText()` 替换 turndown 默认 escape；`tidyEscapes()` 只清行内过度转义 |
+| JS 输入 | `extensions/concept.js` / `ai.js` / `ai-block.js` / `fullwidth.js`（新）/ `ui/overlays.js` | 敲 `［［…］］` 直接变概念标注（含 `＝＞` 映射）、`｛｛…｝｝` 变 AI 绿字、行首 `：：：ai` 变 AI 块、`＃`/`－`/`＞`/`１．`/`｀｀｀` 走输入规则；`／` 开斜杠菜单、全角 `［［` 开概念补全 |
+| 序列化 | `markdown.js` | 概念/AI 标记永远写半角；普通正文不再被转义；`[[…]]` 手动转义保留 |
+
+**自检**：
+
+- harness 夹具 18 `18-fullwidth-syntax` + 同名 `.expected.md` 做字节级断言（现在 19 个夹具；老夹具 00–13、15、17 的往返结果**一个字节都没变**，14/16 仍是已知归一）；
+- harness 新增 `symbols` 探针：逐字符走 ProseMirror 的 `handleTextInput`（等同真实键盘），8 项全过——
+  `concept` / `heading` / `bullet` / `quote` / `ordered` / `aiInline` / `aiBlock` / `code`；
+- 新增 `KnowledgeSymbolNormalizationTest`（10 例：全角概念/混写/全角 AI/AI 块/块级标记/正文标点不动/围栏与行内代码不动/幂等/载入时归一）；
+- `:app:ui:jvmTest` 全量通过。
+
+**取舍 / 未做**：
+
+- Compose 退路编辑器里**直接敲**全角不会当场归一，要等下次载入（默认编辑器是 WebView，输入规则已覆盖）；
+- 全角行内强调 `＊粗＊`、全角链接括号/表格竖线仍不认（Markdown 标准保持 ASCII，只把自定义方言和块级标记做到一致）；
+- 手动转义仍只认 ASCII 反斜杠写法（`\[\[…\]\]`），全角括号的手动转义没有额外支持；
+- 程序仍会在「不转义就会变语法」的地方写反斜杠（`\[\[`、行首 `\#` 等）——这是保住字面意思的必要成本，不是给普通符号加转义。
+
 ## 8. 落地清单（本轮改了哪些文件）
 
 | 文件 | 改了什么 |
@@ -438,3 +479,10 @@ internal fun markdownShortcutHints(bindings: List<MarkdownBinding>): List<Shortc
 | `tools/web-editor/src/markdown.js` | 新增 `normalizeListIndent()`（缩进不足的嵌套列表不被拍平）与 `tidyEscapes()`（清理 `\-`/`\_`/重复反斜杠等过度转义） |
 | `app/ui/src/jvmTest/resources/web-editor/fixtures/16-nested-list-indent.md`（新） | 往返夹具：2 空格嵌套列表 + 行内代码后连字符 + 空格间下划线 |
 | 文档 | 本文；`docs/README.md` 索引一行；`docs/knowledge-base-draft.md` §12/§13 补编辑器形态与 Tab/快捷键 |
+| `tools/web-editor/src/markdown.js` | 全角行首标记/围栏/`：：：ai` 归一（`normalizeSyntaxLines`）；概念/AI 行内正则宽字符化；`escapeMarkdownText` 取代 turndown 默认转义（不再给 `[草稿]`/`2*3` 加反斜杠，只保留最小必要转义） |
+| `tools/web-editor/src/extensions/concept.js` / `ai.js` / `ai-block.js` / `fullwidth.js`（新） / `ui/overlays.js` | 输入侧全角等价：全角概念/AI/标题/列表/引用/有序/围栏输入规则，全角 `／` 斜杠菜单、`［［` 补全、`＝＞` 分隔符 |
+| `app/ui/.../KnowledgeNote.kt` | 新增 `normalizeSyntaxSymbols()`，`parseNoteMarkdown` 载入时把语法位置的全角符号归一半角 |
+| `app/ui/src/jvmTest/.../KnowledgeSymbolNormalizationTest.kt`（新） | 10 例符号一致性测试（全角/混写/围栏与行内代码不动/幂等/载入归一） |
+| `app/ui/src/jvmTest/.../WebEditorHarness.kt` + `resources/web-editor/fixtures/18-fullwidth-syntax(.expected).md`（新） | harness 支持 `*.expected.md` 字节级断言 + `symbols` 逐字符输入探针（8 项） |
+| `app/ui/src/jvmMain/resources/editor/editor.js` | 重新构建（全角输入规则 + 新转义策略） |
+| 文档 | 本文 §7.10；`tools/web-editor/README.md` 补「全角/半角一致」「转义策略」两节；`docs/knowledge-base-draft.md` §12 补一句 |

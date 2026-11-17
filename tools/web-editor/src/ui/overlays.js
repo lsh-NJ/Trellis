@@ -1,13 +1,31 @@
 /**
- * 两个浮层：斜杠菜单（`/`）和概念补全（`[[`）。
+ * 两个浮层：斜杠菜单（/）和概念补全（[[）。
  *
  * 为什么不在 Tiptap 的 keymap 里做：补全是「就地替换一段源码」，需要在
  * keydown 里先于 ProseMirror 抢按键（↑↓/Enter/Tab/Esc）；用 document 捕获阶段的
  * 监听最直接。浮层 DOM 复用 index.html 里的 .slash-menu / .concept-menu 样式。
+ *
+ * 2026-11-16：中英文输入法一致——全角 ／ 触发斜杠菜单、全角 ［［ 触发概念补全、
+ * 全角映射符 ＝＞ 与箭头 ⇒ 都当分隔符认；最终写回正文的一律是半角语法。
  */
 import { slashCommands } from './slash-commands.js'
 
 const SEPARATOR = '=>'
+const SEPARATOR_VARIANTS = ['=>', '→', '⇒', '＝＞']
+
+/** 概念补全里最近一个映射分隔符的位置（全角/箭头写法都认）；没有返回 null。 */
+function lastSeparatorAt(text) {
+  let index = -1
+  let length = 0
+  for (const variant of SEPARATOR_VARIANTS) {
+    const at = text.lastIndexOf(variant)
+    if (at > index) {
+      index = at
+      length = variant.length
+    }
+  }
+  return index < 0 ? null : { index, length }
+}
 
 function textBefore(editor) {
   const { selection } = editor.state
@@ -88,7 +106,7 @@ export function createOverlays(editor) {
     if (text == null) return close()
     const cursor = editor.state.selection.from
 
-    const slash = /(?:^|\s)\/([^\s/]*)$/.exec(text)
+    const slash = /(?:^|\s)[/／]([^\s/／]*)$/.exec(text)
     if (slash) {
       const query = slash[1].toLowerCase()
       const matched = slashCommands().filter((command) => command.matches(query))
@@ -101,13 +119,14 @@ export function createOverlays(editor) {
       return render()
     }
 
-    const concept = /\[\[([^\]\n]*)$/.exec(text)
+    // 全角 ［［/半角 [[ 都触发补全；闭合符号（全角 ］）不参与查询。
+    const concept = /[\[\uFF3B]{2}([^\]\uFF3D\n]*)$/.exec(text)
     if (concept) {
       const inside = concept[1]
-      const separatorAt = Math.max(inside.lastIndexOf(SEPARATOR), inside.lastIndexOf('→'))
-      const query = (separatorAt >= 0 ? inside.slice(separatorAt + 2) : inside).trim()
+      const separator = lastSeparatorAt(inside)
+      const query = (separator ? inside.slice(separator.index + separator.length) : inside).trim()
       const list = candidates(query)
-      if (separatorAt >= 0) {
+      if (separator) {
         if (!list.length) return close()
         mode = 'concept'
         items = list
@@ -145,11 +164,13 @@ export function createOverlays(editor) {
       return
     }
 
-    const inside = editor.state.doc.textBetween(from, to, '\n')
-    const separatorAt = Math.max(inside.lastIndexOf(SEPARATOR), inside.lastIndexOf('→'))
-    const shown = (separatorAt >= 0 ? inside.slice(0, separatorAt) : inside).trim()
-    const display = separatorAt >= 0 ? shown || item.label : item.label
-    const target = separatorAt >= 0 ? item.label : null
+    // from 指着 [[（两个字符），所以取内容时跳过开头两个字符，避免把 [[ 拼进原文。
+    const contentFrom = Math.min(from + 2, to)
+    const inside = editor.state.doc.textBetween(contentFrom, to, '\n')
+    const separator = lastSeparatorAt(inside)
+    const shown = (separator ? inside.slice(0, separator.index) : inside).trim()
+    const display = separator ? shown || item.label : item.label
+    const target = separator ? item.label : null
     close()
     editor
       .chain()
