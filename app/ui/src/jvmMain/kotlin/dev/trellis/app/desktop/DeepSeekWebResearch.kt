@@ -60,7 +60,7 @@ internal class DeepSeekWebResearch(
         return ResearchSources(hits = ordered, pages = pages)
     }
 
-    internal suspend fun search(query: String, count: Int = 5): List<ResearchHit> {
+    override suspend fun search(query: String, count: Int): List<ResearchHit> {
         val body = """
             {"query":${quote(query)},"count":${count.coerceIn(1, 50)}}
         """.trim()

@@ -25,8 +25,11 @@ enum class ChatRole { User, Assistant, Step, Status, Plan }
  *
  * [Skipped] 和「没做成」分开记：失败是「试了、砸了」，跳过是「前一步砸了，
  * 这一步根本没跑」—— 后者不该被算进失败数里。
+ *
+ * [Awaiting] 是「已经跑完、等用户点头才进下一步」：计划工作流每段结束都停在这里，
+ * 用户点了「继续」才变成 [Done]。它和 [Running] 的区别是「不是宿主在跑，是人在看」。
  */
-enum class PlanStepState { Pending, Running, Done, Failed, Skipped }
+enum class PlanStepState { Pending, Running, Awaiting, Done, Failed, Skipped }
 
 /**
  * 清单里的一步。
@@ -107,6 +110,14 @@ data class ChatLine(
      * 旧会话没有这个字段：过程行还是纯文本，展开后按老样子平铺。
      */
     val tool: ChatToolTrace? = null,
+    /**
+     * 这一轮生成/更新的计划文档 id（知识库「计划文档」里的计划 id 或草稿 id）。
+     *
+     * 计划工作流每段结束都会带回一个链接，对话里渲染成可点的「总计划文档」；
+     * 点了直接跳到知识库对应文档。空 = 这一轮没碰文档。
+     */
+    val docLinkId: String = "",
+    val docLinkLabel: String = "",
 )
 
 /**

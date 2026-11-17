@@ -66,6 +66,14 @@ data class ResearchSources(
 /** 调研网关：给 [ResearchTools] 用；测试里传假的即可。 */
 interface ResearchGateway {
     suspend fun gather(goal: String): ResearchSources?
+
+    /**
+     * 单条 query 检索（可选实现）。
+     *
+     * 计划工作流的资源聚合要按站点分组搜（CSDN / 知乎 / 博客园 / 阿里云 / 腾讯云 / GitHub），
+     * 不能只用 [gather] 那三条固定 query。默认返回空：测试里的假网关不用为它补实现。
+     */
+    suspend fun search(query: String, count: Int = 5): List<ResearchHit> = emptyList()
 }
 
 /**

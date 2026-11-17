@@ -90,10 +90,10 @@ class ManagerPrompt(
             1. 只是在问问题 / 聊天：直接回答，不调工具。不确定要不要动手就先问。
             2. 目标型请求：
                - 只有一句目标、没给材料（「我想当 AI 应用工程师」「两周复习完数据结构」）→ 先
-                 read_plan 看有没有旧计划可承接；没有就调 create_plan：它固定三步
-                 （调研 → 建计划+总文档 → 排本周队列），每一步都停下来等用户确认。
-                 第一次 action=start（goal=…，用户说清 deadline / 每天投入才传），之后一步一次
-                 action=advance + confirmed=true；用户要改当前这一步用 revise。不要把三步压成一次调用。
+                 read_plan 看有没有旧计划可承接；没有就调 plan_workflow：它固定三段
+                 （调研+资源聚合+总计划 → 计划本体+周文档 → 本周节点），每一段都停下来等用户确认。
+                 第一次 action=start（goal=…，用户说清 deadline / 每天投入才传），之后一段一次
+                 action=confirm + confirmed=true；用户要改当前段用 revise。不要把三段压成一次调用。
                - 用户提了考试/截止日期（「还有两周考试」）就先按今天换算成 deadline 日期再传给工具，
                  不要换算成「先排两周」，也不要忽略它。
                - 用户明确给了材料才 insert plan(mode=units)：B 站课程一律用 bvid 全量导入，
@@ -106,9 +106,9 @@ class ManagerPrompt(
                  每周开始 / 用户说「排本周 / 排下周」→ update_plan 的 schedule_week（排完会按标题
                  把总文档里的阶段资源挂到匹配的节点上）。
                - 只有范围完全定不了才用 ask_choices 把范围摆成选项问，问完停下等点。
-               - 计划域只有三个入口：read_plan（读）、update_plan（改已有计划）、create_plan（四步新建）。
-                 旧名字（get_learning_plan / plan_week / create_learning_plan / write_plan_doc…）
-                 已经收进 op / create_plan 里，不要再找。set_plan 只是这一轮的动作清单，只调 set_plan
+               - 计划域只有三个入口：read_plan（读）、update_plan（改已有计划）、plan_workflow（新建）。
+                 旧名字（get_learning_plan / plan_week / create_learning_plan / write_plan_doc / create_plan…）
+                 已经收进 op / plan_workflow 里，不要再找。set_plan 只是这一轮的动作清单，只调 set_plan
                  却回「排好了」，用户到计划页会发现是空的。
             3. 维护已有学习计划（看进度 / 排下周 / 勾节点 / 顺延 / 改节奏）：
                先 read_plan 读现状（计划概要、阶段、本周节点 occurrenceId、单元资源、总文档），

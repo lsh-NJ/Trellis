@@ -187,6 +187,113 @@ private fun NoteListRow(
 }
 
 /**
+ * 「计划文档」分类里的一行：id 用来打开（计划 id 或草稿 id），label 是能认出来的标题。
+ */
+internal data class PlanDocListEntry(val id: String, val label: String)
+
+/**
+ * 知识库左栏「计划文档」分类下的一行（计划文档 / 草稿共用）。
+ *
+ * 和笔记行同一套骨架（`listRowSurface` / `ListRowSelectionBar`：46dp、选中竖条、hover 底），
+ * 但计划文档只读、不能删，所以不画 ×；草稿用一个 [meta] 小字标出来。
+ */
+@Composable
+internal fun PlanDocListRow(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    meta: String? = null,
+    modifier: Modifier = Modifier,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .hoverable(interaction)
+            .listRowSurface(selected, hovered)
+            .clickable(onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        ListRowSelectionBar(selected)
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                label,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (meta != null) {
+                Text(
+                    meta,
+                    style = LocalTrellisTokens.current.type.meta,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 知识库左栏的「计划文档」分类：计划与草稿都能直接点开（只读，见 [PlanDocPage]）。
+ *
+ * 计划文档原来只能从计划页跳进来，且是二级页；现在这里有常驻入口，所以分类要一直露出
+ * 「还没有计划文档」的空态，用户才知道这个分类存在。行多了限高内滚，别把下面的笔记列表挤没。
+ */
+@Composable
+internal fun PlanDocListSection(
+    plans: List<PlanDocListEntry>,
+    drafts: List<PlanDocListEntry>,
+    onOpen: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier) {
+        Text(
+            "计划文档",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
+        )
+        if (plans.isEmpty() && drafts.isEmpty()) {
+            Text(
+                "还没有计划文档",
+                style = LocalTrellisTokens.current.type.meta,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 4.dp, top = 2.dp, bottom = 2.dp),
+            )
+            return@Column
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 200.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            plans.forEach { entry ->
+                PlanDocListRow(
+                    label = entry.label,
+                    selected = false,
+                    onClick = { onOpen(entry.id) },
+                )
+            }
+            // 草稿排在计划后面：它是「计划工作流第一步」写下的总计划，等计划建好就被收养（adoptDraft）。
+            drafts.forEach { entry ->
+                PlanDocListRow(
+                    label = entry.label,
+                    selected = false,
+                    meta = "草稿",
+                    onClick = { onOpen(entry.id) },
+                )
+            }
+        }
+    }
+}
+
+/**
  * 笔记底部的「本笔记涉及的概念」：点 chip 看概念详情，点 × 熄灭（删引用），
  * 末尾一个输入框手动补概念（AI 抽不到时用户自己标，是 §4「手动兜底」的入口）。
  */

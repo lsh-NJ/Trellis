@@ -2404,6 +2404,55 @@ class AppRuntime private constructor() {
     }
 
     /**
+     * 计划工作流每段的状态同步到右侧清单（宿主负责，不靠模型想起来调 step_done）。
+     *
+     * 用户定的规则是「清单必须显示等待确认」：这一段跑完、等用户点头时，
+     * 清单上这一行要停在 [PlanStepState.Awaiting]，而不是悄悄变成「已完成」。
+     */
+    private fun planWorkflowChecklist(phase: Int, state: String) {
+        when (state) {
+            "start" -> beginPlanSpecs(
+                listOf(
+                    PlanStepSpec("调研 + 资源聚合 + 总计划", impact = "生成总计划文档，等用户确认"),
+                    PlanStepSpec("创建计划本体 + 周计划文档"),
+                    PlanStepSpec("安排本周节点"),
+                ),
+            )
+            "running" -> markPlanStepState(phase, PlanStepState.Running)
+            "awaiting" -> markPlanStepState(phase, PlanStepState.Awaiting)
+            "done" -> finishPlanStep(phase, ok = true)
+            "failed" -> finishPlanStep(phase, ok = false, note = "这一段没跑成")
+        }
+    }
+
+    /** 直接改清单上某一步的状态；越界/已完成的不动。 */
+    private fun markPlanStepState(index: Int, state: PlanStepState) {
+        val id = activePlanId ?: return
+        val at = chat.indexOfFirst { it.id == id }
+        if (at < 0) return
+        val line = chat[at]
+        if (index !in line.plan.indices) return
+        val step = line.plan[index]
+        if (step.state == PlanStepState.Done || step.state == PlanStepState.Failed || step.state == PlanStepState.Skipped) return
+        val now = System.currentTimeMillis()
+        val updated = line.plan.toMutableList()
+        updated[index] = step.copy(
+            state = state,
+            startedMs = if (step.startedMs > 0L) step.startedMs else now,
+        )
+        chat[at] = line.copy(plan = updated, planFinishedMs = 0L)
+        persistChat()
+    }
+
+    /** 计划工作流三段的显示名（用于提示词里的「当前段」）。 */
+    private fun workflowPhaseLabel(phase: String): String = when (phase) {
+        "research" -> "调研 + 资源聚合 + 总计划"
+        "plan" -> "创建计划本体 + 周计划文档"
+        "week" -> "安排本周节点"
+        else -> "进行中"
+    }
+
+    /**
      * 有新工具开始执行时把清单里第一个待办亮成「进行中」，并记下工具名和开始时间。
      *
      * 工具名从过程行「第 N 步：tool_name」里取 —— 宿主本来就知道，不用让模型再报一次。
@@ -2443,6 +2492,8 @@ class AppRuntime private constructor() {
         if (at < 0) return
         val line = chat[at]
         if (line.plan.isEmpty() || line.planFinishedMs != 0L) return
+        // 计划工作流停在「等待确认」时不算收尾：清单要一直挂着这一步，等用户点。
+        if (line.plan.any { it.state == PlanStepState.Awaiting }) return
         val running = line.plan.indexOfFirst { it.state == PlanStepState.Running }
         val now = System.currentTimeMillis()
         val plan = line.plan.mapIndexed { index, step ->
@@ -2828,20 +2879,24 @@ class AppRuntime private constructor() {
                 onChanged = { refreshPlan() },
                 dbError = { planDbError },
             )
-            // 新建计划的四步流程：调研 → 建计划+总文档 → 排本周 → 定钟点，每一步都等用户确认。
-            // 状态落 job/job_step，换一轮对话能接着走；内部复用 research_plan / plan_week 的实现。
-            val createPlanTools = CreatePlanTools(
+            // 计划工作流：调研+资源+总计划 → 计划本体+周文档 → 本周节点。
+            // 这是从管理员手里剥出来的一条固定流水线：每段结束都停下来等用户确认，
+            // 推进权在宿主（job/job_step 落库），模型只负责每段的内容和把结果讲清楚。
+            val planWorkflow = PlanWorkflow(
                 service = { runCatching { learningPlan() }.getOrNull() },
                 workflow = { if (::planWorkflowStore.isInitialized) planWorkflowStore else null },
+                docStore = { if (::planDocStore.isInitialized) planDocStore else null },
                 research = { researchTools },
                 clock = clock,
-                dispatch = { name, args ->
-                    legacyPlanTools[name]?.call(args)
-                        ?: ToolResult("内部缺少工具 $name，这次没动数据。", isError = true)
-                },
+                llm = llm,
+                gateway = { researchGateway },
                 onChanged = { refreshPlan() },
                 dbError = { planDbError },
-                docStore = { if (::planDocStore.isInitialized) planDocStore else null },
+                onChecklist = { phase, state -> planWorkflowChecklist(phase, state) },
+                onDocLink = { id, label ->
+                    turnDocLinkId = id
+                    turnDocLinkLabel = label
+                },
             )
             // 跨会话记忆也是手：用户说出长期目标/偏好时写进管家日志，要回忆过去时再检索。
             // 和管家仪式共用同一份 append-only 记忆 —— 目标不该只有晨/夜仪式才有机会落盘。
@@ -2875,7 +2930,7 @@ class AppRuntime private constructor() {
             }
             val allTools = tools.all + screenToolList + layoutTools.all + styleTools.all +
                 workflowTools.all + bilibiliTools.all + taskTools.all +
-                planEditTools.all + createPlanTools.all +
+                planEditTools.all + planWorkflow.all +
                 diagnosticsTools.all + memoryTools.all +
                 goalTools.all
             val memorySection = memoryBlock()
@@ -2920,12 +2975,35 @@ class AppRuntime private constructor() {
                 "\n\n" + workflowTools.guidance + "\n\n" + bilibiliTools.guidance +
                 "\n\n" + taskTools.guidance +
                 "\n\n" + planEditTools.guidance +
-                "\n\n" + createPlanTools.guidance +
+                "\n\n" + planWorkflow.guidance +
                 "\n\n" + diagnosticsTools.guidance + "\n\n" + memoryTools.guidance +
                 "\n\n" + goalTools.guidance + "\n\n" + expandGuidance
             // 跨会话记忆块只随记忆内容变化，接在 guidance 最末尾：两条路径（普通 / 管家）
             // 都用同一份 promptGuidance，静态前缀逐字节稳定，前缀缓存只从记忆块开始失效。
             val promptGuidance = if (memorySection.isBlank()) guidance else guidance + "\n\n" + memorySection
+            // 计划工作流转接：有一段流程正等用户确认时，这一轮只给它这段流程该用的手。
+            // 不靠提示词自觉 —— 能改计划的其他工具这一轮一个都不装，模型想绕也绕不过去。
+            val openFlow = if (::planWorkflowStore.isInitialized) {
+                runCatching { planWorkflowStore.latestOpen("plan_flow") }.getOrNull()
+            } else {
+                null
+            }
+            if (openFlow != null && openFlow.state == "awaiting_user") {
+                val current = openFlow.steps.firstOrNull { it.state == "running" }?.step.orEmpty()
+                val modeGuidance = buildString {
+                    appendLine("<plan_workflow_mode>")
+                    appendLine("用户已经进入一段计划流程，这一段正停在「等待确认」。")
+                    appendLine("当前段：" + workflowPhaseLabel(current) + "（jobId=" + openFlow.id + "）。")
+                    appendLine("这一轮只能做这些：把上一段的结果讲清楚、回答用户的修改意见、用 ask_choices 问要不要进入下一段；")
+                    appendLine("用户明确同意后才调 plan_workflow(action=confirm, confirmed=true)；要改已有的计划/文档内容用 update_plan，不要另开一段计划流程。")
+                    appendLine("</plan_workflow_mode>")
+                }
+                val flowTools = allTools.filter {
+                    it.name == "plan_workflow" || it.name == "ask_choices" ||
+                        it.name == "read_plan" || it.name == "update_plan"
+                }
+                return ChatRig(catalog, tools, flowTools, planWorkflow.guidance + "\n\n" + modeGuidance)
+            }
             return ChatRig(catalog, tools, allTools, promptGuidance)
     }
 
@@ -2986,6 +3064,8 @@ class AppRuntime private constructor() {
         chatBusy = true
         activePlanId = null
         chatAsk = null
+        turnDocLinkId = null
+        turnDocLinkLabel = null
         if (!hidden) {
             addChatLine(ChatRole.User, text)
             rememberRound(chat.last().id)
@@ -3184,6 +3264,19 @@ class AppRuntime private constructor() {
                 displayText = result.text
             }
             renderAnswer()
+            // 计划工作流这一轮产出的文档链接：贴在回复下面，点了直接跳知识库。
+            val docId = turnDocLinkId
+            if (!docId.isNullOrBlank()) {
+                val at = chat.indexOfFirst { it.id == answer.id }
+                if (at >= 0) {
+                    chat[at] = chat[at].copy(
+                        docLinkId = docId,
+                        docLinkLabel = turnDocLinkLabel?.takeIf { it.isNotBlank() } ?: "计划文档",
+                    )
+                }
+                turnDocLinkId = null
+                turnDocLinkLabel = null
+            }
 
             // 清单不能一直挂在「进行中」：这一轮结束（成功/没做成）都要收尾。
             settlePlanAfterRound(result.ok)
@@ -4173,6 +4266,15 @@ class AppRuntime private constructor() {
 
     /** 知识库里「计划文档」二级页当前打开的计划；非空时知识库页整页显示它。 */
     var planDocBrowseId by mutableStateOf<String?>(null)
+
+    /**
+     * 这一轮计划工作流要挂到回复上的文档链接（工具回调填，收尾时贴到这一轮的回复行）。
+     *
+     * 为什么不放工具结果里让模型转述：链接是界面元素，模型转述十有八九写坏 markdown；
+     * 由宿主直接挂到这一轮，点一下就是真的跳转。
+     */
+    private var turnDocLinkId: String? = null
+    private var turnDocLinkLabel: String? = null
         private set
 
     /**
@@ -4816,8 +4918,16 @@ class AppRuntime private constructor() {
 
     // ---------------------------------------------------------------- 计划文档
 
-    /** 计划页只做跳转：打开知识库并定位到这份计划的文档。 */
+    /** 计划页只做跳转：打开知识库并定位到这份计划的文档（草稿 id 也能直接打开）。 */
     internal fun openPlanDocs(planId: String? = null) {
+        // 草稿不是计划：计划本体还没建时也会有草稿，不能拿 learningPlan() 的 id 校验把它挡掉。
+        // 判据与知识库页一致：前缀 `draft_`，或 store 里确实有这份草稿。
+        val draftStore = if (::planDocStore.isInitialized) planDocStore else null
+        if (planId != null && (planId.startsWith(PLAN_DOC_DRAFT_PREFIX) || draftStore?.readDraft(planId) != null)) {
+            planDocBrowseId = planId
+            currentTab = TAB_KNOWLEDGE
+            return
+        }
         val service = learningPlan()
         val target = planId ?: planFocusId ?: service?.activePlanId()
         if (service == null || target == null) {

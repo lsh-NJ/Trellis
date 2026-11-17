@@ -752,13 +752,16 @@ private fun PlanThreadLink(line: ChatLine, running: Boolean, onOpen: () -> Unit)
     }
     val allSettled = settled == plan.size
     val failed = plan.any { it.state == PlanStepState.Failed }
+    val awaiting = plan.any { it.state == PlanStepState.Awaiting }
     val active = plan.firstOrNull { it.state == PlanStepState.Running }?.text
+        ?: plan.firstOrNull { it.state == PlanStepState.Awaiting }?.text
     val scheme = MaterialTheme.colorScheme
     val extra = LocalExtraColors.current
     val tokens = LocalTrellisTokens.current
     val tone = when {
         failed -> scheme.error
         allSettled -> extra.accentText
+        awaiting -> extra.warning
         running -> RunningAmber
         else -> scheme.onSurfaceVariant
     }
@@ -771,7 +774,11 @@ private fun PlanThreadLink(line: ChatLine, running: Boolean, onOpen: () -> Unit)
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            if (allSettled) "执行计划 · 已完成" else "执行计划 · 进行中",
+            when {
+                allSettled -> "执行计划 · 已完成"
+                awaiting -> "执行计划 · 等待确认"
+                else -> "执行计划 · 进行中"
+            },
             style = tokens.type.meta,
             fontFamily = FontFamily.Monospace,
             letterSpacing = 0.6.sp,
@@ -960,6 +967,17 @@ private fun RoundView(
                 DeepSeekMarkup.strip(conclusion),
                 modifier = Modifier.fillMaxWidth(),
                 bodyStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.5.sp, lineHeight = 27.6.sp),
+            )
+        }
+
+        // 计划文档链接：计划工作流每段结束都会带回一个文档 id，点一下直接跳知识库对应文件。
+        // 不塞进正文 markdown：链接要能点，正文渲染只负责「好看」，点击交给宿主。
+        val docLinkId = round.reply?.docLinkId.orEmpty()
+        if (docLinkId.isNotBlank()) {
+            Spacer(Modifier.height(8.dp))
+            ChromeTextLink(
+                round.reply?.docLinkLabel?.takeIf { it.isNotBlank() } ?: "打开计划文档",
+                onClick = { runtime.openPlanDocs(docLinkId) },
             )
         }
 

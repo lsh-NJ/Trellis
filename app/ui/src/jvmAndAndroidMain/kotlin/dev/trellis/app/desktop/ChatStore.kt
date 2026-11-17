@@ -154,6 +154,8 @@ internal class ChatStore(home: File, private val log: (String) -> Unit = {}) {
                             ?.mapNotNull { (it as? JsonPrimitive)?.content } ?: emptyList(),
                     )
                 },
+                docLinkId = line["docLinkId"]?.jsonPrimitive?.content ?: "",
+                docLinkLabel = line["docLinkLabel"]?.jsonPrimitive?.content ?: "",
             )
         } ?: emptyList()
         ChatSession(
@@ -273,6 +275,11 @@ internal class ChatStore(home: File, private val log: (String) -> Unit = {}) {
                         }
                         if (line.practiceState != PracticeProposalState.Open) {
                             put("practiceState", line.practiceState.name)
+                        }
+                        // 只有真的带文档链接的行才写这两个字段，旧会话文件不受影响。
+                        if (line.docLinkId.isNotBlank()) {
+                            put("docLinkId", line.docLinkId)
+                            put("docLinkLabel", line.docLinkLabel)
                         }
                         line.tool?.let { trace ->
                             put(

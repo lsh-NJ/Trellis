@@ -79,6 +79,26 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         PlanDocPage(runtime, planId) { runtime.closePlanDocs() }
         return
     }
+    // 「计划文档」分类：计划与草稿都能在知识库左栏直接只读打开（原来只能从计划页跳进来）。
+    // planAll 平时由计划页维护，直接从导航进知识库时可能还是空的，补一次即可，别每次强制刷新焦点。
+    LaunchedEffect(Unit) { if (runtime.planAll.isEmpty()) runtime.refreshPlan() }
+    val planDocPlans = runtime.planAll
+    // 草稿标题用文档第一个一级标题（计划工作流第一步只写了总计划，还没有计划标题可用）。
+    // 只在进入页面 / 计划列表变化时读一遍文件：笔记正文每敲一个字都会重组，别把文件 IO 放进重组路径。
+    val planDocDrafts = remember(planDocPlans) {
+        runCatching {
+            runtime.planDocStore.draftIds().map { draftId ->
+                val firstHeading = runtime.planDocStore.readDraft(draftId)
+                    ?.lineSequence()
+                    ?.map { it.trim() }
+                    ?.firstOrNull { it.startsWith("# ") }
+                    ?.removePrefix("# ")
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                PlanDocListEntry(draftId, firstHeading ?: ("总计划草稿 · " + draftId.take(8)))
+            }
+        }.getOrDefault(emptyList())
+    }
     val tokens = LocalTrellisTokens.current
     val store = runtime.knowledgeStore
     val metaStore = remember(runtime) { ConceptMetaStore(runtime.home) }
@@ -885,7 +905,8 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
 
             Spacer(Modifier.height(12.dp))
 
-            if (notes.isEmpty() && concepts.isEmpty()) {
+            // 有计划文档但一篇笔记都没有时也要露出左栏：不然「计划文档」分类根本不可见。
+            if (notes.isEmpty() && concepts.isEmpty() && planDocPlans.isEmpty() && planDocDrafts.isEmpty()) {
                 KnowledgeEmptyState(onCreate = { createNote() })
             } else {
                 Row(Modifier.weight(1f).fillMaxWidth()) {
@@ -963,6 +984,15 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                                 )
                             }
                             Spacer(Modifier.height(8.dp))
+                            // 「计划文档」分类放「笔记」列表上方：计划与草稿都直接点开，不占笔记的选择/搜索逻辑。
+                            PlanDocListSection(
+                                plans = planDocPlans.map { plan ->
+                                    PlanDocListEntry(plan.id, plan.title.ifBlank { "未命名计划" })
+                                },
+                                drafts = planDocDrafts,
+                                onOpen = { runtime.openPlanDocs(it) },
+                            )
+                            Spacer(Modifier.height(8.dp))
                             val hits = searchHits
                             if (hits != null) {
                                 KnowledgeSearchResults(
@@ -972,7 +1002,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                                     zone = clock.zone,
                                     onOpenNote = { openSearchHit(it) },
                                     onOpenConcept = { openConcept(it) },
-                                    modifier = Modifier.fillMaxSize(),
+                                    modifier = Modifier.weight(1f).fillMaxWidth(),
                                 )
                             } else {
                                 NoteListPanel(
@@ -982,7 +1012,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                                     emptyHint = "没有匹配的笔记",
                                     onSelect = { selectNote(it) },
                                     onDelete = { deleteTarget = it },
-                                    modifier = Modifier.fillMaxSize(),
+                                    modifier = Modifier.weight(1f).fillMaxWidth(),
                                 )
                             }
                         }

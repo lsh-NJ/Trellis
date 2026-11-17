@@ -284,10 +284,16 @@ private fun PlanStepRow(index: Int, step: PlanStep, last: Boolean) {
     val extra = LocalExtraColors.current
     val tokens = LocalTrellisTokens.current
     val active = step.state == PlanStepState.Running
-    val rowBg = if (active) extra.warningContainer else Color.Transparent
+    val awaiting = step.state == PlanStepState.Awaiting
+    val rowBg = when {
+        active -> extra.warningContainer
+        awaiting -> extra.warningContainer.copy(alpha = 0.45f)
+        else -> Color.Transparent
+    }
     val titleColor = when (step.state) {
         PlanStepState.Pending -> scheme.onSurfaceVariant.copy(alpha = 0.85f)
         PlanStepState.Running -> scheme.onSurface
+        PlanStepState.Awaiting -> scheme.onSurface
         PlanStepState.Done -> scheme.onSurfaceVariant.copy(alpha = 0.75f)
         PlanStepState.Failed -> extra.danger
         PlanStepState.Skipped -> scheme.onSurfaceVariant.copy(alpha = 0.55f)
@@ -439,6 +445,19 @@ private fun PlanStepGlyph(state: PlanStepState) {
                     .size(14.dp)
                     .border(1.dp, scheme.onSurfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(4.dp)),
             )
+            PlanStepState.Awaiting -> Box(
+                Modifier
+                    .size(14.dp)
+                    .border(1.5.dp, extra.warning, RoundedCornerShape(7.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    Modifier
+                        .size(5.dp)
+                        .clip(CircleShape)
+                        .background(extra.warning),
+                )
+            }
             PlanStepState.Running -> {
                 // 脉冲点而不是转圈：清单是「进度」，转圈是「等待」；转圈看久了会以为卡住。
                 val pulse = rememberInfiniteTransition(label = "plan-pulse")
@@ -526,10 +545,11 @@ private fun PlanStepGlyph(state: PlanStepState) {
     }
 }
 
-private enum class PlanStatus { Waiting, Running, Done, Failed }
+private enum class PlanStatus { Waiting, Awaiting, Running, Done, Failed }
 
 private fun PlanStatus.glyph(): PlanStepState = when (this) {
     PlanStatus.Waiting -> PlanStepState.Pending
+    PlanStatus.Awaiting -> PlanStepState.Awaiting
     PlanStatus.Running -> PlanStepState.Running
     PlanStatus.Done -> PlanStepState.Done
     PlanStatus.Failed -> PlanStepState.Failed
@@ -537,6 +557,7 @@ private fun PlanStatus.glyph(): PlanStepState = when (this) {
 
 private fun PlanStatus.label(): String = when (this) {
     PlanStatus.Waiting -> "等它开始"
+    PlanStatus.Awaiting -> "等待你确认"
     PlanStatus.Running -> "正在执行"
     PlanStatus.Done -> "已完成"
     PlanStatus.Failed -> "有失败步骤"
@@ -554,6 +575,7 @@ private fun planStatus(plan: List<PlanStep>, running: Boolean): PlanStatus {
     }
     return when {
         allSettled -> if (failed) PlanStatus.Failed else PlanStatus.Done
+        plan.any { it.state == PlanStepState.Awaiting } -> PlanStatus.Awaiting
         running || plan.any { it.state == PlanStepState.Running } -> PlanStatus.Running
         else -> PlanStatus.Waiting
     }
@@ -561,6 +583,7 @@ private fun planStatus(plan: List<PlanStep>, running: Boolean): PlanStatus {
 
 private fun stepMeta(step: PlanStep, active: Boolean): String = when (step.state) {
     PlanStepState.Done -> "完成" + if (step.ms > 0) " · " + durationText(step.ms) else ""
+    PlanStepState.Awaiting -> "等待确认 · 点「继续」进入下一段"
     PlanStepState.Running -> "正在执行" + if (step.ms > 0) " · " + durationText(step.ms) else ""
     PlanStepState.Failed -> "失败" + if (step.note.isNotBlank()) " · " + step.note else ""
     PlanStepState.Skipped -> "跳过" + if (step.note.isNotBlank()) " · " + step.note else ""

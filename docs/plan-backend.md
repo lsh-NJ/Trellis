@@ -370,5 +370,17 @@
 - 仍待办：`create_learning_plan(bvid)` 还是旧的「清洗分集标题直接生成单元」路径，
   没有改走资源池；`unit_resource.resource_id` 列已留但尚未写入（当前只复制字段）。
 
+---
+
+## 21 2026-11-17：计划工作流（plan_workflow 三段）+ 计划文档进知识库
+
+- **计划文档改存文件**：`<home>/knowledge/plan-docs/<planId>/总览.md` 与 `<YYYY-Www>.md`；草稿在 `_drafts/<draftId>.md`。旧 `plan_doc` 表 / `plans/docs` 只做一次性导入（只补缺失、不覆盖）。知识库左栏多一个「计划文档」分类，计划和草稿都能直接只读打开；计划页跳转仍然可用。
+- **计划创建从管理员剥成固定流程**：模型不再自己拆步骤，调 `plan_workflow` 接手。三段：1）调研 + 资源聚合 + 总计划（写草稿文档就停）；2）计划本体 + 周计划文档（建空壳、绑目标/里程碑、草稿落成正式总文档、写本周条目文档，**不建节点**）；3）本周节点（把周文档条目 `appendUnits` + `enqueueUnits` 进本周队列，不排到天）。每段结束都落 `job.state=awaiting_user`，等用户确认；推进走 `action=confirm`。流程状态在 `job`/`job_step`（kind=`plan_flow`），跨轮/重启可续。
+- **资源聚合**（`PlanWorkflow.scout`）：DeepSeek 搜索按站点检索 CSDN / 知乎 / 博客园 / 阿里云开发者 / 腾讯云 / GitHub，B 站单独走 `BilibiliClient.search`（按播放量 + 分集数）；宿主按类型分层（视频/文档/仓库/文章/问答，每类 2–3 条、总 12 条）后交给模型，模型只能从候选项里挑 URL。
+- **执行清单**：新增 `PlanStepState.Awaiting`；工作流每段跑完由宿主把清单这一步标成「等待确认」，用户点继续后才变完成。模型不用调 `step_done`。
+- **转接**：存在 `awaiting_user` 的流程时，这一轮工具收窄到 `plan_workflow` / `ask_choices` / `read_plan` / `update_plan`，其他写工具不装，避免模型绕过流程另建一份计划。
+- **待补**：第二、三段只支持 `update_plan` 局部改，不能整段重跑；资源候选还没有缓存。
+
+
 
 
