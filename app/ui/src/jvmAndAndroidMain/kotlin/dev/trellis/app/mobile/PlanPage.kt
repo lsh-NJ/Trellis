@@ -1278,17 +1278,16 @@ private fun StageProgressRow(stage: StageView, onClick: () -> Unit) {
     }
 }
 
-/** 有单元时「done/total」；没单元时显示主题数；老计划（带周区间）退化成周号（桌面同语义）。 */
-private fun stageProgressLabel(stage: StageView): String =
-    if (stage.total > 0) {
-        stage.done.toString() + "/" + stage.total
-    } else if (stage.topics.isNotEmpty()) {
-        stage.topics.count { it.complete }.toString() + "/" + stage.topics.size
-    } else {
-        val start = stage.weekStart?.takeLast(2) ?: return "—"
-        val end = stage.weekEnd?.takeLast(2) ?: return "—"
-        "W" + start + "–" + end
+/** 统一按主题算（桌面同语义）；没有主题的老计划退回节点 done/total，再退回周号。 */
+private fun stageProgressLabel(stage: StageView): String {
+    if (stage.topics.isNotEmpty()) {
+        return stage.topics.count { it.complete }.toString() + "/" + stage.topics.size + " 主题"
     }
+    if (stage.total > 0) return stage.done.toString() + "/" + stage.total
+    val start = stage.weekStart?.takeLast(2) ?: return "—"
+    val end = stage.weekEnd?.takeLast(2) ?: return "—"
+    return "W" + start + "–" + end
+}
 
 /** 阶段 → 周卡：区间内第一张 → 区间之后第一张 → 最后一张（桌面 `stageFirstPlanWeek` 同语义）。 */
 private fun stageFirstPlanWeek(cards: List<PlanWeekCard>, stage: StageView): String? {

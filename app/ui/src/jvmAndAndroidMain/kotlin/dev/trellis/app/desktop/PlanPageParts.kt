@@ -769,16 +769,27 @@ private fun resourceKindLabel(kind: String): String = when (kind) {
  * 会连宽屏也不显示右栏（联调踩过）。窗口宽度在 PlanScreen 里用 `LocalWindowInfo` 取，和知识库页同一套。
  */
 /**
- * 阶段进度：有节点就显示 done/total；没有节点时显示主题数，老计划（带周区间）退化成 W45–W47。
+ * 阶段进度：**统一按主题算**（阶段完成 = 它的主题全部完成）。
  *
- * 2026-11-18 起阶段不绑周：进度按主题/节点算，周只会出现在老计划里。
+ * 以前同一栏里有的行显示节点数（0/7）、有的行显示主题数（0/2 主题），两种口径混在一起
+ * 根本没法比较；而且节点数会被「这周排了几条」带偏。没有主题的老计划才退回节点 done/total，
+ * 再老的退回周区间。
  */
 private fun stageProgressLabel(stage: StageView): String {
+    if (stage.topics.isNotEmpty()) {
+        return stage.topics.count { it.complete }.toString() + "/" + stage.topics.size + " 主题"
+    }
     if (stage.total > 0) return stage.done.toString() + "/" + stage.total
-    if (stage.topics.isNotEmpty()) return stage.topics.count { it.complete }.toString() + "/" + stage.topics.size + " 主题"
     val start = stage.weekStart?.takeLast(2)?.trimStart('0') ?: return "—"
     val end = stage.weekEnd?.takeLast(2)?.trimStart('0') ?: return "—"
     return if (start == end) "W" + start else "W" + start + "–W" + end
+}
+
+/** 进度条跟着标签的口径走：有主题按主题比例，老计划按节点比例。 */
+private fun stageProgressFraction(stage: StageView): Float {
+    if (stage.topics.isNotEmpty()) return stage.topics.count { it.complete }.toFloat() / stage.topics.size
+    if (stage.total > 0) return stage.done.toFloat() / stage.total
+    return 0f
 }
 
 internal fun shouldShowStageRail(windowWidthDp: Float, stageCount: Int): Boolean =
@@ -843,7 +854,7 @@ internal fun PlanStageRail(runtime: AppRuntime, modifier: Modifier = Modifier) {
                         .height(3.dp)
                         .background(tokens.colors.rule),
                 ) {
-                    val fraction = if (stage.total > 0) stage.done.toFloat() / stage.total else 0f
+                    val fraction = stageProgressFraction(stage)
                     Box(
                         Modifier
                             .fillMaxWidth(fraction)
