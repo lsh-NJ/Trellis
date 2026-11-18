@@ -447,26 +447,24 @@ class PlanWorkflowTest {
         assertTrue(again.content.contains("已经有一段计划流程"), again.content)
     }
     /**
-     * 打字确认也要算数，但必须「确定」才放行：整句白名单、带修改/否定/拖延字眼一律不算。
-     * 2026-11-18 实测踩到过：卡片只活一轮，用户随口说句话就没入口推进了。
+     * 打字确认不再硬匹配白名单：交给一次「是/否」调用，宿主只认 JSON 里的 confirm=true。
+     * 解析不出来、模型没按格式说，一律当没说（宁可不推进）。
      */
     @Test
-    fun typedConfirmationCountsOnlyWhenUnambiguous() {
-        // 明确同意
-        assertTrue(PlanWorkflow.confirmIntent("开始下一步"), "点按钮的原话")
-        assertTrue(PlanWorkflow.confirmIntent("继续"))
-        assertTrue(PlanWorkflow.confirmIntent("好"))
-        assertTrue(PlanWorkflow.confirmIntent("好的，继续吧"))
-        assertTrue(PlanWorkflow.confirmIntent("可以"))
-        assertTrue(PlanWorkflow.confirmIntent("没问题"))
-        assertTrue(PlanWorkflow.confirmIntent("确认"))
-        // 带修改/否定/拖延：都不算
-        assertFalse(PlanWorkflow.confirmIntent("我要改一下"), "改")
-        assertFalse(PlanWorkflow.confirmIntent("先不建"), "先/不")
-        assertFalse(PlanWorkflow.confirmIntent("好，但我先看看阶段"), "但/先/看")
-        assertFalse(PlanWorkflow.confirmIntent("等一下"), "等")
-        assertFalse(PlanWorkflow.confirmIntent("好的我看看"), "看")
-        assertFalse(PlanWorkflow.confirmIntent(""));
-        assertFalse(PlanWorkflow.confirmIntent("帮我看看这周排得对不对"), "长句不算")
+    fun confirmVerdictAcceptsOnlyExplicitJsonTrue() {
+        assertTrue(PlanWorkflow.parseConfirmVerdict("{\"confirm\":true}"))
+        assertTrue(PlanWorkflow.parseConfirmVerdict("`@json\n{\"confirm\": true}\n`@"))
+        assertFalse(PlanWorkflow.parseConfirmVerdict("{\"confirm\":false}"))
+        assertFalse(PlanWorkflow.parseConfirmVerdict("好，继续吧"))
+        assertFalse(PlanWorkflow.parseConfirmVerdict(""))
+        val messages = PlanWorkflow.confirmVerdictMessages(
+            "「总计划文档 → 周文档」还没做，要现在开始吗？",
+            listOf("开始下一步", "我要改一下", "先不建"),
+            "行，那就往下走吧",
+        )
+        val user = messages.last().content
+        assertTrue(user.contains("要现在开始吗"), user)
+        assertTrue(user.contains("行，那就往下走吧"), user)
     }
+
 }

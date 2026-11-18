@@ -25,6 +25,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
@@ -1000,35 +1001,52 @@ internal class PlanWorkflow(
         const val ADVANCE_LABEL: String = "开始下一步"
 
         /**
-         * 用户这句话算不算「确定要往下走」。
+         * 「用户这句话算不算同意继续」的判定提示词。
          *
-         * 选项卡不是唯一入口：用户直接回「继续 / 好 / 开始下一步」也该算确认（宿主记一次性凭据，
-         * 模型自己说 advance 不算）。判定必须确定、宁严勿宽：**整句**在白名单里才算；
-         * 带否定/修改/拖延字眼（不、别、先、等、改、换、看、想、再说……）一律不算 ——
-         * 误判成同意会让流程在用户没想清楚时往下跑，比多问一次贵得多。
+         * 不用白名单硬匹配：自然语言千变万化，白名单既脆又容易误判。多花一次「是/否」
+         * 小调用换确定性和可解释性；模型只输出 `{"confirm":true|false}`，宿主按 JSON 读。
+         * 解析失败 / 没配模型 / 超时一律当 false —— 误判成同意会让流程在用户没想清楚时
+         * 往下跑，比多问一次贵得多。
          */
-        fun confirmIntent(text: String): Boolean {
-            val normalized = text.trim()
-                .replace(Regex("[\\s，。！？、；：,.!?;:~～…（）()\\[\\]【】\"'“”‘’]"), "")
-                .lowercase()
-            if (normalized.isEmpty() || normalized.length > 8) return false
-            if (CONFIRM_REJECT.any { normalized.contains(it) }) return false
-            return normalized in CONFIRM_WORDS
+        fun confirmVerdictMessages(
+            question: String,
+            options: List<String>,
+            reply: String,
+        ): List<LlmMessage> = listOf(
+            LlmMessage(
+                LlmRole.System,
+                buildString {
+                    appendLine("你是确认判定器。宿主要求用户确认一件事，用户回了一句话。")
+                    appendLine("判断用户是否明确同意现在继续/开始，只输出一个 JSON 对象：")
+                    appendLine("{\"confirm\":true} 或 {\"confirm\":false}")
+                    appendLine("规则：")
+                    appendLine("1. 只有明确表示「继续 / 开始 / 可以」才为 true；只是复述、反问、含糊其辞，都为 false。")
+                    appendLine("2. 用户想改任何内容（阶段、主题、时间、范围、资源）都为 false。")
+                    appendLine("3. 用户想先看看、等一下、考虑一下，都为 false。")
+                    appendLine("4. 拿不准就 false。")
+                },
+            ),
+            LlmMessage(
+                LlmRole.User,
+                buildString {
+                    appendLine("等待确认的问题：" + question.ifBlank { "要进入下一步吗？" })
+                    if (options.isNotEmpty()) appendLine("界面上的选项：" + options.joinToString(" / "))
+                    appendLine("用户回复：「" + reply.trim() + "」")
+                    append("只输出 JSON。")
+                },
+            ),
+        )
+
+        /** 读判定结果：只认 JSON 里的 confirm=true；解析不出来就是 false。 */
+        fun parseConfirmVerdict(raw: String): Boolean {
+            val start = raw.indexOf('{')
+            val end = raw.lastIndexOf('}')
+            if (start < 0 || end <= start) return false
+            val root = runCatching {
+                Json.parseToJsonElement(raw.substring(start, end + 1)) as? JsonObject
+            }.getOrNull() ?: return false
+            return root["confirm"]?.jsonPrimitive?.booleanOrNull == true
         }
-
-        private val CONFIRM_WORDS: Set<String> = setOf(
-            "开始下一步", "开始下步", "开始下一步吧", "下一步", "开始", "继续", "继续吧", "开始吧",
-            "好", "好的", "好滴", "行", "行的", "可以", "可以的", "没问题", "确认", "确定",
-            "走吧", "ok", "okay", "确认继续",
-            // 「好 + 动词」这类自然说法也收：口头确认最常见的就是这几种。
-            "好的继续吧", "好继续吧", "好的继续", "好继续", "可以继续", "可以继续吧",
-            "可以开始", "好的开始", "好开始", "那就开始吧", "那就继续吧", "嗯开始", "嗯继续",
-        )
-
-        /** 拿不准就当没说：这些字眼出现时（哪怕同时也有「好」）都不算确定答复。 */
-        private val CONFIRM_REJECT: List<String> = listOf(
-            "不", "别", "先", "等", "改", "换", "看", "想", "说", "算", "停", "待", "回头", "稍", "但", "吗",
-        )
 
         const val SCOUT_TIMEOUT_MS = 45_000L
         const val MASTER_TIMEOUT_MS = 60_000L

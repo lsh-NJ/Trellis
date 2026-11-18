@@ -137,6 +137,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -198,6 +199,9 @@ internal const val TAB_GOALS = 9
 
 /** 练习提议去重用的 topic；同一单元提过一次就不再提。 */
 private const val PRACTICE_PROPOSAL_TOPIC = "练习提议"
+
+/** 判断「用户这句话是不是同意继续」的一次小调用最多等这么久；超时当没说。 */
+private const val PLAN_CONFIRM_TIMEOUT_MS = 10_000L
 
 /** 这一次运行里已经提议过的练习；重开程序后从空开始（同一单元另有记忆里的去重）。 */
 private val proposedPracticeExerciseIds = mutableSetOf<String>()
@@ -1448,9 +1452,11 @@ class AppRuntime private constructor() {
     /** 从界面发起一轮对话：job 挂在 runtime 上，切页不会把它掐断。 */
     fun ask(request: String) {
         if (chatBusy) return
-        // 用户用打字回答「继续 / 好」也给凭据：选项卡不是唯一入口（判定见 PlanWorkflow.confirmIntent）。
-        considerTypedPlanConfirm(request)
-        chatJob = chatScope.launch { sendChat(request) }
+        chatJob = chatScope.launch {
+            // 有流程在等确认时先判一句「这是不是同意」：多花一次是/否小调用，换自然语言的确定性。
+            confirmPlanAdvanceIfNeeded(request)
+            sendChat(request)
+        }
     }
 
     /** 用户主动喊停。停掉的那一轮会留一行「已停止」，不会假装跑完了。 */
@@ -4478,14 +4484,33 @@ class AppRuntime private constructor() {
     }
 
     /**
-     * 用户没点卡片、直接在对话里回「继续 / 好 / 开始下一步」也算确认。
+     * 有流程在等确认时，判断这句话是不是「同意继续」。
      *
-     * 判定在 [PlanWorkflow.confirmIntent]（白名单整句匹配、带修改/否定字眼不算），
-     * 宿主只负责记一次性凭据；凭据仍然由工具来领，模型自己说「继续」不算。
+     * 自然语言千变万化，白名单既脆又容易误判；这里多花一次「是/否」小调用换确定性：
+     * 按钮原话直接放行（和点卡片同一个一次性凭据），「我要改一下 / 先不建」直接跳过，
+     * 其余交给 [PlanWorkflow.confirmVerdictMessages]。凭据仍由工具来领，模型自己说「继续」不算。
      */
-    private fun considerTypedPlanConfirm(text: String) {
-        if (!PlanWorkflow.confirmIntent(text)) return
-        planAdvanceConsented = currentPlanAdvanceGate()
+    private suspend fun confirmPlanAdvanceIfNeeded(text: String) {
+        val gate = currentPlanAdvanceGate() ?: return
+        val trimmed = text.trim()
+        when {
+            trimmed == PlanWorkflow.ADVANCE_LABEL -> planAdvanceConsented = gate
+            trimmed == "我要改一下" || trimmed == "先不建" -> return
+            planAdvanceReplyConfirmed(text) -> planAdvanceConsented = gate
+        }
+    }
+
+    /** 判一句话是不是同意继续：一次是/否调用；没配模型、超时、解析失败都当 false。 */
+    private suspend fun planAdvanceReplyConfirmed(text: String): Boolean {
+        val config = LlmConfigLoader.load(home) ?: return false
+        // 判一句是/否不值得开思考：关掉思考，输出就只剩那个 JSON。
+        val llm = llmOverride ?: HttpLlmClient(config.copy(thinking = false))
+        val question = planAdvanceQuestion.ifBlank { "这一段还没做完，要现在开始吗？" }
+        val messages = PlanWorkflow.confirmVerdictMessages(question, planAdvanceOptions, text)
+        val raw = withTimeoutOrNull(PLAN_CONFIRM_TIMEOUT_MS) {
+            runCatching { llm.completeText(messages) }.getOrNull()
+        } ?: return false
+        return PlanWorkflow.parseConfirmVerdict(raw)
     }
 
     /**
