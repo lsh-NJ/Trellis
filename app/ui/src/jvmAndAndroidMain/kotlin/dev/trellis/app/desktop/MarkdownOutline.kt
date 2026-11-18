@@ -60,7 +60,8 @@ internal data class OutlineItem(
     val children: List<OutlineItem> = emptyList(),
 )
 
-private data class FlatHeading(
+/** 扫描出来的一个标题行：层级、去空白后的文字、字符偏移、行号、文档内序号。 */
+internal data class HeadingLine(
     val level: Int,
     val text: String,
     val offset: Int,
@@ -71,13 +72,11 @@ private data class FlatHeading(
 private val outlineHeadingPattern = Regex("^(#{1,6})\\s+(.+)$")
 
 /**
- * 把正文解析成标题树。
- *
- * 只有 `# 标题`（`#` 后面必须有空格和非空文字）才算标题——和 [parseMarkdown] 保持同一套规则，
- * 否则目录里的第 N 条和预览里的第 N 个标题会对不上，跳转会错位。
+ * 只扫标题行，不建树。目录、结构化分块共用这一份规则（围栏代码块里的 `#` 不算），
+ * 免得「目录里的第 N 条」和「分块里的第 N 节」对不上。
  */
-internal fun parseOutline(body: String): List<OutlineItem> {
-    val flat = mutableListOf<FlatHeading>()
+internal fun scanHeadingLines(body: String): List<HeadingLine> {
+    val result = mutableListOf<HeadingLine>()
     var inFence = false
     var offset = 0
     var ordinal = 0
@@ -93,7 +92,7 @@ internal fun parseOutline(body: String): List<OutlineItem> {
             if (match != null) {
                 val text = match.groupValues[2].trim()
                 if (text.isNotEmpty()) {
-                    flat += FlatHeading(
+                    result += HeadingLine(
                         level = match.groupValues[1].length,
                         text = text,
                         offset = offset,
@@ -106,6 +105,17 @@ internal fun parseOutline(body: String): List<OutlineItem> {
         }
         offset += raw.length + 1
     }
+    return result
+}
+
+/**
+ * 把正文解析成标题树。
+ *
+ * 只有 `# 标题`（`#` 后面必须有空格和非空文字）才算标题——和 [parseMarkdown] 保持同一套规则，
+ * 否则目录里的第 N 条和预览里的第 N 个标题会对不上，跳转会错位。
+ */
+internal fun parseOutline(body: String): List<OutlineItem> {
+    val flat = scanHeadingLines(body)
 
     // 按层级挂树：找最近的、层级更小的前驱当父节点；跳级（# 直接到 ###）也归到最近的上级。
     fun build(index: Int, parentLevel: Int): Pair<List<OutlineItem>, Int> {

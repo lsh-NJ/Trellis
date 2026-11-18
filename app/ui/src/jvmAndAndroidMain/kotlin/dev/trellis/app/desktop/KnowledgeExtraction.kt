@@ -20,6 +20,13 @@ internal data class ConceptCandidate(
     val definition: String,
     val mention: String = "",
     val aliases: List<String> = emptyList(),
+    /**
+     * 概念所属的完整章节路径（含当前节），由宿主按分块统一盖章，不来自模型输出。
+     *
+     * 同一节被拆成多段送模型时，各段拿到的前缀完全相同，合并按「路径 + 名字」去重；
+     * 不同节里的同名概念（两处「去重」）不会被合成一条。
+     */
+    val sectionPath: List<String> = emptyList(),
 )
 
 /**
@@ -45,106 +52,11 @@ internal data class ExtractionResult(
     val fills: List<FillSuggestion> = emptyList(),
 )
 
-/** 单次送进模型的正文上限：再长就按段落切成多段分别整理（见 [extractionBodyChunks]）。 */
+/** 单次送进模型的正文上限：再长就按标题结构切成多段分别整理（见 [extractionChunks]）。 */
 internal const val MAX_EXTRACT_BODY_CHARS: Int = 6000
 
 /** 一次整理最多分这么多段（≈ [MAX_EXTRACT_BODY_CHARS] × 8 字）；再长只整理前面这几段。 */
 internal const val MAX_EXTRACT_CHUNKS: Int = 8
-
-/** 一/二级标题行：`# 标题`、`## 标题`（`###` 不会命中一级/二级模式）。 */
-private val firstLevelHeadingLine = Regex("^#\\s+\\S")
-private val secondLevelHeadingLine = Regex("^##\\s+\\S")
-
-/**
- * 把长正文按「标题结构」切成不超过 [MAX_EXTRACT_BODY_CHARS] 的段。
- *
- * 优先按**一级标题**分段；某个一级段太大就降级按**二级标题**拆；仍然太大才按行断开
- * （单行超长硬切）。相邻的小段会拼在一起，避免每节都单独打一次请求。
- * 最多返回 [MAX_EXTRACT_CHUNKS] 段，更长的笔记尾部不再送模型（避免一次整理打十几个请求）。
- * 短正文原样返回一段。
- */
-internal fun extractionBodyChunks(body: String): List<String> {
-    if (body.length <= MAX_EXTRACT_BODY_CHARS) return listOf(body)
-    val pieces = ArrayList<String>()
-    for (topSection in splitAtHeadingLevel(body, firstLevelHeadingLine)) {
-        if (topSection.length <= MAX_EXTRACT_BODY_CHARS) {
-            pieces += topSection
-            continue
-        }
-        for (secondSection in splitAtHeadingLevel(topSection, secondLevelHeadingLine)) {
-            if (secondSection.length <= MAX_EXTRACT_BODY_CHARS) {
-                pieces += secondSection
-            } else {
-                pieces += splitIntoLines(secondSection)
-            }
-        }
-    }
-    return packPieces(pieces).take(MAX_EXTRACT_CHUNKS)
-}
-
-/** 按标题行把正文切成若干节；每节从标题行开始，第一节是第一个标题之前的内容（可能为空）。 */
-private fun splitAtHeadingLevel(body: String, heading: Regex): List<String> {
-    val sections = ArrayList<String>()
-    val current = StringBuilder()
-    val lines = body.split('\n')
-    val headingLines = lines.indices.filter { heading.containsMatchIn(lines[it]) }
-    if (headingLines.isEmpty()) return listOf(body)
-    for ((index, line) in lines.withIndex()) {
-        val piece = if (index == lines.lastIndex) line else line + "\n"
-        if (index in headingLines && current.isNotEmpty()) {
-            sections += current.toString()
-            current.clear()
-        }
-        current.append(piece)
-    }
-    if (current.isNotEmpty()) sections += current.toString()
-    return sections.filter { it.isNotEmpty() }
-}
-
-/** 单节还是太大：按行断开（优先行尾，单行超长硬切）。 */
-private fun splitIntoLines(text: String): List<String> {
-    if (text.length <= MAX_EXTRACT_BODY_CHARS) return listOf(text)
-    val pieces = ArrayList<String>()
-    val current = StringBuilder()
-    fun flush() {
-        if (current.isNotEmpty()) {
-            pieces += current.toString()
-            current.clear()
-        }
-    }
-    fun hardSplit(rest: String) {
-        var remaining = rest
-        while (remaining.length > MAX_EXTRACT_BODY_CHARS) {
-            flush()
-            pieces += remaining.substring(0, MAX_EXTRACT_BODY_CHARS)
-            remaining = remaining.substring(MAX_EXTRACT_BODY_CHARS)
-        }
-        current.append(remaining)
-    }
-    val lines = text.split('\n')
-    for ((index, line) in lines.withIndex()) {
-        val piece = if (index == lines.lastIndex) line else line + "\n"
-        if (current.length + piece.length > MAX_EXTRACT_BODY_CHARS && current.isNotEmpty()) flush()
-        if (piece.length > MAX_EXTRACT_BODY_CHARS) hardSplit(piece) else current.append(piece)
-    }
-    flush()
-    return pieces
-}
-
-/** 把相邻的小段拼成不超过上限的块：标题边界优先，但不为每节单独打一次请求。 */
-private fun packPieces(pieces: List<String>): List<String> {
-    val packed = ArrayList<String>()
-    val current = StringBuilder()
-    for (piece in pieces) {
-        if (current.isNotEmpty() && current.length + piece.length > MAX_EXTRACT_BODY_CHARS) {
-            packed += current.toString()
-            current.clear()
-        }
-        current.append(piece)
-    }
-    if (current.isNotEmpty()) packed += current.toString()
-    return packed
-}
 
 /**
  * 让模型从笔记里抽概念、顺便补用户留的空位。
@@ -160,6 +72,10 @@ internal fun buildKnowledgeExtractionMessages(
     headings: List<String> = emptyList(),
     chunkIndex: Int = 0,
     chunkCount: Int = 1,
+    contextPath: List<String> = emptyList(),
+    continued: Boolean = false,
+    truncated: Boolean = false,
+    headingPrefix: String = "",
 ): List<LlmMessage> {
     val system = "你是个人知识库的整理助手。任务只有两件：①从笔记里挑出**作者确实讲过**、" +
         "值得长期回查的概念，每个给出规范名、正文里的原词（mention）、可选别名和一句话定义；" +
@@ -177,13 +93,24 @@ internal fun buildKnowledgeExtractionMessages(
         append("笔记标题：").append(title.ifBlank { "（无标题）" }).append("\n\n")
         val chunkHint = if (chunkCount > 1) {
             "（这是整篇正文的第 " + (chunkIndex + 1) + "/" + chunkCount +
-                " 段，其余段落这里省略；概念与空位都只看这一段）\n\n"
+                " 段，其余段落这里省略；概念与空位都只看这一段）"
         } else {
             ""
         }
-        append("笔记正文").append(chunkHint).append("：\n").append(body.take(MAX_EXTRACT_BODY_CHARS)).append("\n\n")
+        if (contextPath.isNotEmpty()) {
+            append("本段所属章节：").append(contextPath.joinToString(" > ")).append("\n\n")
+        }
+        if (continued) {
+            append("（本段接上一段的正文，仍在同一节里；标题在前一段已经给过）\n\n")
+        }
+        append("笔记正文").append(chunkHint).append("：\n")
+        if (headingPrefix.isNotBlank()) append(headingPrefix).append("\n\n")
+        append(body.take(MAX_EXTRACT_BODY_CHARS)).append("\n\n")
+        if (truncated) {
+            append("（这篇笔记太长，后面还有内容没有送进来；只整理目前看到的这些）\n\n")
+        }
         if (headings.isNotEmpty()) {
-            append("本笔记的标题结构（按出现顺序，仅供建图参考）：\n")
+            append("本笔记的标题结构（缩进表示层级，仅供建图参考）：\n")
             headings.forEach { append("- ").append(it).append('\n') }
             append('\n')
         }
@@ -213,7 +140,8 @@ internal fun buildKnowledgeExtractionMessages(
             .append("找不到的 mention 会被丢掉。正文原词和 name 相同时 mention 可以省略。\n")
         append("4. name 是规范名：想总结得更标准可以写在 name 里，但必须通过 mention 映射回正文原词；")
             .append("别人对同一个概念的不同叫法写进 aliases（不要自己发明没人用过的词，也不要把")
-            .append("「集合」「段」这种通用词当别名）。\n")
+            .append("「集合」「段」这种通用词当别名）。name 只写本节内的短名，不要自带「章节/」前缀；")
+            .append("同一概念在不同段落里必须用同一个名字（章节前缀由系统按所属章节统一加）。\n")
         append("5. 数量不设上限：正文里确实讲过的概念都可以列，但每个都必须满足上面的依据；")
             .append("拿不准的就别抽。\n")
         append("6. definition 不超过 40 个字，一句能独立看懂的解释（不是复述名词）。\n")
@@ -469,6 +397,8 @@ internal fun applyConsolidatedCandidates(
             definition = item.definition.ifBlank { uncovered.first().definition },
             mention = mention,
             aliases = aliases,
+            // 统一分析只在同一节内跑，但候选会重新构造，前缀要显式带回来。
+            sectionPath = uncovered.first().sectionPath,
         )
     }
     for (candidate in original) {
@@ -487,7 +417,9 @@ internal fun mergeExtractionResults(results: List<ExtractionResult>): Extraction
     val candidates = LinkedHashMap<String, ConceptCandidate>()
     for (result in results) {
         for (candidate in result.candidates) {
-            val key = conceptIdentityKey(candidate.name)
+            // 前缀（sectionPath）+ 本地名才是完整身份：同节多段能合并，跨节同名不合并。
+            val key = candidate.sectionPath.joinToString("\u0001") +
+                "\u0002" + conceptIdentityKey(candidate.name)
             val existing = candidates[key]
             if (existing == null) {
                 candidates[key] = candidate

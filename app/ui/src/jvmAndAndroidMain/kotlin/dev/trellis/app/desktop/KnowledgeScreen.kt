@@ -313,33 +313,47 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
         aiJob?.cancel()
         aiJob = scope.launch {
             extracting = true
-            // 长笔记按段落切成多段分别整理：一次只送 6000 字，后面没看到的段落就永远抽不到概念。
-            val chunks = extractionBodyChunks(note.body)
-            // 分段后每段的局部行号要换算成整篇行号，补全才能落回原文同一行。
-            val chunkLineOffsets = ArrayList<Int>(chunks.size)
-            var consumedLines = 0
-            for (chunk in chunks) {
-                chunkLineOffsets += consumedLines
-                consumedLines += chunk.count { it == '\n' }
+            // 长笔记按标题结构切段（标题 1 > 标题 2 > 本段正文），每段带上自己的章节路径。
+            val chunks = extractionChunks(note.body)
+            if (chunks.isEmpty()) {
+                extracting = false
+                message = "没有可整理的正文（表格不计入）"
+                return@launch
             }
-            val headings = parseOutline(note.body)
-                .filter { it.level <= 2 }
-                .map { it.text }
-                .take(8)
+            // 整篇标题树（缩进）一起给模型：建图建议优先沿用作者自己的章节名。
+            val headings = outlinePromptLines(parseOutline(note.body))
+            // 前缀一致性：按概念 mention 所在行找章节，盖到候选上；同一节的多段（甚至普通分段）
+            // 都得到同一份 sectionPath，合并按「路径 + 名字」去重。
+            val bodyLines = note.body.split('\n')
+            val anchors = sectionAnchors(scanHeadingLines(note.body))
+            fun sectionPathFor(candidate: ConceptCandidate, chunk: ExtractionChunk): List<String> {
+                val mention = candidate.mention.ifBlank { candidate.name }
+                if (mention.isNotBlank()) {
+                    for (line in chunk.startLine..minOf(chunk.endLine, bodyLines.lastIndex)) {
+                        if (bodyLines[line].contains(mention)) return sectionAt(anchors, line)
+                    }
+                }
+                return chunk.sectionPath
+            }
             val raws = ArrayList<String>()
+            val parsedResults = ArrayList<ExtractionResult>()
             for ((index, chunk) in chunks.withIndex()) {
                 // 空位只送这一段里的：否则模型会凭标签猜后面几段的空位。
-                val chunkSlots = if (chunks.size == 1) slots else findAiFillSlots(chunk, chunkLineOffsets[index])
+                val chunkSlots = slots.filter { it.lineIndex in chunk.startLine..chunk.endLine }
                 val raw = try {
                     client.complete(
                         buildKnowledgeExtractionMessages(
                             note.title,
-                            chunk,
+                            chunk.text,
                             note.concepts,
                             chunkSlots,
                             headings = headings,
                             chunkIndex = index,
                             chunkCount = chunks.size,
+                            contextPath = chunk.contextPath,
+                            continued = chunk.continued,
+                            truncated = chunk.truncated,
+                            headingPrefix = chunk.headingPrefix,
                         ),
                     )
                 } catch (cancelled: CancellationException) {
@@ -348,7 +362,15 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                 } catch (failed: Exception) {
                     null
                 }
-                if (raw != null) raws += raw
+                if (raw != null) {
+                    raws += raw
+                    val parsed = parseExtractionResult(raw)
+                    parsedResults += parsed.copy(
+                        candidates = parsed.candidates.map {
+                            it.copy(sectionPath = sectionPathFor(it, chunk))
+                        },
+                    )
+                }
             }
             if (raws.isEmpty()) {
                 extracting = false
@@ -359,22 +381,31 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
                 }
                 return@launch
             }
-            val merged = mergeExtractionResults(raws.map(::parseExtractionResult))
-            // 分段整理时，各段候选再放在一起统一分析一遍：合并同义项、统一别名与定义。
-            // 只整理已有候选、不新增，模型漏掉的候选原样保留（见 applyConsolidatedCandidates）。
-            val candidates = if (chunks.size > 1 && merged.candidates.size > 1) {
+            val merged = mergeExtractionResults(parsedResults)
+            // 统一分析只在同一节内跑：跨节同名概念（两处「去重」）不该被合成一条。
+            // 段落模式不跑：每段已经很短，且段落数可能上百，逐节再调一次不划算。
+            suspend fun consolidate(group: List<ConceptCandidate>): List<ConceptCandidate> {
+                if (group.size <= 1) return group
                 val consolidatedRaw = try {
-                    client.complete(buildConceptConsolidationMessages(note.title, merged.candidates))
+                    client.complete(buildConceptConsolidationMessages(note.title, group))
                 } catch (cancelled: CancellationException) {
                     extracting = false
                     throw cancelled
                 } catch (failed: Exception) {
                     null
                 }
-                applyConsolidatedCandidates(
-                    merged.candidates,
+                return applyConsolidatedCandidates(
+                    group,
                     consolidatedRaw?.let(::parseConceptCandidates).orEmpty(),
                 )
+            }
+            val paragraphMode = chunks.any { it.paragraph }
+            val candidates = if (!paragraphMode && merged.candidates.size > 1) {
+                val consolidated = ArrayList<ConceptCandidate>()
+                for (group in merged.candidates.groupBy { it.sectionPath }.values) {
+                    consolidated += consolidate(group)
+                }
+                consolidated
             } else {
                 merged.candidates
             }

@@ -43,12 +43,18 @@ import dev.trellis.app.desktop.NoteSummary
 import dev.trellis.app.desktop.alignAiFills
 import dev.trellis.app.desktop.applyAiFills
 import dev.trellis.app.desktop.buildKnowledgeExtractionMessages
+import dev.trellis.app.desktop.ExtractionResult
 import dev.trellis.app.desktop.displayTitle
-import dev.trellis.app.desktop.extractionBodyChunks
+import dev.trellis.app.desktop.extractionChunks
 import dev.trellis.app.desktop.findAiFillSlots
 import dev.trellis.app.desktop.markConceptAnnotations
 import dev.trellis.app.desktop.mergeExtractionResults
+import dev.trellis.app.desktop.outlinePromptLines
 import dev.trellis.app.desktop.parseExtractionResult
+import dev.trellis.app.desktop.parseOutline
+import dev.trellis.app.desktop.scanHeadingLines
+import dev.trellis.app.desktop.sectionAnchors
+import dev.trellis.app.desktop.sectionAt
 import dev.trellis.app.desktop.retainedCandidates
 import dev.trellis.app.desktop.synchronizeConceptMembership
 import dev.trellis.app.desktop.chooseMarkdownExportFile
@@ -518,29 +524,50 @@ private suspend fun organizeNote(
 ): String {
     if (note.body.isBlank()) return "正文是空的，没什么可整理"
     val slots = findAiFillSlots(note.body)
-    val chunks = extractionBodyChunks(note.body)
+    val chunks = extractionChunks(note.body)
+    if (chunks.isEmpty()) return "没有可整理的正文（表格不计入）"
+    val headings = outlinePromptLines(parseOutline(note.body))
+    val bodyLines = note.body.split('\n')
+    val anchors = sectionAnchors(scanHeadingLines(note.body))
+    fun sectionPathFor(candidate: dev.trellis.app.desktop.ConceptCandidate, chunk: dev.trellis.app.desktop.ExtractionChunk): List<String> {
+        val mention = candidate.mention.ifBlank { candidate.name }
+        if (mention.isNotBlank()) {
+            for (line in chunk.startLine..minOf(chunk.endLine, bodyLines.lastIndex)) {
+                if (bodyLines[line].contains(mention)) return sectionAt(anchors, line)
+            }
+        }
+        return chunk.sectionPath
+    }
     val raws = ArrayList<String>()
-    var consumedLines = 0
+    val parsedResults = ArrayList<ExtractionResult>()
     for ((index, chunk) in chunks.withIndex()) {
         // 分段送模型时，空位 id 仍然按整篇的行号算：模型看到的「slot@12」在主笔记里也是第 12 行。
-        val chunkSlots = if (chunks.size == 1) slots else findAiFillSlots(chunk, consumedLines)
-        consumedLines += chunk.count { it == '\n' }
+        val chunkSlots = slots.filter { it.lineIndex in chunk.startLine..chunk.endLine }
         val raw = runCatching {
             client.complete(
                 buildKnowledgeExtractionMessages(
                     title = note.title,
-                    body = chunk,
+                    body = chunk.text,
                     existing = note.concepts,
                     slots = chunkSlots,
+                    headings = headings,
                     chunkIndex = index,
                     chunkCount = chunks.size,
+                    contextPath = chunk.contextPath,
+                    continued = chunk.continued,
+                    truncated = chunk.truncated,
+                    headingPrefix = chunk.headingPrefix,
                 ),
             )
         }.getOrNull() ?: continue
         raws += raw
+        val parsed = parseExtractionResult(raw)
+        parsedResults += parsed.copy(
+            candidates = parsed.candidates.map { it.copy(sectionPath = sectionPathFor(it, chunk)) },
+        )
     }
     if (raws.isEmpty()) return "AI 整理失败，不影响笔记保存；可以稍后重试"
-    val merged = mergeExtractionResults(raws.map(::parseExtractionResult))
+    val merged = mergeExtractionResults(parsedResults)
 
     val filled = applyAiFills(note.body, alignAiFills(slots, merged.fills))
     val identitiesForRetain = (
