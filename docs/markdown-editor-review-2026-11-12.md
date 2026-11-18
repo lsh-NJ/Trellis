@@ -451,6 +451,37 @@ internal fun markdownShortcutHints(bindings: List<MarkdownBinding>): List<Shortc
 - 手动转义仍只认 ASCII 反斜杠写法（`\[\[…\]\]`），全角括号的手动转义没有额外支持；
 - 程序仍会在「不转义就会变语法」的地方写反斜杠（`\[\[`、行首 `\#` 等）——这是保住字面意思的必要成本，不是给普通符号加转义。
 
+### 7.11 标题语法显影 / 标题回车退格 / 正文标记重画（2026-11-19）
+
+用户反馈三条：
+
+1. **标题必须把内容删光才能变正文**——光标贴着隐藏的 `#` 时看不到它，也就没法「删掉它」；
+   设计口径是「光标在语法旁边/块内能看到原始 Markdown，光标不在、焦点不在就是纯渲染态」；
+2. **从标题行按回车，下一行还是标题**；
+3. **正文块左边距那个 `¶` 太丑**，要画个好看的。
+
+**落地**：
+
+| 位置 | 改动 |
+|---|---|
+| `tools/web-editor/src/extensions/gutter.js` | 光标所在标题前挂一个**不可编辑的 widget** 显示 `#`×级别（`span.heading-syntax`，`contenteditable=false`、`pointer-events:none`）；焦点不在编辑器时 **gutter 和 `#` 一律不挂**（`editor.isFocused` 早退 + focus/blur 时手动踢一次事务重算 decorations）；标题不再画 `H1`/`H2` 徽标（`#` 已经说明级别）；正文块的 `data-marker` 从 `¶` 改成 `paragraph`，由 CSS 画小圆点 |
+| `tools/web-editor/src/extensions/keys.js` | 新增 `backspaceInHeading`（光标在标题开头 → `setNode('paragraph')`，标题降级成正文、内容不动）；`enterInHeading`（标题末尾回车 → 在标题后插一个**空正文段落**并把光标放进去；标题中间回车 → `splitBlock` 拆成两条同级标题；空标题回车 → 直接变正文）；抽出 `handleEnter`/`handleBackspace` 两个入口，**键盘与 `window.__trellisKey` 走同一套**，避免调试钩子和真实按键漂移 |
+| `tools/web-editor/src/main.js` | `window.__trellisKey` 改调 `handleEnter`/`handleBackspace` |
+| `app/ui/src/jvmMain/resources/editor/index.html` | 新增 `.heading-syntax` 样式（等宽、0.58em、`#8e8e93` 50% 透明度、与标题拉开了 0.42em）；正文标记改成 6px 小圆点（`border-radius:50%`、`--fg-soft` 34% 透明度、对齐首行光学中心） |
+| `app/ui/src/jvmTest/.../WebEditorHarness.kt` | 新增 `heading` 探针（10 项断言：末尾回车出新正文段 / 只留一条标题 / 开头退格降级 / 文本不丢 / 中间回车拆两条 / `#` 显影 / 光标离开消失 / 正文标记是 paragraph / 标题不挂 gutter 徽标）+ `heading-blur` 阶段（失焦后 `#` 与 gutter 都归零）；深色主题截 `heading-syntax.png` / `gutter-paragraph.png` |
+
+**自检**（隔离 worktree `~/trellis-editor-verify`，避开另一个会话正在写的构建目录）：
+
+- harness 19 个夹具 + 全角探针 + 列表按键探针 + 标题探针全过；`heading-blur: {"syntax":0,"gutter":0}`；
+- 深色主题截图目检：标题前 `##` 是低调等宽灰、正文左侧是小圆点（不是 `¶`）。
+
+**取舍**：
+
+- 标题的 `#` 是**装饰**（widget），删它是通过「开头退格 → 降级成正文」实现的，不是真的删字符；
+  这样文件里永远只有 `# 标题` 这一种写法，不存在「正文里出现裸 `#`」的中间态。
+- 标题中间回车仍然拆成两条同级标题（和 Typora/大多数编辑器一致）；只有**末尾**回车才是新正文段。
+- 列表项里的块不参与标题逻辑（schema 里标题不会出现在列表内）。
+
 ## 8. 落地清单（本轮改了哪些文件）
 
 | 文件 | 改了什么 |
@@ -486,3 +517,6 @@ internal fun markdownShortcutHints(bindings: List<MarkdownBinding>): List<Shortc
 | `app/ui/src/jvmTest/.../WebEditorHarness.kt` + `resources/web-editor/fixtures/18-fullwidth-syntax(.expected).md`（新） | harness 支持 `*.expected.md` 字节级断言 + `symbols` 逐字符输入探针（8 项） |
 | `app/ui/src/jvmMain/resources/editor/editor.js` | 重新构建（全角输入规则 + 新转义策略） |
 | 文档 | 本文 §7.10；`tools/web-editor/README.md` 补「全角/半角一致」「转义策略」两节；`docs/knowledge-base-draft.md` §12 补一句 |
+| `tools/web-editor/src/extensions/gutter.js` / `keys.js` / `main.js` | 标题语法显影（`#` widget，仅焦点在编辑器且光标在标题内）、标题开头退格降级成正文、标题末尾回车新起正文段落、失焦后 gutter 与 `#` 全消失；`__trellisKey` 与键盘共用 `handleEnter/handleBackspace` |
+| `app/ui/src/jvmMain/resources/editor/index.html` | `.heading-syntax` 样式；正文块标记从 `¶` 改成 CSS 小圆点 |
+| `app/ui/src/jvmTest/.../WebEditorHarness.kt` | `heading` 探针（10 项断言）+ `heading-blur` 阶段 + 深色主题截图 `heading-syntax.png`/`gutter-paragraph.png` |

@@ -50,10 +50,10 @@
   .ai::after  { content: "\201D"; font-size: 22px; }
   /* [[概念]]：绿色 + 下划线（和 Compose 编辑器的标注样式保持一致）。 */
   .concept { color: var(--accent-soft); text-decoration: underline; }
-  /* 段落标记（gutter）：给光标所在的顶层块挂 class + data-marker，
+  /* 块类型提示（gutter）：给光标所在的顶层块挂 class + data-marker，
      由 CSS 的 ::before 画到左边距。用 node decoration 而不是 widget：
      列表项里 widget 的落点要跨 listItem/paragraph 下钻，位置算错就整块不显示。
-     伪元素绝对定位，不占行高、不影响段间距。 */
+     伪元素绝对定位，不占行高、不影响段间距；光标离开编辑器就整块不再挂（见 gutter.js）。 */
   .ProseMirror .gutter-current {
     position: relative;
   }
@@ -68,9 +68,36 @@
     font-size: 11px;
     font-weight: 600;
     color: var(--fg-soft);
-    opacity: 0.8;
+    opacity: 0.72;
     white-space: nowrap;
     pointer-events: none;
+  }
+  /* 正文块不画字符（¶ 是个校对符号，放在正文旁边很闹）：画一个安静的小圆点，
+     6px、34% 墨色，视觉上只做「这一块是正文」的标记。 */
+  .ProseMirror .gutter-current[data-marker="paragraph"]::before {
+    content: "";
+    left: -16px;
+    top: 0.52em;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--fg-soft);
+    opacity: 0.34;
+  }
+  /* 标题前面的 #：只在光标进入这条标题时出现（gutter.js 的 widget），不可编辑。
+     设计口径：光标在语法旁边/块内才看得到原始 Markdown，光标离开就是纯渲染。 */
+  .ProseMirror .heading-syntax {
+    display: inline-block;
+    margin-right: 0.42em;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 0.58em;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--fg-soft);
+    opacity: 0.5;
+    user-select: none;
+    pointer-events: none;
+    -webkit-user-select: none;
   }
   /* [[概念]] 补全浮层 */
   .concept-menu {

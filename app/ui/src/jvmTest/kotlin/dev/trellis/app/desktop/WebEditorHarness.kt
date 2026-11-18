@@ -72,6 +72,8 @@ internal object WebEditorHarness {
         val results = LinkedHashMap<String, FixtureResult>()
         val mismatches = ArrayList<String>()
         var symbolFlags = ""
+        var headingJson = ""
+        var headingBlurJson = ""
         try {
             awaitEditorReady(host) || error("页面 30 秒内没有就绪（window.editorReady != true）")
 
@@ -209,6 +211,131 @@ internal object WebEditorHarness {
             println("[web-editor-harness] symbols: " + symbolFlags)
             Thread.sleep(400)
             saveScreenshot(host, File(outDir, "fullwidth-symbols.png"))
+            // 标题/正文交互探针（2026-11-19 用户反馈的三条）：
+            //  ① 标题末尾回车 → 下面新起正文段（不再复制同级标题）；
+            //  ② 标题开头退格 → 标题降级成正文（不用把内容删光）；
+            //  ③ 光标进标题才显影 #（焦点离开全部消失），正文块在左边距画小圆点。
+            val headingScript = """
+                (function () {
+                  const e = window.__trellisEditor
+                  const key = (k) => window.__trellisKey(k)
+                  const findTop = (type, text) => {
+                    let found = null
+                    e.state.doc.descendants((node, pos) => {
+                      if (found !== null) return false
+                      if (node.type.name !== type) return true
+                      if (text != null && node.textContent !== text) return true
+                      found = { pos: pos, node: node }
+                      return false
+                    })
+                    return found
+                  }
+                  const checks = []
+                  const check = (name, ok) => checks.push(name + '=' + (ok ? '1' : '0'))
+                  const out = {}
+
+                  // ① 标题末尾回车 → 新起正文段，再打字确认新行是正文
+                  window.setMarkdown('# 一级标题')
+                  e.commands.focus('start')
+                  const h1 = findTop('heading', null)
+                  e.commands.setTextSelection(h1.pos + 1 + h1.node.content.size)
+                  out.enterReturned = key('Enter')
+                  out.afterEnterHtml = window.getHTML()
+                  e.view.dispatch(e.state.tr.insertText('正文', e.state.selection.from))
+                  out.afterTypingHtml = window.getHTML()
+                  out.afterEnterMarkdown = window.getMarkdown()
+                  check('enterNewParagraph', out.afterTypingHtml.indexOf('<p>正文</p>') >= 0 &&
+                    out.afterTypingHtml.indexOf('<h1>一级标题</h1>') >= 0)
+                  check('enterSingleHeading', (out.afterTypingHtml.match(/<h[1-6][ >]/g) || []).length === 1)
+
+                  // ② 标题开头退格 → 降级成正文（内容不丢）
+                  window.setMarkdown('## 二级标题\n\n正文')
+                  e.commands.focus('start')
+                  const h2 = findTop('heading', '二级标题')
+                  e.commands.setTextSelection(h2.pos + 1)
+                  out.backspaceReturned = key('Backspace')
+                  out.afterBackspaceHtml = window.getHTML()
+                  out.afterBackspaceMarkdown = window.getMarkdown()
+                  check('backspaceDemotes', out.afterBackspaceHtml.indexOf('<p>二级标题</p>') >= 0 &&
+                    out.afterBackspaceHtml.indexOf('<h2') < 0)
+                  check('backspaceKeepsText', out.afterBackspaceMarkdown.indexOf('二级标题') >= 0)
+
+                  // ③ 标题中间回车 → 拆成两条同级标题
+                  window.setMarkdown('# 标题')
+                  e.commands.focus('start')
+                  const h3 = findTop('heading', null)
+                  e.commands.setTextSelection(h3.pos + 2)
+                  out.splitReturned = key('Enter')
+                  out.afterSplitHtml = window.getHTML()
+                  out.afterSplitMarkdown = window.getMarkdown()
+                  check('enterMidSplits', (out.afterSplitHtml.match(/<h1[ >]/g) || []).length === 2)
+
+                  // ④ # 只在光标进入标题时出现；焦点离开全部消失；正文块标记是 paragraph
+                  window.setMarkdown('## 标题\n\n正文')
+                  e.commands.focus('start')
+                  e.view.dispatch(e.state.tr)
+                  const syntaxEl = document.querySelector('.heading-syntax')
+                  out.syntaxText = syntaxEl ? syntaxEl.textContent : null
+                  out.syntaxInHeading = document.querySelectorAll('.heading-syntax').length
+                  const gutter1 = document.querySelector('.gutter-current')
+                  out.gutterInHeading = gutter1 ? gutter1.getAttribute('data-marker') : null
+                  e.commands.focus('end')
+                  e.view.dispatch(e.state.tr)
+                  out.syntaxInParagraph = document.querySelectorAll('.heading-syntax').length
+                  const gutter2 = document.querySelector('.gutter-current')
+                  out.gutterInParagraph = gutter2 ? gutter2.getAttribute('data-marker') : null
+                  check('syntaxInHeading', out.syntaxInHeading === 1 && out.syntaxText === '##')
+                  check('syntaxLeavesWithCaret', out.syntaxInParagraph === 0)
+                  check('gutterDotForParagraph', out.gutterInParagraph === 'paragraph')
+                  check('gutterHiddenInHeading', out.gutterInHeading === null)
+
+                  out.checks = checks.join(' ')
+                  return JSON.stringify(out)
+                })()
+            """.trimIndent()
+            headingJson = onFx { host.view.engine.executeScript(headingScript) as? String ?: "" }
+            println("[web-editor-harness] heading: " + headingJson)
+            // 焦点离开编辑器：# 与 gutter 都应该消失（等待 blur 的 0ms 重绘，同步读不到）。
+            onFx {
+                host.view.engine.executeScript(
+                    "window.setMarkdown(\"## 标题\\n\\n正文\"); " +
+                        "const e = window.__trellisEditor; e.commands.focus('start'); e.view.dispatch(e.state.tr)",
+                )
+            }
+            Thread.sleep(200)
+            onFx { host.view.engine.executeScript("window.__trellisEditor.view.dom.blur()") }
+            Thread.sleep(300)
+            headingBlurJson = onFx {
+                host.view.engine.executeScript(
+                    "(function(){ return JSON.stringify({syntax: document.querySelectorAll('.heading-syntax').length, " +
+                        "gutter: document.querySelectorAll('.gutter-current').length}) })()",
+                ) as? String ?: ""
+            }
+            println("[web-editor-harness] heading-blur: " + headingBlurJson)
+
+            // 深色主题下截两张图：标题语法显影、正文小圆点标记（和用户实际主题一致）。
+            runCatching {
+                // 前面的探针可能把「菜单」浮层留在页面上，截图前先关掉。
+                onFx { host.view.engine.executeScript("window.hideShortcutMenu()") }
+                onFx {
+                    host.view.engine.executeScript(
+                        "window.setTheme({background:'#1c1c1e',onBackground:'#ececec',onSurfaceVariant:'#8e8e93'," +
+                            "accent:'#8fd14f',accentSoft:'rgba(143,209,79,.62)',codeBackground:'#2a2a2c',border:'#3a3a3c'})",
+                    )
+                }
+                onFx {
+                    host.view.engine.executeScript(
+                        "window.setMarkdown(\"# 学习笔记\\n\\n第一段正文：光标停在正文里时，左边只留一个小圆点。" +
+                            "\\n\\n## 二级标题\\n\\n第二段正文：这里放光标看标题语法。\")",
+                    )
+                }
+                onFx { host.view.engine.executeScript(caretScript("二级标题")) }
+                Thread.sleep(600)
+                saveScreenshot(host, File(outDir, "heading-syntax.png"))
+                onFx { host.view.engine.executeScript(caretScript("第一段正文")) }
+                Thread.sleep(600)
+                saveScreenshot(host, File(outDir, "gutter-paragraph.png"))
+            }
             // 滚动条截图：长文档滚到中间，确认是低调的胶囊而不是系统大滑条。
             runCatching {
                 onFx { host.view.engine.executeScript("window.hideShortcutMenu()") }
@@ -240,8 +367,34 @@ internal object WebEditorHarness {
                 "全角输入规则没生效：" + name + "（" + symbolFlags + "）"
             }
         }
+        for (name in listOf(
+            "enterNewParagraph",
+            "enterSingleHeading",
+            "backspaceDemotes",
+            "backspaceKeepsText",
+            "enterMidSplits",
+            "syntaxInHeading",
+            "syntaxLeavesWithCaret",
+            "gutterDotForParagraph",
+            "gutterHiddenInHeading",
+        )) {
+            check(headingJson.contains(name + "=1")) {
+                "标题/正文交互没生效：" + name + "（" + headingJson + "）"
+            }
+        }
+        check(headingBlurJson.contains("\"syntax\":0") && headingBlurJson.contains("\"gutter\":0")) {
+            "焦点离开编辑器后 # / gutter 没消失：" + headingBlurJson
+        }
         return Report(results.size, jsonFile, pngFile)
     }
+
+    /** 把光标放到「包含 [text] 的文本块」末尾，并强制重算一次 decorations（截图用）。 */
+    private fun caretScript(text: String): String =
+        "(function(){ const e = window.__trellisEditor; let target = null; " +
+            "e.state.doc.descendants((node,pos)=>{ if (target == null && node.isTextblock && " +
+            "node.textContent.indexOf(" + jsString(text) + ") >= 0) target = pos + 1 + node.content.size; return true }); " +
+            "if (target != null) { e.commands.focus(); e.commands.setTextSelection(target); e.view.dispatch(e.state.tr) } " +
+            "return target != null })()"
 
     // ------------------------------------------------------------------ 环境/夹具
 

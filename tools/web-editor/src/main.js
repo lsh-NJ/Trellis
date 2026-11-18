@@ -24,7 +24,7 @@ import { ConceptMark } from './extensions/concept.js'
 import { AiMark } from './extensions/ai.js'
 import { AiBlock } from './extensions/ai-block.js'
 import { Gutter } from './extensions/gutter.js'
-import { EditorKeys, backspaceInList, enterInList } from './extensions/keys.js'
+import { EditorKeys, handleBackspace, handleEnter } from './extensions/keys.js'
 import { FullwidthInput } from './extensions/fullwidth.js'
 import { createOverlays } from './ui/overlays.js'
 import { markdownToHtml, htmlToMarkdown } from './markdown.js'
@@ -320,10 +320,11 @@ window.setConcepts = (names) => {
   window.__trellisConcepts = Array.isArray(names) ? names.slice() : []
   return true
 }
-// 调试/回归用：直接跑列表按键处理逻辑（不经过真实键盘事件，JavaFX 的合成事件不可靠）。
+// 调试/回归用：直接跑按键处理逻辑（不经过真实键盘事件，JavaFX 的合成事件不可靠）。
+// 和真实键盘走同一套 handleEnter / handleBackspace，避免两处实现漂移。
 window.__trellisKey = (name) => {
-  if (name === 'Enter') return enterInList(editor)
-  if (name === 'Backspace') return backspaceInList(editor)
+  if (name === 'Enter') return handleEnter(editor)
+  if (name === 'Backspace') return handleBackspace(editor)
   return false
 }
 window.focusEditor = () => editor.commands.focus()
