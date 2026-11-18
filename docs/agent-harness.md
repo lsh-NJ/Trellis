@@ -135,7 +135,8 @@
   <tools>           35 只工具全量目录（名字+描述+风险提示，按名字排序）
   <tool_protocol>   JSON 工具调用 + done/cannotDo 协议
 [current_state]     已装插件、错误、待审批、当前页（动态，放前缀之后）
-[history]           最近 20 条正式发言
+[checkpoint]        更早对话折叠后的交接摘要（没有就不插；见 ContextWindow）
+[history]           近期正式发言（按 token 预算，不再固定 20 条）
 [optional skill]    未来：用户显式触发的技能/计划模式说明（默认无）
 [user]              这一句话
 ```

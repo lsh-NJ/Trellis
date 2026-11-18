@@ -233,7 +233,7 @@ ChatScreen ──> AppRuntime.sendChat()
 ```
 
 **2026-11-07 起（用户定的）**：**没有意图分类器**——每轮拿全量工具，模型自己决定聊天 / 动手 / 先问一句；不再有「按意图裁工具、按意图拼提示词、判错就干不了活」。
-分层提示词顺序：静态 system（规则 + 工具守则 + 全量工具目录 + 管理员守则 + `<task:work>` 通用工作流）→ 动态 `<current_state>` → 历史（最近 20 条）→ 用户这句话。
+分层提示词顺序：静态 system（规则 + 工具守则 + 全量工具目录 + 管理员守则 + `<task:work>` 通用工作流）→ 动态 `<current_state>` → 会话检查点（更早对话折叠后的摘要，没有就不插）→ 历史（按 token 预算留近期原文）→ 用户这句话。
 > 设计背景、A/B 与迁移记录见 `docs/agent-harness.md`；`Intent.kt` / `TOOL_INTENTS` / 关键词分类器的删除记录也在那里。
 
 **自主检查轮（2026-11-08，第二条独立入口）**：用户勾掉计划节点后，`AppRuntime` 对完成前后的 `stages` 做快照对比（`AutonomyTrigger.detectAutonomyEvent(before, after, poolEmpty)`）：只有**跨过一个阶段**（`StageDone`）或**整份计划完成**（`PlanDone`）才触发，单节点不打扰；只在用户动作（`origin="ui.plan"`/`ui.tasks.node`）后判定，笔记自动勾选/系统结算不触发。触发后在管家会话里跑一轮**隐藏轮**：工具集换成 `AutonomyTools`（只读 + `propose_practice`/`ask_choices`/`rest`，写工具本轮不给），人格由 `ProactivePrompt.systemPrompt()` 拼在 `StewardPrompt` 之后；用户不在对话页就标未读、失焦且真有建议才发桌面通知、`rest` 则什么都不说。用户点选后由**下一轮普通会话**执行写操作（`confirmed=true`），自主轮自己不改计划。计划完成后自主轮只给「新开一份计划」的建议：已完成计划对 AGENT 只读（不追加/不排周/不改节奏），用户侧不冻结、仍可打开操作。

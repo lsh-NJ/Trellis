@@ -172,6 +172,8 @@ internal class ChatStore(home: File, private val log: (String) -> Unit = {}) {
             kind = SessionKind.entries
                 .firstOrNull { it.name == root["kind"]?.jsonPrimitive?.content }
                 ?: SessionKind.Manager,
+            // 旧文件没有检查点：空串就是「还没折叠过」，不需要额外迁移。
+            checkpoint = root["checkpoint"]?.jsonPrimitive?.content ?: "",
         )
     }.getOrNull()
 
@@ -218,6 +220,8 @@ internal class ChatStore(home: File, private val log: (String) -> Unit = {}) {
         if (session.unread) put("unread", true)
         // 只写 steward：普通管理员会话是默认值，不写进每份文件。
         if (session.kind != SessionKind.Manager) put("kind", session.kind.name)
+        // 没有检查点就不写字段：绝大多数会话文件不该因为这次升级多出一行空值。
+        if (session.checkpoint.isNotBlank()) put("checkpoint", session.checkpoint)
         putJsonArray("lines") {
             session.lines.forEach { line ->
                 add(

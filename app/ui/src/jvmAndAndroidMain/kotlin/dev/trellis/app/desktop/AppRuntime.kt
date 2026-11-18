@@ -23,6 +23,12 @@ import dev.trellis.ai.tool.ToolResult
 import dev.trellis.ai.tool.DeepSeekMarkup
 import dev.trellis.ai.manager.ManagerPrompt
 import dev.trellis.ai.manager.ManagerRouter
+import dev.trellis.ai.memory.ContextBudget
+import dev.trellis.ai.memory.checkpointMessages
+import dev.trellis.ai.memory.needsCompaction
+import dev.trellis.ai.memory.normalizeCheckpoint
+import dev.trellis.ai.memory.planWindow
+import dev.trellis.ai.memory.tailWithin
 import dev.trellis.ai.steward.MorningRearrangePrompt
 import dev.trellis.ai.steward.ProactivePrompt
 import dev.trellis.ai.steward.StewardPrompt
@@ -1408,8 +1414,21 @@ class AppRuntime private constructor() {
     /** 知识库笔记：文件是真相，以后加的索引只是从这些文件重建的投影。 */
     internal lateinit var knowledgeStore: KnowledgeStore
 
-    /** 发给模型的历史（只有正式对话，不含过程）；上限 20 条，防止越聊越贵。 */
+    /**
+     * 发给模型的历史（只有正式对话，不含过程）。
+     *
+     * 按 token 预算留近期原文，不是固定条数；涨过预算就由 [compactHistoryIfNeeded]
+     * 把最老的一段折进 [chatCheckpoint]（L1→L2），原文仍留在聊天记录里。
+     */
     private val chatHistory = mutableListOf<LlmMessage>()
+
+    /**
+     * 当前会话的检查点（更早对话折叠后的摘要）。
+     *
+     * 和 [chatHistory] 同进退：换会话时一起清、开历史会话时一起读、
+     * 每折叠一次就更新一次，并随 [persistChat] 落进 ChatSession.checkpoint。
+     */
+    private var chatCheckpoint: String = ""
 
     /**
      * 跑对话的 scope 挂在 runtime 上，**不能挂在聊天页上**。
@@ -1561,6 +1580,7 @@ class AppRuntime private constructor() {
         currentChatId = null
         chat.clear()
         chatHistory.clear()
+        chatCheckpoint = ""
         // 提问属于上一轮对话：换会话后还留着，点一下会当成新会话的提问发出去。
         chatAsk = null
         // 行 id 是**整个进程**单调递增的：会话之间、重启前后都不能撞，
@@ -1580,15 +1600,18 @@ class AppRuntime private constructor() {
         // 只升不降：从任意一段历史会话切过来，新行都不能复用别的会话已有的 id。
         nextChatLineId = maxOf(nextChatLineId, (session.lines.maxOfOrNull { it.id } ?: 0L) + 1)
         chatHistory.clear()
-        session.lines
+        chatCheckpoint = session.checkpoint
+        // 只按 token 预算取尾部（不是固定 20 条）：短会话多带几轮，长会话别把窗口撑爆。
+        // 截断点落在轮边界上，最后一轮永远保留；更早的事实已经在 checkpoint 里。
+        val restored = session.lines
             .filter { it.role == ChatRole.User || it.role == ChatRole.Assistant }
-            .takeLast(20)
-            .forEach { line ->
-                chatHistory += LlmMessage(
+            .map { line ->
+                LlmMessage(
                     if (line.role == ChatRole.User) LlmRole.User else LlmRole.Assistant,
                     line.text,
                 )
             }
+        chatHistory += tailWithin(restored, ContextBudget.HISTORY_TOKENS)
         // 打开即已读：用户人就在这段里，红点不该还留着。
         markChatRead(session.id)
     }
@@ -2157,6 +2180,7 @@ class AppRuntime private constructor() {
                 updatedAt = now,
                 lines = chat.toList(),
                 kind = existing?.kind ?: SessionKind.Manager,
+                checkpoint = chatCheckpoint,
             ),
         )
         loadChatSessions()
@@ -3314,6 +3338,7 @@ class AppRuntime private constructor() {
                 state = managerState(),
                 request = text,
                 history = chatHistory.toList(),
+                checkpoint = chatCheckpoint,
                 onDelta = { delta ->
                     answerText += delta
                     displayText = visibleReply(answerText)
@@ -3449,7 +3474,9 @@ class AppRuntime private constructor() {
                 chatHistory += LlmMessage(LlmRole.User, text)
                 chatHistory += LlmMessage(LlmRole.Assistant, displayText)
             }
-            while (chatHistory.size > 20) chatHistory.removeAt(0)
+            // 历史涨过预算就把最老的一段折进检查点（L1→L2）。只做普通轮：
+            // 隐藏轮（管家自动检查）没有用户在场，不值得为它多花一次模型调用。
+            if (!hidden) compactHistoryIfNeeded(llm)
 
             // 每一轮都重取一次界面数据：工具可能动了插件、计划、样式中的任何一样，
             // 现在没有意图可以告诉我们「这轮动没动」，重取一遍最稳（开销很小）。

@@ -181,4 +181,12 @@ data class ChatSession(
     val unread: Boolean = false,
     /** 旧会话文件没有这个字段，默认 [SessionKind.Manager]。 */
     val kind: SessionKind = SessionKind.Manager,
+    /**
+     * 更早对话的交接摘要（上下文分层里的 L2）。
+     *
+     * 生成时机：历史涨过 token 预算、宿主把最老的一段折进这里（见 [dev.trellis.ai.memory.planWindow]）。
+     * 落盘是为了重开应用后还接得住上下文；旧文件没有这个字段，读回来是空串 —— 等价于「还没折叠过」。
+     * 原文不会被删：它仍在 [lines] 里，只是不再每轮都喂给模型。
+     */
+    val checkpoint: String = "",
 )

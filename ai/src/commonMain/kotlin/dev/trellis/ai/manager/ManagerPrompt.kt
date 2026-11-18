@@ -4,6 +4,7 @@ import dev.trellis.ai.CapabilityCatalog
 import dev.trellis.ai.LlmMessage
 import dev.trellis.ai.LlmRole
 import dev.trellis.ai.PromptBuilder
+import dev.trellis.ai.memory.checkpointBlock
 import dev.trellis.ai.tool.AgentTool
 import dev.trellis.ai.tool.ToolAgent
 
@@ -15,7 +16,8 @@ import dev.trellis.ai.tool.ToolAgent
  * ```
  * [system] 静态前缀：管理员身份 + 产品与插件说明书 + 工具工作守则 + 工具清单 + 通用工作流
  * [system] 动态状态：当前装了哪些插件、内核状态
- * ...历史对话...
+ * [system] 会话检查点：更早部分被折叠后的摘要（没有就不插）
+ * ...历史对话（近期原文，按 token 预算留）...
  * [user]   这一句请求
  * ```
  *
@@ -35,10 +37,18 @@ class ManagerPrompt(
         state: String,
         request: String,
         history: List<LlmMessage> = emptyList(),
+        /**
+         * 更早对话的检查点（[dev.trellis.ai.memory.checkpointBlock] 包好的正文，或空串）。
+         *
+         * 放在历史和状态之间：它比 state 变得慢（只在折叠时更新），又必须排在近期原文之前 ——
+         * 读起来是「现在的状态 → 之前发生过什么 → 最近聊了什么 → 这一句」。
+         */
+        checkpoint: String = "",
     ): List<LlmMessage> {
         val out = mutableListOf<LlmMessage>()
         out += LlmMessage(LlmRole.System, base)
         if (state.isNotBlank()) out += LlmMessage(LlmRole.System, stateBlock(state))
+        if (checkpoint.isNotBlank()) out += LlmMessage(LlmRole.System, checkpointBlock(checkpoint))
         out += history
         out += LlmMessage(LlmRole.User, userLine(request))
         return out

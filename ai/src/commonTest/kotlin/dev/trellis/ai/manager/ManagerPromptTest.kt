@@ -91,6 +91,21 @@ class ManagerPromptTest {
         assertEquals(LlmRole.User, chat.last().role)
     }
 
+    @Test
+    fun aCheckpointGoesBetweenStateAndHistory() {
+        val history = listOf(
+            LlmMessage(LlmRole.User, "最近一句"),
+            LlmMessage(LlmRole.Assistant, "最近一句的回答"),
+        )
+        val messages = prompt.messages("已装插件：1 个", "接着来", history, checkpoint = "## 进度\n做到第二步")
+
+        assertEquals(6, messages.size)
+        assertTrue(messages[2].content.startsWith("<session_checkpoint>"), "检查点要排在历史之前")
+        assertTrue(messages[2].content.contains("做到第二步"))
+        assertEquals("最近一句", messages[3].content)
+        assertEquals("我想要：接着来", messages.last().content)
+    }
+
     private fun pluginDecisionBlock(): String =
         prompt.base.substringAfter("<when_to_create_a_plugin>")
             .substringBefore("</when_to_create_a_plugin>")

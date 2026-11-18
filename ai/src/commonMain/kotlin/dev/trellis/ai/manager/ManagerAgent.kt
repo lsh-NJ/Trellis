@@ -74,6 +74,8 @@ class ManagerAgent(
         state: String,
         request: String,
         history: List<LlmMessage> = emptyList(),
+        /** 更早对话的检查点；空串表示还没有折叠过。 */
+        checkpoint: String = "",
         onDelta: suspend (String) -> Unit = {},
         onLog: (String) -> Unit = {},
         onTrace: (dev.trellis.ai.tool.ToolTrace) -> Unit = {},
@@ -85,7 +87,7 @@ class ManagerAgent(
          */
         onThinkingDelta: ((String) -> Unit)? = null,
     ): ManagerResult {
-        val messages = router.prompt.messages(state, request, history)
+        val messages = router.prompt.messages(state, request, history, checkpoint)
 
         // ① 先按聊天跑：流式吐字，用户不用等整段生成。
         val streamed = StringBuilder()
