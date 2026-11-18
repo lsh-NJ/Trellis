@@ -61,6 +61,14 @@ object PlanUnitBand {
 data class PlanDocItem(
     val text: String,
     val minutesHint: Int? = null,
+    /** 周文档里这个节点属于哪个主题（`### 主题：进程状态` 分组）；老文档没有，就是 null。 */
+    val topic: String? = null,
+)
+
+/** 阶段下的一个主题：名称 + 体量（天，可空表示文档没写）。 */
+data class PlanDocTopic(
+    val name: String,
+    val days: Int? = null,
 )
 
 /** 总文档阶段里的一条资源：`- [名称](url) — 备注`。 */
@@ -85,6 +93,8 @@ data class PlanDocStage(
     val deliverable: String = "",
     val acceptance: String = "",
     val resources: List<DocResource> = emptyList(),
+    /** 阶段的主题清单：`- 主题：进程状态与切换（约 2 天）`。 */
+    val topics: List<PlanDocTopic> = emptyList(),
 )
 
 /** 一份计划文档解析后的结构：`# 目标与验收` / `## 阶段` / `## 2026-W45` / `## 待安排` 四块。 */
@@ -106,6 +116,7 @@ private class StageBuilder(
     private var deliverable: String = ""
     private var acceptance: String = ""
     private val resources = mutableListOf<DocResource>()
+    private val topics = mutableListOf<PlanDocTopic>()
     private var resourceMode = false
 
     fun addBullet(bullet: String) {
@@ -117,6 +128,7 @@ private class StageBuilder(
                 "聚焦" -> focus = value
                 "交付物" -> deliverable = value
                 "过关标准" -> acceptance = value
+                "主题" -> addTopic(value)
                 "资源" -> {
                     resourceMode = true
                     addLinks(value)
@@ -125,6 +137,19 @@ private class StageBuilder(
             return
         }
         if (resourceMode) addLinks(bullet)
+    }
+
+    /** `进程状态与切换（约 2 天）` → 主题名 + 天数；没写天数就只留名字。 */
+    private fun addTopic(text: String) {
+        val days = TOPIC_DAYS.find(text)
+        val name = if (days != null) {
+            text.removeRange(days.range).trim().trimEnd('，', ',', '；', ';', '、')
+        } else {
+            text.trim()
+        }
+        if (name.isBlank()) return
+        val parsed = days?.groupValues?.get(1)?.toIntOrNull()?.takeIf { it in 1..30 }
+        if (topics.none { it.name == name }) topics += PlanDocTopic(name = name, days = parsed)
     }
 
     private fun addLinks(text: String) {
@@ -158,6 +183,7 @@ private class StageBuilder(
         deliverable = deliverable,
         acceptance = acceptance,
         resources = resources.toList(),
+        topics = topics.toList(),
     )
 
     companion object {
@@ -185,7 +211,10 @@ private class StageBuilder(
         }
 
         private val LINK = Regex("\\[([^\\]]+)]\\(([^)\\s]+)\\)")
-        private val FIELD_PREFIX = Regex("^(聚焦|交付物|过关标准|资源)\\s*[：:]\\s*(.*)$")
+        private val FIELD_PREFIX = Regex("^(聚焦|交付物|过关标准|主题|资源)\\s*[：:]\\s*(.*)$")
+
+        /** 主题体量：`（约 2 天）`。 */
+        private val TOPIC_DAYS = Regex("[（(]\\s*约?\\s*(\\d+)\\s*天\\s*[）)]")
         private val WEEK_RANGE = Regex("(\\d{4}-W\\d{2})\\s*[–—~-]\\s*(\\d{4}-W\\d{2})")
         private val WEEKS_COUNT = Regex("约\\s*(\\d+)\\s*周")
         private val WEEK_PAREN = Regex("\\s*[（(][^）)]*[）)]\\s*$")
@@ -496,6 +525,7 @@ class PlanDocStore(home: File) : AutoCloseable {
         val unscheduled = mutableListOf<PlanDocItem>()
         var section = Section.NONE
         var week: String? = null
+        var weekTopic: String? = null
         var stage: StageBuilder? = null
 
         fun flushStage() {
@@ -529,18 +559,27 @@ class PlanDocStore(home: File) : AutoCloseable {
                 weekHeading != null -> {
                     flushStage()
                     week = weekHeading.groupValues[1]
+                    weekTopic = null
                     section = Section.WEEK
+                }
+                section == Section.WEEK && WEEK_TOPIC_HEADING.matches(line) -> {
+                    // 周文档里 `### 主题：X` 是分组标题：它下面直到下一个 `###`/`##` 的条目都属于这个主题。
+                    // 其它 `###` 仍按「不认识的标题」处理（结束当前小节），避免把随手写的子标题带进来。
+                    weekTopic = WEEK_TOPIC_HEADING.matchEntire(line)
+                        ?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() }
                 }
                 UNSCHEDULED_HEADING.matches(line) -> {
                     flushStage()
                     section = Section.UNSCHEDULED
                     week = null
+                    weekTopic = null
                 }
                 line.startsWith("#") -> {
                     // 其它标题（含 `### ...`）结束当前小节，其下条目忽略。
                     flushStage()
                     section = Section.NONE
                     week = null
+                    weekTopic = null
                 }
                 else -> {
                     val bullet = BULLET.matchEntire(line)?.groupValues?.get(1)?.trim()
@@ -550,7 +589,9 @@ class PlanDocStore(home: File) : AutoCloseable {
                         Section.UNSCHEDULED -> itemOf(bullet)?.let(unscheduled::add)
                         Section.WEEK -> {
                             val current = week ?: return@forEach
-                            itemOf(bullet)?.let { weeks.getOrPut(current) { mutableListOf() }.add(it) }
+                            itemOf(bullet)?.let {
+                                weeks.getOrPut(current) { mutableListOf() }.add(it.copy(topic = weekTopic))
+                            }
                         }
                         Section.STAGES -> {
                             if (bullet.startsWith("阶段 ")) {
@@ -573,13 +614,20 @@ class PlanDocStore(home: File) : AutoCloseable {
     /** 某份计划总文档里的阶段（无文档返回空）。 */
     fun stages(planId: String): List<PlanDocStage> = load(planId)?.stages.orEmpty()
 
-    /** 某份计划在某一周应该落到的阶段（按阶段周区间判断；拿不到区间返回 null）。 */
-    fun stageForWeek(planId: String, week: String): PlanDocStage? =
-        stages(planId).firstOrNull { stage ->
+    /**
+     * 某份计划在某一周应该落到的阶段。
+     *
+     * 老计划按周区间匹配；2026-11-18 起阶段不再绑周，就退回第一个阶段（周文档由「当前阶段主题」
+     * 决定，这里只给资源挂载/展示一个兜底，别让没有区间的计划拿不到阶段资源）。
+     */
+    fun stageForWeek(planId: String, week: String): PlanDocStage? {
+        val all = stages(planId)
+        return all.firstOrNull { stage ->
             val start = stage.weekStart
             val end = stage.weekEnd
             start != null && end != null && week in start..end
-        }
+        } ?: all.firstOrNull()
+    }
 
     /**
      * 一条 bullet 文字 → 条目（把「（中 · 约 30 分钟）」这类时长标注剥出来）。
@@ -628,6 +676,9 @@ class PlanDocStore(home: File) : AutoCloseable {
         val STAGES_HEADING = Regex("^##\\s*阶段\\s*$")
         val STAGE_HEADING = Regex("^###\\s+(阶段\\b.*)$")
         val WEEK_HEADING = Regex("^##\\s*(\\d{4}-W\\d{2})\\s*$")
+
+        /** 周文档里的主题分组标题：`### 主题：进程状态`。 */
+        val WEEK_TOPIC_HEADING = Regex("^###\\s*主题\\s*[：:]\\s*(.+)$")
         val UNSCHEDULED_HEADING = Regex("^##\\s*待安排\\s*$")
         val BULLET = Regex("^(?:[-*+]|\\d+[.)])\\s+(.+)$")
 

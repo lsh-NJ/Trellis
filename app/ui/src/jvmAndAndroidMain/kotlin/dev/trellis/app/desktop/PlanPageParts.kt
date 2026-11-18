@@ -768,11 +768,16 @@ private fun resourceKindLabel(kind: String): String = when (kind) {
  * 所以 1440pt 的窗口里页面最多只量到 1080dp，永远够不到 `TrellisBreakpoints.medium`——拿页面宽度判
  * 会连宽屏也不显示右栏（联调踩过）。窗口宽度在 PlanScreen 里用 `LocalWindowInfo` 取，和知识库页同一套。
  */
-/** 阶段进度：有单元就显示 done/total；没有单元时退化成「W45–W47」这样的周区间，别让右栏一片「—」。 */
+/**
+ * 阶段进度：有节点就显示 done/total；没有节点时显示主题数，老计划（带周区间）退化成 W45–W47。
+ *
+ * 2026-11-18 起阶段不绑周：进度按主题/节点算，周只会出现在老计划里。
+ */
 private fun stageProgressLabel(stage: StageView): String {
     if (stage.total > 0) return stage.done.toString() + "/" + stage.total
-    val start = stage.weekStart.takeLast(2).trimStart('0')
-    val end = stage.weekEnd.takeLast(2).trimStart('0')
+    if (stage.topics.isNotEmpty()) return stage.topics.count { it.complete }.toString() + "/" + stage.topics.size + " 主题"
+    val start = stage.weekStart?.takeLast(2)?.trimStart('0') ?: return "—"
+    val end = stage.weekEnd?.takeLast(2)?.trimStart('0') ?: return "—"
     return if (start == end) "W" + start else "W" + start + "–W" + end
 }
 
@@ -802,8 +807,10 @@ internal fun PlanStageRail(runtime: AppRuntime, modifier: Modifier = Modifier) {
             style = tokens.type.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        val currentStageId = stages.firstOrNull { !it.complete }?.id ?: stages.lastOrNull()?.id
         stages.forEach { stage ->
-            val selected = stage.covers(runtime.planSelectedWeek)
+            val selected = stage.covers(runtime.planSelectedWeek) ||
+                (stage.weekStart == null && stage.id == currentStageId)
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -849,9 +856,12 @@ internal fun PlanStageRail(runtime: AppRuntime, modifier: Modifier = Modifier) {
     }
 }
 
-/** 选中周是否落在这个阶段的 ISO 周号区间里（周号零填充，字符串比较就是周序）。 */
-private fun StageView.covers(week: String?): Boolean =
-    week != null && week >= weekStart && week <= weekEnd
+/** 选中周是否落在这个阶段的 ISO 周号区间里（老计划）；不绑周的阶段由调用点按「当前阶段」判断。 */
+private fun StageView.covers(week: String?): Boolean {
+    val start = weekStart ?: return false
+    val end = weekEnd ?: return false
+    return week != null && week >= start && week <= end
+}
 
 /**
  * 阶段 → 计划里实际存在的周卡：优先区间内的第一张，其次区间后的第一张，最后退回最后一张。
@@ -860,7 +870,12 @@ private fun StageView.covers(week: String?): Boolean =
  */
 private fun stageFirstPlanWeek(runtime: AppRuntime, stage: StageView): String? {
     val cards = runtime.planWeekCards
-    return cards.firstOrNull { it.week >= stage.weekStart && it.week <= stage.weekEnd }?.week
-        ?: cards.firstOrNull { it.week >= stage.weekStart }?.week
+    val start = stage.weekStart
+    val end = stage.weekEnd
+    // 不绑周的阶段（新计划）：跳回当前周 / 第一张周卡，别让点击没反应。
+    if (start == null || end == null) return cards.firstOrNull { it.week == runtime.planSelectedWeek }?.week
+        ?: cards.firstOrNull()?.week
+    return cards.firstOrNull { it.week >= start && it.week <= end }?.week
+        ?: cards.firstOrNull { it.week >= start }?.week
         ?: cards.lastOrNull()?.week
 }

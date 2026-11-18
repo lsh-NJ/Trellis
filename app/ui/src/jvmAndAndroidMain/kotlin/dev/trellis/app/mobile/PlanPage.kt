@@ -190,11 +190,14 @@ fun PlanPage(runtime: AppRuntime) {
         val stages = runtime.planStages
         if (stages.isNotEmpty()) {
             item {
-                val completedStages = stages.count { it.total > 0 && it.done >= it.total }
+                val completedStages = stages.count { it.complete }
                 val selectedWeek = runtime.planSelectedWeek
                 val current = stages.firstOrNull { stage ->
-                    selectedWeek != null && selectedWeek >= stage.weekStart && selectedWeek <= stage.weekEnd
-                } ?: stages.firstOrNull { it.done < it.total } ?: stages.last()
+                    val start = stage.weekStart
+                    val end = stage.weekEnd
+                    selectedWeek != null && start != null && end != null &&
+                        selectedWeek >= start && selectedWeek <= end
+                } ?: stages.firstOrNull { !it.complete } ?: stages.last()
                 CardBox {
                     Row(
                         Modifier
@@ -1275,16 +1278,24 @@ private fun StageProgressRow(stage: StageView, onClick: () -> Unit) {
     }
 }
 
-/** 有单元时「done/total」，还没排单元时退化成周区间（桌面同语义）。 */
+/** 有单元时「done/total」；没单元时显示主题数；老计划（带周区间）退化成周号（桌面同语义）。 */
 private fun stageProgressLabel(stage: StageView): String =
     if (stage.total > 0) {
         stage.done.toString() + "/" + stage.total
+    } else if (stage.topics.isNotEmpty()) {
+        stage.topics.count { it.complete }.toString() + "/" + stage.topics.size
     } else {
-        "W" + stage.weekStart.takeLast(2) + "–" + stage.weekEnd.takeLast(2)
+        val start = stage.weekStart?.takeLast(2) ?: return "—"
+        val end = stage.weekEnd?.takeLast(2) ?: return "—"
+        "W" + start + "–" + end
     }
 
 /** 阶段 → 周卡：区间内第一张 → 区间之后第一张 → 最后一张（桌面 `stageFirstPlanWeek` 同语义）。 */
-private fun stageFirstPlanWeek(cards: List<PlanWeekCard>, stage: StageView): String? =
-    cards.firstOrNull { it.week >= stage.weekStart && it.week <= stage.weekEnd }?.week
-        ?: cards.firstOrNull { it.week >= stage.weekStart }?.week
+private fun stageFirstPlanWeek(cards: List<PlanWeekCard>, stage: StageView): String? {
+    val start = stage.weekStart
+    val end = stage.weekEnd
+    if (start == null || end == null) return cards.firstOrNull()?.week
+    return cards.firstOrNull { it.week >= start && it.week <= end }?.week
+        ?: cards.firstOrNull { it.week >= start }?.week
         ?: cards.lastOrNull()?.week
+}

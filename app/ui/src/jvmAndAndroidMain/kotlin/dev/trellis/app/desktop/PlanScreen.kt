@@ -953,7 +953,8 @@ private fun PlanWeekQueueCard(runtime: AppRuntime) {
                     Text(unit.title, style = MaterialTheme.typography.bodyLarge)
                     Text(
                         buildString {
-                            if (unit.chapter.isNotBlank()) append(unit.chapter).append(" · ")
+                            // chapter 是「阶段 · 主题」：队列卡只显示主题，阶段在右栏看。
+                            if (unit.chapter.isNotBlank()) append(unit.chapter.substringAfter(" · ")).append(" · ")
                             append(PlanUnitBand.describe(unit.estimateMinutes))
                             append(" · ").append(unitKindLabel(unit.kind))
                         },

@@ -22,6 +22,7 @@ import dev.trellis.domain.plan.PlanDiff
 import dev.trellis.domain.plan.PlanResourceView
 import dev.trellis.domain.plan.PlanStateView
 import dev.trellis.domain.plan.ReviewView
+import dev.trellis.domain.plan.StageTopicView
 import dev.trellis.domain.plan.StageView
 import dev.trellis.domain.plan.SuggestionView
 import dev.trellis.domain.plan.TodoItem
@@ -606,43 +607,116 @@ internal fun SqliteLearningPlanService.buildPlanState(planId: String): PlanState
 }
 
 /**
- * 当前版本的阶段 + 每个阶段周区间内的完成数 / 承诺数。
+ * 当前版本的阶段 + 主题，以及各自的完成数 / 节点数。
  *
- * done/total 用 occurrence 状态现算（不落地计数列）：拖拽、跳过、撤销都会改状态，
- * 存一份缓存只会跟事实对不上。total = 区间内被承诺过的单元数（DISTINCT），
- * done = 其中至少有一次 occurrence 是 done 的单元数。
+ * 2026-11-18 起阶段与周解绑：阶段 = 内容分组（主题清单），节点 `chapter` 写成「阶段 · 主题」，
+ * 进度按这个前缀聚合（主题全做完才算主题完成；没展开的主题 total = 0、不算完成）。
+ * 老计划（阶段带 ISO 周区间、节点 chapter 不是阶段名）退回「周区间内的承诺单元」口径，
+ * 保证旧数据进度不变。
  */
 internal fun SqliteLearningPlanService.buildStages(planId: String): List<StageView> {
     val version = currentVersion(planId) ?: return emptyList()
-    return connection.prepareStatement(
-        "SELECT s.id, s.name, s.week_start, s.week_end, s.focus, " +
-            "(SELECT COUNT(DISTINCT cu.unit_id) FROM commitment c " +
-            "JOIN commitment_unit cu ON cu.commitment_id = c.id " +
-            "WHERE c.plan_version_id = s.plan_version_id AND c.week BETWEEN s.week_start AND s.week_end) AS total, " +
-            "(SELECT COUNT(DISTINCT o.unit_id) FROM occurrence o " +
-            "JOIN commitment c ON c.id = o.commitment_id " +
-            "WHERE c.plan_version_id = s.plan_version_id AND c.week BETWEEN s.week_start AND s.week_end " +
-            "AND o.status = 'done') AS done " +
-            "FROM plan_stage s WHERE s.plan_version_id = ? ORDER BY s.sort_order, s.created_at",
+    data class StageSeed(
+        val id: String,
+        val name: String,
+        val weekStart: String?,
+        val weekEnd: String?,
+        val focus: String,
+    )
+    data class TopicSeed(val name: String, val days: Int)
+    data class UnitRow(val chapter: String, val done: Boolean)
+
+    val stages = mutableListOf<StageSeed>()
+    connection.prepareStatement(
+        "SELECT id,name,week_start,week_end,focus FROM plan_stage WHERE plan_version_id = ? " +
+            "ORDER BY sort_order, created_at",
     ).use { ps ->
         ps.setString(1, version)
         ps.executeQuery().use { rs ->
-            buildList {
-                while (rs.next()) {
-                    add(
-                        StageView(
-                            id = rs.getString(1),
-                            name = rs.getString(2),
-                            weekStart = rs.getString(3),
-                            weekEnd = rs.getString(4),
-                            focus = rs.getString(5) ?: "",
-                            done = rs.getInt(7),
-                            total = rs.getInt(6),
-                        ),
-                    )
-                }
+            while (rs.next()) {
+                stages += StageSeed(
+                    id = rs.getString(1),
+                    name = rs.getString(2).orEmpty(),
+                    weekStart = rs.getString(3),
+                    weekEnd = rs.getString(4),
+                    focus = rs.getString(5).orEmpty(),
+                )
             }
         }
+    }
+    if (stages.isEmpty()) return emptyList()
+
+    val topicsByStage = linkedMapOf<String, MutableList<TopicSeed>>()
+    connection.prepareStatement(
+        "SELECT t.stage_id,t.name,t.days FROM plan_stage_topic t " +
+            "JOIN plan_stage s ON s.id = t.stage_id WHERE s.plan_version_id = ? ORDER BY t.sort_order",
+    ).use { ps ->
+        ps.setString(1, version)
+        ps.executeQuery().use { rs ->
+            while (rs.next()) {
+                topicsByStage.getOrPut(rs.getString(1)) { mutableListOf() } +=
+                    TopicSeed(rs.getString(2).orEmpty(), rs.getInt(3))
+            }
+        }
+    }
+
+    // 单元一条条拉回来在 Kotlin 里按 chapter 前缀聚合：SQL 里做 LIKE 要转义阶段名里的 % _，
+    // 而且一个计划也就几十上百个单元，读一次比多条子查询划算。
+    val units = mutableListOf<UnitRow>()
+    connection.prepareStatement(
+        "SELECT u.chapter, EXISTS(SELECT 1 FROM occurrence o WHERE o.unit_id = u.id AND o.status = 'done') " +
+            "FROM plan_unit u WHERE u.plan_version_id = ?",
+    ).use { ps ->
+        ps.setString(1, version)
+        ps.executeQuery().use { rs ->
+            while (rs.next()) units += UnitRow(rs.getString(1).orEmpty(), rs.getInt(2) != 0)
+        }
+    }
+
+    fun countByWeekRange(start: String?, end: String?): Pair<Int, Int> {
+        if (start == null || end == null) return 0 to 0
+        return connection.prepareStatement(
+            "SELECT COUNT(DISTINCT cu.unit_id), " +
+                "COUNT(DISTINCT CASE WHEN o.status = 'done' THEN o.unit_id END) " +
+                "FROM commitment c JOIN commitment_unit cu ON cu.commitment_id = c.id " +
+                "LEFT JOIN occurrence o ON o.unit_id = cu.unit_id " +
+                "WHERE c.plan_version_id = ? AND c.week BETWEEN ? AND ?",
+        ).use { ps ->
+            ps.setString(1, version)
+            ps.setString(2, start)
+            ps.setString(3, end)
+            ps.executeQuery().use { rs ->
+                if (rs.next()) rs.getInt(1) to rs.getInt(2) else 0 to 0
+            }
+        }
+    }
+
+    return stages.map { stage ->
+        val prefix = stage.name + " · "
+        val matched = units.filter { it.chapter == stage.name || it.chapter.startsWith(prefix) }
+        val (weekTotal, weekDone) = if (matched.isEmpty()) countByWeekRange(stage.weekStart, stage.weekEnd) else 0 to 0
+        val total = if (matched.isEmpty()) weekTotal else matched.size
+        val done = if (matched.isEmpty()) weekDone else matched.count { it.done }
+        val topics = topicsByStage[stage.id].orEmpty().map { topic ->
+            val topicChapter = prefix + topic.name
+            val topicUnits = units.filter { it.chapter == topicChapter }
+            StageTopicView(
+                name = topic.name,
+                days = topic.days,
+                done = topicUnits.count { it.done },
+                total = topicUnits.size,
+            )
+        }
+        StageView(
+            id = stage.id,
+            name = stage.name,
+            weekStart = stage.weekStart,
+            weekEnd = stage.weekEnd,
+            focus = stage.focus,
+            done = done,
+            total = total,
+            topics = topics,
+        )
     }
 }
 

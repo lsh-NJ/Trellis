@@ -81,6 +81,9 @@ internal class PlanDatabase private constructor(val connection: Connection) : Au
             }
         }
 
+        // 阶段与周解绑（2026-11-18）：老的 plan_stage.week_* 是 NOT NULL，写不了「不绑周」的阶段。
+        rebuildPlanStageForTopicStages()
+
         if (applied == 0) {
             // `INSERT OR IGNORE` 而不是先查再插：手机上启动时计划库会被开两次
             // （运行时创建与管家的首个 tick 撞在一起），两个连接都读到「还没迁移」，
@@ -95,6 +98,38 @@ internal class PlanDatabase private constructor(val connection: Connection) : Au
         }
     }
 
+
+    /**
+     * 2026-11-18 起阶段不再强制绑定 ISO 周区间（阶段 = 内容分组 + 主题，周只管排关节奏）。
+     *
+     * 旧库的 `plan_stage.week_*` 是 NOT NULL，SQLite 改约束只能重建表：先改名、按新 DDL 建表、
+     * 拷数据、删旧表。新库建出来就是可空的，这里看 `notnull` 直接跳过。旧数据一律保留（区间照旧可用）。
+     */
+    private fun rebuildPlanStageForTopicStages() {
+        val notNull = mutableMapOf<String, Boolean>()
+        connection.createStatement().use { st ->
+            st.executeQuery("PRAGMA table_info(plan_stage)").use { rs ->
+                while (rs.next()) {
+                    notNull[rs.getString("name").lowercase()] = rs.getInt("notnull") != 0
+                }
+            }
+        }
+        if (notNull["week_start"] != true) return
+        connection.createStatement().use { st ->
+            // 主题表外键指的是 plan_stage：表要改名重建，先把空表删掉，重建完再按新 DDL 建回来。
+            st.execute("DROP TABLE IF EXISTS plan_stage_topic")
+            st.execute("ALTER TABLE plan_stage RENAME TO plan_stage_weeks_notnull")
+            st.execute(PLAN_STAGE_TABLE_DDL)
+            st.execute(
+                "INSERT INTO plan_stage(id,plan_version_id,name,week_start,week_end,focus,sort_order,created_at) " +
+                    "SELECT id,plan_version_id,name,week_start,week_end,focus,sort_order,created_at " +
+                    "FROM plan_stage_weeks_notnull",
+            )
+            st.execute("DROP TABLE plan_stage_weeks_notnull")
+            st.execute(PLAN_STAGE_TOPIC_TABLE_DDL)
+            st.execute("CREATE INDEX IF NOT EXISTS idx_plan_stage_topic_stage ON plan_stage_topic(stage_id, sort_order)")
+        }
+    }
 
     /** 旧库缺列时补上；新库在建表时就带了，这里查一下再决定。 */
     private fun ensureColumn(table: String, column: String, ddl: String): Boolean {

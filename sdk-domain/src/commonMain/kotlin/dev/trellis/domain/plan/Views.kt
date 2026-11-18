@@ -177,21 +177,53 @@ data class UnitResourceView(
 )
 
 /**
- * 学习阶段（`plan_stage` 表）：把计划按 ISO 周区间切成「第 1 阶段 / 第 2 阶段」。
+ * 阶段下的一个主题：一块 1–5 天能学完的内容（“进程状态与上下文切换”），周文档把它展开成节点。
  *
- * 阶段是「由面到点」中间那层：目标 > 阶段（周区间 + 重点）> 每周单元。
- * [done] / [total] 是这个周区间内承诺单元的完成数 / 总数，由 occurrence 状态现算。
+ * [done] / [total] 是这个主题下已建节点的完成数 / 总数；还没展开的主题 total = 0。
+ */
+@Serializable
+data class StageTopicView(
+    val name: String,
+    val days: Int = 2,
+    val done: Int = 0,
+    val total: Int = 0,
+) {
+    /** 主题完成 = 已经展开过、并且节点全做完（“没展开”不算完成）。 */
+    val complete: Boolean get() = total > 0 && done >= total
+}
+
+/**
+ * 学习阶段（`plan_stage` 表）：计划的内容分组（主题清单），可选带 ISO 周区间。
+ *
+ * 阶段是「由面到点」中间那层：目标 > 阶段（主题清单 + 重点）> 每周节点。
+ * 2026-11-18 起新计划的阶段**不再写周区间**（周只管排关节奏，阶段只管内容和体量）；
+ * 老计划仍可能带区间，[weekStart] / [weekEnd] 因此可空。
+ * [done] / [total] 是阶段下已知节点的完成数 / 总数；[topics] 给出更细一层的进度。
  */
 @Serializable
 data class StageView(
     val id: String,
     val name: String,
-    val weekStart: String,
-    val weekEnd: String,
+    val weekStart: String? = null,
+    val weekEnd: String? = null,
     val focus: String = "",
     val done: Int = 0,
     val total: Int = 0,
-)
+    val topics: List<StageTopicView> = emptyList(),
+) {
+    /** 阶段体量（天）：主题天数之和；老计划没主题时按周区间粗算。 */
+    val estimatedDays: Int
+        get() = topics.sumOf { it.days }.takeIf { it > 0 }
+            ?: run {
+                val start = weekStart ?: return@run 0
+                val end = weekEnd ?: return@run 0
+                ((end.takeLast(2).toIntOrNull() ?: 0) - (start.takeLast(2).toIntOrNull() ?: 0) + 1).coerceAtLeast(0)
+            }
+
+    /** 阶段完成 = 所有主题都已展开并做完（没有主题的老阶段按 done/total 判）。 */
+    val complete: Boolean
+        get() = if (topics.isEmpty()) total > 0 && done >= total else topics.all { it.complete }
+}
 
 /**
  * 整份计划的单元完成度（当前生效版本）。

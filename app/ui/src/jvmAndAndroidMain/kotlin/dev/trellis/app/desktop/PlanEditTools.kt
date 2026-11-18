@@ -9,6 +9,7 @@ import dev.trellis.domain.plan.LearningPlanService
 import dev.trellis.domain.plan.PlanResourceDraft
 import dev.trellis.domain.plan.ResourceDraft
 import dev.trellis.domain.plan.StageDraft
+import dev.trellis.domain.plan.StageTopicDraft
 import dev.trellis.domain.plan.UnitDraft
 import dev.trellis.domain.plan.WeekDayItem
 import dev.trellis.domain.plan.WeekView
@@ -114,10 +115,21 @@ internal class PlanEditTools(
                     if (stages.isEmpty()) {
                         appendLine("  （还没有阶段）")
                     } else {
-                        stages.forEach {
-                            appendLine("  - ").append(it.name).append("（").append(it.weekStart).append(" – ")
-                                .append(it.weekEnd).append("，完成 ").append(it.done).append("/").append(it.total)
-                                .append("）").append(if (it.focus.isBlank()) "" else "：" + it.focus)
+                        stages.forEach { stage ->
+                            val span = if (stage.weekStart != null && stage.weekEnd != null) {
+                                stage.weekStart + " – " + stage.weekEnd + "，"
+                            } else {
+                                ""
+                            }
+                            appendLine("  - ").append(stage.name).append("（").append(span)
+                                .append("完成 ").append(stage.done).append("/").append(stage.total)
+                                .append(if (stage.topics.isEmpty()) "" else "，" + stage.topics.size + " 个主题")
+                                .append("）").append(if (stage.focus.isBlank()) "" else "：" + stage.focus)
+                            stage.topics.forEach { topic ->
+                                appendLine("    · ").append(topic.name).append("（约 ").append(topic.days).append(" 天，")
+                                    .append(if (topic.total == 0) "未展开" else topic.done.toString() + "/" + topic.total)
+                                    .append("）")
+                            }
                         }
                     }
                 }
@@ -392,8 +404,12 @@ internal class PlanEditTools(
         val specs = stages.map { stage ->
             val name = stage.str("name")?.takeIf { it.isNotBlank() }
                 ?: return OpResult("每个阶段都要 name。", isError = true)
-            val start = stage.str("weekStart") ?: return OpResult("阶段「$name」缺 weekStart。", isError = true)
-            val end = stage.str("weekEnd") ?: return OpResult("阶段「$name」缺 weekEnd。", isError = true)
+            // 阶段与周解绑后周区间可选：要么都写，要么都不写。
+            val start = stage.str("weekStart")?.takeIf { it.isNotBlank() }
+            val end = stage.str("weekEnd")?.takeIf { it.isNotBlank() }
+            if ((start == null) != (end == null)) {
+                return OpResult("阶段「$name」的 weekStart / weekEnd 要么都写、要么都不写。", isError = true)
+            }
             StageDoc(
                 name = name,
                 weekStart = start,
@@ -405,11 +421,24 @@ internal class PlanEditTools(
                     val title = r.str("title") ?: return@mapNotNull null
                     DocResource(title, r.str("url").orEmpty(), r.str("note").orEmpty())
                 },
+                topics = stage.arr("topics").mapNotNull { topic ->
+                    val topicName = topic.str("name")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                    StageTopicDoc(topicName, (topic.int("days") ?: 2).coerceIn(1, 5))
+                },
             )
         }
         if (dryRun) return OpResult("（dryRun）会写 ${specs.size} 个阶段：" + specs.joinToString("、") { it.name })
         val drafts = specs.mapIndexed { index, spec ->
-            StageDraft(name = spec.name, weekStart = spec.weekStart, weekEnd = spec.weekEnd, focus = spec.focus, sortOrder = index)
+            StageDraft(
+                name = spec.name,
+                weekStart = spec.weekStart,
+                weekEnd = spec.weekEnd,
+                focus = spec.focus,
+                sortOrder = index,
+                topics = spec.topics.mapIndexed { topicIndex, topic ->
+                    StageTopicDraft(topic.name, topic.days, topicIndex)
+                },
+            )
         }
         val result = runCatching { svc.setStages(env(planId, "tool.plan.edit.stages"), planId, drafts) }
             .getOrElse { return OpResult("写阶段失败：${it.message ?: it}", isError = true) }
@@ -519,18 +548,46 @@ internal class PlanEditTools(
         val weekStart = set.str("weekStart") ?: target.weekStart
         val weekEnd = set.str("weekEnd") ?: target.weekEnd
         val focus = set.str("focus") ?: target.focus
-        if (dryRun) return OpResult("（dryRun）会把阶段「$name」改成「$newName」（$weekStart – $weekEnd）")
+        val topics = target.topics
+        val spanText = if (weekStart != null && weekEnd != null) weekStart + " – " + weekEnd else "不绑周"
+        if (dryRun) return OpResult("（dryRun）会把阶段「$name」改成「$newName」（$spanText）")
         val drafts = existing.mapIndexed { index, stage ->
             if (stage.id == target.id) {
-                StageDraft(newName, weekStart, weekEnd, focus, index)
+                StageDraft(
+                    name = newName,
+                    weekStart = weekStart,
+                    weekEnd = weekEnd,
+                    focus = focus,
+                    sortOrder = index,
+                    topics = topics.mapIndexed { topicIndex, topic ->
+                        StageTopicDraft(topic.name, topic.days, topicIndex)
+                    },
+                )
             } else {
-                StageDraft(stage.name, stage.weekStart, stage.weekEnd, stage.focus, index)
+                StageDraft(
+                    name = stage.name,
+                    weekStart = stage.weekStart,
+                    weekEnd = stage.weekEnd,
+                    focus = stage.focus,
+                    sortOrder = index,
+                    topics = stage.topics.mapIndexed { topicIndex, topic ->
+                        StageTopicDraft(topic.name, topic.days, topicIndex)
+                    },
+                )
             }
         }
         val result = runCatching { svc.setStages(env(id, "tool.plan.edit.stage"), id, drafts) }
             .getOrElse { return OpResult("改阶段失败：${it.message ?: it}", isError = true) }
         if (!result.ok) return OpResult("改阶段失败：${result.error?.message ?: "未知错误"}", isError = true)
-        val specs = drafts.map { StageDoc(it.name, it.weekStart, it.weekEnd, it.focus) }
+        val specs = drafts.map {
+            StageDoc(
+                name = it.name,
+                weekStart = it.weekStart,
+                weekEnd = it.weekEnd,
+                focus = it.focus,
+                topics = it.topics.map { topic -> StageTopicDoc(topic.name, topic.days) },
+            )
+        }
         rewriteDocStages(id, specs)
         return OpResult("阶段「$name」已改成「$newName」。", planId = id)
     }
@@ -1054,14 +1111,17 @@ internal class PlanEditTools(
 
     // ---------------------------------------------------------------- 文档阶段块
 
+    private data class StageTopicDoc(val name: String, val days: Int = 2)
+
     private data class StageDoc(
         val name: String,
-        val weekStart: String,
-        val weekEnd: String,
+        val weekStart: String? = null,
+        val weekEnd: String? = null,
         val focus: String = "",
         val deliverable: String = "",
         val acceptance: String = "",
         val resources: List<DocResource> = emptyList(),
+        val topics: List<StageTopicDoc> = emptyList(),
     )
 
     private fun rewriteDocStages(planId: String, stages: List<StageDoc>) {
@@ -1078,8 +1138,16 @@ internal class PlanEditTools(
     private fun renderStages(stages: List<StageDoc>): String = buildString {
         appendLine("## 阶段")
         stages.forEachIndexed { index, stage ->
-            appendLine("### 阶段 ${index + 1} · ${stage.name}（${stage.weekStart} – ${stage.weekEnd}）")
+            val span = if (stage.weekStart != null && stage.weekEnd != null) {
+                "（${stage.weekStart} – ${stage.weekEnd}）"
+            } else {
+                ""
+            }
+            appendLine("### 阶段 ${index + 1} · ${stage.name}$span")
             if (stage.focus.isNotBlank()) appendLine("- 聚焦：${stage.focus}")
+            stage.topics.forEach { topic ->
+                appendLine("  - 主题：${topic.name}（约 ${topic.days} 天）")
+            }
 
             if (stage.resources.isNotEmpty()) {
                 appendLine("- 资源：")

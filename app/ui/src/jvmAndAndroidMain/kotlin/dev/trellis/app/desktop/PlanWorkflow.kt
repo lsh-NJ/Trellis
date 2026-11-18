@@ -9,12 +9,15 @@ import dev.trellis.domain.plan.Actor
 import dev.trellis.domain.plan.CommandEnvelope
 import dev.trellis.domain.plan.LearningPlanService
 import dev.trellis.domain.plan.StageDraft
+import dev.trellis.domain.plan.StageTopicDraft
+import dev.trellis.domain.plan.StageTopicView
+import dev.trellis.domain.plan.StageView
 import dev.trellis.domain.plan.UnitDraft
+import dev.trellis.feature.learning.PlanDocStage
 import dev.trellis.feature.learning.PlanDocStore
 import dev.trellis.feature.learning.PlanUnitBand
 import dev.trellis.feature.learning.PlanWorkflowStore
 import java.time.LocalDate
-import java.time.temporal.ChronoField
 import java.time.temporal.ChronoUnit
 import java.util.UUID
 import kotlinx.coroutines.withTimeoutOrNull
@@ -391,7 +394,12 @@ internal class PlanWorkflow(
             id
         }
 
-        val weekDoc = buildWeekDoc(week, goal, master, daily, feedback)
+        // 这一周排哪个阶段：第一个还没完成的阶段（刚建的计划就是阶段 1；老计划按 done/total 判）。
+        val stageViews = runCatching { svc.stages(planId) }.getOrDefault(emptyList())
+        val currentStage = currentStageOf(stageViews)
+        val stageName = currentStage?.name?.takeIf { it.isNotBlank() } ?: "本周"
+        val stageTopics = currentStage?.topics.orEmpty()
+        val weekDoc = buildWeekDoc(week, goal, master, daily, stageName, stageTopics, feedback)
             ?: return ToolResult(
                 "周文档没生成出来（模型超时，或两次输出都不成形的 Markdown）。可以 revise 重做这一段。",
                 isError = true,
@@ -400,7 +408,12 @@ internal class PlanWorkflow(
             .onFailure { return ToolResult("周文档没写成：" + (it.message ?: "未知原因"), isError = true) }
         wf.updatePayload(
             job.id,
-            payloadWith(job.payload, "planId" to JsonPrimitive(planId), "week" to JsonPrimitive(week)),
+            payloadWith(
+                job.payload,
+                "planId" to JsonPrimitive(planId),
+                "week" to JsonPrimitive(week),
+                "stage" to JsonPrimitive(stageName),
+            ),
         )
         onDocLink(planId, "本周周文档（" + week + "）", week)
         onChanged()
@@ -441,11 +454,15 @@ internal class PlanWorkflow(
         if (items.isEmpty()) {
             return ToolResult("周文档里没有 " + week + " 的条目（第二段可能没写成），先 revise 重做第二段。", isError = true)
         }
-        val chapter = store.stageForWeek(planId, week)?.name ?: "本周"
+        // 章节 = 「阶段 · 主题」：阶段进度靠它聚合（主题全做完才算主题完成）。
+        val stageName = job.payload.stringField("stage")
+            ?: store.stageForWeek(planId, week)?.name
+            ?: "本周"
         // 节点只装「要学的点」：kind 一律 study，不生成复习/实践类条目。
         val drafts = items.map { item ->
+            val topic = item.topic?.takeIf { it.isNotBlank() }
             UnitDraft(
-                chapter = chapter,
+                chapter = if (topic != null) stageName + " · " + topic else stageName,
                 title = item.text.take(60),
                 // 周文档里的体量档（小/中/大）已经换算成分钟；老文档的裸分钟数也照用。
                 estimateMinutes = PlanUnitBand.clamp(item.minutesHint ?: PlanUnitBand.DEFAULT),
@@ -479,13 +496,7 @@ internal class PlanWorkflow(
     ): MasterDraft? {
         val today = clock.today()
         val thisWeek = isoWeekOf(today)
-        // 截止决定「可用几周」：阶段必须落在这个区间里，否则文档会自相矛盾（一周的计划切成三周）。
-        val deadlineWeek = if (deadline.isNotBlank()) {
-            runCatching { isoWeekOf(LocalDate.parse(deadline)) }.getOrNull()
-        } else {
-            null
-        }
-        val horizon = horizonWeeks(thisWeek, deadlineWeek)
+        val budgetDays = availableDays(deadline)
         val system = buildString {
             appendLine("你是学习规划师。输入是一句目标和一批候选学习资源，输出一份总计划文档。")
             appendLine("只输出一个 JSON 对象，不要代码块、不要解释：")
@@ -496,41 +507,42 @@ internal class PlanWorkflow(
             if (deadline.isNotBlank()) appendLine("- 截止：<" + deadline + ">")
             appendLine("- 验收：<怎么算学完，可自测>")
             appendLine("## 阶段")
-            appendLine("- 阶段 1 · <名称>（<起始周> – <结束周>，约 N 周）：<这一阶段聚焦什么>")
+            appendLine("- 阶段 1 · <名称>（约 N 天）：<这一阶段聚焦什么>")
+            appendLine("  - 主题：<主题名>（约 M 天）")
+            appendLine("  - 主题：<主题名 2>（约 M 天）")
             appendLine("  - 资源：")
             appendLine("    - [<资源名>](<url>) — <一句话说明>")
-            if (horizon != null && deadlineWeek != null) {
-                appendLine("（阶段 1、2… 同样写法；周用 " + thisWeek + " 这种 ISO 周格式；第一个阶段必须从 " + thisWeek + " 开始，")
-                appendLine("  各阶段首尾相接，最后一个阶段不能晚于截止那周 " + deadlineWeek + "。从本周到截止一共 " + horizon + " 周。）")
-            } else {
-                appendLine("（阶段 1、2… 同样写法；周用 " + thisWeek + " 这种 ISO 周格式，从 " + thisWeek + " 开始，各阶段首尾相接；")
-                appendLine("  没有截止就按内容切 2–5 个阶段、每个 1–3 周，总长 4–10 周。）")
-            }
+            appendLine("（阶段 2、3… 同样写法。不写周、不写具体日期 —— 日期由宿主按主题体量算。）")
             appendLine("## 资源清单")
             appendLine("### <类型：视频/文章/仓库/文档/问答>")
             appendLine("- [<资源名>](<url>) — <来源>")
             appendLine()
             appendLine("约束：")
-            appendLine("1. 阶段只写名称、周数、聚焦和资源；不要写交付物、过关标准。")
-            appendLine("2. 阶段数由内容和可用周数决定（1–6 个）。可用周数只有 1 周时，只写 1 个阶段")
-            appendLine("   （" + thisWeek + " – " + thisWeek + "），不要硬切成 3 个。")
-            appendLine("3. 资源只能从用户消息里的 <resource_candidates> 里挑，url 必须逐字照抄；每个阶段 1–3 条。")
+            appendLine("1. 阶段 = 内容分组：名称 + 聚焦 + 主题清单 + 资源；不写 ISO 周，也不写日期。")
+            appendLine("2. 主题 = 一块能连续学 1–5 天的内容（通常 2–4 天）：名字写具体内容（如「进程状态与上下文切换」），")
+            appendLine("   不写「学习 / 掌握 / 复习」这类动作；体量写「（约 N 天）」。")
+            appendLine("3. 主题数量不设上下限：资料能自然切出几块就写几块，切不出更多就少写，")
+            appendLine("   不要为了凑数拆分或合并；一个阶段通常 2–8 个主题。")
+            appendLine("4. 主题必须能在候选资料的标题 / 目录 / 分集里找到依据；找不到依据的不许写。")
+            appendLine("5. 阶段数也不设下限：按主题量自然分组（通常 2–6 个阶段）。")
+            appendLine("6. 资源只能从用户消息里的 <resource_candidates> 里挑，url 必须逐字照抄；每个阶段 1–3 条。")
             appendLine("   概念/系统课优先视频；查阅/术语优先文档；动手练优先仓库；经验/考点优先文章或问答。")
-            appendLine("4. 同一份资源最多出现在两个阶段；资源清单按类型分组列全。")
-            appendLine("5. 不编造资料里没有的链接；不写内部工具名。")
-            appendLine("6. 目标行只写要学什么和时限：时限必须和截止一致。如果目标句里说的时限和截止对不上")
+            appendLine("7. 目标行只写要学什么和时限：时限必须和截止一致。如果目标句里的时限和截止对不上")
             appendLine("   （例：句子里说「一周内」，但截止在两个多月后），以截止日期为准，目标行不要写「一周内」。")
+            if (budgetDays != null) {
+                appendLine("8. 从今天到截止一共 " + budgetDays + " 天：所有阶段的主题天数合计不要超过这个数；")
+                appendLine("   装不下就缩减范围，不要硬塞。")
+            } else {
+                appendLine("8. 没有截止：按内容自然分阶段，主题天数合计控制在 4–10 周内即可，后面按周推进。")
+            }
         }
         val user = buildString {
             appendLine("目标：" + goal)
             appendLine("今天：" + today + "，本周：" + thisWeek)
             if (deadline.isNotBlank()) {
-                val weeksNote = if (deadlineWeek != null && horizon != null) {
-                    "（截止那周：" + deadlineWeek + "，从本周到截止共 " + horizon + " 周）"
-                } else {
-                    ""
-                }
-                appendLine("截止日期：" + deadline + weeksNote)
+                appendLine("截止日期：" + deadline + (budgetDays?.let { "（从今天到截止共 " + it + " 天）" } ?: ""))
+            } else {
+                appendLine("截止日期：没给（按内容自然分阶段）")
             }
             appendLine("每天投入：" + daily + " 分钟")
             if (!feedback.isNullOrBlank()) appendLine("用户对上一版的修改意见：" + feedback)
@@ -554,58 +566,35 @@ internal class PlanWorkflow(
             Json.parseToJsonElement(extractJsonObject(text).orEmpty()) as? JsonObject
         }.getOrNull()
         /**
-         * 阶段区间必须自洽：从本周开始、按时间顺序不重叠、不超过截止那周、阶段数不超过可用周数。
+         * 阶段/主题结构验收：主题必须有、每个 1–5 天、合计不超预算。
          *
-         * 真实事故（2026-11-18）：一周的计划被切成三周（阶段 1/2/3 各一周），而目标里写「一周内」——
-         * 文档上下自相矛盾。原因一半在上游（manager 把两个月后的考试当成计划截止），
-         * 一半在这里：阶段模板没有「可用周数」这个概念，也没有任何校验。
+         * 「数量」不做硬约束（不设上下限）——数量应该由资料和预算决定，硬写数字只会逼模型凑数。
+         * 2026-11-18：阶段与周解绑，阶段不再写周区间，所以这里校验的是主题体量而不是周区间。
          */
-        fun stagesWithinHorizon(markdown: String): Boolean {
+        fun stagesAcceptable(markdown: String): Boolean {
             val stages = docStore()?.parse(markdown)?.stages.orEmpty()
             if (stages.isEmpty()) return false
-            val ranges = stages.mapNotNull { stage ->
-                val start = stage.weekStart ?: return@mapNotNull null
-                val end = stage.weekEnd ?: return@mapNotNull null
-                start to end
-            }
-            if (ranges.size != stages.size) return false
-            if (ranges.first().first != thisWeek) return false
-            if (ranges.any { it.first > it.second }) return false
-            // 顺序、不重叠（相邻阶段留缝不算矛盾，只是不紧凑；重叠一定是写错了）。
-            for (index in 1 until ranges.size) {
-                if (ranges[index].first <= ranges[index - 1].second) return false
-            }
-            if (deadlineWeek != null && ranges.any { it.second > deadlineWeek }) return false
-            if (horizon == null && (horizonWeeks(thisWeek, ranges.last().second) ?: return false) > 12) return false
-            if (horizon != null) {
-                if (stages.size > horizon) return false
-                if (horizon == 1 && stages.size != 1) return false
-            }
+            if (stages.any { it.topics.isEmpty() }) return false
+            val topics = stages.flatMap { it.topics }
+            if (topics.any { it.name.isBlank() }) return false
+            if (topics.any { (it.days ?: 0) !in 1..5 }) return false
+            val total = topics.sumOf { (it.days ?: 0).coerceIn(1, 5) }
+            if (total <= 0) return false
+            if (budgetDays != null && total > budgetDays) return false
+            if (budgetDays == null && total > 120) return false
             return true
         }
         val raw = structuredCall(
             timeoutMs = MASTER_TIMEOUT_MS,
             retryHint = buildString {
-                append("上一次的输出不可用：要么不是合法 JSON / 被截断，要么阶段区间和截止对不上。")
-                append("这次只输出 JSON、不要代码块；阶段从 ")
-                append(thisWeek)
-                append(" 开始、首尾相接")
-                if (deadlineWeek != null && horizon != null) {
-                    append("、不超过 ")
-                    append(deadlineWeek)
-                    append("（从本周到截止共 ")
-                    append(horizon)
-                    append(" 周")
-                    if (horizon == 1) append("；只有 1 周可用，只写 1 个阶段")
-                    append("）")
-                } else {
-                    append("、按内容 2–5 个阶段")
-                }
-                append("；目标行不要写和截止矛盾的时限；doc 控制在 60 行以内。")
+                append("上一次的输出不可用：要么不是合法 JSON / 被截断，要么阶段里没有主题、主题天数不在 1–5，")
+                append("或主题天数合计超出预算。这次只输出 JSON、不要代码块；每个阶段至少 1 个「主题：名称（约 N 天）」，")
+                if (budgetDays != null) append("全部主题天数合计不超过 " + budgetDays + " 天；")
+                append("主题数量由资料决定，不要凑数。")
             },
             accept = { text ->
                 val doc = parseRoot(text)?.get("doc")?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-                doc.isNotBlank() && stagesWithinHorizon(doc)
+                doc.isNotBlank() && stagesAcceptable(doc)
             },
         ) { extra ->
             docLlm.complete(listOf(LlmMessage(LlmRole.System, system), LlmMessage(LlmRole.User, user + extra)))
@@ -615,14 +604,23 @@ internal class PlanWorkflow(
             .ifBlank { goal.take(16) }
         val markdown = root["doc"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
         if (markdown.isBlank()) return null
-        val stageCount = docStore()?.parse(markdown)?.stages?.size ?: 0
+        val stages = docStore()?.parse(markdown)?.stages.orEmpty()
+        val fixed = if (stages.isEmpty()) markdown else fixStageDayTotals(markdown, stages)
+        val stageCount = stages.size
+        val topicCount = stages.sumOf { it.topics.size }
+        val totalDays = stages.sumOf { stage -> stage.topics.sumOf { (it.days ?: 2).coerceIn(1, 5) } }
         return MasterDraft(
             title = title,
-            markdown = markdown,
+            markdown = fixed,
             summary = buildString {
                 appendLine("总计划文档写好了：计划「" + title + "」" +
-                    (if (stageCount > 0) "，共 " + stageCount + " 个阶段" else "") + "。")
-                appendLine(preview(markdown))
+                    (if (stageCount > 0) "，共 " + stageCount + " 个阶段、" + topicCount + " 个主题" else "") + "。")
+                if (totalDays > 0) {
+                    append("按主题体量合计约 ").append(totalDays).append(" 天")
+                    if (budgetDays != null) append("（截止前共有 ").append(budgetDays).append(" 天）")
+                    appendLine("；实际快慢按周调整。")
+                }
+                appendLine(preview(fixed))
                 append("文档可以在知识库「计划文档」里打开；下一步是把它变成本周的周文档。")
             },
         )
@@ -635,35 +633,45 @@ internal class PlanWorkflow(
         goal: String,
         master: String,
         daily: Int,
+        stageName: String,
+        topics: List<StageTopicView>,
         feedback: String?,
     ): WeekDoc? {
+        val topicLines = topics.map { "- " + it.name + "（约 " + it.days + " 天）" }
         val system = buildString {
-            appendLine("你是学习规划师。输入是一份总计划文档，输出这一周的周文档。")
+            appendLine("你是学习规划师。输入是一份总计划文档和当前阶段，输出这一周的周文档。")
             appendLine("只输出周文档 Markdown 本身（不要代码块、不要解释），结构严格如下：")
             appendLine("# " + week + " 周计划")
             appendLine("- 本周重点：<一句话>")
             appendLine("## " + week)
+            appendLine("### 主题：<本周主题里的一个名字，逐字照抄>")
             appendLine("- <要学的知识点>（<小|中|大> · 约 N 分钟）")
-            appendLine("（再列 2–8 行，同样写法）")
+            appendLine("（这个主题下 2–6 行；换下一个主题时再起一个「### 主题：…」）")
             appendLine()
             appendLine("约束：")
             appendLine("1. 只列这一周要学的知识点 —— 具体的知识/技能主题（名词短语，如「进程调度算法」")
-            appendLine("   「页面置换计算」「闭包与作用域链」），标题不超过 24 个字。")
+            appendLine("   「闭包与作用域链」），标题不超过 24 个字。")
             appendLine("   不要写复习、练习、实验、做题、复盘这类动作条目 —— 计划节点只装要学的内容。")
             appendLine("   也不要写「…范围划分 / …盘点 / …排序 / …排期 / …自评 / …框架搭建 / …方法与诀窍 /")
             appendLine("   …时间分配」这类元内容：它们回答「怎么安排学习」，不是「学什么」。")
-            appendLine("   如果这一周只想到元内容，就把这周真正要学的第一个具体知识点写出来。")
-            appendLine("   例：「前端面试四大板块构成」→「事件循环与宏微任务机制」；")
-            appendLine("   「自学编程的入门顺序」→「变量、函数与程序执行流程」。")
-            appendLine("2. 每条按内容多少标一个体量档：小 ≈ 15 分钟、中 ≈ 30 分钟、大 ≈ 45 分钟。")
-            appendLine("   45 分钟是单块上限，内容再多就拆成两条；分钟数就写档位对应的那个数，不要自己另编。")
-            appendLine("3. 不要为了凑满一周的投入预算把条目摊平：条目数由内容决定（3–9 条），宁可少写；")
-            appendLine("   一周填不满参考时长是正常的。投入参考由宿主写在文档里，不用你算。")
-            appendLine("4. 内容必须落在总计划文档里本周所处的阶段（按阶段周区间判断），不要提前学后面的阶段。")
+            appendLine("2. 主题分组：「### 主题：」后面必须逐字用下面「本周主题」里的名字，不要自创主题；")
+            appendLine("   按顺序从第一个主题开始取，取到这一周的投入量为止（可以只取部分主题，也可以跨到下一个主题）。")
+            appendLine("   一周取不满是正常的，不要为了填满预算把每条都写成一样的量。")
+            appendLine("3. 每条标体量档：小 ≈ 15 分钟、中 ≈ 30 分钟、大 ≈ 45 分钟。45 是单块上限，内容再多就拆成两条；")
+            appendLine("   分钟数就写档位对应的那个数，不要自己另编。")
+            appendLine("4. 内容必须落在总计划文档里当前阶段（" + stageName + "）的主题范围内，不要提前学后面的阶段。")
         }
         val user = buildString {
             appendLine("目标：" + goal)
             appendLine("本周：" + week)
+            appendLine("每天投入：" + daily + " 分钟（只做参考，取不满没关系）")
+            appendLine("当前阶段：" + stageName)
+            appendLine("本周主题（按顺序取）：")
+            if (topicLines.isEmpty()) {
+                appendLine("（这个阶段没有主题清单：按总计划文档里当前阶段的内容自己列，主题名自己拟但要具体）")
+            } else {
+                topicLines.forEach { appendLine(it) }
+            }
             if (!feedback.isNullOrBlank()) appendLine("用户对上一版的修改意见：" + feedback)
             appendLine()
             appendLine("<master_doc>")
@@ -674,11 +682,11 @@ internal class PlanWorkflow(
         val markdown = structuredCall(
             timeoutMs = WEEK_TIMEOUT_MS,
             retryHint = "上一次的输出不是可用的周文档（可能被截断）。这次只输出周文档 Markdown 本身，" +
-                "不要代码块、不要解释；条目控制在 8 条以内。",
+                "不要代码块、不要解释；每个「### 主题：」下面放 2–6 条知识点，主题名逐字用上面给的名字。",
             accept = { text ->
                 val normalized = normalizeWeekDoc(week, text)
-                if (store == null) normalized.isNotBlank()
-                else store.parse(normalized).weeks[week].orEmpty().isNotEmpty()
+                val items = store?.parse(normalized)?.weeks?.get(week).orEmpty()
+                items.isNotEmpty() && items.all { it.text.isNotBlank() }
             },
         ) { extra ->
             docLlm.completeText(listOf(LlmMessage(LlmRole.System, system), LlmMessage(LlmRole.User, user + extra)))
@@ -690,14 +698,15 @@ internal class PlanWorkflow(
     }
 
     /**
-     * 周文档只保留「标题 + 本周重点 + 投入参考 + 周标题下的条目」，模型多写的段落一律丢掉。
+     * 周文档只保留「标题 + 本周重点 + 投入参考 + 主题分组 + 条目」，模型多写的段落一律丢掉。
      *
      * 投入参考这一行由宿主按设置里的每天投入算，不让模型写：模型一旦拿到预算就会把它
-     * 除以条数，变成一串一模一样的分钟数。
+     * 除以条数，变成一串一模一样的分钟数。主题分组是小标题，保留下来给节点定章节（阶段 · 主题）。
      */
     private fun normalizeWeekDoc(week: String, raw: String, dailyMinutes: Int = 0): String {
-        val items = mutableListOf<String>()
+        val items = mutableListOf<Pair<String?, String>>()
         var focus = ""
+        var topic: String? = null
         var inWeek = false
         raw.lineSequence().forEach { line ->
             val trimmed = line.trim()
@@ -705,9 +714,19 @@ internal class PlanWorkflow(
                 trimmed.startsWith("# ") -> Unit
                 trimmed.startsWith("- 本周重点") ->
                     focus = trimmed.removePrefix("- 本周重点").trim().trimStart('：', ':').trim()
-                WEEK_HEADING.matches(trimmed) -> inWeek = true
-                trimmed.startsWith("## ") -> inWeek = false
-                inWeek && BULLET.matches(trimmed) -> items += trimmed.removePrefix("- ").trim()
+                WEEK_HEADING.matches(trimmed) -> {
+                    inWeek = true
+                    topic = null
+                }
+                inWeek && WEEK_TOPIC_HEADING.matches(trimmed) -> {
+                    topic = trimmed.substringAfter("：").substringAfter(":").trim().takeIf { it.isNotBlank() }
+                }
+                trimmed.startsWith("## ") -> {
+                    inWeek = false
+                    topic = null
+                }
+                inWeek && trimmed.startsWith("### ") -> Unit
+                inWeek && BULLET.matches(trimmed) -> items += topic to trimmed.removePrefix("- ").trim()
             }
         }
         return buildString {
@@ -716,7 +735,15 @@ internal class PlanWorkflow(
             weeklyBudgetLine(dailyMinutes)?.let { appendLine(it) }
             appendLine()
             appendLine("## " + week)
-            items.forEach { appendLine("- " + it) }
+            var lastTopic: String? = null
+            items.forEach { (itemTopic, text) ->
+                if (itemTopic != null && itemTopic != lastTopic) {
+                    if (lastTopic != null) appendLine()
+                    appendLine("### 主题：" + itemTopic)
+                    lastTopic = itemTopic
+                }
+                appendLine("- " + text)
+            }
         }.trimEnd()
     }
 
@@ -734,20 +761,66 @@ internal class PlanWorkflow(
         return "- 本周投入参考：" + text + "（每天 " + dailyMinutes + " 分钟，可多可少）"
     }
 
-    /** 从总计划文档解析阶段 → 计划库的阶段区间（解析不到周区间就跳过）。 */
+    /** 从总计划文档解析阶段 + 主题 → 计划库的阶段草稿（不写周区间：阶段与周解绑）。 */
     private fun stageDraftsOf(store: PlanDocStore, master: String): List<StageDraft> =
-        store.parse(master).stages.mapIndexedNotNull { index, stage ->
-            val start = stage.weekStart ?: return@mapIndexedNotNull null
-            val end = stage.weekEnd ?: return@mapIndexedNotNull null
+        store.parse(master).stages.mapIndexed { index, stage ->
             StageDraft(
                 name = stage.name,
-                weekStart = start,
-                weekEnd = end,
                 focus = stage.focus,
                 sortOrder = index,
+                topics = stage.topics.mapIndexed { topicIndex, topic ->
+                    StageTopicDraft(
+                        name = topic.name,
+                        days = (topic.days ?: 2).coerceIn(1, 5),
+                        sortOrder = topicIndex,
+                    )
+                },
             )
         }
 
+    /** 从今天到截止（含首尾）一共几天；没截止 / 格式不对返回 null。 */
+    private fun availableDays(deadline: String): Int? {
+        if (deadline.isBlank()) return null
+        val date = runCatching { LocalDate.parse(deadline) }.getOrNull() ?: return null
+        return (ChronoUnit.DAYS.between(clock.today(), date) + 1).toInt().coerceAtLeast(1)
+    }
+
+    /** 当前阶段：第一个没完成的（没主题的老阶段按 done/total 判）；全完成就落在最后一个。 */
+    private fun currentStageOf(stages: List<StageView>): StageView? =
+        stages.firstOrNull { !it.complete } ?: stages.lastOrNull()
+
+    /**
+     * 把每个阶段标题里的「约 N 天」改成主题天数之和。
+     *
+     * 模型只负责「切哪些主题、每个主题几天」，阶段总天数由宿主求和 —— 否则又是一类
+     * 「42 分钟」式的假数字（自己算错还写进文档）。找不到标题里的天数就补在阶段名后面。
+     */
+    private fun fixStageDayTotals(markdown: String, stages: List<PlanDocStage>): String {
+        val lines = markdown.lines().toMutableList()
+        val used = mutableSetOf<Int>()
+        stages.forEach { stage ->
+            val days = stage.topics.sumOf { (it.days ?: 2).coerceIn(1, 5) }
+            if (days <= 0) return@forEach
+            var index = -1
+            for (i in lines.indices) {
+                if (i in used) continue
+                val trimmed = lines[i].trim()
+                if (trimmed.startsWith("- 阶段") && trimmed.contains(stage.name)) {
+                    index = i
+                    break
+                }
+            }
+            if (index < 0) return@forEach
+            used += index
+            val line = lines[index]
+            lines[index] = if (STAGE_DAYS.containsMatchIn(line)) {
+                line.replace(STAGE_DAYS, "（约 " + days + " 天）")
+            } else {
+                line.replaceFirst(stage.name, stage.name + "（约 " + days + " 天）")
+            }
+        }
+        return lines.joinToString("\n")
+    }
 
     // ---------------------------------------------------------------- 资源聚合（调研）
 
@@ -887,28 +960,6 @@ internal class PlanWorkflow(
         return if (parsed.isBefore(clock.today())) "" else parsed.toString()
     }
 
-    /** `2026-W47` → 那周的周一；格式不对返回 null。 */
-    private fun weekMonday(week: String): LocalDate? {
-        val match = ISO_WEEK.matchEntire(week) ?: return null
-        val year = match.groupValues[1].toIntOrNull() ?: return null
-        val weekNo = match.groupValues[2].toIntOrNull() ?: return null
-        // ISO 周定义：包含 1 月 4 日的那一周是第 1 周；先取它，再往后推。
-        val week1Monday = LocalDate.of(year, 1, 4).with(ChronoField.DAY_OF_WEEK, 1L)
-        return runCatching { week1Monday.plusWeeks((weekNo - 1).toLong()) }.getOrNull()
-    }
-
-    /** 下一周（`2026-W47` → `2026-W48`）；跨年由日期算，不手拼。 */
-    private fun nextWeekOf(week: String): String? = weekMonday(week)?.plusWeeks(1)?.let(::isoWeekOf)
-
-    /** 从本周到截止周一共几周（含首尾）；截止为空 / 格式不对返回 null。 */
-    private fun horizonWeeks(thisWeek: String, deadlineWeek: String?): Int? {
-        if (deadlineWeek == null) return null
-        val start = weekMonday(thisWeek) ?: return null
-        val end = weekMonday(deadlineWeek) ?: return null
-        if (end.isBefore(start)) return 1
-        return (ChronoUnit.WEEKS.between(start, end) + 1).toInt()
-    }
-
     private fun resolveJob(wf: PlanWorkflowStore, arguments: JsonObject): PlanWorkflowStore.Job? {
         val id = arguments.str("jobId")
         return if (id != null) wf.load(id) else wf.latestOpen("plan_flow")
@@ -949,7 +1000,12 @@ internal class PlanWorkflow(
         const val WEEK_TIMEOUT_MS = 60_000L
         val FENCE: String = String(CharArray(3) { Char(96) })
         val WEEK_HEADING = Regex("^##\\s*\\d{4}-W\\d{2}\\s*$")
-        val ISO_WEEK = Regex("^(\\d{4})-W(\\d{2})$")
+
+        /** 周文档里的主题分组标题：`### 主题：进程状态`。 */
+        val WEEK_TOPIC_HEADING = Regex("^###\\s*主题\\s*[：:]\\s*.+$")
+
+        /** 阶段标题里的体量：`（约 9 天）`。 */
+        val STAGE_DAYS = Regex("[（(]\\s*约\\s*\\d+\\s*天\\s*[）)]")
         val BULLET = Regex("^(?:[-*+]|\\d+[.)])\\s+.+$")
     }
 }

@@ -896,6 +896,9 @@ internal fun SqliteLearningPlanService.cmdDeletePlan(
 /** 一个计划最多几个阶段。阶段是「几个星期攻什么」的粗粒度，太多说明该拆计划了。 */
 private const val MAX_STAGES = 20
 
+/** 单个阶段的主题上限：不是产品口径（数量由材料决定），只是防止一次写进几千条把库撑爆。 */
+private const val MAX_STAGE_TOPICS = 40
+
 /**
  * 幂等替换当前版本的阶段列表。
  *
@@ -920,11 +923,27 @@ internal fun SqliteLearningPlanService.cmdSetStages(
         val name = draft.name.trim()
         if (name.isBlank()) return fail(ErrorCode.E_INVALID, "第 ${index + 1} 个阶段没有名字。")
         if (!names.add(name)) return fail(ErrorCode.E_INVALID, "阶段名不能重复：「$name」出现了两次。")
-        if (!PlanTime.isWeekFormat(draft.weekStart) || !PlanTime.isWeekFormat(draft.weekEnd)) {
-            return fail(ErrorCode.E_INVALID, "阶段「$name」的周要写成 2026-W44 这种格式。")
+        // 阶段与周解绑（2026-11-18）：周区间整体可选；写了就两个都要、且格式/顺序要对。
+        val hasRange = draft.weekStart != null || draft.weekEnd != null
+        if (hasRange) {
+            val start = draft.weekStart
+            val end = draft.weekEnd
+            if (start == null || end == null || !PlanTime.isWeekFormat(start) || !PlanTime.isWeekFormat(end)) {
+                return fail(ErrorCode.E_INVALID, "阶段「$name」的周要写成 2026-W44 这种格式（两个都写或都不写）。")
+            }
+            if (start > end) return fail(ErrorCode.E_INVALID, "阶段「$name」的起始周不能晚于结束周。")
         }
-        if (draft.weekStart > draft.weekEnd) {
-            return fail(ErrorCode.E_INVALID, "阶段「$name」的起始周不能晚于结束周。")
+        if (draft.topics.size > MAX_STAGE_TOPICS) {
+            return fail(ErrorCode.E_INVALID, "阶段「$name」的主题太多了（最多 $MAX_STAGE_TOPICS 个）；拆成两个阶段。")
+        }
+        val topicNames = mutableSetOf<String>()
+        draft.topics.forEachIndexed { topicIndex, topic ->
+            val topicName = topic.name.trim()
+            if (topicName.isBlank()) return fail(ErrorCode.E_INVALID, "阶段「$name」的第 ${topicIndex + 1} 个主题没有名字。")
+            if (!topicNames.add(topicName)) return fail(ErrorCode.E_INVALID, "阶段「$name」的主题名重复：「$topicName」。")
+            if (topic.days !in 1..5) {
+                return fail(ErrorCode.E_INVALID, "主题「$topicName」的体量要在 1–5 天。")
+            }
         }
     }
     return write(env) {
@@ -942,14 +961,25 @@ internal fun SqliteLearningPlanService.cmdSetStages(
         }
         if (committedRange != null) {
             stages.forEach { draft ->
-                if (draft.weekStart < committedRange.first || draft.weekEnd > committedRange.second) {
+                // 只有带周区间（老口径）的阶段才需要和承诺周对账；不绑周的阶段只按内容走。
+                val start = draft.weekStart
+                val end = draft.weekEnd
+                if (start != null && end != null && (start < committedRange.first || end > committedRange.second)) {
                     return@write fail(
                         ErrorCode.E_INVALID,
-                        "阶段「${draft.name.trim()}」的周区间（${draft.weekStart}–${draft.weekEnd}）" +
+                        "阶段「${draft.name.trim()}」的周区间（$start–$end）" +
                             "超出了计划承诺的周（${committedRange.first}–${committedRange.second}）。",
                     )
                 }
             }
+        }
+        // 主题表外键指阶段：先删主题，再删阶段，否则外键会挡住。
+        connection.prepareStatement(
+            "DELETE FROM plan_stage_topic WHERE stage_id IN " +
+                "(SELECT id FROM plan_stage WHERE plan_version_id = ?)",
+        ).use { ps ->
+            ps.setString(1, version)
+            ps.executeUpdate()
         }
         connection.prepareStatement("DELETE FROM plan_stage WHERE plan_version_id = ?").use { ps ->
             ps.setString(1, version)
@@ -957,11 +987,12 @@ internal fun SqliteLearningPlanService.cmdSetStages(
         }
         val createdAt = nowIso()
         stages.forEachIndexed { index, draft ->
+            val stageId = Ids.next("st_")
             connection.prepareStatement(
                 "INSERT INTO plan_stage(id,plan_version_id,name,week_start,week_end,focus,sort_order,created_at) " +
                     "VALUES(?,?,?,?,?,?,?,?)",
             ).use { ps ->
-                ps.setString(1, Ids.next("st_"))
+                ps.setString(1, stageId)
                 ps.setString(2, version)
                 ps.setString(3, draft.name.trim())
                 ps.setString(4, draft.weekStart)
@@ -971,6 +1002,19 @@ internal fun SqliteLearningPlanService.cmdSetStages(
                 ps.setInt(7, if (draft.sortOrder != 0) draft.sortOrder else index)
                 ps.setString(8, createdAt)
                 ps.executeUpdate()
+            }
+            draft.topics.forEachIndexed { topicIndex, topic ->
+                connection.prepareStatement(
+                    "INSERT INTO plan_stage_topic(id,stage_id,name,days,sort_order,created_at) VALUES(?,?,?,?,?,?)",
+                ).use { ps ->
+                    ps.setString(1, Ids.next("tp_"))
+                    ps.setString(2, stageId)
+                    ps.setString(3, topic.name.trim())
+                    ps.setInt(4, topic.days)
+                    ps.setInt(5, if (topic.sortOrder != 0) topic.sortOrder else topicIndex)
+                    ps.setString(6, createdAt)
+                    ps.executeUpdate()
+                }
             }
         }
         appendEvent(

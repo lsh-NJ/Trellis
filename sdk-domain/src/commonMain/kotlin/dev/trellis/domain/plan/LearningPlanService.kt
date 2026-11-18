@@ -401,14 +401,28 @@ data class CommitmentDraft(
 @kotlinx.serialization.Serializable
 data class SplitPart(val day: String, val estimateMinutes: Int)
 
-/** 一个学习阶段：ISO 周区间 + 一句重点；`sortOrder` 省略时按列表顺序排。 */
+/** 阶段下的一个主题：名称 + 体量（天）；周文档把它展开成 2–6 个节点。 */
+@kotlinx.serialization.Serializable
+data class StageTopicDraft(
+    val name: String,
+    val days: Int = 2,
+    val sortOrder: Int = 0,
+)
+
+/**
+ * 一个学习阶段：主题清单 + 一句重点；`sortOrder` 省略时按列表顺序排。
+ *
+ * [weekStart] / [weekEnd] 可空：2026-11-18 起阶段与周解绑，新计划不写周区间；
+ * 老计划（含按周区间算进度的口径）仍可带。
+ */
 @kotlinx.serialization.Serializable
 data class StageDraft(
     val name: String,
-    val weekStart: String,
-    val weekEnd: String,
+    val weekStart: String? = null,
+    val weekEnd: String? = null,
     val focus: String = "",
     val sortOrder: Int = 0,
+    val topics: List<StageTopicDraft> = emptyList(),
 )
 
 /** 资源池里的一条；`parentId` 用于课程 → 分集。 */

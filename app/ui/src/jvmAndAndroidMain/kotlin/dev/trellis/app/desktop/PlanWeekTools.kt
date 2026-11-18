@@ -201,6 +201,8 @@ internal data class PlannedItem(
     val chapter: String,
     /** 资源池 id（可选，最多 3 条）；节点名仍写内容/知识点。 */
     val resources: List<String> = emptyList(),
+    /** 属于当前阶段的哪个主题（2026-11-18 起节点章节写成「阶段 · 主题」）；模型没给就是 null。 */
+    val topic: String? = null,
 )
 
 /** 模型给的整周安排：这周重点 + 条目。 */
@@ -298,6 +300,12 @@ internal suspend fun planOneWeek(
         )
     }
 
+    // 当前阶段与主题：周文档按主题分组取点，节点章节写成「阶段 · 主题」，进度才能按主题聚合。
+    val planStages = runCatching { plan.stages(planId) }.getOrDefault(emptyList())
+    val currentStage = planStages.firstOrNull { !it.complete } ?: planStages.lastOrNull()
+    val stageName = currentStage?.name.orEmpty()
+    val stageTopics = currentStage?.topics.orEmpty().map { it.name to it.days }
+
     val outline = planDocStore?.read(planId).orEmpty()
     // 资源切片：课程容器不直接引用，只把分集/文章等材料给模型；最多 120 条。
     val resourceSlice = runCatching { plan.resources(planId) }
@@ -313,10 +321,13 @@ internal suspend fun planOneWeek(
     val raw = withTimeoutOrNull(TIMEOUT_MS) {
         llm.complete(
             listOf(
-                LlmMessage(LlmRole.System, weekSystemPrompt(week, dailyMinutes)),
+                LlmMessage(LlmRole.System, weekSystemPrompt(week, dailyMinutes, stageName, stageTopics)),
                 LlmMessage(
                     LlmRole.User,
-                    weekUserPrompt(today.toString(), outline, lastWeek, lastSummary, stageFocus, resourceSlice),
+                    weekUserPrompt(
+                        today.toString(), outline, lastWeek, lastSummary, stageFocus, resourceSlice,
+                        stageName, stageTopics,
+                    ),
                 ),
             ),
         )
@@ -379,9 +390,15 @@ internal suspend fun planOneWeek(
             }
             queueDocWritten = true
         }
+        val validTopics = stageTopics.map { it.first }.toSet()
         val drafts = deduped.map { item ->
+            val topic = item.topic?.takeIf { it in validTopics }
             UnitDraft(
-                chapter = item.chapter.ifBlank { "本周" },
+                chapter = when {
+                    topic != null && stageName.isNotBlank() -> stageName + " · " + topic
+                    stageName.isNotBlank() -> stageName
+                    else -> item.chapter.ifBlank { "本周" }
+                },
                 title = item.title,
                 estimateMinutes = PlanUnitBand.clamp(item.minutes),
                 // 队列模式只装「要学的点」：不再按模型的 practice/review 分类落库。
@@ -586,6 +603,7 @@ private fun parseWeekItems(raw: String): ParsedWeek? {
         PlannedItem(
             title = title, minutes = minutes, kind = normalized, chapter = chapter,
             resources = resources.distinct().take(3),
+            topic = obj["topic"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() },
         )
     }
     if (items.isEmpty()) return null
@@ -658,7 +676,12 @@ private fun normalizeTitle(raw: String): String =
         .replace("与", "")
         .replace("及", "")
 
-private fun weekSystemPrompt(week: String, dailyMinutes: Int): String = buildString {
+private fun weekSystemPrompt(
+    week: String,
+    dailyMinutes: Int,
+    stageName: String = "",
+    topics: List<Pair<String, Int>> = emptyList(),
+): String = buildString {
     appendLine("你是学习规划师，正在给 " + week + " 这一周排具体内容。只输出一个 JSON 对象，不要 markdown、不要解释：")
     appendLine("{\"focus\":\"这周重点（≤20 字）\",\"items\":[{\"title\":\"条目标题（≤20 字）\",\"chapter\":\"章节或主题\",\"kind\":\"study|practice|review\",\"minutes\":30,\"resources\":[\"res_x\"]}]}")
     appendLine("参考：本周每天投入约 " + dailyMinutes + " 分钟（只是参考，内容多可以多排、整体延期也行，不必卡死）；条目 3–14 个；每条 10–45 分钟。")
@@ -668,6 +691,11 @@ private fun weekSystemPrompt(week: String, dailyMinutes: Int): String = buildStr
     appendLine("内容规则：看视频/看书算 study；动手写代码、做项目、做题算 practice；复盘/重做错题/回顾算 review。")
     appendLine("交付物整理规则：整理 README/文档/提交历史/仓库结构这类收尾工作算 practice，只在阶段收尾周出现一次，不要每周都排。")
     appendLine("前几周通识偏 study，专业技术路线要给 practice（写出能被运行/看到的东西）；复习安排在阶段收尾。")
+    if (topics.isNotEmpty()) {
+        appendLine("当前阶段：" + stageName + "。每条要标 topic：从下面给的主题里**逐字**选一个（不要自创），")
+        appendLine("按顺序从第一个主题开始取，取到这一周的投入量为止；一周取不满是正常的。")
+        appendLine("主题（按顺序）：" + topics.joinToString("、") { it.first + "（约 " + it.second + " 天）" })
+    }
 }
 
 private fun weekUserPrompt(
@@ -677,10 +705,16 @@ private fun weekUserPrompt(
     lastSummary: String,
     stageFocus: String,
     resources: List<PlanResourceView> = emptyList(),
+    stageName: String = "",
+    topics: List<Pair<String, Int>> = emptyList(),
 ): String = buildString {
     appendLine("今天：" + today)
     appendLine("上周（" + lastWeek + "）的条目：" + (lastSummary.ifBlank { "没有记录" }))
     if (stageFocus.isNotBlank()) appendLine("本周所属阶段的焦点：" + stageFocus)
+    if (stageName.isNotBlank()) appendLine("当前阶段：" + stageName)
+    if (topics.isNotEmpty()) {
+        appendLine("本周可以取的主题（按顺序，topic 逐字用这里面的名字）：" + topics.joinToString("、") { it.first })
+    }
     appendLine("计划文档（大纲）：")
     appendLine(outline.ifBlank { "（还没有文档）" })
     if (resources.isNotEmpty()) {
@@ -742,7 +776,14 @@ private fun weekQueueDoc(week: String, focus: String, items: List<PlannedItem>):
     }
     appendLine()
     appendLine("## 节点")
+    var currentTopic: String? = null
     items.forEach { item ->
+        val topic = item.topic?.takeIf { it.isNotBlank() }
+        if (topic != null && topic != currentTopic) {
+            appendLine()
+            appendLine("### 主题：" + topic)
+            currentTopic = topic
+        }
         appendLine("- " + item.title + "（" + kindLabel(item.kind) + " · 约 " + item.minutes + " 分钟）")
     }
 }

@@ -16,6 +16,25 @@ package dev.trellis.feature.learning
  * 在手机上会直接抛 `no such function: json_valid`，整库建不起来。
  * payload 的合法性由写入侧的 `JsonObject` 类型保证，读取一律在 Kotlin 侧解析。
  */
+/**
+ * 阶段表的 DDL：周区间**可空**（2026-11-18 起阶段与周解绑，老计划仍可带区间）。
+ *
+ * 迁移重建旧表也用这一份，保证新库（直接建）和旧库（重建）结构一致。
+ */
+internal val PLAN_STAGE_TABLE_DDL: String =
+    "CREATE TABLE IF NOT EXISTS plan_stage (" +
+        "id TEXT PRIMARY KEY, plan_version_id TEXT NOT NULL REFERENCES plan_version(id), " +
+        "name TEXT NOT NULL, " +
+        "week_start TEXT NULL CHECK (week_start IS NULL OR week_start GLOB '[0-9][0-9][0-9][0-9]-W[0-9][0-9]'), " +
+        "week_end TEXT NULL CHECK (week_end IS NULL OR week_end GLOB '[0-9][0-9][0-9][0-9]-W[0-9][0-9]'), " +
+        "focus TEXT NOT NULL DEFAULT '', sort_order INTEGER NOT NULL, created_at TEXT NOT NULL)"
+
+/** 阶段主题表：一个阶段下的内容块，体量按天估（1–5 天），周文档把它们展开成节点。 */
+internal val PLAN_STAGE_TOPIC_TABLE_DDL: String =
+    "CREATE TABLE IF NOT EXISTS plan_stage_topic (" +
+        "id TEXT PRIMARY KEY, stage_id TEXT NOT NULL REFERENCES plan_stage(id), " +
+        "name TEXT NOT NULL, days INTEGER NOT NULL DEFAULT 2, sort_order INTEGER NOT NULL, created_at TEXT NOT NULL)"
+
 internal val PLAN_SCHEMA_V1: List<String> = listOf(
     "CREATE TABLE IF NOT EXISTS schema_migration (" +
         "version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)",
@@ -103,15 +122,14 @@ internal val PLAN_SCHEMA_V1: List<String> = listOf(
         "commitment_id TEXT NOT NULL REFERENCES commitment(id), " +
         "unit_id TEXT NOT NULL REFERENCES plan_unit(id), sort_order INTEGER NOT NULL, " +
         "PRIMARY KEY (commitment_id, unit_id))",
-    // 阶段：把一版计划按 ISO 周区间切开（第 1–4 周 / 第 5–8 周…），给「由面到点」的中间层。
+    // 阶段：一版计划的内容分组（主题清单），可选带 ISO 周区间（老计划用；新计划不再写周区间）。
     // 阶段属于版本：换版时旧阶段随旧版本一起变成历史，新版本重新定阶段。
-    "CREATE TABLE IF NOT EXISTS plan_stage (" +
-        "id TEXT PRIMARY KEY, plan_version_id TEXT NOT NULL REFERENCES plan_version(id), " +
-        "name TEXT NOT NULL, " +
-        "week_start TEXT NOT NULL CHECK (week_start GLOB '[0-9][0-9][0-9][0-9]-W[0-9][0-9]'), " +
-        "week_end TEXT NOT NULL CHECK (week_end GLOB '[0-9][0-9][0-9][0-9]-W[0-9][0-9]'), " +
-        "focus TEXT NOT NULL DEFAULT '', sort_order INTEGER NOT NULL, created_at TEXT NOT NULL)",
+    PLAN_STAGE_TABLE_DDL,
     "CREATE INDEX IF NOT EXISTS idx_plan_stage_version ON plan_stage(plan_version_id, sort_order)",
+    // 阶段主题：阶段下的内容块（体量按天估），周文档把它们展开成节点。2026-11-18 起阶段不再
+    // 强制绑定周区间，所以「阶段里有什么」必须显式存，否则进度和周排期都没有依据。
+    PLAN_STAGE_TOPIC_TABLE_DDL,
+    "CREATE INDEX IF NOT EXISTS idx_plan_stage_topic_stage ON plan_stage_topic(stage_id, sort_order)",
     // 计划文档：总文档（kind=overview，week=''）与周文档（kind=week，week=2026-W46）。
     // 以前是 plans/docs/*.md 文件，和计划库分成两个真相；进库后一次事务就能把「建计划 + 写文档」写完。
     "CREATE TABLE IF NOT EXISTS plan_doc (" +

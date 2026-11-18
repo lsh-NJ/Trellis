@@ -195,7 +195,11 @@ class ResearchToolsTest {
         assertEquals("2026-W46", stages[0].weekEnd)
         assertEquals("2026-W47", stages[1].weekStart)
         assertEquals("2026-W49", stages[2].weekEnd)
-        assertTrue(stages.all { it.weekStart <= it.weekEnd })
+        assertTrue(stages.all { stage ->
+            val start = stage.weekStart
+            val end = stage.weekEnd
+            start != null && end != null && start <= end
+        })
 
         // 大纲文档照旧。
         val doc = harness.docStore.read(planId)

@@ -3656,12 +3656,16 @@ class AppRuntime private constructor() {
         val service = runCatching { learningPlan() }.getOrNull() ?: return null
         val stages = runCatching { service.stages(planId) }.getOrDefault(emptyList())
         if (stages.isEmpty()) return "这份计划还没有阶段，按整份计划处理。"
-        val current = stages.firstOrNull { st: StageView ->
-            val week = isoWeekOf(clock.today())
-            week >= st.weekStart && week <= st.weekEnd
-        } ?: stages.firstOrNull { it.done < it.total }
+        // 阶段与周解绑后按主题进度找当前阶段：第一个没完成的；老计划（没有主题）看 done/total。
+        val current = stages.firstOrNull { !it.complete } ?: stages.lastOrNull()
         return current?.let {
-            "当前阶段：" + it.name + "（" + it.weekStart + "–" + it.weekEnd + "，完成 " + it.done + "/" + it.total + "）。"
+            val detail = if (it.topics.isNotEmpty()) {
+                "完成 " + it.done + "/" + it.total + "，主题 " + it.topics.count { topic -> topic.complete } +
+                    "/" + it.topics.size
+            } else {
+                "完成 " + it.done + "/" + it.total
+            }
+            "当前阶段：" + it.name + "（" + detail + "）。"
         }
     }
 

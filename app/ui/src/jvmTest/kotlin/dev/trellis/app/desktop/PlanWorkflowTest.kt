@@ -78,14 +78,21 @@ class PlanWorkflowTest {
         var autoConsent: Boolean = true,
     )
 
+    /**
+     * 新口径的总计划文档：阶段 = 主题清单（约 N 天），不写周区间、不写日期。
+     * 2026-11-18 起阶段与周解绑，周文档的阶段主题从这里取。
+     */
     private fun masterJson(): String {
         val doc = listOf(
             "# 目标与验收",
             "- 目标：两个月后期末考试，复习操作系统",
             "- 验收：每章能自己复述并做出例题",
             "## 阶段",
-            "- 阶段 1 · 基础（2026-W45 – 2026-W45，约 1 周）：中断与系统调用",
-            "- 阶段 2 · 进程（2026-W46 – 2026-W47，约 2 周）：调度与同步",
+            "- 阶段 1 · 基础（约 3 天）：中断与系统调用",
+            "  - 主题：中断与系统调用（约 3 天）",
+            "- 阶段 2 · 进程（约 5 天）：调度与同步",
+            "  - 主题：进程状态（约 2 天）",
+            "  - 主题：调度算法（约 3 天）",
         ).joinToString("\n")
         return "{\"title\":\"操作系统备考\",\"doc\":\"" + doc.replace("\n", "\\n") + "\"}"
     }
@@ -95,10 +102,11 @@ class PlanWorkflowTest {
         "- 本周重点：中断与系统调用",
         "",
         "## " + thisWeek,
+        "### 主题：中断与系统调用",
         // 2026-11-17 起条目只标体量档（小/中/大 = 15/30/45），不再写由预算摊出来的分钟数。
         "- 中断与系统调用（中 · 约 30 分钟）",
-        "- 进程调度算法（小 · 约 15 分钟）",
-        "- 页面置换计算（大 · 约 45 分钟）",
+        "- 中断处理流程（小 · 约 15 分钟）",
+        "- 系统调用过程（大 · 约 45 分钟）",
     ).joinToString("\n")
 
     /** 临时拼一份总计划文档 JSON：阶段行由调用方给。 */
@@ -217,7 +225,8 @@ class PlanWorkflowTest {
         val planId = plans.first().id
         assertEquals("awaiting_user", assertNotNull(h.workflow.load(jobId)).state)
         val weekText = h.docStore.readWeek(planId, thisWeek).orEmpty()
-        assertTrue(weekText.contains("进程调度算法"), weekText)
+        assertTrue(weekText.contains("中断处理流程"), weekText)
+        assertTrue(weekText.contains("### 主题：中断与系统调用"), weekText)
         // 投入参考由宿主按每天投入算（60 × 7 = 7 小时），不摊到条目上。
         assertTrue(weekText.contains("本周投入参考：约 7 小时"), weekText)
         assertFalse(weekText.contains("每天投入："), weekText)
@@ -239,7 +248,12 @@ class PlanWorkflowTest {
         assertEquals("done", assertNotNull(h.workflow.load(jobId)).state)
         val units = assertNotNull(h.service.week(planId, thisWeek)).commitment?.units.orEmpty()
         assertEquals(3, units.size, units.joinToString { it.title })
-        assertTrue(units.any { it.title.contains("页面置换") }, units.joinToString { it.title })
+        assertTrue(units.any { it.title.contains("系统调用") }, units.joinToString { it.title })
+        // 节点章节写成「阶段 · 主题」：阶段进度靠它按主题聚合（2026-11-18 起阶段不绑周）。
+        assertTrue(
+            units.all { it.chapter == "基础 · 中断与系统调用" },
+            units.joinToString { it.title + "@" + it.chapter },
+        )
         // 节点只装要学的点：没有复习/练习类条目，kind 一律 study。
         assertTrue(units.all { it.kind == "study" }, units.joinToString { it.kind })
         assertTrue(units.none { it.title.contains("复习") || it.title.contains("练习") })
@@ -330,41 +344,49 @@ class PlanWorkflowTest {
         assertEquals("cancelled", assertNotNull(h.workflow.load(job)).state)
     }
 
-    /** 截止在 3 周后：masterJson 的阶段铺满 W45–W47，正好落在截止内，不该重试。 */
+    /** 截止在两周后（15 天预算）：masterJson 的主题合计 10 天，不该重试；阶段不写周区间。 */
     @Test
-    fun stagesMaySpanUpToTheDeadline() = runTest {
+    fun topicsWithinTheBudgetDoNotRetry() = runTest {
         val h = harness(listOf(masterJson(), weekDoc()))
-        start(h, deadline = "2026-11-18")
-        assertEquals(1, h.llm.calls, "阶段没超出截止就不该重试")
+        start(h, deadline = "2026-11-20")
+        assertEquals(1, h.llm.calls, "主题天数没超预算就不该重试")
         advance(h)
         val planId = h.service.plans().single().id
         val stages = h.service.stages(planId)
         assertEquals(2, stages.size)
-        assertEquals("2026-W45", stages.first().weekStart)
-        assertEquals("2026-W47", stages.last().weekEnd)
+        assertEquals(null, stages.first().weekStart)
+        assertEquals(listOf(3, 5), stages.map { stage -> stage.topics.sumOf { it.days } })
     }
 
     /**
-     * 真实事故（2026-11-18）：用户说「一周内过一遍」，总文档却切成三个阶段、每个一周，
-     * 和目标/截止自相矛盾。阶段必须落在截止周内，不符就重试一次。
+     * 真实事故（2026-11-18）：用户说「一周内过一遍」，总文档却切成三个阶段、主题合计远超一周。
+     * 现在阶段不绑周：校验「主题天数合计 ≤ 截止前的可用天数」，超了就重试一次。
      */
     @Test
-    fun masterRetriesWhenStagesOverrunTheDeadline() = runTest {
-        val threeWeeks = masterDoc(
-            "- 阶段 1 · 体系结构（2026-W45 – 2026-W45，约 1 周）：五层框架",
-            "- 阶段 2 · 网络层（2026-W46 – 2026-W46，约 1 周）：转发",
-            "- 阶段 3 · 应用层（2026-W47 – 2026-W47，约 1 周）：收尾",
+    fun masterRetriesWhenTopicsOverrunTheDeadline() = runTest {
+        val tooLong = masterDoc(
+            "- 阶段 1 · 体系结构（约 5 天）：五层框架",
+            "  - 主题：体系结构与分层（约 3 天）",
+            "  - 主题：物理层与链路层（约 2 天）",
+            "- 阶段 2 · 网络层（约 4 天）：转发",
+            "  - 主题：IP 与路由（约 4 天）",
+            "- 阶段 3 · 应用层（约 4 天）：收尾",
+            "  - 主题：应用层协议（约 4 天）",
         )
-        val oneWeek = masterDoc("- 阶段 1 · 全程通读（2026-W45 – 2026-W45，约 1 周）：五层结构 + 主干概念")
-        val h = harness(listOf(threeWeeks, oneWeek, weekDoc()))
-        start(h, deadline = "2026-11-08")
-        assertEquals(2, h.llm.calls, "阶段超出截止应当重试一次")
+        val fits = masterDoc(
+            "- 阶段 1 · 全程通读（约 3 天）：五层结构 + 主干概念",
+            "  - 主题：五层结构与主干概念（约 3 天）",
+        )
+        val h = harness(listOf(tooLong, fits, weekDoc()))
+        start(h, deadline = "2026-11-06")
+        assertEquals(2, h.llm.calls, "主题天数超出截止预算应当重试一次")
         advance(h)
         val planId = h.service.plans().single().id
         val stages = h.service.stages(planId)
         assertEquals(1, stages.size, "一周的计划只能有 1 个阶段")
-        assertEquals("2026-W45", stages.single().weekStart)
-        assertEquals("2026-W45", stages.single().weekEnd)
+        assertEquals(null, stages.single().weekStart)
+        assertEquals(1, stages.single().topics.size)
+        assertEquals(3, stages.single().topics.single().days)
     }
 
     /**
@@ -408,7 +430,7 @@ class PlanWorkflowTest {
         assertEquals(3, h.llm.calls, "第二段应该重试一次")
         assertEquals("awaiting_user", assertNotNull(h.workflow.load(jobId)).state)
         val planId = h.service.plans().single().id
-        assertTrue(h.docStore.readWeek(planId, thisWeek).orEmpty().contains("进程调度算法"))
+        assertTrue(h.docStore.readWeek(planId, thisWeek).orEmpty().contains("中断处理流程"))
     }
 
     @Test

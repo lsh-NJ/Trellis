@@ -517,7 +517,7 @@ class PlanDocStoreTest {
     }
 
     @Test
-    fun stageForWeekMatchesTheWeekRangeAndSkipsStagesWithoutOne() {
+    fun stageForWeekMatchesTheWeekRangeAndFallsBackToTheFirstStage() {
         val planId = newPlan("阶段计划")
         store.save(
             planId,
@@ -532,7 +532,44 @@ class PlanDocStoreTest {
 
         assertEquals("基础语法", store.stageForWeek(planId, "2026-W45")?.name)
         assertEquals("基础语法", store.stageForWeek(planId, "2026-W46")?.name)
-        assertNull(store.stageForWeek(planId, "2026-W47"))
+        // 2026-11-18 起阶段不再绑周：周没有对应区间时退回第一个阶段（周文档按当前阶段主题取点）。
+        assertEquals("基础语法", store.stageForWeek(planId, "2026-W47")?.name)
         assertNull(store.stageForWeek("pln_missing", "2026-W45"))
+    }
+    /**
+     * 2026-11-18 起新总文档的阶段只有「主题清单 + 约 N 天」，不写周区间；
+     * 周文档用 「### 主题：X」 分组，条目要带上主题（节点章节靠它算阶段进度）。
+     */
+    @Test
+    fun parseReadsTopicOnlyStagesAndWeekTopicGroups() {
+        val doc = store.parse(
+            """
+            # 目标与验收
+            - 目标A：复习操作系统
+            ## 阶段
+            - 阶段 1 · 进程与线程（约 4 天）：进程模型
+              - 主题：进程状态（约 2 天）
+              - 主题：PCB 与进程控制（约 2 天）
+            - 阶段 2 · 内存管理（约 3 天）
+              - 主题：分页与页表（约 3 天）
+            ## 2026-W47
+            ### 主题：进程状态
+            - 进程的五状态（中 · 约 30 分钟）
+            ### 主题：PCB 与进程控制
+            - PCB 组成（小 · 约 15 分钟）
+            """.trimIndent(),
+        )
+
+        assertEquals(2, doc.stages.size)
+        assertNull(doc.stages[0].weekStart)
+        assertNull(doc.stages[0].weekEnd)
+        assertEquals(listOf("进程状态", "PCB 与进程控制"), doc.stages[0].topics.map { it.name })
+        assertEquals(listOf(2, 2), doc.stages[0].topics.map { it.days })
+        assertEquals(listOf("分页与页表"), doc.stages[1].topics.map { it.name })
+        assertEquals(3, doc.stages[1].topics.single().days)
+
+        val week = doc.weeks["2026-W47"].orEmpty()
+        assertEquals(listOf("进程状态", "PCB 与进程控制"), week.map { it.topic })
+        assertEquals(listOf(30, 15), week.map { it.minutesHint })
     }
 }
