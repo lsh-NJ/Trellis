@@ -467,4 +467,17 @@ class PlanWorkflowTest {
         assertTrue(user.contains("行，那就往下走吧"), user)
     }
 
+    /**
+     * 取消流程要把还没落成计划的草稿删掉：它是这段流程的中间产物，
+     * 留着会在知识库左栏挂一份永远点不开的「总计划（草稿）」（2026-11-19 用户反馈）。
+     */
+    @Test
+    fun cancellingAFlowDeletesItsUnadoptedDraft() = runTest {
+        val h = harness()
+        start(h)
+        assertTrue(h.docStore.draftIds().isNotEmpty(), "第一段应该先写出草稿")
+        val cancelled = h.tool.call(buildJsonObject { put("action", "cancel") })
+        assertFalse(cancelled.isError, cancelled.content)
+        assertTrue(h.docStore.draftIds().isEmpty(), "取消后草稿应该删掉：" + h.docStore.draftIds())
+    }
 }

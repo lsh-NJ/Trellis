@@ -2579,12 +2579,43 @@ class AppRuntime private constructor() {
     /** 计划被放弃/删除后，取消绑在它上面的未结流程（清单也随之收尾）。 */
     private fun cancelPlanFlowsFor(planId: String) {
         if (!::planWorkflowStore.isInitialized) return
+        // 取消之前先记下这些流程的草稿：计划被删/放弃后，草稿只是这段流程的输入，一起收掉。
+        val drafts = runCatching { planWorkflowStore.openJobs("plan_flow") }
+            .getOrDefault(emptyList())
+            .filter { job -> jobPayloadField(job.payload, "planId") == planId }
+            .mapNotNull { job -> jobPayloadField(job.payload, "draftId") }
+            .distinct()
         val cancelled = runCatching { planWorkflowStore.cancelOpenForPlan(planId) }.getOrDefault(0)
         if (cancelled > 0) {
+            if (::planDocStore.isInitialized) drafts.forEach { planDocStore.deleteDraft(it) }
             reconcileWorkflowChecklists()
             appendAppLog("计划 " + planId + " 被删除/放弃，已取消 " + cancelled + " 段未结计划流程")
         }
     }
+
+    /**
+     * 启动时清一次计划文档孤儿。
+     *
+     * 两类：计划库里已经没有的计划文档目录（计划被软删/库里换过），以及没有未结流程
+     * 认领的草稿（流程取消后留的「总计划（草稿）」）。只动文档文件，不碰计划库。
+     */
+    private fun pruneOrphanPlanDocs() {
+        if (!::planDocStore.isInitialized || !::planWorkflowStore.isInitialized) return
+        val service = runCatching { learningPlan() }.getOrNull() ?: return
+        val known = runCatching { service.plans().map { it.id }.toSet() }.getOrNull() ?: return
+        val openDraftIds = runCatching { planWorkflowStore.openJobs("plan_flow") }
+            .getOrDefault(emptyList())
+            .mapNotNull { job -> jobPayloadField(job.payload, "draftId") }
+            .toSet()
+        val removed = runCatching { planDocStore.pruneOrphans(known, openDraftIds) }.getOrDefault(0)
+        if (removed > 0) appendAppLog("清理计划文档孤儿：" + removed + " 个文件")
+    }
+
+    /** 从 job payload 里取一个字符串字段（只用于流程/文档清理）。 */
+    private fun jobPayloadField(payload: String, key: String): String? =
+        runCatching {
+            (Json.parseToJsonElement(payload) as? JsonObject)?.get(key)?.jsonPrimitive?.contentOrNull
+        }.getOrNull()?.takeIf { it.isNotBlank() }
 
     /** 计划工作流三段的显示名（用于提示词里的「当前段」）。 */
     private fun workflowPhaseLabel(phase: String): String = when (phase) {
@@ -5884,6 +5915,10 @@ class AppRuntime private constructor() {
         }
         // 删掉计划后，绑在它上面的未结流程必须一起取消，否则下次 start 会被它挡住。
         cancelPlanFlowsFor(planId)
+        // 计划文档（总览 + 各周）跟着删：软删之后这份计划不会再出现在列表里，文档留着就是孤儿。
+        if (::planDocStore.isInitialized) {
+            runCatching { planDocStore.deletePlanDocs(planId) }
+        }
         refreshPlan()
         // 删计划可能连带软删目标（或解绑），目标页的状态要跟着更新。
         refreshGoals()
@@ -7076,6 +7111,9 @@ class AppRuntime private constructor() {
             runtime.pluginCardStyles = runtime.pluginStyleStore.load()
             runtime.planDocStore = PlanDocStore(home)
             runtime.planWorkflowStore = PlanWorkflowStore(home)
+            // 启动时清一次计划文档孤儿（软删计划的文档、没人认领的草稿）：
+            // 草稿是流程第一段的中间产物，流程取消后文件没人删，知识库左栏会一直挂着它。
+            runCatching { runtime.pruneOrphanPlanDocs() }
             runtime.chatStore = ChatStore(home) { line -> runtime.appendAppLog(line) }
             runtime.planSessionStore = PlanSessionStore(home)
             runtime.knowledgeStore = KnowledgeStore(home, runtime.clock)

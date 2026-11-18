@@ -275,8 +275,16 @@ internal class PlanWorkflow(
         val job = resolveJob(wf, arguments) ?: return ToolResult("现在没有进行中的计划流程。", isError = true)
         wf.setJobState(job.id, "cancelled")
         onChecklist(job.id)
-        // 已经写好的文档/计划都保留：文档是用户的资产，删不删交给用户。
-        return ToolResult("已取消这段计划流程。已经写好的文档和计划不会自动删；要删计划去计划页。")
+        // 草稿还没落成计划（第二段没跑）时，取消就把草稿删掉：它只是这段流程的中间产物，
+        // 留着会在知识库里挂一份永远点不开的「总计划（草稿）」（2026-11-19 用户反馈）。
+        // 已经落成计划的文档是计划资产，不在这里删 —— 放弃/删除计划时一起清。
+        val hasPlan = !job.payload.stringField("planId").isNullOrBlank()
+        if (!hasPlan) job.payload.stringField("draftId")?.let { docStore()?.deleteDraft(it) }
+        return if (hasPlan) {
+            ToolResult("已取消这段计划流程。计划的文档和节点都保留；要删计划去计划页。")
+        } else {
+            ToolResult("已取消这段计划流程，这段的草稿也一起删掉了。")
+        }
     }
 
     // ---------------------------------------------------------------- 三段执行

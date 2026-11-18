@@ -381,6 +381,50 @@ class PlanDocStore(home: File) : AutoCloseable {
         runCatching { draftFile(draftId).delete() }
     }
 
+    /**
+     * 删掉某个计划的全部文档（总览 + 各周）。计划被删除时调用。
+     *
+     * 返回删掉的文件数；目录不存在就当删过了，不抛。
+     */
+    fun deletePlanDocs(planId: String): Int {
+        if (!PLAN_ID_PATTERN.matches(planId)) return 0
+        val dir = planDir(planId)
+        if (!dir.isDirectory) return 0
+        val removed = dir.listFiles().orEmpty().count { it.isFile }
+        runCatching { dir.deleteRecursively() }
+        return removed
+    }
+
+    /**
+     * 启动时清一次孤儿：计划库里已经没有的计划文档目录、以及不再被任何未结流程引用的草稿。
+     *
+     * 为什么需要：草稿是计划流程第一段的中间产物 —— 用户放弃/删掉计划、或流程被取消后，
+     * 文件没人删，知识库左栏会一直挂着一份「总计划（草稿）」；计划被软删后它的文档目录
+     * 也不会自己消失。这里只删「计划库里没有的目录」和「没有未结流程认领的草稿」，
+     * 正在跑的流程不受影响。
+     *
+     * @param knownPlanIds 计划库里还存在的计划 id（进行中 + 已放弃都算，软删的不算）。
+     * @param keepDraftIds 未结流程 payload 里记着的草稿 id（它们的输入，不能删）。
+     */
+    fun pruneOrphans(knownPlanIds: Set<String>, keepDraftIds: Set<String>): Int {
+        var removed = 0
+        runCatching {
+            docsDir.listFiles().orEmpty().forEach { dir ->
+                if (!dir.isDirectory || dir.name == DRAFT_DIR) return@forEach
+                if (!PLAN_ID_PATTERN.matches(dir.name)) return@forEach
+                if (dir.name in knownPlanIds) return@forEach
+                removed += dir.listFiles().orEmpty().count { it.isFile }
+                dir.deleteRecursively()
+            }
+            draftIds().forEach { draftId ->
+                if (draftId in keepDraftIds) return@forEach
+                deleteDraft(draftId)
+                removed += 1
+            }
+        }
+        return removed
+    }
+
     /** 现存草稿 id（按 id 排序）。 */
     fun draftIds(): List<String> = try {
         draftsDir.listFiles().orEmpty()

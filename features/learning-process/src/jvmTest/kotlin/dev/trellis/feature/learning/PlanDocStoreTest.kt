@@ -572,4 +572,38 @@ class PlanDocStoreTest {
         assertEquals(listOf("进程状态", "PCB 与进程控制"), week.map { it.topic })
         assertEquals(listOf(30, 15), week.map { it.minutesHint })
     }
+
+    /** 删计划时它的文档目录（总览 + 各周）一起删；重复删不抛。 */
+    @Test
+    fun deletingAPlanRemovesItsDocsDirectory() {
+        val planId = newPlan("文档清理")
+        store.save(planId, "# 目标与验收\n- 目标A：清理测试\n")
+        store.saveWeek(planId, "2026-W45", "## 2026-W45\n- 条目\n")
+        assertTrue(planDocFile(planId).exists())
+        assertEquals(2, store.deletePlanDocs(planId))
+        assertFalse(File(docsRoot, planId).exists())
+        assertEquals(0, store.deletePlanDocs(planId))
+    }
+
+    /**
+     * 启动清理：计划库里没有的文档目录删掉；没有被未结流程引用的草稿删掉。
+     * 场景就是 2026-11-19 用户反馈的：放弃并删除计划后，知识库里还挂着一份「总计划（草稿）」。
+     */
+    @Test
+    fun pruneOrphansDropsUnknownPlanDirsAndUnreferencedDrafts() {
+        val kept = newPlan("保留的计划")
+        store.save(kept, "# 目标与验收\n- 目标A：留着\n")
+        val orphan = newPlan("被删掉的计划")
+        store.save(orphan, "# 目标与验收\n- 目标A：孤儿\n")
+        store.saveDraft("draft_aaaa111122223333", "# 目标与验收\n- 目标A：流程还在跑\n")
+        store.saveDraft("draft_bbbb444455556666", "# 目标与验收\n- 目标A：流程已取消\n")
+
+        val removed = store.pruneOrphans(setOf(kept), setOf("draft_aaaa111122223333"))
+
+        assertTrue(planDocFile(kept).exists(), "保留计划的文档不能动")
+        assertFalse(File(docsRoot, orphan).exists(), "计划库里没有的目录要删掉")
+        assertNotNull(store.readDraft("draft_aaaa111122223333"), "未结流程的草稿不能删")
+        assertNull(store.readDraft("draft_bbbb444455556666"), "没人认领的草稿要删掉")
+        assertTrue(removed >= 2, "至少删了一个目录 + 一份草稿：$removed")
+    }
 }
