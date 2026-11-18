@@ -46,7 +46,8 @@ import kotlinx.serialization.json.put
  * 管理员的上下文里不会多出一整套计划工具；反过来，流程内部也用不到管理员的任何工具。
  *
  * 推进权在宿主：每段跑完，宿主自己摆「开始下一步 / 我要改 / 先不建」三个选项并停下；
- * 只有用户真的点了「开始下一步」，[consumeConsent] 才会放行 advance。
+ * 用户点了「开始下一步」，或在对话里明确回「继续 / 好 / 开始下一步」这类确定答复，
+ * [consumeConsent] 才会放行 advance（判定是宿主按白名单整句匹配，见 [confirmIntent]）。
  * 模型自己写 confirmed=true 已经没用了 —— 那个参数被删掉了。
  */
 internal class PlanWorkflow(
@@ -124,7 +125,8 @@ internal class PlanWorkflow(
         override val name: String = "plan_workflow"
         override val description: String =
             "建学习计划：把目标交给这条固定流程 —— 调研出总计划文档 → 周文档 → 本周要学的知识点。" +
-                "第一次 action=start 带 goal；之后每段的推进由宿主摆按钮给用户点，用户点了才调 action=advance；" +
+                "第一次 action=start 带 goal；之后每段的推进要用户拍板：用户点了按钮、或在对话里明确说" +
+                "「开始下一步 / 继续 / 好」，宿主会记一次性凭据，这时才调 action=advance（凭据由宿主校验，你自己说没用）；" +
                 "用户要改当前这段用 action=revise + feedback。不要用它之外的写工具另建计划。"
         override val parameters: String = """
             action: start | advance | revise | status | cancel（默认 start）
@@ -179,8 +181,9 @@ internal class PlanWorkflow(
     /**
      * 用户点了「开始下一步」之后才允许推进。
      *
-     * [consumeConsent] 是宿主记的一次性凭据：只有真的点了那个选项才为 true。
-     * 模型自己调 advance（没凭据）会被挡住，并被告知去摆选项 —— 推进权不在模型手里。
+     * [consumeConsent] 是宿主记的一次性凭据：用户点了选项，或对话里明确说「继续 / 好 /
+     * 开始下一步」这类确定答复，宿主才记；判定在 [confirmIntent]（白名单整句匹配，
+     * 带「改 / 先 / 等 / 看」等字眼一律不算）。模型自己调 advance（没凭据）会被挡住。
      */
     private suspend fun advance(wf: PlanWorkflowStore, arguments: JsonObject): ToolResult {
         val job = resolveJob(wf, arguments) ?: return ToolResult("没有进行中的计划流程；先 action=start。", isError = true)
@@ -194,8 +197,8 @@ internal class PlanWorkflow(
             ?: return ToolResult("流程状态不完整，用 action=status 看一下。", isError = true)
         if (!consumeConsent(job.id, current.step)) {
             return ToolResult(
-                "这次没有往下走：用户还没点「" + ADVANCE_LABEL + "」。先把这一段的产出讲清楚；" +
-                    "用户点了那个选项之后，再调 action=advance。",
+                "这次没有往下走：用户还没确认（没点「" + ADVANCE_LABEL + "」，也没明确说继续）。" +
+                    "先把这一段的产出讲清楚；用户点了那个选项、或明确回「继续 / 好」之后，再调 action=advance。",
                 isError = true,
             )
         }
@@ -318,7 +321,8 @@ internal class PlanWorkflow(
         )
         return ToolResult(
             result.content + "\n\n下一步（" + phaseLabel(next) + "）还没做。选项已经摆在对话里，" +
-                "把这一段的产出讲给用户听，等用户点；用户点了「" + ADVANCE_LABEL + "」之后你才能调 action=advance。",
+                "把这一段的产出讲给用户听，等用户拍板：用户点「" + ADVANCE_LABEL + "」或回「继续 / 好」都算确认，" +
+                "然后才能调 action=advance。",
         )
     }
 
@@ -992,8 +996,39 @@ internal class PlanWorkflow(
     }
 
     internal companion object {
-        /** 「开始下一步」是宿主摆的固定选项；只有点了它才放行 advance。 */
+        /** 「开始下一步」是宿主摆的固定选项；点了它（或明确说继续）才放行 advance。 */
         const val ADVANCE_LABEL: String = "开始下一步"
+
+        /**
+         * 用户这句话算不算「确定要往下走」。
+         *
+         * 选项卡不是唯一入口：用户直接回「继续 / 好 / 开始下一步」也该算确认（宿主记一次性凭据，
+         * 模型自己说 advance 不算）。判定必须确定、宁严勿宽：**整句**在白名单里才算；
+         * 带否定/修改/拖延字眼（不、别、先、等、改、换、看、想、再说……）一律不算 ——
+         * 误判成同意会让流程在用户没想清楚时往下跑，比多问一次贵得多。
+         */
+        fun confirmIntent(text: String): Boolean {
+            val normalized = text.trim()
+                .replace(Regex("[\\s，。！？、；：,.!?;:~～…（）()\\[\\]【】\"'“”‘’]"), "")
+                .lowercase()
+            if (normalized.isEmpty() || normalized.length > 8) return false
+            if (CONFIRM_REJECT.any { normalized.contains(it) }) return false
+            return normalized in CONFIRM_WORDS
+        }
+
+        private val CONFIRM_WORDS: Set<String> = setOf(
+            "开始下一步", "开始下步", "开始下一步吧", "下一步", "开始", "继续", "继续吧", "开始吧",
+            "好", "好的", "好滴", "行", "行的", "可以", "可以的", "没问题", "确认", "确定",
+            "走吧", "ok", "okay", "确认继续",
+            // 「好 + 动词」这类自然说法也收：口头确认最常见的就是这几种。
+            "好的继续吧", "好继续吧", "好的继续", "好继续", "可以继续", "可以继续吧",
+            "可以开始", "好的开始", "好开始", "那就开始吧", "那就继续吧", "嗯开始", "嗯继续",
+        )
+
+        /** 拿不准就当没说：这些字眼出现时（哪怕同时也有「好」）都不算确定答复。 */
+        private val CONFIRM_REJECT: List<String> = listOf(
+            "不", "别", "先", "等", "改", "换", "看", "想", "说", "算", "停", "待", "回头", "稍", "但", "吗",
+        )
 
         const val SCOUT_TIMEOUT_MS = 45_000L
         const val MASTER_TIMEOUT_MS = 60_000L

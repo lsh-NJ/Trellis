@@ -210,7 +210,7 @@ class PlanWorkflowTest {
         // 用户没点「开始下一步」：模型自己调 advance 必须被拒，流程停在原地。
         val rejected = h.tool.call(buildJsonObject { put("action", "advance") })
         assertTrue(rejected.isError, rejected.content)
-        assertTrue(rejected.content.contains("还没点"), rejected.content)
+        assertTrue(rejected.content.contains("还没确认"), rejected.content)
         assertEquals("awaiting_user", assertNotNull(h.workflow.latestOpen("plan_flow")).state)
     }
 
@@ -445,5 +445,28 @@ class PlanWorkflowTest {
         )
         assertTrue(again.isError)
         assertTrue(again.content.contains("已经有一段计划流程"), again.content)
+    }
+    /**
+     * 打字确认也要算数，但必须「确定」才放行：整句白名单、带修改/否定/拖延字眼一律不算。
+     * 2026-11-18 实测踩到过：卡片只活一轮，用户随口说句话就没入口推进了。
+     */
+    @Test
+    fun typedConfirmationCountsOnlyWhenUnambiguous() {
+        // 明确同意
+        assertTrue(PlanWorkflow.confirmIntent("开始下一步"), "点按钮的原话")
+        assertTrue(PlanWorkflow.confirmIntent("继续"))
+        assertTrue(PlanWorkflow.confirmIntent("好"))
+        assertTrue(PlanWorkflow.confirmIntent("好的，继续吧"))
+        assertTrue(PlanWorkflow.confirmIntent("可以"))
+        assertTrue(PlanWorkflow.confirmIntent("没问题"))
+        assertTrue(PlanWorkflow.confirmIntent("确认"))
+        // 带修改/否定/拖延：都不算
+        assertFalse(PlanWorkflow.confirmIntent("我要改一下"), "改")
+        assertFalse(PlanWorkflow.confirmIntent("先不建"), "先/不")
+        assertFalse(PlanWorkflow.confirmIntent("好，但我先看看阶段"), "但/先/看")
+        assertFalse(PlanWorkflow.confirmIntent("等一下"), "等")
+        assertFalse(PlanWorkflow.confirmIntent("好的我看看"), "看")
+        assertFalse(PlanWorkflow.confirmIntent(""));
+        assertFalse(PlanWorkflow.confirmIntent("帮我看看这周排得对不对"), "长句不算")
     }
 }

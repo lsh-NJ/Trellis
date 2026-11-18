@@ -1448,6 +1448,8 @@ class AppRuntime private constructor() {
     /** 从界面发起一轮对话：job 挂在 runtime 上，切页不会把它掐断。 */
     fun ask(request: String) {
         if (chatBusy) return
+        // 用户用打字回答「继续 / 好」也给凭据：选项卡不是唯一入口（判定见 PlanWorkflow.confirmIntent）。
+        considerTypedPlanConfirm(request)
         chatJob = chatScope.launch { sendChat(request) }
     }
 
@@ -2437,6 +2439,11 @@ class AppRuntime private constructor() {
             }
             return
         }
+        // 流程已经不在等确认（跑完了 / 被取消）：推进凭据作废，补摆逻辑也别再拿旧卡片出来。
+        if (job.state != "awaiting_user" && planAdvanceGate?.first == jobId) {
+            planAdvanceGate = null
+            planAdvanceConsented = null
+        }
         val steps = job.steps
         if (steps.isEmpty()) return
         val now = System.currentTimeMillis()
@@ -3019,6 +3026,8 @@ class AppRuntime private constructor() {
                 // 段间确认由宿主摆选项：用户点了「开始下一步」，才把一次性凭据交给工具。
                 onAskConfirm = { jobId, phase, question, options ->
                     planAdvanceGate = jobId to phase
+                    planAdvanceQuestion = question
+                    planAdvanceOptions = options
                     offerChoices(question, options)
                 },
                 consumeConsent = { jobId, phase -> consumePlanAdvanceConsent(jobId, phase) },
@@ -3121,7 +3130,8 @@ class AppRuntime private constructor() {
                     appendLine("用户已经进入一段计划流程，这一段正停在「等待确认」。")
                     appendLine("当前段：" + workflowPhaseLabel(current) + "（jobId=" + openFlow.id + "）。")
                     appendLine("这一轮只做三件事：把上一段的产出讲清楚、按用户意见调 plan_workflow(action=revise, feedback=…)、")
-                    appendLine("用户点了「" + PlanWorkflow.ADVANCE_LABEL + "」之后再调 action=advance。推进由宿主按钮控制，你不能自己决定往下走。")
+                    appendLine("用户点了「" + PlanWorkflow.ADVANCE_LABEL + "」，或在对话里明确回「继续 / 好 / 开始下一步」，")
+                    appendLine("之后再调 action=advance。凭据由宿主记和校验（宿主也会重新摆出选项卡），你不能自己决定往下走。")
                     appendLine("要改已有的计划/文档内容用 update_plan；不要另开一段计划流程。")
                     appendLine("</plan_workflow_mode>")
                 }
@@ -3478,11 +3488,45 @@ class AppRuntime private constructor() {
             }
             persistChat()
             chatBusy = false
-            // 计划推进凭据只对这一轮有效：用户点了继续但模型没推进，下轮要重新点。
+            // 计划推进凭据只对这一轮有效：用户点了继续但模型没推进，下轮要重新确认。
             planAdvanceConsented = null
+            // 流程还在等确认但卡片没挂回这一轮（卡片只活在最后一轮）：补摆，别让人找不到入口。
+            if (!hidden) runCatching { reofferPlanAdvanceIfWaiting() }
             // 完成事件可能在这一轮跑的期间又攒下一件：现在这一轮收尾了，接着开自主检查。
             if (pendingAutonomy != null) launchAutonomyTurn()
         }
+    }
+
+    /**
+     * 历史超预算时，把最老的一段折进会话检查点。
+     *
+     * 顺序是「先摘要、后丢原文」：摘要调用失败就原样保留，下一轮再试 ——
+     * 宁可多花一次调用，也不要为了省 token 把用户刚说过的话悄悄扔掉。
+     * 摘要走 completeText（不开 JSON mode），模型直接给一段人话。
+     */
+    private suspend fun compactHistoryIfNeeded(llm: LlmClient) {
+        if (!needsCompaction(chatHistory, ContextBudget.HISTORY_TOKENS)) return
+        val plan = planWindow(chatHistory, ContextBudget.KEEP_TOKENS, ContextBudget.MIN_TURNS)
+        if (!plan.changed) return
+        // 用户点「停止」时压缩调用也会被取消：必须原样抛出去，
+        // 不能被当成「摘要失败」吞掉，否则这一轮停不下来。
+        val summary = try {
+            llm.completeText(checkpointMessages(chatCheckpoint, plan.folded))
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (error: Throwable) {
+            appendAppLog("会话压缩失败，原文保留：" + (error.message ?: error::class.simpleName))
+            return
+        }
+        val checkpoint = normalizeCheckpoint(summary)
+        if (checkpoint.isBlank()) {
+            appendAppLog("会话压缩返回空摘要，原文保留")
+            return
+        }
+        chatCheckpoint = checkpoint
+        chatHistory.clear()
+        chatHistory += plan.kept
+        appendAppLog("会话压缩：折叠 " + plan.folded.size + " 条，保留 " + plan.kept.size + " 条")
     }
 
     // ---- 完成事件触发的自主检查 ----
@@ -4422,11 +4466,58 @@ class AppRuntime private constructor() {
      */
     private var planAdvanceGate: Pair<String, String>? = null
     private var planAdvanceConsented: Pair<String, String>? = null
+    /** 段间确认卡的文案：流程还在等确认时补摆卡片，得用和第一次一样的问题/选项。 */
+    private var planAdvanceQuestion: String = ""
+    private var planAdvanceOptions: List<String> = emptyList()
 
     /** 用户点了继续：记下一次性凭据，等工具来领。 */
     private fun markPlanAdvanceConsent(choiceText: String) {
-        val gate = planAdvanceGate ?: return
-        if (choiceText.trim() == PlanWorkflow.ADVANCE_LABEL) planAdvanceConsented = gate
+        if (choiceText.trim() == PlanWorkflow.ADVANCE_LABEL) {
+            planAdvanceConsented = currentPlanAdvanceGate()
+        }
+    }
+
+    /**
+     * 用户没点卡片、直接在对话里回「继续 / 好 / 开始下一步」也算确认。
+     *
+     * 判定在 [PlanWorkflow.confirmIntent]（白名单整句匹配、带修改/否定字眼不算），
+     * 宿主只负责记一次性凭据；凭据仍然由工具来领，模型自己说「继续」不算。
+     */
+    private fun considerTypedPlanConfirm(text: String) {
+        if (!PlanWorkflow.confirmIntent(text)) return
+        planAdvanceConsented = currentPlanAdvanceGate()
+    }
+
+    /**
+     * 现在等确认的是哪一段。
+     *
+     * 优先用内存里摆卡时记下的；没有（换过会话 / 卡片丢了 / 重开应用）就从 job 表里现查 ——
+     * 推进权本来就在 job 状态里，不该因为卡片没了就找不回入口。
+     */
+    private fun currentPlanAdvanceGate(): Pair<String, String>? {
+        planAdvanceGate?.let { return it }
+        val store = if (::planWorkflowStore.isInitialized) planWorkflowStore else return null
+        val job = runCatching { store.latestOpen("plan_flow") }.getOrNull() ?: return null
+        if (job.state != "awaiting_user") return null
+        val phase = job.steps.firstOrNull { it.state == "running" }?.step ?: return null
+        return job.id to phase
+    }
+
+    /**
+     * 这一轮收尾时如果流程还在等确认、又没有卡片挂着，就把卡片补回来。
+     *
+     * 提问卡只渲染在「最后一轮」那条回复下面、而且不落盘：用户随口说句话、切一次会话，
+     * 卡片就再也找不到了 —— 之前只能放弃重来。补摆用的是宿主记下的问题和固定选项。
+     */
+    private fun reofferPlanAdvanceIfWaiting() {
+        if (chatBusy || chatAsk != null) return
+        val gate = currentPlanAdvanceGate() ?: return
+        planAdvanceGate = gate
+        val question = planAdvanceQuestion.ifBlank { "这一段还没做完，要现在开始吗？" }
+        val options = planAdvanceOptions.ifEmpty {
+            listOf(PlanWorkflow.ADVANCE_LABEL, "我要改一下", "先不建")
+        }
+        offerChoices(question, options)
     }
 
     /** 工具来领凭据：只放行一次，领完就清掉。 */
