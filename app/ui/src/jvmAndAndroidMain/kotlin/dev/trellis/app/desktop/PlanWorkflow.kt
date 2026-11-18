@@ -14,6 +14,8 @@ import dev.trellis.feature.learning.PlanDocStore
 import dev.trellis.feature.learning.PlanUnitBand
 import dev.trellis.feature.learning.PlanWorkflowStore
 import java.time.LocalDate
+import java.time.temporal.ChronoField
+import java.time.temporal.ChronoUnit
 import java.util.UUID
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
@@ -124,7 +126,7 @@ internal class PlanWorkflow(
         override val parameters: String = """
             action: start | advance | revise | status | cancel（默认 start）
             goal: start 必填，一句话目标（例：两个月后期末考试，复习操作系统）
-            deadline: 可选，YYYY-MM-DD（用户说了才传，按今天换算）
+            deadline: 可选，这件事要完成的日期 YYYY-MM-DD（「一周内」= 今天+7）。用户只是提到更远的考试/比赛日期时，那不是这个计划的截止，写进 goal 就行；revise 时传可以改截止日期
             dailyMinutes: 可选，30–240（用户说清每天投入才传）
             feedback: revise 用，用户对当前这段的修改意见
             jobId: 可选，不传就用最近一段没结束的计划流程
@@ -229,7 +231,15 @@ internal class PlanWorkflow(
         // 三段都是「文档 → 文档」：哪一段都能按用户意见重做，重做只覆盖这一段的产物。
         val feedback = arguments.str("feedback")?.trim()
         if (feedback.isNullOrBlank()) return ToolResult("revise 需要 feedback：用户想改什么。", isError = true)
-        return runPhase(wf, job, current.step, feedback)
+        // 用户发现截止写错了（例如把更远的考试日期当成了计划截止）可以直接改，不用重开流程。
+        val deadline = normalizeDeadline(arguments.str("deadline"))
+        val updated = if (deadline.isNotBlank()) {
+            wf.updatePayload(job.id, payloadWith(job.payload, "deadline" to JsonPrimitive(deadline)))
+            wf.load(job.id) ?: job
+        } else {
+            job
+        }
+        return runPhase(wf, updated, current.step, feedback)
     }
 
     private fun status(wf: PlanWorkflowStore, arguments: JsonObject): ToolResult {
@@ -324,7 +334,7 @@ internal class PlanWorkflow(
         val candidates = scout(goal)
         val draft = draftMasterDoc(goal, deadline, daily, candidates, feedback)
             ?: return ToolResult(
-                "总计划文档没生成出来（模型超时，或两次输出都不是合法 JSON —— 常见是被截断）。" +
+                "总计划文档没生成出来（模型超时、输出被截断，或阶段区间和截止对不上且重试无效）。" +
                     "这次没写成，可以 revise 重做这一段。",
                 isError = true,
             )
@@ -469,35 +479,59 @@ internal class PlanWorkflow(
     ): MasterDraft? {
         val today = clock.today()
         val thisWeek = isoWeekOf(today)
+        // 截止决定「可用几周」：阶段必须落在这个区间里，否则文档会自相矛盾（一周的计划切成三周）。
+        val deadlineWeek = if (deadline.isNotBlank()) {
+            runCatching { isoWeekOf(LocalDate.parse(deadline)) }.getOrNull()
+        } else {
+            null
+        }
+        val horizon = horizonWeeks(thisWeek, deadlineWeek)
         val system = buildString {
             appendLine("你是学习规划师。输入是一句目标和一批候选学习资源，输出一份总计划文档。")
             appendLine("只输出一个 JSON 对象，不要代码块、不要解释：")
             appendLine("{\"title\":\"计划标题（≤16 字）\",\"doc\":\"整份总计划 Markdown\"}")
             appendLine("doc 必须严格是这个结构（解析器只认这几个标题）：")
             appendLine("# 目标与验收")
-            appendLine("- 目标：<一句目标>")
+            appendLine("- 目标：<一句目标 + 时限口径>")
             if (deadline.isNotBlank()) appendLine("- 截止：<" + deadline + ">")
             appendLine("- 验收：<怎么算学完，可自测>")
             appendLine("## 阶段")
             appendLine("- 阶段 1 · <名称>（<起始周> – <结束周>，约 N 周）：<这一阶段聚焦什么>")
             appendLine("  - 资源：")
             appendLine("    - [<资源名>](<url>) — <一句话说明>")
-            appendLine("（阶段 2、3… 同样写法，共 3–8 个；周用 " + thisWeek + " 这种 ISO 周格式，从 " + thisWeek + " 开始，各阶段首尾相接）")
+            if (horizon != null && deadlineWeek != null) {
+                appendLine("（阶段 1、2… 同样写法；周用 " + thisWeek + " 这种 ISO 周格式；第一个阶段必须从 " + thisWeek + " 开始，")
+                appendLine("  各阶段首尾相接，最后一个阶段不能晚于截止那周 " + deadlineWeek + "。从本周到截止一共 " + horizon + " 周。）")
+            } else {
+                appendLine("（阶段 1、2… 同样写法；周用 " + thisWeek + " 这种 ISO 周格式，从 " + thisWeek + " 开始，各阶段首尾相接；")
+                appendLine("  没有截止就按内容切 2–5 个阶段、每个 1–3 周，总长 4–10 周。）")
+            }
             appendLine("## 资源清单")
             appendLine("### <类型：视频/文章/仓库/文档/问答>")
             appendLine("- [<资源名>](<url>) — <来源>")
             appendLine()
             appendLine("约束：")
             appendLine("1. 阶段只写名称、周数、聚焦和资源；不要写交付物、过关标准。")
-            appendLine("2. 资源只能从用户消息里的 <resource_candidates> 里挑，url 必须逐字照抄；每个阶段 1–3 条。")
+            appendLine("2. 阶段数由内容和可用周数决定（1–6 个）。可用周数只有 1 周时，只写 1 个阶段")
+            appendLine("   （" + thisWeek + " – " + thisWeek + "），不要硬切成 3 个。")
+            appendLine("3. 资源只能从用户消息里的 <resource_candidates> 里挑，url 必须逐字照抄；每个阶段 1–3 条。")
             appendLine("   概念/系统课优先视频；查阅/术语优先文档；动手练优先仓库；经验/考点优先文章或问答。")
-            appendLine("3. 同一份资源最多出现在两个阶段；资源清单按类型分组列全。")
-            appendLine("4. 不编造资料里没有的链接；不写内部工具名。")
+            appendLine("4. 同一份资源最多出现在两个阶段；资源清单按类型分组列全。")
+            appendLine("5. 不编造资料里没有的链接；不写内部工具名。")
+            appendLine("6. 目标行只写要学什么和时限：时限必须和截止一致。如果目标句里说的时限和截止对不上")
+            appendLine("   （例：句子里说「一周内」，但截止在两个多月后），以截止日期为准，目标行不要写「一周内」。")
         }
         val user = buildString {
             appendLine("目标：" + goal)
             appendLine("今天：" + today + "，本周：" + thisWeek)
-            if (deadline.isNotBlank()) appendLine("截止日期：" + deadline)
+            if (deadline.isNotBlank()) {
+                val weeksNote = if (deadlineWeek != null && horizon != null) {
+                    "（截止那周：" + deadlineWeek + "，从本周到截止共 " + horizon + " 周）"
+                } else {
+                    ""
+                }
+                appendLine("截止日期：" + deadline + weeksNote)
+            }
             appendLine("每天投入：" + daily + " 分钟")
             if (!feedback.isNullOrBlank()) appendLine("用户对上一版的修改意见：" + feedback)
             appendLine()
@@ -519,12 +553,59 @@ internal class PlanWorkflow(
         fun parseRoot(text: String): JsonObject? = runCatching {
             Json.parseToJsonElement(extractJsonObject(text).orEmpty()) as? JsonObject
         }.getOrNull()
+        /**
+         * 阶段区间必须自洽：从本周开始、按时间顺序不重叠、不超过截止那周、阶段数不超过可用周数。
+         *
+         * 真实事故（2026-11-18）：一周的计划被切成三周（阶段 1/2/3 各一周），而目标里写「一周内」——
+         * 文档上下自相矛盾。原因一半在上游（manager 把两个月后的考试当成计划截止），
+         * 一半在这里：阶段模板没有「可用周数」这个概念，也没有任何校验。
+         */
+        fun stagesWithinHorizon(markdown: String): Boolean {
+            val stages = docStore()?.parse(markdown)?.stages.orEmpty()
+            if (stages.isEmpty()) return false
+            val ranges = stages.mapNotNull { stage ->
+                val start = stage.weekStart ?: return@mapNotNull null
+                val end = stage.weekEnd ?: return@mapNotNull null
+                start to end
+            }
+            if (ranges.size != stages.size) return false
+            if (ranges.first().first != thisWeek) return false
+            if (ranges.any { it.first > it.second }) return false
+            // 顺序、不重叠（相邻阶段留缝不算矛盾，只是不紧凑；重叠一定是写错了）。
+            for (index in 1 until ranges.size) {
+                if (ranges[index].first <= ranges[index - 1].second) return false
+            }
+            if (deadlineWeek != null && ranges.any { it.second > deadlineWeek }) return false
+            if (horizon == null && (horizonWeeks(thisWeek, ranges.last().second) ?: return false) > 12) return false
+            if (horizon != null) {
+                if (stages.size > horizon) return false
+                if (horizon == 1 && stages.size != 1) return false
+            }
+            return true
+        }
         val raw = structuredCall(
             timeoutMs = MASTER_TIMEOUT_MS,
-            retryHint = "上一次的输出不是可用的 JSON（可能被截断）。这次只输出一个 JSON 对象，" +
-                "不要代码块；doc 控制在 60 行以内，先保证 JSON 完整。",
+            retryHint = buildString {
+                append("上一次的输出不可用：要么不是合法 JSON / 被截断，要么阶段区间和截止对不上。")
+                append("这次只输出 JSON、不要代码块；阶段从 ")
+                append(thisWeek)
+                append(" 开始、首尾相接")
+                if (deadlineWeek != null && horizon != null) {
+                    append("、不超过 ")
+                    append(deadlineWeek)
+                    append("（从本周到截止共 ")
+                    append(horizon)
+                    append(" 周")
+                    if (horizon == 1) append("；只有 1 周可用，只写 1 个阶段")
+                    append("）")
+                } else {
+                    append("、按内容 2–5 个阶段")
+                }
+                append("；目标行不要写和截止矛盾的时限；doc 控制在 60 行以内。")
+            },
             accept = { text ->
-                parseRoot(text)?.get("doc")?.jsonPrimitive?.contentOrNull?.trim().isNullOrBlank().not()
+                val doc = parseRoot(text)?.get("doc")?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+                doc.isNotBlank() && stagesWithinHorizon(doc)
             },
         ) { extra ->
             docLlm.complete(listOf(LlmMessage(LlmRole.System, system), LlmMessage(LlmRole.User, user + extra)))
@@ -806,6 +887,28 @@ internal class PlanWorkflow(
         return if (parsed.isBefore(clock.today())) "" else parsed.toString()
     }
 
+    /** `2026-W47` → 那周的周一；格式不对返回 null。 */
+    private fun weekMonday(week: String): LocalDate? {
+        val match = ISO_WEEK.matchEntire(week) ?: return null
+        val year = match.groupValues[1].toIntOrNull() ?: return null
+        val weekNo = match.groupValues[2].toIntOrNull() ?: return null
+        // ISO 周定义：包含 1 月 4 日的那一周是第 1 周；先取它，再往后推。
+        val week1Monday = LocalDate.of(year, 1, 4).with(ChronoField.DAY_OF_WEEK, 1L)
+        return runCatching { week1Monday.plusWeeks((weekNo - 1).toLong()) }.getOrNull()
+    }
+
+    /** 下一周（`2026-W47` → `2026-W48`）；跨年由日期算，不手拼。 */
+    private fun nextWeekOf(week: String): String? = weekMonday(week)?.plusWeeks(1)?.let(::isoWeekOf)
+
+    /** 从本周到截止周一共几周（含首尾）；截止为空 / 格式不对返回 null。 */
+    private fun horizonWeeks(thisWeek: String, deadlineWeek: String?): Int? {
+        if (deadlineWeek == null) return null
+        val start = weekMonday(thisWeek) ?: return null
+        val end = weekMonday(deadlineWeek) ?: return null
+        if (end.isBefore(start)) return 1
+        return (ChronoUnit.WEEKS.between(start, end) + 1).toInt()
+    }
+
     private fun resolveJob(wf: PlanWorkflowStore, arguments: JsonObject): PlanWorkflowStore.Job? {
         val id = arguments.str("jobId")
         return if (id != null) wf.load(id) else wf.latestOpen("plan_flow")
@@ -846,6 +949,7 @@ internal class PlanWorkflow(
         const val WEEK_TIMEOUT_MS = 60_000L
         val FENCE: String = String(CharArray(3) { Char(96) })
         val WEEK_HEADING = Regex("^##\\s*\\d{4}-W\\d{2}\\s*$")
+        val ISO_WEEK = Regex("^(\\d{4})-W(\\d{2})$")
         val BULLET = Regex("^(?:[-*+]|\\d+[.)])\\s+.+$")
     }
 }

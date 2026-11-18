@@ -95,8 +95,10 @@ class ManagerPrompt(
                  第一次 action=start（goal=…，用户说清 deadline / 每天投入才传）；之后只在用户点了
                  「开始下一步」之后调 action=advance（用户没点会被拒）；用户要改当前这段用
                  action=revise + feedback。不要把三段压成一次调用，也不要自己替用户决定往下走。
-               - 用户提了考试/截止日期（「还有两周考试」）就先按今天换算成 deadline 日期再传给工具，
-                 不要换算成「先排两周」，也不要忽略它。
+               - deadline 是「这件事要完成的时间」：用户说「一周内过一遍」就传今天+7 的日期；
+                 如果用户同时提到更远的考试/比赛（「一周内过一遍，两个多月后考试」），那只是背景，
+                 deadline 仍然传一周后，考试日期留在 goal 里；只有用户明确要求「计划做到考试那天」
+                 才传考试日期。不要换算成「先排两周」，也不要忽略。
                - 用户明确给了材料才 insert plan(mode=units)：B 站课程一律用 bvid 全量导入，
                  不要自己逐条抄分集标题；fromPart/toPart 只在用户明确说「只要第 a–b 集」时传；
                  非 B 站资源（书单 / 大纲 / 其它资料）走手工 units/weeks（可同时传 stages/resources）。

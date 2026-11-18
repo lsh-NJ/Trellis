@@ -101,6 +101,17 @@ class PlanWorkflowTest {
         "- 页面置换计算（大 · 约 45 分钟）",
     ).joinToString("\n")
 
+    /** 临时拼一份总计划文档 JSON：阶段行由调用方给。 */
+    private fun masterDoc(vararg stages: String): String {
+        val doc = (listOf(
+            "# 目标与验收",
+            "- 目标：复习操作系统",
+            "- 验收：能复述主干",
+            "## 阶段",
+        ) + stages).joinToString("\n")
+        return "{\"title\":\"操作系统备考\",\"doc\":\"" + doc.replace("\n", "\\n") + "\"}"
+    }
+
     private var harnessRef: Harness? = null
 
     private fun harness(replies: List<String> = listOf(masterJson(), weekDoc(), masterJson())): Harness {
@@ -149,11 +160,12 @@ class PlanWorkflowTest {
         harnessRef = null
     }
 
-    private suspend fun start(h: Harness): String {
+    private suspend fun start(h: Harness, deadline: String? = null): String {
         val result = h.tool.call(
             buildJsonObject {
                 put("action", "start")
                 put("goal", "两个月后期末考试，复习操作系统")
+                if (deadline != null) put("deadline", deadline)
             },
         )
         assertTrue(!result.isError, result.content)
@@ -318,6 +330,43 @@ class PlanWorkflowTest {
         assertEquals("cancelled", assertNotNull(h.workflow.load(job)).state)
     }
 
+    /** 截止在 3 周后：masterJson 的阶段铺满 W45–W47，正好落在截止内，不该重试。 */
+    @Test
+    fun stagesMaySpanUpToTheDeadline() = runTest {
+        val h = harness(listOf(masterJson(), weekDoc()))
+        start(h, deadline = "2026-11-18")
+        assertEquals(1, h.llm.calls, "阶段没超出截止就不该重试")
+        advance(h)
+        val planId = h.service.plans().single().id
+        val stages = h.service.stages(planId)
+        assertEquals(2, stages.size)
+        assertEquals("2026-W45", stages.first().weekStart)
+        assertEquals("2026-W47", stages.last().weekEnd)
+    }
+
+    /**
+     * 真实事故（2026-11-18）：用户说「一周内过一遍」，总文档却切成三个阶段、每个一周，
+     * 和目标/截止自相矛盾。阶段必须落在截止周内，不符就重试一次。
+     */
+    @Test
+    fun masterRetriesWhenStagesOverrunTheDeadline() = runTest {
+        val threeWeeks = masterDoc(
+            "- 阶段 1 · 体系结构（2026-W45 – 2026-W45，约 1 周）：五层框架",
+            "- 阶段 2 · 网络层（2026-W46 – 2026-W46，约 1 周）：转发",
+            "- 阶段 3 · 应用层（2026-W47 – 2026-W47，约 1 周）：收尾",
+        )
+        val oneWeek = masterDoc("- 阶段 1 · 全程通读（2026-W45 – 2026-W45，约 1 周）：五层结构 + 主干概念")
+        val h = harness(listOf(threeWeeks, oneWeek, weekDoc()))
+        start(h, deadline = "2026-11-08")
+        assertEquals(2, h.llm.calls, "阶段超出截止应当重试一次")
+        advance(h)
+        val planId = h.service.plans().single().id
+        val stages = h.service.stages(planId)
+        assertEquals(1, stages.size, "一周的计划只能有 1 个阶段")
+        assertEquals("2026-W45", stages.single().weekStart)
+        assertEquals("2026-W45", stages.single().weekEnd)
+    }
+
     /**
      * 真实事故（2026-11-17 真跑）：开思考时模型把输出预算全花在推理上，总计划文档的
      * JSON 被截断（正文只剩 572 字），流程直接报「模型没回上来」。现在结构化输出会重试一次。
@@ -329,6 +378,25 @@ class PlanWorkflowTest {
         assertEquals(2, h.llm.calls, "第一段应该重试一次")
         assertEquals("awaiting_user", assertNotNull(h.workflow.load(jobId)).state)
         assertTrue(h.docStore.draftIds().isNotEmpty(), "重试后草稿应该写出来")
+    }
+
+    /** 截止写错了（把两个月后的考试当成计划截止）不用重开流程：revise 带 deadline 就能改。 */
+    @Test
+    fun reviseCanFixTheDeadline() = runTest {
+        val h = harness(listOf(masterJson(), masterJson()))
+        val jobId = start(h, deadline = "2027-01-18")
+        val result = h.tool.call(
+            buildJsonObject {
+                put("action", "revise")
+                put("feedback", "截止应该是一周后，不是考试那天")
+                put("deadline", "2026-11-22")
+            },
+        )
+        assertTrue(!result.isError, result.content)
+        assertTrue(
+            assertNotNull(h.workflow.load(jobId)).payload.contains("2026-11-22"),
+            assertNotNull(h.workflow.load(jobId)).payload,
+        )
     }
 
     /** 周文档被截断时同样重试；重试成功后周文档照常落盘。 */
