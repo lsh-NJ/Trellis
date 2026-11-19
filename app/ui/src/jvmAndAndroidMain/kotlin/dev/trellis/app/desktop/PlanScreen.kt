@@ -52,7 +52,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.font.FontWeight
 import java.time.LocalDate
 import androidx.compose.ui.text.style.TextOverflow
@@ -110,9 +109,7 @@ internal fun PlanScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     ) {
         // 右栏的显示条件看**窗口**宽度：本页被外壳限宽成 1120dp（还得减左右各 20dp 内边距），
         // 1440pt 的窗口里 maxWidth 最多 1080dp，拿页面宽度判永远够不到 medium 断点。
-        val windowWidthDp = with(LocalDensity.current) {
-            LocalWindowInfo.current.containerSize.width.toDp().value
-        }
+        val windowWidthDp = currentWindowWidth().value
         // 抽屉打开时内容永远让开 296dp：盖在日期格上会让「拖到某天」的落点被遮住（现场复现过）。
         // 窄窗让不开（296 抽屉 + 232 列表 + 日卡会把中间列压成一列字），就在抽屉打开期间先把
         // 左侧计划列表收起来，把宽度让给日卡；收起抽屉后列表原样回来。

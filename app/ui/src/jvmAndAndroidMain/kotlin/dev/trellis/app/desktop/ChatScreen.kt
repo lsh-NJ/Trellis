@@ -73,7 +73,6 @@ import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -138,9 +137,7 @@ fun ChatScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
 
     // 窄窗（最小 880×600）里左右两条 296 栏会把对话列挤到不足 200dp：
     // 按窗口宽度收窄右栏、缩小对话区左右留白，正文至少还能读。
-    val containerWidthDp = with(LocalDensity.current) {
-        LocalWindowInfo.current.containerSize.width.toDp().value
-    }
+    val containerWidthDp = currentWindowWidth().value
     val narrowChat = containerWidthDp < 1024f
     val planPanelWidth = if (narrowChat) 232.dp else 296.dp
     val conversationPadding = if (narrowChat) 12.dp else 24.dp

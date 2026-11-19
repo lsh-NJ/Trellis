@@ -97,10 +97,11 @@ class ExerciseAttemptStore(private val file: Path) {
 
     fun append(attempt: ExerciseAttempt) {
         file.parent?.let { Files.createDirectories(it) }
-        Files.writeString(
+        // 安卓的 java.nio.file.Files 没有 writeString（那是桌面 JDK 11 的 API），
+        // 共用源集里改成「自己编码成字节 + Files.write」，两边都能编过。
+        Files.write(
             file,
-            encode(attempt).toString() + "\n",
-            Charsets.UTF_8,
+            (encode(attempt).toString() + "\n").toByteArray(Charsets.UTF_8),
             StandardOpenOption.CREATE,
             StandardOpenOption.APPEND,
         )

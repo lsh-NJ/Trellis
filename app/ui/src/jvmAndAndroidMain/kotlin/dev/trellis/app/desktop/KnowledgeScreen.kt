@@ -36,7 +36,6 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
@@ -109,7 +108,7 @@ internal fun KnowledgeScreen(runtime: AppRuntime, modifier: Modifier = Modifier)
     val pageFocus = remember { FocusRequester() }
     // 中窗及以下：右栏（本篇概念 + 目录）默认收成 36dp 窄边，别把编辑区挤成一条缝。
     // 用户点窄边的箭头仍可强行展开——展开时按 240dp 给，不按他之前拖的宽度硬撑。
-    val windowWidth = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.width.toDp() }
+    val windowWidth = currentWindowWidth()
     val narrowRail = windowWidth < TrellisBreakpoints.medium.dp
     var railOverride by remember { mutableStateOf(false) }
 

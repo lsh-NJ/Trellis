@@ -40,7 +40,8 @@ object ExerciseFileStore {
     /** 读单个 `.jsonl` 文件；文件不存在返回空 bank（导入目录场景下不是错误）。 */
     fun loadFile(path: Path): ExerciseStore.ParseResult {
         if (!path.exists()) return ExerciseStore.ParseResult(ExerciseBank.EMPTY, emptyList())
-        val text = Files.readString(path)
+        // 同 ExerciseAttemptStore：readString 是桌面 JDK 11 才有的，安卓侧只能用 readAllBytes。
+        val text = String(Files.readAllBytes(path), Charsets.UTF_8)
         return ExerciseStore.parse(text)
     }
 
