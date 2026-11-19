@@ -482,6 +482,43 @@ internal fun markdownShortcutHints(bindings: List<MarkdownBinding>): List<Shortc
 - 标题中间回车仍然拆成两条同级标题（和 Typora/大多数编辑器一致）；只有**末尾**回车才是新正文段。
 - 列表项里的块不参与标题逻辑（schema 里标题不会出现在列表内）。
 
+### 7.12 笔记里的链接：点开系统浏览器 + 地球标识（2026-11-19）
+
+用户要求：`给笔记增加链接跳转功能，使用默认浏览器打开网络连接`，顺带把链接渲染优化一下
+（除了蓝色，再在链接前加一个网络标识）。
+
+**为什么点不开**：JavaFX WebView 里点 `<a href>` 默认是**把整个编辑器页面导航过去**
+（WebView 没有地址栏，一导航编辑器就白屏）；Tiptap Link 默认 `openOnClick: true` 走的是
+`window.open`，WebView 直接丢掉。两条路都不通，所以必须自己接管点击。
+
+**落地**：
+
+| 位置 | 改动 |
+|---|---|
+| `tools/web-editor/src/extensions/links.js`（新） | `LinkClick` 扩展：`handleClick` 里对锚点一律 `preventDefault`（绝不让 WebView 自己导航），再按协议决定是否调桥 `trellisEditorBridge.onLinkClick(url)`；只放行 **http / https / mailto**；按下后拖动超过 4px（在选字）不算点击；**Option/Alt 点击**或光标已经在这条链接里 → 只落光标、不打开（方便改文字） |
+| `tools/web-editor/src/main.js` | `StarterKit.configure({ link: { openOnClick: false, onLinkPaste: true, markdownLinks: true } })` + 注册 `LinkClick`；`markdownLinks` 让直接打 `[文字](https://…)` 也能变成链接 |
+| `tools/web-editor/src/theme.js` | 链接色按背景深浅算（浅色 `#2563eb` / 深色 `#7cb0ff`），不再吃浏览器默认蓝 |
+| `app/ui/src/jvmMain/resources/editor/index.html` | `.ProseMirror a` 蓝色 + 细下划线（`text-underline-offset: 3px`）；`a::before` 放 🌐 地球当「网络标识」 |
+| `app/ui/src/jvmMain/kotlin/.../MarkdownWebEditor.kt` | 桥新增 `onLinkClick(url)` → `openExternalLink()`：`externalLinkUri()` 做协议白名单（`OPENABLE_LINK_SCHEMES` = http/https/mailto），后台线程 `Desktop.browse()`，失败只写一行日志 |
+| `app/ui/src/jvmTest/.../MarkdownLinkOpenTest.kt`（新） | 白名单单测：http/https/mailto 放行，file:/javascript:/data:/ftp:/相对路径一律拒绝 |
+| `app/ui/src/jvmTest/.../WebEditorHarness.kt` | `link` 探针（8 项）：链接渲染成 `<a>`、地球图标存在、链接色是主题蓝、点击过桥打开、Alt 点击不打开、光标已在链接里时点击不打开、mailto 也打开、非白名单协议不打开；深色主题截图 `link-render.png` |
+
+**图标为什么用 emoji 而不是图片**（踩坑记录）：先做了内联 SVG data URI，又做了 22×22 PNG
+data URI，两次在 WebView 里都**静默不显示**；做了个对照实验（同页面并排渲染 solid /
+gradient / png data URI / <img data URI> / emoji）才确认 **JavaFX WebView 不加载 data: URI
+的图片**（纯色和渐变能画，图片不能），而 🌐 emoji 用系统 emoji 字体正常渲染。所以图标最终是
+`a::before { content: "\1F310" }`，不用维护图片资源、也自动适配深浅主题。
+
+**自检**：harness 链接探针 8 项全过（`link: {... checks:"linkRenders=1 linkIcon=1 linkBlue=1 clickOpens=1 altClickIgnored=1 caretClickEdits=1 mailtoOpens=1 unsafeIgnored=1"}`），
+深色主题截图确认「🌐 + 蓝字 + 下划线」；`MarkdownLinkOpenTest` 3 例全过；全量 `:app:ui:jvmTest` 通过。
+
+**取舍**：
+
+- 点击链接 = 打开浏览器，所以**改链接文字要按 Option/Alt 点**（或先把光标移进去再点）；这是
+  Notion 式取舍，已写进 ext 注释。
+- Compose 退路编辑器（设置里可切）里的链接仍是纯渲染、不可点：默认编辑器是 WebView，暂不动退路。
+- 只放行 http/https/mailto：`file:` 等本地/脚本协议不交给系统（安全边界）。
+
 ## 8. 落地清单（本轮改了哪些文件）
 
 | 文件 | 改了什么 |
@@ -520,3 +557,8 @@ internal fun markdownShortcutHints(bindings: List<MarkdownBinding>): List<Shortc
 | `tools/web-editor/src/extensions/gutter.js` / `keys.js` / `main.js` | 标题语法显影（`#` widget，仅焦点在编辑器且光标在标题内）、标题开头退格降级成正文、标题末尾回车新起正文段落、失焦后 gutter 与 `#` 全消失；`__trellisKey` 与键盘共用 `handleEnter/handleBackspace` |
 | `app/ui/src/jvmMain/resources/editor/index.html` | `.heading-syntax` 样式；正文块标记从 `¶` 改成 CSS 小圆点 |
 | `app/ui/src/jvmTest/.../WebEditorHarness.kt` | `heading` 探针（10 项断言）+ `heading-blur` 阶段 + 深色主题截图 `heading-syntax.png`/`gutter-paragraph.png` |
+| `tools/web-editor/src/extensions/links.js`（新）/ `main.js` / `theme.js` | 链接点击接管（preventDefault + 过桥 `onLinkClick`，只放行 http/https/mailto，Alt 点击编辑）、StarterKit link 配置（openOnClick=false、markdownLinks）、链接主题蓝按深浅色算 |
+| `app/ui/src/jvmMain/resources/editor/index.html` | 链接蓝色 + 细下划线 + `a::before` 🌐 地球标识（WebView 不加载 data URI 图片，故用 emoji） |
+| `app/ui/src/jvmMain/kotlin/.../MarkdownWebEditor.kt` | 桥新增 `onLinkClick`；`externalLinkUri()` 协议白名单 + 后台线程 `Desktop.browse()` |
+| `app/ui/src/jvmTest/.../MarkdownLinkOpenTest.kt`（新） | 协议白名单单测 |
+| `app/ui/src/jvmTest/.../WebEditorHarness.kt` | `link` 探针 8 项 + 深色主题截图 `link-render.png` |

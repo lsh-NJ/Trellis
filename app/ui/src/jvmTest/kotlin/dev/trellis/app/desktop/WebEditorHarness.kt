@@ -74,6 +74,7 @@ internal object WebEditorHarness {
         var symbolFlags = ""
         var headingJson = ""
         var headingBlurJson = ""
+        var linkJson = ""
         try {
             awaitEditorReady(host) || error("页面 30 秒内没有就绪（window.editorReady != true）")
 
@@ -313,6 +314,80 @@ internal object WebEditorHarness {
             }
             println("[web-editor-harness] heading-blur: " + headingBlurJson)
 
+            // 链接探针（2026-11-19）：点击 → 过桥交给宿主打开默认浏览器；Option/Alt 点击只落光标；
+            // 图标由 CSS ::before 的内联 SVG 画（不是 emoji）；非 http/https/mailto 不打开。
+            val linkScript = """
+                (function () {
+                  const e = window.__trellisEditor
+                  window.__openedLinks = []
+                  window.trellisEditorBridge = {
+                    onUpdate: () => {},
+                    onBlur: () => {},
+                    onFocus: () => {},
+                    onLinkClick: (url) => window.__openedLinks.push(url),
+                  }
+                  const checks = []
+                  const check = (name, ok) => checks.push(name + '=' + (ok ? '1' : '0'))
+                  const out = {}
+                  const clickEl = (el, extra) => {
+                    const rect = el.getBoundingClientRect()
+                    const opts = Object.assign(
+                      { bubbles: true, cancelable: true, clientX: rect.left + 3, clientY: rect.top + 3 },
+                      extra || {},
+                    )
+                    el.dispatchEvent(new MouseEvent('mousedown', opts))
+                    el.dispatchEvent(new MouseEvent('mouseup', opts))
+                    el.dispatchEvent(new MouseEvent('click', opts))
+                  }
+
+                  window.setMarkdown(
+                    '## 参考链接\n\n[Trellis 仓库](https://github.com/lsh-NJ/Trellis) 与 [邮件](mailto:a@b.com)。\n\n危险链接：[坏](javascript:alert(1))。',
+                  )
+                  e.commands.focus('start')
+                  const anchors = document.querySelectorAll('.ProseMirror a')
+                  out.anchorCount = anchors.length
+                  out.hrefs = Array.prototype.map.call(anchors, (a) => a.getAttribute('href')).join(' | ')
+                  out.hasIcon = (() => {
+                    const content = window.getComputedStyle(anchors[0], '::before').content || ''
+                    // emoji 在 computed style 里可能是 "🌐" 也可能是转义 "\1F310"
+                    return content.indexOf('\uD83C\uDF10') >= 0 || content.toLowerCase().indexOf('1f310') >= 0
+                  })()
+                  out.linkColor = window.getComputedStyle(anchors[0]).color
+
+                  clickEl(anchors[0])
+                  out.openedAfterFirst = window.__openedLinks.slice()
+                  clickEl(anchors[0], { altKey: true })
+                  out.openedAfterAlt = window.__openedLinks.slice()
+
+                  // 光标已经在同一条链接里（等于键盘挪进去）→ 点击只落光标、不打开。
+                  const linkPos = e.view.posAtDOM(anchors[0], 0)
+                  e.commands.setTextSelection(linkPos + 1)
+                  out.caretInLinkBeforeClick = e.isActive('link')
+                  clickEl(anchors[0])
+                  out.openedAfterCaretClick = window.__openedLinks.slice()
+
+                  clickEl(anchors[1])
+                  out.openedAfterMailto = window.__openedLinks.slice()
+
+                  const bad = anchors.length > 2 ? anchors[2] : null
+                  if (bad) clickEl(bad)
+                  out.openedAfterBad = window.__openedLinks.slice()
+
+                  check('linkRenders', out.anchorCount >= 2)
+                  check('linkIcon', out.hasIcon)
+                  check('linkBlue', out.linkColor === 'rgb(37, 99, 235)')
+                  check('clickOpens', out.openedAfterFirst.length === 1 && out.openedAfterFirst[0].indexOf('github.com') >= 0)
+                  check('altClickIgnored', out.openedAfterAlt.length === 1)
+                  check('caretClickEdits', out.openedAfterCaretClick.length === 1 && out.caretInLinkBeforeClick === true)
+                  check('mailtoOpens', out.openedAfterMailto.length === 2)
+                  check('unsafeIgnored', out.openedAfterBad.length === 2)
+                  out.checks = checks.join(' ')
+                  return JSON.stringify(out)
+                })()
+            """.trimIndent()
+            linkJson = onFx { host.view.engine.executeScript(linkScript) as? String ?: "" }
+            println("[web-editor-harness] link: " + linkJson)
+
             // 深色主题下截两张图：标题语法显影、正文小圆点标记（和用户实际主题一致）。
             runCatching {
                 // 前面的探针可能把「菜单」浮层留在页面上，截图前先关掉。
@@ -326,9 +401,14 @@ internal object WebEditorHarness {
                 onFx {
                     host.view.engine.executeScript(
                         "window.setMarkdown(\"# 学习笔记\\n\\n第一段正文：光标停在正文里时，左边只留一个小圆点。" +
+                            "\\n\\n参考：[Trellis 仓库](https://github.com/lsh-NJ/Trellis) 与直接粘贴的 https://example.com/doc 。" +
                             "\\n\\n## 二级标题\\n\\n第二段正文：这里放光标看标题语法。\")",
                     )
                 }
+                // 先把链接那块的光标挪开，单独截一张「链接渲染」。
+                onFx { host.view.engine.executeScript(caretScript("第二段正文")) }
+                Thread.sleep(600)
+                saveScreenshot(host, File(outDir, "link-render.png"))
                 onFx { host.view.engine.executeScript(caretScript("二级标题")) }
                 Thread.sleep(600)
                 saveScreenshot(host, File(outDir, "heading-syntax.png"))
@@ -384,6 +464,20 @@ internal object WebEditorHarness {
         }
         check(headingBlurJson.contains("\"syntax\":0") && headingBlurJson.contains("\"gutter\":0")) {
             "焦点离开编辑器后 # / gutter 没消失：" + headingBlurJson
+        }
+        for (name in listOf(
+            "linkRenders",
+            "linkIcon",
+            "linkBlue",
+            "clickOpens",
+            "altClickIgnored",
+            "caretClickEdits",
+            "mailtoOpens",
+            "unsafeIgnored",
+        )) {
+            check(linkJson.contains(name + "=1")) {
+                "链接没有按预期工作：" + name + "（" + linkJson + "）"
+            }
         }
         return Report(results.size, jsonFile, pngFile)
     }

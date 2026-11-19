@@ -28,9 +28,11 @@ import javafx.scene.Scene
 import javafx.scene.web.WebView
 import java.awt.AWTEvent
 import java.awt.BorderLayout
+import java.awt.Desktop
 import java.awt.Toolkit
 import java.awt.event.AWTEventListener
 import java.awt.event.MouseEvent
+import java.net.URI
 import javax.swing.JPanel
 import javax.swing.SwingUtilities
 import netscape.javascript.JSObject
@@ -105,6 +107,8 @@ internal fun MarkdownWebEditor(
         host.onEditingFinished = { latestFinished?.invoke() }
         host.onShortcut = { latestShortcut?.invoke(it) }
         host.onMenuClosed = { latestMenuClosed() }
+        // 笔记里的链接：永远用系统默认浏览器打开，不用 WebView 自己导航（见 openExternalLink）。
+        host.onLinkClick = { url -> openExternalLink(url) }
     }
 
     LaunchedEffect(noteId, body) {
@@ -138,6 +142,7 @@ private class MarkdownWebHost {
     var onEditingFinished: (() -> Unit)? = null
     var onShortcut: ((String) -> Unit)? = null
     var onMenuClosed: (() -> Unit)? = null
+    var onLinkClick: ((String) -> Unit)? = null
 
     private val fxPanel = JFXPanel()
     private var webView: WebView? = null
@@ -273,6 +278,7 @@ private class MarkdownWebHost {
             b.blurListener = { SwingUtilities.invokeLater { onEditingFinished?.invoke() } }
             b.shortcutListener = { name -> SwingUtilities.invokeLater { onShortcut?.invoke(name) } }
             b.menuClosedListener = { SwingUtilities.invokeLater { onMenuClosed?.invoke() } }
+            b.linkListener = { url -> SwingUtilities.invokeLater { onLinkClick?.invoke(url) } }
         }
         bridge = jxb
         window.setMember("trellisEditorBridge", jxb)
@@ -312,6 +318,7 @@ internal class MarkdownEditorBridge {
     var blurListener: (() -> Unit)? = null
     var shortcutListener: ((String) -> Unit)? = null
     var menuClosedListener: (() -> Unit)? = null
+    var linkListener: ((String) -> Unit)? = null
 
     fun onUpdate(markdown: String) {
         markdownListener?.invoke(markdown)
@@ -331,7 +338,46 @@ internal class MarkdownEditorBridge {
     fun onMenuClosed() {
         menuClosedListener?.invoke()
     }
+
+    /** 笔记里的链接被点击：交给宿主的默认浏览器打开。 */
+    fun onLinkClick(url: String) {
+        linkListener?.invoke(url)
+    }
 }
+
+/**
+ * 用系统默认浏览器打开笔记里的链接。
+ *
+ * 只放行 http / https / mailto：笔记可能来自外部导入，`file:`、`javascript:`、`data:`
+ * 这类协议一律不交给系统（安全边界），失败也只写一行日志、不弹窗打扰。
+ * browse 是系统调用，可能卡住，所以丢到后台线程，不占 FX / Swing 线程。
+ */
+internal fun openExternalLink(raw: String) {
+    val uri = externalLinkUri(raw) ?: return
+    if (!Desktop.isDesktopSupported()) return
+    val desktop = Desktop.getDesktop()
+    if (!desktop.isSupported(Desktop.Action.BROWSE)) return
+    Thread({
+        runCatching { desktop.browse(uri) }
+            .onFailure { println("Trellis: 打开链接失败（" + uri.scheme + "）：" + it.message) }
+    }, "trellis-open-link").apply {
+        isDaemon = true
+        start()
+    }
+}
+
+/** 解析出可以交给系统浏览器的链接；协议不在白名单里/解析不了就返回 null。 */
+internal fun externalLinkUri(raw: String): URI? {
+    val text = raw.trim()
+    if (text.isEmpty()) return null
+    val uri = runCatching { URI(text) }.getOrNull() ?: return null
+    val scheme = uri.scheme?.lowercase() ?: return null
+    if (scheme !in OPENABLE_LINK_SCHEMES) return null
+    return uri
+}
+
+/** 允许交给系统浏览器的协议：只放行 web 与邮件。 */
+internal val OPENABLE_LINK_SCHEMES: Set<String> = setOf("http", "https", "mailto")
 
 /** 把 index.html 和打包好的 editor.js 拼成一页，直接 loadContent（不走临时文件）。 */
 

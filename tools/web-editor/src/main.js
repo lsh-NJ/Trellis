@@ -26,6 +26,7 @@ import { AiBlock } from './extensions/ai-block.js'
 import { Gutter } from './extensions/gutter.js'
 import { EditorKeys, handleBackspace, handleEnter } from './extensions/keys.js'
 import { FullwidthInput } from './extensions/fullwidth.js'
+import { LinkClick } from './extensions/links.js'
 import { createOverlays } from './ui/overlays.js'
 import { markdownToHtml, htmlToMarkdown } from './markdown.js'
 import { applyTheme } from './theme.js'
@@ -48,6 +49,14 @@ const editor = new Editor({
       heading: { levels: [1, 2, 3, 4, 5, 6] },
       // 代码块换成 lowlight 版本才有语法高亮；原来的 codeBlock 关掉避免重复注册。
       codeBlock: false,
+      // 链接：点击交给我们自己的 LinkClick（打开系统浏览器），不让 Tiptap 去 window.open；
+      // markdownLinks 让直接打 [文字](https://…) 也能变成链接。
+      link: {
+        openOnClick: false,
+        linkOnPaste: true,
+        markdownLinks: true,
+        HTMLAttributes: { rel: 'noopener noreferrer' },
+      },
     }),
     CodeBlockLowlight.configure({ lowlight }),
     Mathematics.configure({ katexOptions: { throwOnError: false, strict: 'ignore' } }),
@@ -63,6 +72,7 @@ const editor = new Editor({
     Gutter,
     EditorKeys,
     FullwidthInput,
+    LinkClick,
   ],
   content: '<p></p>',
   editorProps: {

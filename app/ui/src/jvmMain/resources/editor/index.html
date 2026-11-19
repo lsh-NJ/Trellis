@@ -50,6 +50,28 @@
   .ai::after  { content: "\201D"; font-size: 22px; }
   /* [[概念]]：绿色 + 下划线（和 Compose 编辑器的标注样式保持一致）。 */
   .concept { color: var(--accent-soft); text-decoration: underline; }
+  /* 链接：主题蓝 + 前面一颗地球 🌐 当「网络标识」。
+     为什么图标用 emoji 而不是图片：JavaFX WebView 里 data: URI 的 CSS 背景图和 <img>
+     都不加载（实测 solid / gradient 能画，data:image/png 不画），emoji 反而稳定渲染。
+     深色/浅色主题只换链接文字色（--link），emoji 自带颜色，不用跟着换。 */
+  :root { --link: #2563eb; }
+  .ProseMirror a {
+    color: var(--link);
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    /* 下划线离文字远一点：地球 emoji 的底部会压到下划线上，看着像「图标长在线上」。 */
+    text-underline-offset: 3px;
+    cursor: pointer;
+    word-break: break-word;
+  }
+  .ProseMirror a::before {
+    content: "\1F310";
+    display: inline;
+    margin-right: 3px;
+    font-size: 0.9em;
+    font-style: normal;
+    vertical-align: 0.04em;
+  }
   /* 块类型提示（gutter）：给光标所在的顶层块挂 class + data-marker，
      由 CSS 的 ::before 画到左边距。用 node decoration 而不是 widget：
      列表项里 widget 的落点要跨 listItem/paragraph 下钻，位置算错就整块不显示。
