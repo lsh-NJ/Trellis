@@ -1,7 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  图标：摊开的书 + 书签带，背景是 L1 档松绿渐变加 3% 纸纹。
+  前景/背景都是按密度出的 PNG（drawable-*dpi），不是 vector：
+  纸纹和柔和投影用 vector 画不出来，硬画会在低密度下变成噪点。
+  内容仍收在 108dp 画布中间的安全区里 —— 自适应图标会被裁成圆/方/水滴。
+-->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@color/trellis_paper" />
+    <background android:drawable="@drawable/ic_launcher_background" />
     <foreground android:drawable="@drawable/ic_launcher_foreground" />
-    <!-- Android 13 的「主题图标」：系统会按壁纸把单色层染色，缺了它只会显示一块白底。 -->
-    <monochrome android:drawable="@drawable/ic_launcher_foreground" />
+    <!-- Android 13 的「主题图标」：系统按壁纸染色，只用这一层的 alpha。 -->
+    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
 </adaptive-icon>
