@@ -40,6 +40,10 @@ kotlin {
             api(project(":features:exams"))
             // B 站工具与活动采集要发 GET；java.net.http 只有桌面有，所以走平台出口。
             implementation(project(":net"))
+            // 多端同步内核（HLC / head / blob / 文件域）；桌面与 Android 共用。
+            implementation(project(":sync"))
+            // 账号系统：用户模型/会话/本地账号缓存/账号 HTTP 客户端。
+            implementation(project(":user"))
             api(project(":ai"))
             api(project(":plugin-dsl"))
             api(project(":plugin-script"))

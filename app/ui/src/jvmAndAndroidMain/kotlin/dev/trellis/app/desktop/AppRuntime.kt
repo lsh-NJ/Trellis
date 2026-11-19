@@ -68,6 +68,16 @@ import dev.trellis.feature.exams.ExerciseFileStore
 import dev.trellis.feature.exams.SubjectMastery
 import dev.trellis.feature.exams.masteryOf
 import dev.trellis.feature.exams.summarizeMastery
+import dev.trellis.sync.SyncConfig
+import dev.trellis.sync.SyncConfigStore
+import dev.trellis.sync.SyncReport
+import dev.trellis.sync.TrellisSyncService
+import dev.trellis.user.AccountStore
+import dev.trellis.user.HttpUserClient
+import dev.trellis.user.LocalAccount
+import dev.trellis.user.LoginSession
+import dev.trellis.user.UserApiException
+import dev.trellis.user.UserPublic
 import dev.trellis.activity.ActivityAggregator
 import dev.trellis.activity.ActivityClassifier
 import dev.trellis.activity.ActivitySettings
@@ -1450,6 +1460,256 @@ class AppRuntime private constructor() {
 
     private var chatJob: Job? = null
 
+    // ---------------------------------------------------------------- 多端同步
+    //
+    // 同步是可选能力：<home>/sync/config.json 不存在或 enabled=false 时完全不启动，
+    // 演示/临时 TRELLIS_HOME 不会误传数据。协议、冲突策略见 docs/multi-device-sync.md。
+    // 这一版只同步知识库笔记与计划文档（文件域）；plan.db 快照与日志/记录域在后面接。
+
+    private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val syncMutex = Mutex()
+    private var syncJob: Job? = null
+    private var syncService: TrellisSyncService? = null
+
+    /** 当前同步配置；设置页展示，配置对话框写回。 */
+    var syncConfig by mutableStateOf(SyncConfig())
+        private set
+
+    /** 最近一次同步结果；没同步过为 null。 */
+    var syncReport by mutableStateOf<SyncReport?>(null)
+        private set
+
+    /** 同步错误（给人看的一句话）；成功时清空。 */
+    var syncError by mutableStateOf<String?>(null)
+        private set
+
+    var syncRunning by mutableStateOf(false)
+        private set
+
+    // ---------------------------------------------------------------- 账号
+    //
+    // 本地只缓存 UserPublic + 会话 token（<home>/account.json），不存密码；服务端才是
+    // 用户库的权威。HTTP 同步必须带登录后的 Bearer token，服务端据此把数据分到
+    // <root>/users/<userId>/ 下。
+
+    private lateinit var accountStore: AccountStore
+
+    var account by mutableStateOf<LocalAccount?>(null)
+        private set
+
+    /**
+     * 重新读 <home>/sync/config.json 并重启定时同步。
+     *
+     * 配置无效（未开启 / 目录为空）时只停掉任务，不报错——这是默认状态。
+     * 启动/保存配置/关掉开关都走这里，保证「配置是唯一的开关」。
+     */
+    fun restartSync() {
+        syncJob?.cancel()
+        syncJob = null
+        syncService = null
+        syncConfig = SyncConfigStore.load(home)
+        syncReport = null
+        syncError = null
+        if (!syncConfig.isValid()) {
+            syncRunning = false
+            return
+        }
+        val currentAccount = account
+        if (syncConfig.transport == SyncConfig.TRANSPORT_HTTP) {
+            if (currentAccount == null) {
+                syncRunning = false
+                return
+            }
+            if (currentAccount.expiresAt > 0 && currentAccount.expiresAt <= System.currentTimeMillis()) {
+                syncError = "登录已过期，请在「账号」里重新登录"
+                return
+            }
+            if (currentAccount.serverUrl.trimEnd('/') != syncConfig.baseUrl.trimEnd('/')) {
+                syncError = "账号服务器与同步地址不一致：先登录这个地址，或改同步地址"
+                return
+            }
+        }
+        val service = runCatching {
+            TrellisSyncService(
+                home = home,
+                config = syncConfig,
+                platform = if (HostPlatform.isDesktop) "desktop" else "android",
+                bearerToken = currentAccount?.token,
+            )
+        }.getOrElse { error ->
+            syncError = "同步没启动：${error.message ?: error::class.simpleName}"
+            return
+        }
+        syncService = service
+        syncJob = syncScope.launch {
+            while (true) {
+                syncNow()
+                delay(60_000)
+            }
+        }
+    }
+
+    /** 立即同步一次；没配置/正在同步时直接返回。 */
+    suspend fun syncNow(): SyncReport? = syncMutex.withLock {
+        val service = syncService ?: return@withLock null
+        syncRunning = true
+        try {
+            val report = service.sync()
+            syncReport = report
+            syncError = if (report.ok) null else report.summary()
+            if (report.pulled + report.pushed + report.conflicts > 0) tick++
+            report
+        } catch (t: Throwable) {
+            syncError = "同步失败：" + (t.message ?: t::class.simpleName)
+            appendAppLog("同步失败：${t.message ?: t::class.simpleName}")
+            null
+        } finally {
+            syncRunning = false
+        }
+    }
+
+    /**
+     * 保存同步配置并立即重启任务。返回给人看的一句话（设置页展示）。
+     *
+     * 远端是「本地/挂载目录」（FolderTransport）；WebDAV/自建服务接上后这里只增加字段，
+     * 不改变调用方。
+     */
+    fun applySyncConfig(
+        enabled: Boolean,
+        transport: String = SyncConfig.TRANSPORT_FOLDER,
+        remotePath: String = "",
+        baseUrl: String = "",
+        token: String = "",
+    ): String {
+        val config = SyncConfig(
+            enabled = enabled,
+            transport = transport,
+            remotePath = remotePath.trim(),
+            baseUrl = baseUrl.trim(),
+            token = token.trim(),
+        )
+        if (enabled && !config.isValid()) {
+            return if (transport == SyncConfig.TRANSPORT_HTTP) "HTTP 地址不能为空" else "同步目录不能为空"
+        }
+        runCatching { SyncConfigStore.save(home, config) }
+            .onFailure { return "同步配置没写成：${it.message ?: it::class.simpleName}" }
+        restartSync()
+        val target = if (config.transport == SyncConfig.TRANSPORT_HTTP) config.baseUrl else config.remotePath
+        return if (config.isValid()) "已开启同步：$target" else "已关闭同步"
+    }
+
+    // ---------------------------------------------------------------- 账号操作
+
+    private fun deviceLabel(): String = if (HostPlatform.isDesktop) "desktop" else "android"
+
+    /** 登录账号；成功后会缓存本地账号并重启同步。返回给人看的一句话。 */
+    suspend fun loginAccount(
+        serverUrl: String,
+        gatewayToken: String,
+        username: String,
+        password: String,
+    ): String {
+        val url = serverUrl.trim().trimEnd('/')
+        if (url.isBlank()) return "服务器地址不能为空"
+        if (username.isBlank() || password.isBlank()) return "用户名和密码都要填"
+        return try {
+            val session = HttpUserClient(url, gatewayToken.trim()).login(
+                username = username.trim(),
+                password = password,
+                deviceName = deviceLabel(),
+            )
+            acceptAccount(url, gatewayToken.trim(), session)
+            "已登录：${session.user.displayName}"
+        } catch (e: UserApiException) {
+            e.message
+        } catch (t: Throwable) {
+            "登录失败：${t.message ?: t::class.simpleName}"
+        }
+    }
+
+    /** 注册账号；第一个用户由服务端设为管理员，之后通常需要邀请码。 */
+    suspend fun registerAccount(
+        serverUrl: String,
+        gatewayToken: String,
+        username: String,
+        password: String,
+        displayName: String,
+        inviteCode: String,
+    ): String {
+        val url = serverUrl.trim().trimEnd('/')
+        if (url.isBlank()) return "服务器地址不能为空"
+        return try {
+            val session = HttpUserClient(url, gatewayToken.trim()).register(
+                username = username.trim(),
+                password = password,
+                displayName = displayName.trim(),
+                inviteCode = inviteCode.trim(),
+                deviceName = deviceLabel(),
+            )
+            acceptAccount(url, gatewayToken.trim(), session)
+            "已注册并登录：${session.user.displayName}"
+        } catch (e: UserApiException) {
+            e.message
+        } catch (t: Throwable) {
+            "注册失败：${t.message ?: t::class.simpleName}"
+        }
+    }
+
+    suspend fun logoutAccount(): String {
+        val current = account ?: return "现在没有登录"
+        runCatching { HttpUserClient(current.serverUrl, current.gatewayToken).logout(current.token) }
+        accountStore.clear()
+        account = null
+        restartSync()
+        return "已退出登录"
+    }
+
+    /** 启动时用本地 token 校验一次；401 自动清掉本地账号，避免一直拿失效 token 去同步。 */
+    private suspend fun refreshAccountSession() {
+        val current = account ?: return
+        if (current.expiresAt > 0 && current.expiresAt <= System.currentTimeMillis()) {
+            accountStore.clear()
+            account = null
+            restartSync()
+            return
+        }
+        runCatching { HttpUserClient(current.serverUrl, current.gatewayToken).me(current.token) }
+            .onSuccess { user ->
+                val updated = current.copy(
+                    username = user.username,
+                    displayName = user.displayName,
+                    role = user.role,
+                    savedAt = System.currentTimeMillis(),
+                )
+                runCatching { accountStore.save(updated) }
+                account = updated
+            }
+            .onFailure { error ->
+                if (error is UserApiException && error.status == 401) {
+                    accountStore.clear()
+                    account = null
+                    restartSync()
+                }
+            }
+    }
+
+    private fun acceptAccount(serverUrl: String, gatewayToken: String, session: LoginSession) {
+        val local = LocalAccount(
+            serverUrl = serverUrl,
+            gatewayToken = gatewayToken,
+            userId = session.user.id,
+            username = session.user.username,
+            displayName = session.user.displayName,
+            role = session.user.role,
+            token = session.token,
+            expiresAt = session.expiresAt,
+            savedAt = System.currentTimeMillis(),
+        )
+        accountStore.save(local)
+        account = local
+        restartSync()
+    }
+
     /**
      * 一次排队中的「完成事件」自主检查。
      *
@@ -1655,6 +1915,8 @@ class AppRuntime private constructor() {
     fun onWindowFocused() {
         windowFocused = true
         triggerStewardCheck()
+        // 回到前台顺手拉一次多端同步；同步服务没配置时为 null，直接跳过。
+        syncService?.let { syncScope.launch { syncNow() } }
     }
 
     fun onWindowLostFocus() {
@@ -6116,6 +6378,8 @@ class AppRuntime private constructor() {
     suspend fun shutdown() {
         chatScope.cancel()
         undoScope.cancel()
+        syncJob?.cancel()
+        syncScope.cancel()
         if (this::kernel.isInitialized) kernel.shutdown()
     }
 
@@ -7178,6 +7442,12 @@ class AppRuntime private constructor() {
             runtime.refresh()
             // 待办板上的计划节点是启动时就要有的：不点计划页也得看得见。
             runtime.refreshPlan()
+            // 账号：本地缓存先读出来（离线也能显示），后台用 token 校验一次。
+            runtime.accountStore = AccountStore(home)
+            runtime.account = runtime.accountStore.load()
+            // 多端同步：配置存在才启动；后台拉一次，然后每 60 秒一次。
+            runtime.restartSync()
+            runtime.syncScope.launch { runtime.refreshAccountSession() }
 
             // 截图/联调用：TRELLIS_DEMO_CHOICES="这次先改哪块？|对话页|计划页|先都不改" 模拟「模型调了
             // ask_choices」：第一段是问题，其余是选项。真实路径是模型调工具，这里只是省得每次都等模型。

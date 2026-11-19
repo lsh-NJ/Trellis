@@ -1,0 +1,361 @@
+openapi: 3.0.3
+info:
+  title: Trellis 同步服务端 API
+  version: "1.0.0"
+  description: |
+    Trellis 客户端使用的同步服务端最小契约（v1，schema=1）。
+
+    - 服务端 = 账号系统 + 按用户隔离的对象存储；不需要 WebSocket/数据库。
+    - 网关 trial token 走 `X-Token`（可选，由网关校验）；用户会话 token 走
+      `X-Trellis-Auth: Bearer <token>`（本服务端校验）。
+    - 对象路径相对于 `users/<userId>/`，例如 `heads/notes/<deviceId>.json`、
+      `blobs/notes/<sha256>`。
+    - 完整说明与验收清单见 `docs/server-integration-contract.md`。
+servers:
+  - url: https://your-host.example.com
+    description: 经网关/隧道的公网地址
+  - url: http://127.0.0.1:8000
+    description: 本机/手机 localhost（只用于调试）
+tags:
+  - name: health
+  - name: auth
+  - name: users
+  - name: objects
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: 探活
+      security: []
+      responses:
+        "200":
+          description: 服务正常
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
+  /v1/auth/register:
+    post:
+      tags: [auth]
+      summary: 注册（第一个用户自动 ADMIN，之后需要邀请码）
+      description: 可选带网关 trial token `X-Token`。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "200":
+          description: 注册成功并直接登录
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginSession"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/auth/login:
+    post:
+      tags: [auth]
+      summary: 登录
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginSession"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /v1/auth/me:
+    get:
+      tags: [auth]
+      summary: 当前用户
+      security:
+        - UserAuth: []
+      responses:
+        "200":
+          description: 当前用户
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/auth/logout:
+    post:
+      tags: [auth]
+      summary: 退出登录（删除当前会话）
+      security:
+        - UserAuth: []
+      responses:
+        "204":
+          description: 已退出
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/users:
+    get:
+      tags: [users]
+      summary: 用户列表（仅 ADMIN）
+      security:
+        - UserAuth: []
+      responses:
+        "200":
+          description: 用户列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsersResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /v1/object:
+    get:
+      tags: [objects]
+      summary: 读取对象
+      security:
+        - UserAuth: []
+      parameters:
+        - name: path
+          in: query
+          required: true
+          description: 相对于当前用户根目录的 POSIX 路径
+          schema:
+            type: string
+            example: heads/notes/dev_01.json
+      responses:
+        "200":
+          description: 对象字节
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [objects]
+      summary: 写入对象（幂等覆盖，原子写）
+      security:
+        - UserAuth: []
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+            example: blobs/notes/0123abcd
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "204":
+          description: 写入成功
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+  /v1/list:
+    get:
+      tags: [objects]
+      summary: 列出对象
+      security:
+        - UserAuth: []
+      parameters:
+        - name: prefix
+          in: query
+          required: false
+          description: 相对路径前缀，空表示用户根
+          schema:
+            type: string
+            example: heads/notes/
+      responses:
+        "200":
+          description: 文件列表（前缀无对象时为空数组）
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FileEntry"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+components:
+  securitySchemes:
+    UserAuth:
+      type: apiKey
+      in: header
+      name: X-Trellis-Auth
+      description: "格式：`Bearer <user-token>`。不要用 Authorization，避免与网关 trial token 冲突。"
+    EdgeToken:
+      type: apiKey
+      in: header
+      name: X-Token
+      description: "可选的网关 trial token；由网关校验，服务端可配置是否也校验。"
+  responses:
+    BadRequest:
+      description: 参数、JSON 或路径非法
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: 缺少/无效/过期 token，或用户名密码错
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: 邀请码错误、账号停用或非管理员
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: 对象/路径不存在
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: 用户名已占用
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PayloadTooLarge:
+      description: 请求体超过服务端限制
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    RegisterRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 32
+          pattern: "^[A-Za-z0-9._-]+$"
+        password:
+          type: string
+          minLength: 8
+          maxLength: 128
+        displayName:
+          type: string
+          maxLength: 40
+        inviteCode:
+          type: string
+        deviceName:
+          type: string
+          maxLength: 80
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+        deviceName:
+          type: string
+    UserPublic:
+      type: object
+      required: [id, username, displayName, role, status, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          example: usr_9M96EC03ZTGDQ5RG212239NFT0
+        username:
+          type: string
+        displayName:
+          type: string
+        role:
+          type: string
+          enum: [ADMIN, USER]
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED]
+        createdAt:
+          type: integer
+          format: int64
+        updatedAt:
+          type: integer
+          format: int64
+    LoginSession:
+      type: object
+      required: [token, expiresAt, user]
+      properties:
+        token:
+          type: string
+          description: 用户会话 token，明文只返回这一次
+        expiresAt:
+          type: integer
+          format: int64
+        user:
+          $ref: "#/components/schemas/UserPublic"
+    MeResponse:
+      type: object
+      required: [user]
+      properties:
+        user:
+          $ref: "#/components/schemas/UserPublic"
+    UsersResponse:
+      type: object
+      required: [users]
+      properties:
+        users:
+          type: array
+          items:
+            $ref: "#/components/schemas/UserPublic"
+    FileEntry:
+      type: object
+      required: [path, size]
+      properties:
+        path:
+          type: string
+          description: 相对于用户根目录的 POSIX 路径
+          example: heads/notes/dev_01.json
+        size:
+          type: integer
+          format: int64
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          example: unauthorized
+        message:
+          type: string
+          example: 登录已失效，请重新登录

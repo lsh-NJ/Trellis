@@ -42,6 +42,10 @@
 | [markdown-editor-review-2026-11-12.md](markdown-editor-review-2026-11-12.md) | **Markdown 编辑器调优（评审落地稿）**：把《MarkDown编辑器文件检查》三条口语意见调成可验收规格（段落式显示 R1.1–R1.5、Tab/Shift+Tab 层级与缩进 R2.1–R2.4、快捷键补全+自定义 R3.1–R3.5），附现状/实测（Compose 单文本框做不到 <1 行段距，段落式改由 WebView/Tiptap 可切形态提供）、实现设计与自检计划 | 设计稿 + 实现记录（2026-11-12） | 改知识库编辑器（段落/缩进/快捷键/编辑器形态）前 |
 | [markdown-webview-opensource-survey.md](markdown-webview-opensource-survey.md) | **WebView 段落式编辑器的开源方案调研 + spike**：Vditor 4.0.1（MIT）/ Tiptap 3.34 + 官方扩展（MIT）/ Muya / Milkdown / Novel（Apache-2.0）对照与实测截图（JavaFX WebView 里都能跑）、坑（localStorage/file://、cdn、中文字体、脚本编码）、可直接借用的包清单、源码工程重建计划与风险 | 调研 + 可行性 spike（2026-11-14） | 决定 WebView 编辑器的技术路线 / 借开源实现前 |
 | [../tools/web-editor/README.md](../tools/web-editor/README.md) | **知识库 WebView 编辑器源码工程**：Tiptap 3 + marked + turndown + esbuild，构建产物写回 `app/ui/src/jvmMain/resources/editor/editor.js`；含与 Kotlin 的 window API/bridge 契约、Markdown 方言、构建步骤、JavaFX WebView 回归 harness 用法、当前状态与后续阶段 | 活文档（2026-11-14） | 改 WebView 编辑器 / 加代码高亮、公式、AI 补全浮窗前 |
+| [server-integration-contract.md](server-integration-contract.md) | **同步服务端对接契约（v1）**：任何语言/平台实现 Trellis 同步服务端时必须满足的端点、头部（X-Token / X-Trellis-Auth）、JSON/二进制格式、按用户目录布局、状态码、手机端前台服务要求、验收清单；配套 [OpenAPI](api/trellis-sync-v1.openapi.yaml) | v1 冻结（2026-11-19） | 手机/VPS/NAS 实现或对接同步服务端前 |
+| [user-system.md](user-system.md) | **用户系统**：用户/会话数据模型、PBKDF2 密码哈希、本地账号缓存与服务端用户库、`/v1/auth/*` 接口、两种 token（网关 X-Token / 用户 X-Trellis-Auth）、按账号隔离同步数据、安全清单与试用运营 | 实现记录（v1，2026-11-19） | 改账号/登录/会话/多用户隔离 / 部署用户系统前 |
+| [multi-device-sync.md](multi-device-sync.md) | **多端数据互通方案**：数据分域与同步口径（哪些同步/不同步）、HLC + 每设备命名空间 + 内容寻址 blob 的同步协议、笔记/日志/JSON 记录/plan.db 各自的合并与冲突策略、单写租约、WebDAV/文件夹传输、分阶段落地与测试矩阵 | 方案（Draft v0.1，2026-11-19） | 讨论「多端同步 / 换机搬家 / 数据放哪」前 |
+| [cloud-roadmap.md](cloud-roadmap.md) | **云端与服务器路线**：官网（静态托管）、多端同步（WebDAV vs 自建服务）、Agent 云数据源（公共内容/搜索代理 vs 用户数据上云）三件事拆解；「什么时候才需要服务器」的判定标准、薄 API 设计、技术选型与成本、S0–S3 路线 | 方案（Draft v0.1，2026-11-19） | 讨论「要不要买服务器 / 做官网 / Agent 云端数据」前 |
 
 ## 阅读路径
 
@@ -60,6 +64,10 @@
 - **要碰「今天/本周/跨周/时长/超时」**：`time-conventions.md`（规范，先读 §0 和 §8）→ 计划链路看 `LearningPlanRhythmTest` → 要调试时间推移看 §7（开发者跳日期）。
 - **要改界面/主题/布局**：`../AGENTS.md` §3「按问题找文件」→ `examples/bento-style.md`（三层边界）→ `conversation-redesign.md`（若改会话页）。
 - **要动跨端/热更新**：`plugin-hotplug-path.md` §0 TL;DR → 对应 research 分册；别从零再调研一遍。
+- **要做多端同步 / 换机搬家**：`multi-device-sync.md` §0（结论）→ §2（数据口径）→ §4.4（plan.db）→ §8（落地计划）。
+- **要改账号 / 登录 / 多用户隔离**：`user-system.md` §0（结论）→ §2（接口）→ §4（与同步的关系）→ §5（安全清单）。
+- **要让手机/VPS/NAS 实现同步服务端**：`server-integration-contract.md`（契约 + 验收清单）→ `api/trellis-sync-v1.openapi.yaml`（机器可读）→ 参考实现 `sync-server/`。
+- **要决定「要不要服务器 / 官网 / Agent 云端数据」**：`cloud-roadmap.md` §0（判定标准）→ §3（S0–S3 路线）→ §4（Agent 数据契约）→ §7（成本）。
 - **要决定「奖励/连续天数/主动性/推送/定价」**：`research/learning.md` + `research/product.md`（证据在前，别凭直觉）。
 - **要选依赖或碰本地数据/隐私**：`research/tech.md`（记忆框架、sqlite-vec、embedding、GraphRAG 的取舍与来源）。
 - **要发布**：`research/plugin-hotplug/04-app-update-policy.md` + 主文档 §6「热更新两层」。

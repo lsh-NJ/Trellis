@@ -40,6 +40,12 @@ include(":features:activity")
 include(":features:exams")
 // 最小的 HTTP 出口：Java 11 的 java.net.http 安卓没有，必须按平台分叉。
 include(":net")
+// 账号系统：用户/密码哈希/会话/本地账号缓存；桌面与 Android 共用。
+include(":user")
+// 多端数据同步内核：HLC、head/blob 协议、传输抽象、文件域与同步引擎。
+include(":sync")
+// 同步服务端：给 VPS/网关用的薄 HTTP 对象服务（GET/PUT/LIST），无数据库。
+include(":sync-server")
 include(":ui-kernel")
 // 桌面与手机共用的运行时 + 界面（两套源集：jvm / android）。
 include(":app:ui")

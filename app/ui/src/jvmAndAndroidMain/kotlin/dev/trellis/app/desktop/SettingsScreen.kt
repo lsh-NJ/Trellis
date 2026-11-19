@@ -29,6 +29,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -36,6 +37,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,13 +55,17 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.trellis.kernel.slot.Slots
+import dev.trellis.sync.SyncConfig
 import dev.trellis.ui.LocalExtraColors
+import dev.trellis.user.UserRole
 import dev.trellis.ui.SlotArea
 import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
 /**
  * 设置：程序怎么陪你排计划，以及插件自己的开关。
@@ -85,12 +91,15 @@ fun SettingsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
     ) {
         item { ModelSection(runtime, llmNote) { llmOpen = true } }
 
+        item { AccountSection(runtime) }
+
         item { AppearanceSection(runtime) }
 
         item { EditorSection(runtime) }
 
         item { DailyBudgetSection(runtime) }
         item { KnowledgeLinkSection(runtime) }
+        item { SyncSection(runtime) }
 
         item { MarkdownShortcutSection(runtime) }
 
@@ -162,6 +171,293 @@ private fun ModelSection(runtime: AppRuntime, note: String?, onImport: () -> Uni
         if (!note.isNullOrBlank()) {
             SettingsStatusLine(note)
         }
+    }
+}
+
+/**
+ * 多端同步：启用/关闭、传输方式（文件夹 / HTTP）、地址、上次结果、立即同步。
+ *
+ * 这一版只同步「知识库笔记 + 计划文档」两个文件域。HTTP 模式下地址可以是
+ * 「http://127.0.0.1:8000」或 token 网关/隧道地址；口令请求时走 X-Token，
+ * 网关校验后转发前会剥掉。
+ */
+@Composable
+private fun SyncSection(runtime: AppRuntime) {
+    val config = runtime.syncConfig
+    val report = runtime.syncReport
+    val error = runtime.syncError
+    var open by remember { mutableStateOf(false) }
+    var transport by remember(config.transport) { mutableStateOf(config.transport) }
+    var path by remember(config.remotePath) { mutableStateOf(config.remotePath) }
+    var baseUrl by remember(config.baseUrl, runtime.account?.serverUrl) {
+        mutableStateOf(config.baseUrl.ifBlank { runtime.account?.serverUrl.orEmpty() })
+    }
+    var token by remember(config.token) { mutableStateOf(config.token) }
+    var note by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    val status = when {
+        error != null -> "出错"
+        runtime.syncRunning -> "同步中…"
+        !config.isValid() -> "未开启"
+        config.transport == SyncConfig.TRANSPORT_HTTP && runtime.account == null -> "未登录"
+        report == null -> "已开启 · 等待同步"
+        else -> "上次：拉取 ${report.pulled} / 推送 ${report.pushed}"
+    }
+
+    SettingsSection(
+        title = "多端同步",
+        status = status,
+        action = {
+            EditorChip(
+                label = if (config.isValid()) "配置" else "开启",
+                active = false,
+                onClick = { open = true },
+            )
+        },
+    ) {
+        if (!config.isValid()) {
+            SettingsStatusLine("未开启。开启后，笔记本与计划文档会和另一台设备同步；会话、活动、密钥不会同步。")
+        } else {
+            if (config.transport == SyncConfig.TRANSPORT_HTTP) {
+                SettingsStatusLine("HTTP 地址：${config.baseUrl}")
+                val account = runtime.account
+                if (account == null) {
+                    SettingsStatusLine("还没登录账号。HTTP 同步必须带用户 token，先去「账号」登录。")
+                } else {
+                    SettingsStatusLine("账号：${account.displayName}（${account.username}）")
+                }
+            } else {
+                SettingsStatusLine("远端目录：${config.remotePath}")
+            }
+            report?.let { SettingsStatusLine("上次同步：${it.summary()}", error = !it.ok) }
+            error?.let { SettingsStatusLine(it, error = true) }
+            if (config.transport != SyncConfig.TRANSPORT_HTTP || runtime.account != null) {
+                Spacer(Modifier.height(6.dp))
+                EditorChip(
+                    label = if (runtime.syncRunning) "同步中…" else "立即同步",
+                    active = false,
+                    onClick = { if (!runtime.syncRunning) scope.launch { runtime.syncNow() } },
+                )
+            }
+        }
+        note?.let { SettingsStatusLine(it) }
+    }
+
+    if (open) {
+        AlertDialog(
+            onDismissRequest = { open = false },
+            title = { Text("多端同步") },
+            text = {
+                Column {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        EditorChip(
+                            label = "文件夹",
+                            active = transport == SyncConfig.TRANSPORT_FOLDER,
+                            onClick = { transport = SyncConfig.TRANSPORT_FOLDER },
+                        )
+                        EditorChip(
+                            label = "HTTP 服务",
+                            active = transport == SyncConfig.TRANSPORT_HTTP,
+                            onClick = { transport = SyncConfig.TRANSPORT_HTTP },
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    if (transport == SyncConfig.TRANSPORT_HTTP) {
+                        OutlinedTextField(
+                            value = baseUrl,
+                            onValueChange = { baseUrl = it },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text("https://网关地址 或 http://127.0.0.1:8000") },
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = token,
+                            onValueChange = { token = it },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text("访问口令（X-Token）") },
+                            visualTransformation = PasswordVisualTransformation(),
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "口令只保存在本机配置；请求时放在 X-Token 头里。只同步笔记与计划文档。",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    } else {
+                        OutlinedTextField(
+                            value = path,
+                            onValueChange = { path = it },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text("例如 /Users/you/TrellisSync") },
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "两台设备填同一个目录即可。只同步知识库笔记与计划文档；清空地址并保存等于关闭同步。",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val enabled = if (transport == SyncConfig.TRANSPORT_HTTP) baseUrl.isNotBlank() else path.isNotBlank()
+                    note = runtime.applySyncConfig(
+                        enabled = enabled,
+                        transport = transport,
+                        remotePath = path,
+                        baseUrl = baseUrl,
+                        token = token,
+                    )
+                    open = false
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { open = false }) { Text("取消") }
+            },
+        )
+    }
+}
+
+/**
+ * 账号：登录/注册/退出。
+ *
+ * 账号信息本地缓存（\`<home>/account.json\`，不含密码），服务端才是用户库权威；
+ * HTTP 同步必须登录，服务端按账号把数据分到不同目录。
+ */
+@Composable
+private fun AccountSection(runtime: AppRuntime) {
+    val account = runtime.account
+    var open by remember { mutableStateOf(false) }
+    var serverUrl by remember(account?.serverUrl, runtime.syncConfig.baseUrl) {
+        mutableStateOf(account?.serverUrl ?: runtime.syncConfig.baseUrl)
+    }
+    var gatewayToken by remember(account?.gatewayToken, runtime.syncConfig.token) {
+        mutableStateOf(account?.gatewayToken ?: runtime.syncConfig.token)
+    }
+    var username by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var displayName by remember { mutableStateOf("") }
+    var inviteCode by remember { mutableStateOf("") }
+    var mode by remember { mutableStateOf("login") }
+    var note by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    val status = account?.let {
+        it.displayName + " · " + if (it.role == UserRole.ADMIN) "管理员" else "用户"
+    } ?: "未登录"
+
+    SettingsSection(
+        title = "账号",
+        status = status,
+        action = {
+            EditorChip(
+                label = if (account == null) "登录" else "切换",
+                active = false,
+                onClick = { open = true },
+            )
+        },
+    ) {
+        if (account == null) {
+            SettingsStatusLine("未登录。登录后，HTTP 同步的数据按账号隔离；本地笔记/计划仍然先落本机。")
+        } else {
+            SettingsStatusLine("服务器：" + account.serverUrl)
+            SettingsStatusLine("用户：" + account.username + "（" + account.userId + "）")
+            EditorChip(
+                label = "退出登录",
+                active = false,
+                onClick = { scope.launch { note = runtime.logoutAccount() } },
+            )
+        }
+        note?.let { SettingsStatusLine(it) }
+    }
+
+    if (open) {
+        AlertDialog(
+            onDismissRequest = { open = false },
+            title = { Text(if (account == null) "登录 / 注册" else "切换账号") },
+            text = {
+                Column {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        EditorChip("登录", active = mode == "login", onClick = { mode = "login" })
+                        EditorChip("注册", active = mode == "register", onClick = { mode = "register" })
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = serverUrl,
+                        onValueChange = { serverUrl = it },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("账号服务器，例如 https://xxx.trycloudflare.com") },
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = gatewayToken,
+                        onValueChange = { gatewayToken = it },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("网关 trial token（可留空）") },
+                        visualTransformation = PasswordVisualTransformation(),
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = username,
+                        onValueChange = { username = it },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("用户名") },
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("密码（至少 8 位）") },
+                        visualTransformation = PasswordVisualTransformation(),
+                    )
+                    if (mode == "register") {
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = displayName,
+                            onValueChange = { displayName = it },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text("显示名（可留空）") },
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = inviteCode,
+                            onValueChange = { inviteCode = it },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text("邀请码（第一个用户不需要）") },
+                        )
+                    }
+                    note?.let {
+                        Spacer(Modifier.height(8.dp))
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch {
+                        note = if (mode == "login") {
+                            runtime.loginAccount(serverUrl, gatewayToken, username, password)
+                        } else {
+                            runtime.registerAccount(serverUrl, gatewayToken, username, password, displayName, inviteCode)
+                        }
+                        if (note?.startsWith("已") == true) open = false
+                    }
+                }) { Text(if (mode == "login") "登录" else "注册") }
+            },
+            dismissButton = {
+                TextButton(onClick = { open = false }) { Text("取消") }
+            },
+        )
     }
 }
 
