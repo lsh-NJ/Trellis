@@ -639,9 +639,10 @@ P1 的「文件域」垂直切片已落地：`:sync` 模块 + 桌面端接线；
 
 ### 12.2 怎么试
 
-1. 两台设备（或两个 `TRELLIS_HOME`）在「设置 → 多端同步 → 配置」：
-   - 文件夹模式：填同一个目录（iCloud/Dropbox/Syncthing/局域网共享目录）；
-   - HTTP 模式：填服务地址（如 `https://xxx.trycloudflare.com`）和网关口令；再到「设置 → 账号」登录（同一账号的数据互通）。
+1. 两台设备（或两个 `TRELLIS_HOME`）先「设置 → 账号」登录同一账号；
+2. HTTP 模式最快路径：账号卡片里点「用此账号开启同步」（自动带上服务器地址和网关口令并跑一轮），然后点「立即同步」；
+   - 文件夹模式：在「多端同步 → 配置」填同一个目录（iCloud/Dropbox/Syncthing/局域网共享目录）；
+   - 手动 HTTP：填服务地址（如 `https://xxx.trycloudflare.com`）和网关口令。
 2. 一台改笔记或计划文档，等 60 秒或点「立即同步」，另一台同步后可见；
 3. 同一篇两边同时改 → 各留一份，冲突版本在 `<home>/sync/conflicts/<domain>/`。
 
@@ -749,7 +750,7 @@ curl -fsS -H "X-Token: <网关口令>" -H "X-Trellis-Auth: Bearer $USER_TOKEN" \
 
 - `/health` 故意不校验 token，方便网关/隧道探活；其它端点必须带网关 token（若启用）。
 - 服务端不校验网关 token（因为网关已经校验并在转发前剥掉），但**对象接口必须带用户 token**（`X-Trellis-Auth`）；**不要**把 8000 直接暴露到公网。
-- 隧道地址重启会变，客户端改地址即可（设置页可编辑，不用重装）。
+- 隧道地址重启会变，旧地址会返回 **530 / TLS 超时**；账号里的 `serverUrl` 和同步 `baseUrl` 必须一起更新，通常要重新登录一次。Quick Tunnel 只适合临时试跑，长期用请换命名隧道/自有域名/Tailscale。
 - 网关不支持 WebSocket——这正好，同步全程是 HTTP 请求/响应，不需要长连接。
 
 **多用户试用靠账号系统隔离**（见 [user-system.md](user-system.md)）：

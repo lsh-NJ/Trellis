@@ -93,13 +93,15 @@ fun SettingsScreen(runtime: AppRuntime, modifier: Modifier = Modifier) {
 
         item { AccountSection(runtime) }
 
+        // 紧跟账号：登录后这里就是「开启同步 / 立即同步 / 测试连接」，不用再往下翻。
+        item { SyncSection(runtime) }
+
         item { AppearanceSection(runtime) }
 
         item { EditorSection(runtime) }
 
         item { DailyBudgetSection(runtime) }
         item { KnowledgeLinkSection(runtime) }
-        item { SyncSection(runtime) }
 
         item { MarkdownShortcutSection(runtime) }
 
@@ -192,8 +194,11 @@ private fun SyncSection(runtime: AppRuntime) {
     var baseUrl by remember(config.baseUrl, runtime.account?.serverUrl) {
         mutableStateOf(config.baseUrl.ifBlank { runtime.account?.serverUrl.orEmpty() })
     }
-    var token by remember(config.token) { mutableStateOf(config.token) }
+    var token by remember(config.token, runtime.account?.gatewayToken) {
+        mutableStateOf(config.token.ifBlank { runtime.account?.gatewayToken.orEmpty() })
+    }
     var note by remember { mutableStateOf<String?>(null) }
+    var probe by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
     val status = when {
@@ -218,6 +223,13 @@ private fun SyncSection(runtime: AppRuntime) {
     ) {
         if (!config.isValid()) {
             SettingsStatusLine("未开启。开启后，笔记本与计划文档会和另一台设备同步；会话、活动、密钥不会同步。")
+            if (runtime.account != null) {
+                EditorChip(
+                    label = "用此账号开启同步",
+                    active = false,
+                    onClick = { scope.launch { note = runtime.enableSyncWithAccount() } },
+                )
+            }
         } else {
             if (config.transport == SyncConfig.TRANSPORT_HTTP) {
                 SettingsStatusLine("HTTP 地址：${config.baseUrl}")
@@ -234,14 +246,24 @@ private fun SyncSection(runtime: AppRuntime) {
             error?.let { SettingsStatusLine(it, error = true) }
             if (config.transport != SyncConfig.TRANSPORT_HTTP || runtime.account != null) {
                 Spacer(Modifier.height(6.dp))
-                EditorChip(
-                    label = if (runtime.syncRunning) "同步中…" else "立即同步",
-                    active = false,
-                    onClick = { if (!runtime.syncRunning) scope.launch { runtime.syncNow() } },
-                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    EditorChip(
+                        label = if (runtime.syncRunning) "同步中…" else "立即同步",
+                        active = false,
+                        onClick = { if (!runtime.syncRunning) scope.launch { runtime.syncNow() } },
+                    )
+                    if (config.transport == SyncConfig.TRANSPORT_HTTP && runtime.account != null) {
+                        EditorChip(
+                            label = "测试连接",
+                            active = false,
+                            onClick = { scope.launch { probe = runtime.probeSyncConnection() } },
+                        )
+                    }
+                }
             }
         }
         note?.let { SettingsStatusLine(it) }
+        probe?.let { SettingsStatusLine(it) }
     }
 
     if (open) {
@@ -365,6 +387,37 @@ private fun AccountSection(runtime: AppRuntime) {
         } else {
             SettingsStatusLine("服务器：" + account.serverUrl)
             SettingsStatusLine("用户：" + account.username + "（" + account.userId + "）")
+            val syncConfig = runtime.syncConfig
+            val isHttp = syncConfig.transport == SyncConfig.TRANSPORT_HTTP
+            val sameServer = syncConfig.baseUrl.trimEnd('/') == account.serverUrl.trimEnd('/')
+            val syncReady = isHttp && syncConfig.isValid() && sameServer
+            val mismatch = isHttp && syncConfig.baseUrl.isNotBlank() && !sameServer
+            SettingsStatusLine(
+                if (syncReady) {
+                    "同步：已绑定当前账号" + (runtime.syncReport?.let { " · " + it.summary() } ?: "")
+                } else if (mismatch) {
+                    "同步：地址和账号服务器不一致，去「多端同步」改"
+                } else if (isHttp) {
+                    "同步：未开启"
+                } else {
+                    "同步：文件夹模式（不走账号）"
+                },
+                error = mismatch,
+            )
+            if (!syncReady) {
+                EditorChip(
+                    label = "用此账号开启同步",
+                    active = false,
+                    onClick = { scope.launch { note = runtime.enableSyncWithAccount() } },
+                )
+            } else {
+                EditorChip(
+                    label = if (runtime.syncRunning) "同步中…" else "立即同步",
+                    active = false,
+                    onClick = { if (!runtime.syncRunning) scope.launch { note = runtime.syncNow()?.summary() ?: runtime.syncError } },
+                )
+            }
+            Spacer(Modifier.height(4.dp))
             EditorChip(
                 label = "退出登录",
                 active = false,

@@ -68,6 +68,7 @@ import dev.trellis.feature.exams.ExerciseFileStore
 import dev.trellis.feature.exams.SubjectMastery
 import dev.trellis.feature.exams.masteryOf
 import dev.trellis.feature.exams.summarizeMastery
+import dev.trellis.sync.HttpSyncTransport
 import dev.trellis.sync.SyncConfig
 import dev.trellis.sync.SyncConfigStore
 import dev.trellis.sync.SyncReport
@@ -1599,6 +1600,61 @@ class AppRuntime private constructor() {
     }
 
     // ---------------------------------------------------------------- 账号操作
+
+    /**
+     * 用当前登录账号一键开启 HTTP 同步：地址和网关口令都从本地账号缓存里取，
+     * 不需要用户再去「多端同步」里手填一遍。保存后立刻跑一轮并返回结果。
+     */
+    suspend fun enableSyncWithAccount(): String {
+        val acc = account ?: return "先登录账号"
+        val current = syncConfig
+        val config = current.copy(
+            enabled = true,
+            transport = SyncConfig.TRANSPORT_HTTP,
+            baseUrl = acc.serverUrl.trim().trimEnd('/'),
+            token = acc.gatewayToken.ifBlank { current.token },
+            domains = current.domains.ifEmpty { setOf(SyncConfig.DOMAIN_NOTES, SyncConfig.DOMAIN_PLAN_DOCS) },
+        )
+        if (!config.isValid()) return "账号里没有服务器地址，先重新登录"
+        runCatching { SyncConfigStore.save(home, config) }
+            .onFailure { return "同步配置没写成：${it.message ?: it::class.simpleName}" }
+        restartSync()
+        val report = syncNow()
+        return when {
+            report != null -> "已开启同步：${report.summary()}"
+            syncError != null -> "已开启，但首轮失败：$syncError"
+            else -> "已开启同步，稍后自动跑"
+        }
+    }
+
+    /** 连通性诊断：账号是否有效、远端有没有 head、设备注册数，帮用户判断 0 是正常还是地址/协议不对。 */
+    suspend fun probeSyncConnection(): String {
+        val acc = account ?: return "未登录账号"
+        val config = syncConfig
+        if (config.transport != SyncConfig.TRANSPORT_HTTP || config.baseUrl.isBlank()) {
+            return "还没配置 HTTP 同步；先点「用此账号开启同步」"
+        }
+        return try {
+            val client = HttpUserClient(config.baseUrl, config.token)
+            val me = client.me(acc.token)
+            val transport = HttpSyncTransport(
+                baseUrl = config.baseUrl,
+                token = config.token,
+                bearerToken = acc.token,
+            )
+            val heads = transport.list("heads/")
+            val notes = transport.list("heads/notes/")
+            val devices = transport.list("devices/")
+            val localNotes = File(File(home, "knowledge"), "notes")
+                .walkTopDown().count { it.isFile && it.extension == "md" }
+            val localDocs = File(File(home, "knowledge"), "plan-docs")
+                .walkTopDown().count { it.isFile && it.extension == "md" }
+            "连接正常：${me.username}（${me.id}）；本地 notes=$localNotes，plan-docs=$localDocs；" +
+                "远端 heads=${heads.size}，notes heads=${notes.size}，devices=${devices.size}"
+        } catch (t: Throwable) {
+            "连接失败：${t.message ?: t::class.simpleName}"
+        }
+    }
 
     private fun deviceLabel(): String = if (HostPlatform.isDesktop) "desktop" else "android"
 
