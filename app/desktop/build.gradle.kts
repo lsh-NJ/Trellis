@@ -66,6 +66,15 @@ compose.desktop {
             description = "计划设定与追踪"
             vendor = "Trellis"
 
+            // 应用图标：和安卓那枚同一套设计（松绿渐变 + 纸纹底 + 摊开的书）。
+            // jpackage 不认跨平台的图标格式 —— Linux 要 PNG、Windows 要 ICO、macOS 要 ICNS，
+            // 所以在 `icons/` 里各放一份，按当前系统挑。三份都由 1024 的 PNG 导出。
+            when {
+                osName.contains("mac") -> macOS { iconFile.set(project.file("icons/trellis.icns")) }
+                osName.contains("win") -> windows { iconFile.set(project.file("icons/trellis.ico")) }
+                else -> linux { iconFile.set(project.file("icons/trellis.png")) }
+            }
+
             // jlink 默认只打包「它推断需要」的模块：java.net.http 和 java.sql 都不在里面。
             // 不加的后果：编得过、测得过，但打出来的 app 一点「排计划 / 打开计划页」就
             // NoClassDefFoundError: java/sql/DriverManager（SQLite 事件库用），
