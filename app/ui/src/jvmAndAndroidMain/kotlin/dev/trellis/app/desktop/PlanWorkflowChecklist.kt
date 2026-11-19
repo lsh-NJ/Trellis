@@ -24,6 +24,7 @@ internal data class WorkflowPhaseSnapshot(
 )
 
 internal fun workflowPhaseTitle(phase: String): String = when (phase) {
+    "goal" -> "确定目标（问清你的情况）"
     "master" -> "调研结果 → 总计划文档"
     "week" -> "总计划文档 → 周文档"
     "units" -> "周文档 → 计划节点"
@@ -31,6 +32,7 @@ internal fun workflowPhaseTitle(phase: String): String = when (phase) {
 }
 
 internal fun workflowPhaseImpact(phase: String): String = when (phase) {
+    "goal" -> "先问清楚为什么学、什么基础、每天多久、什么算学完，再决定学什么"
     "master" -> "写完总计划文档停下来等你确认"
     "week" -> "建计划本体并生成本周周文档"
     "units" -> "把要学的知识点放进本周队列"
@@ -59,6 +61,7 @@ internal fun workflowChecklistSteps(
             state = state,
             note = when {
                 phase.error != null -> phase.error.orEmpty()
+                state == PlanStepState.Awaiting && phase.phase == "goal" -> "等待确认 · 点「继续」开始调研"
                 state == PlanStepState.Awaiting -> "等待确认 · 点「继续」进入下一段"
                 else -> ""
             },

@@ -54,7 +54,7 @@ internal class PlanEditTools(
 
     val guidance: String = listOf(
         "<how_to_edit_plan>",
-        "1. 计划域只有三个入口：read_plan 读、update_plan 改、plan_workflow 三段新建（调研结果→总计划文档→周文档→计划节点）。",
+        "1. 计划域只有三个入口：read_plan 读、update_plan 改、plan_workflow 新建（先定目标→调研结果→总计划文档→周文档→计划节点；目标空泛时它会先让你问用户，问清后 action=brief）。",
         "   不要再找 get_learning_plan / plan_week / create_learning_plan / write_plan_doc / create_plan 这些旧名字——它们已经收进 op / plan_workflow 里。",
         "   新建计划是周队列模式：节点只进本周队列、不排到天（read_plan 里显示成 unit=pu_…），完成即记当天；不要用 schedule_week 或 occurrence 路径排天。",
         "2. 动手前先 read_plan：拿到 planId、阶段、本周节点（occurrenceId）、待安排池和总文档。",

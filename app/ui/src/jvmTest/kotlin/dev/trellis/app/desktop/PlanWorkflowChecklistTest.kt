@@ -80,7 +80,24 @@ class PlanWorkflowChecklistTest {
     }
 
     @Test
+    fun goalPhaseAwaitingSaysItWillStartResearch() {
+        val steps = workflowChecklistSteps(
+            jobState = "awaiting_user",
+            phases = phases(
+                "goal" to "running",
+                "master" to "pending",
+                "week" to "pending",
+                "units" to "pending",
+            ),
+        )
+        assertEquals(PlanStepState.Awaiting, steps.first().state)
+        assertTrue(steps.first().note.contains("开始调研"), steps.first().note)
+        assertEquals(PlanStepState.Pending, steps[1].state)
+    }
+
+    @Test
     fun phaseTitlesMatchTheThreeDocumentTransformations() {
+        assertEquals("确定目标（问清你的情况）", workflowPhaseTitle("goal"))
         assertEquals("调研结果 → 总计划文档", workflowPhaseTitle("master"))
         assertEquals("总计划文档 → 周文档", workflowPhaseTitle("week"))
         assertEquals("周文档 → 计划节点", workflowPhaseTitle("units"))

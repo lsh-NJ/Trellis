@@ -2619,6 +2619,7 @@ class AppRuntime private constructor() {
 
     /** 计划工作流三段的显示名（用于提示词里的「当前段」）。 */
     private fun workflowPhaseLabel(phase: String): String = when (phase) {
+        "goal" -> "确定目标"
         "master" -> "调研结果 → 总计划文档"
         "week" -> "总计划文档 → 周文档"
         "units" -> "周文档 → 计划节点"
@@ -3092,6 +3093,7 @@ class AppRuntime private constructor() {
                     offerChoices(question, options)
                 },
                 consumeConsent = { jobId, phase -> consumePlanAdvanceConsent(jobId, phase) },
+                onLog = { line -> appendAppLog(line) },
             )
             // 跨会话记忆也是手：用户说出长期目标/偏好时写进管家日志，要回忆过去时再检索。
             // 和管家仪式共用同一份 append-only 记忆 —— 目标不该只有晨/夜仪式才有机会落盘。
@@ -3184,12 +3186,39 @@ class AppRuntime private constructor() {
             } else {
                 null
             }
+            // 「确定目标」段：流程开着、目标还没定。这一轮让模型自由问，不写文档；
+            // 工具只给提问 / 查资料 / 读现状，不给建计划或写节点的手。
+            if (openFlow != null && openFlow.state == "running" &&
+                openFlow.steps.firstOrNull()?.let { it.step == "goal" && it.state == "running" } == true
+            ) {
+                val goalGuidance = buildString {
+                    appendLine("<plan_goal_mode>")
+                    appendLine("用户的目标太空，现在停在计划流程的「确定目标」段（jobId=" + openFlow.id + "）。")
+                    appendLine("这一段由你自由问：先问为什么想学 / 想解决什么、现在什么基础、做过什么；")
+                    appendLine("再问每天大概能投入多久、想达成什么能自己检验的结果、什么时候要完成。")
+                    appendLine("就业 / 转行类目标先问有没有意向岗位；答不出来就用 search_web 查一下市场，")
+                    appendLine("给 2–3 个方向 + 各自的要求和差距，让用户挑一个，不要替他决定。")
+                    appendLine("一次问一到两个问题（可以给 2–5 个选项让用户挑，也可以直接问）；不要自己编造他的情况。")
+                    appendLine("问清后调 plan_workflow(action=brief, goal=…一句具体目标, brief=…4–6 行摘要) 提交，")
+                    appendLine("宿主会摆确认卡；用户点了确认之后才开始调研和写文档。")
+                    appendLine("这一轮不要写计划文档、不要建计划、不要调 advance。")
+                    appendLine("</plan_goal_mode>")
+                }
+                val goalTools = allTools.filter {
+                    it.name == "plan_workflow" || it.name == "ask_choices" ||
+                        it.name == "read_plan" || it.name == "recall_memory"
+                } + autonomyTools.all.filter { it.name == "search_web" }
+                return ChatRig(catalog, tools, goalTools, goalGuidance)
+            }
             if (openFlow != null && openFlow.state == "awaiting_user") {
                 val current = openFlow.steps.firstOrNull { it.state == "running" }?.step.orEmpty()
                 val modeGuidance = buildString {
                     appendLine("<plan_workflow_mode>")
                     appendLine("用户已经进入一段计划流程，这一段正停在「等待确认」。")
                     appendLine("当前段：" + workflowPhaseLabel(current) + "（jobId=" + openFlow.id + "）。")
+                    if (current == "goal") {
+                        appendLine("当前是「确定目标」的确认：把目标摘要讲清楚；用户认可之后才调 advance，进入调研和总计划。")
+                    }
                     appendLine("这一轮只做三件事：把上一段的产出讲清楚、按用户意见调 plan_workflow(action=revise, feedback=…)、")
                     appendLine("用户点了「" + PlanWorkflow.ADVANCE_LABEL + "」，或在对话里明确回「继续 / 好 / 开始下一步」，")
                     appendLine("之后再调 action=advance。凭据由宿主记和校验（宿主也会重新摆出选项卡），你不能自己决定往下走。")

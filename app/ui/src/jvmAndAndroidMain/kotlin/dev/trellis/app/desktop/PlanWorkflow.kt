@@ -32,11 +32,16 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 /**
- * 计划工作流：三段「文档 → 文档」的转换，不是三个任务。
+ * 计划工作流：先定目标，再三段「文档 → 文档」的转换。
  *
+ *   用户情况    → 目标摘要（目标 / 动机 / 起点 / 约束 / 验收）
  *   调研结果    → 总计划文档
  *   总计划文档  → 周文档（本周）
  *   周文档      → 计划节点（只有要学的知识点）
+ *
+ * 「确定目标」这一段不是文档转换，是让模型自己问：用户往往只给一句空泛目标
+ *（「我想学编程」「想准备就业」），宿主不预设问题、不限制轮数，只要求问清后把结论写成
+ * brief 交给宿主，用户在确认卡上点头之后才开始调研和写文档。
  *
  * 为什么这么切：每一段的输入和输出都是文件（[PlanDocStore]），中间没有「模型自己记着」的
  * 状态 —— 上一段的产物就是下一段的输入，所以换一轮对话、关一次应用都能接着走（状态在
@@ -82,12 +87,15 @@ internal class PlanWorkflow(
     /** 用户是否真的点了「开始下一步」；每段只能放行一次。 */
     private val consumeConsent: (jobId: String, phase: String) -> Boolean = { _, _ -> false },
     private val bilibili: BilibiliClient = BilibiliClient(),
+    /** 流程内部诊断（写 app.log）：只记失败原因，不记文档正文。 */
+    private val onLog: (String) -> Unit = {},
 ) {
 
-    /** 三段：显示名、清单、状态、提示词共用这一份，改名只改这里。 */
-    internal val phases: List<String> = listOf("master", "week", "units")
+    /** 四段：先定目标，再三段文档转换。显示名、清单、状态、提示词共用这一份，改名只改这里。 */
+    internal val phases: List<String> = listOf("goal", "master", "week", "units")
 
     internal fun phaseLabel(phase: String): String = when (phase) {
+        "goal" -> "确定目标"
         "master" -> "调研结果 → 总计划文档"
         "week" -> "总计划文档 → 周文档"
         "units" -> "周文档 → 计划节点"
@@ -112,27 +120,48 @@ internal class PlanWorkflow(
         call: suspend (extra: String) -> String,
     ): String? {
         var extra = ""
+        lastDocReject = ""
         repeat(2) { attempt ->
+            lastCallFailure = ""
             val raw = withTimeoutOrNull(timeoutMs) {
-                runCatching { call(extra) }.getOrNull()
-            } ?: return null
+                runCatching { call(extra) }
+                    .onFailure { lastCallFailure = "调用失败：" + (it.message ?: it::class.simpleName) }
+                    .getOrNull()
+            }
+            if (raw == null) {
+                if (lastCallFailure.isBlank()) lastCallFailure = "超过 " + (timeoutMs / 1000) + " 秒没返回"
+                return null
+            }
             if (accept(raw)) return raw
-            if (attempt == 0) extra = "\n\n" + retryHint
+            if (attempt == 0) {
+                extra = "\n\n" + retryHint +
+                    lastDocReject.takeIf { it.isNotBlank() }?.let { "\n上一次被拒的具体原因：" + it + "；请按这一条改。" }.orEmpty()
+            }
         }
         return null
     }
 
+    /** 上一次结构化调用失败的原因（超时 / 异常 / 输出不达标），给用户和日志看。 */
+    private var lastCallFailure: String = ""
+
+    /** 上一次总计划文档被拒的具体原因；空白表示没被拒过。 */
+    private var lastDocReject: String = ""
+
     private inner class Tool : AgentTool {
         override val name: String = "plan_workflow"
         override val description: String =
-            "建学习计划：把目标交给这条固定流程 —— 调研出总计划文档 → 周文档 → 本周要学的知识点。" +
-                "第一次 action=start 带 goal；之后每段的推进要用户拍板：用户点了按钮、或在对话里明确说" +
-                "「开始下一步 / 继续 / 好」，宿主会记一次性凭据，这时才调 action=advance（凭据由宿主校验，你自己说没用）；" +
+            "建学习计划：交给这条固定流程 —— 先定目标，再调研出总计划文档 → 周文档 → 本周要学的知识点。" +
+                "目标太空（「我想学编程」「想准备就业」）时先 start（不带 brief）：流程进入「确定目标」段，" +
+                "这一轮你直接问用户、问清后调 action=brief 提交摘要；目标已经说清楚就 start 时带上 brief 跳过提问。" +
+                "之后每段的推进要用户拍板：用户点了按钮、或在对话里明确说「开始下一步 / 继续 / 好」，" +
+                "宿主会记一次性凭据，这时才调 action=advance（凭据由宿主校验，你自己说没用）；" +
+                "已经停在「等待确认」时用户说继续，就直接 advance，不要再交 brief。" +
                 "用户要改当前这段用 action=revise + feedback。不要用它之外的写工具另建计划。"
         override val parameters: String = """
-            action: start | advance | revise | status | cancel（默认 start）
-            goal: start 必填，一句话目标（例：两个月后期末考试，复习操作系统）
-            deadline: 可选，这件事要完成的日期 YYYY-MM-DD（「一周内」= 今天+7）。用户只是提到更远的考试/比赛日期时，那不是这个计划的截止，写进 goal 就行；revise 时传可以改截止日期
+            action: start | brief | advance | revise | status | cancel（默认 start）
+            goal: start 必填，一句话目标（例：两个月后期末考试，复习操作系统）；brief 时传可以改写成一句更具体的
+            brief: 可选，目标摘要（4–6 行：目标 / 动机 / 起点 / 约束 / 验收）。start 时带 = 目标已说清楚、跳过提问；不带 = 先进「确定目标」段由你自己问；action=brief 时必填
+            deadline: 可选，这件事要完成的日期 YYYY-MM-DD（「一周内」= 今天+7）。用户只是提到更远的考试/比赛日期时，那不是这个计划的截止，写进 goal 就行；revise / brief 时传可以改截止日期
             dailyMinutes: 可选，30–240（用户说清每天投入才传）
             feedback: revise 用，用户对当前这段的修改意见
             jobId: 可选，不传就用最近一段没结束的计划流程
@@ -142,6 +171,7 @@ internal class PlanWorkflow(
             val wf = workflow() ?: return@runCatching ToolResult("计划库打不开，这次没开始。", isError = true)
             when (val action = arguments.str("action") ?: "start") {
                 "start" -> start(wf, arguments)
+                "brief" -> brief(wf, arguments)
                 "advance" -> advance(wf, arguments)
                 "revise" -> revise(wf, arguments)
                 "status" -> status(wf, arguments)
@@ -162,21 +192,110 @@ internal class PlanWorkflow(
             } else {
                 val current = open.steps.firstOrNull { it.state == "running" }?.let { phaseLabel(it.step) } ?: "进行中"
                 return ToolResult(
-                    "已经有一段计划流程在进行中（jobId=" + open.id + "，当前：" + current + "）。先推进或取消它，再开新的。",
+                    "已经有一段计划流程在进行中（jobId=" + open.id + "，当前：" + current + "）。" +
+                        "先推进或取消它，再开新的；目标还没定完就用 action=brief 交摘要。",
                     isError = true,
                 )
             }
         }
         val goal = arguments.str("goal")?.trim().orEmpty()
         if (goal.isEmpty()) return ToolResult("start 需要 goal（一句话目标）。", isError = true)
+        val brief = arguments.str("brief")?.trim().orEmpty()
         val payload = buildJsonObject {
             put("goal", goal)
             put("deadline", normalizeDeadline(arguments.str("deadline")))
             arguments.int("dailyMinutes")?.let { put("dailyMinutes", it.coerceIn(30, 240)) }
+            if (brief.isNotEmpty()) put("brief", brief)
         }.toString()
         val jobId = wf.create("plan_flow", payload, phases)
         onChecklist(jobId)
-        return runPhase(wf, wf.load(jobId)!!, "master", feedback = null)
+        // 目标已经说得够清楚（学什么 / 为什么 / 什么基础 / 每天多久 / 什么时候要完成）：
+        // 跳过提问直接写文档；模型没带 brief 就先停在「确定目标」，由它自己问。
+        if (brief.isEmpty()) return beginGoal(wf, jobId)
+        wf.setStep(jobId, "goal", "done", output = brief)
+        val job = wf.load(jobId) ?: return ToolResult("流程状态读不到了，用 action=status 看一下。", isError = true)
+        return runPhase(wf, job, "master", feedback = null)
+    }
+
+    /**
+     * 「确定目标」段：目标太空，流程先停在这里，由模型自己问。
+     *
+     * 这一段不调模型、不写文档，job 保持 running（不是 awaiting_user）—— 问几轮、问什么、
+     * 要不要先 search_web 查一下市场，全由模型决定；宿主只在它调 [brief] 时接住结论、摆确认卡。
+     * 现在先按「自由问」试：宿主不预设问题清单，只在提示词里给出该问到的维度。
+     */
+    private fun beginGoal(wf: PlanWorkflowStore, jobId: String): ToolResult {
+        wf.setStep(jobId, "goal", "running")
+        onChecklist(jobId)
+        return ToolResult(
+            buildString {
+                appendLine("「确定目标」这一段开始了：现在不写文档，先把用户的情况问清楚。")
+                appendLine("这一轮直接开口问（问几轮由你决定，不要一次抛一堆问题）：")
+                appendLine("1. 先问「为什么想学 / 想解决什么问题」「现在什么基础、做过什么」。")
+                appendLine("2. 再问「每天大概能投入多久」「想达成什么能自己检验的结果」「什么时候要完成」。")
+                appendLine("3. 就业/转行类目标：先问有没有意向岗位；答不出来就用 search_web 查市场，")
+                appendLine("   给 2–3 个方向 + 各自的要求和差距，让用户挑一个（不要替他决定）。")
+                appendLine("4. 用户答不清就问得更具体（举例给他选），不要自己编造他的情况。")
+                appendLine("问清后把结论收成 4–6 行（目标 / 动机 / 起点 / 约束 / 验收 / 时限），调 action=brief 提交；")
+                appendLine("提交时把 goal 也改写成一句具体的（例：三个月内达到能投前端实习的 JS 基础）。")
+                appendLine("现在只问用户，不要调 advance，不要写文档。")
+            }.trimEnd(),
+        )
+    }
+
+    /**
+     * 目标问清后提交摘要：写进 payload，摆确认卡等用户点头。
+     *
+     * 和其余三段一样，推进权在宿主：模型交摘要只是「说它问清了」，真正开始调研要用户点
+     * 「开始下一步」（或明确说继续）。用户要改就回到对话继续问，见 [revise]。
+     */
+    private suspend fun brief(wf: PlanWorkflowStore, arguments: JsonObject): ToolResult {
+        val job = resolveJob(wf, arguments) ?: return ToolResult(noOpenMessage(wf), isError = true)
+        val goalStep = job.steps.firstOrNull()
+        if (goalStep == null || goalStep.step != "goal") {
+            return ToolResult("这段流程没有「确定目标」段（目标早就定了）。要改计划内容用 action=revise。", isError = true)
+        }
+        if (goalStep.state == "done") {
+            return ToolResult("目标已经在流程里定过了。想改目标用 action=revise（带 feedback / goal）。", isError = true)
+        }
+        // 摘要交过、正停在确认上：用户说「继续」就该 advance，不要再交一次（会把卡片重新摆一遍）。
+        if (job.state == "awaiting_user") {
+            return ToolResult(
+                "目标摘要已经交过、正停在确认上。用户点了「" + ADVANCE_LABEL + "」或明确说继续，就调 action=advance 开始调研；" +
+                    "要改目标用 action=revise（带 feedback）。不要再交 brief。",
+                isError = true,
+            )
+        }
+        val text = arguments.str("brief")?.trim().orEmpty()
+        if (text.length < 8) {
+            return ToolResult("brief 太短：用 4–6 行写清目标 / 动机 / 起点 / 约束 / 验收。", isError = true)
+        }
+        val pairs = mutableListOf<Pair<String, kotlinx.serialization.json.JsonElement>>(
+            "brief" to JsonPrimitive(text),
+        )
+        arguments.str("goal")?.trim()?.takeIf { it.isNotBlank() }?.let { pairs += "goal" to JsonPrimitive(it) }
+        normalizeDeadline(arguments.str("deadline")).takeIf { it.isNotBlank() }
+            ?.let { pairs += "deadline" to JsonPrimitive(it) }
+        arguments.int("dailyMinutes")?.coerceIn(30, 240)?.let { pairs += "dailyMinutes" to JsonPrimitive(it) }
+        wf.updatePayload(job.id, payloadWith(job.payload, *pairs.toTypedArray()))
+        wf.setStep(job.id, "goal", "running", output = text)
+        wf.setJobState(job.id, "awaiting_user")
+        onChecklist(job.id)
+        onAskConfirm(
+            job.id,
+            "goal",
+            "目标先按上面这份来定，可以开始做调研和总计划了吗？",
+            listOf(ADVANCE_LABEL, "我要改一下", "先不建"),
+        )
+        return ToolResult(
+            buildString {
+                appendLine("目标摘要先记进流程了（用户点确认之前不会开始调研）：")
+                appendLine(text)
+                appendLine()
+                append("把上面这些用两三句话复述给用户（让他一眼看出理解对不对），然后等拍板：")
+                append("用户点「").append(ADVANCE_LABEL).append("」或明确说「对 / 继续」，再调 action=advance 开始调研。")
+            }.trimEnd(),
+        )
     }
 
     /**
@@ -187,7 +306,7 @@ internal class PlanWorkflow(
      * 带「改 / 先 / 等 / 看」等字眼一律不算）。模型自己调 advance（没凭据）会被挡住。
      */
     private suspend fun advance(wf: PlanWorkflowStore, arguments: JsonObject): ToolResult {
-        val job = resolveJob(wf, arguments) ?: return ToolResult("没有进行中的计划流程；先 action=start。", isError = true)
+        val job = resolveJob(wf, arguments) ?: return ToolResult(noOpenMessage(wf), isError = true)
         if (job.state != "awaiting_user") {
             return ToolResult(
                 "这段流程现在不在等确认（状态：" + job.state + "）。用 action=status 看进度。",
@@ -232,7 +351,7 @@ internal class PlanWorkflow(
     }
 
     private suspend fun revise(wf: PlanWorkflowStore, arguments: JsonObject): ToolResult {
-        val job = resolveJob(wf, arguments) ?: return ToolResult("没有进行中的计划流程；先 action=start。", isError = true)
+        val job = resolveJob(wf, arguments) ?: return ToolResult(noOpenMessage(wf), isError = true)
         val current = job.steps.lastOrNull { it.state == "running" || it.state == "failed" }
             ?: return ToolResult("这段流程没有可重做的阶段。", isError = true)
         // 三段都是「文档 → 文档」：哪一段都能按用户意见重做，重做只覆盖这一段的产物。
@@ -240,6 +359,20 @@ internal class PlanWorkflow(
         if (feedback.isNullOrBlank()) return ToolResult("revise 需要 feedback：用户想改什么。", isError = true)
         // 用户发现截止写错了（例如把更远的考试日期当成了计划截止）可以直接改，不用重开流程。
         val deadline = normalizeDeadline(arguments.str("deadline"))
+        // 「确定目标」段没有文档可重做：退回对话继续问，问好再交新摘要；顺手允许改 goal / deadline。
+        if (current.step == "goal") {
+            val extra = mutableListOf<Pair<String, kotlinx.serialization.json.JsonElement>>()
+            arguments.str("goal")?.trim()?.takeIf { it.isNotBlank() }?.let { extra += "goal" to JsonPrimitive(it) }
+            if (deadline.isNotBlank()) extra += "deadline" to JsonPrimitive(deadline)
+            if (extra.isNotEmpty()) wf.updatePayload(job.id, payloadWith(job.payload, *extra.toTypedArray()))
+            wf.setStep(job.id, "goal", "running")
+            wf.setJobState(job.id, "running")
+            onChecklist(job.id)
+            return ToolResult(
+                "目标还没定下来，流程退回对话：继续问清用户想改的那部分，问好后重新调 action=brief 交摘要。" +
+                    "这次的修改意见：" + feedback,
+            )
+        }
         val updated = if (deadline.isNotBlank()) {
             wf.updatePayload(job.id, payloadWith(job.payload, "deadline" to JsonPrimitive(deadline)))
             wf.load(job.id) ?: job
@@ -250,7 +383,7 @@ internal class PlanWorkflow(
     }
 
     private fun status(wf: PlanWorkflowStore, arguments: JsonObject): ToolResult {
-        val job = resolveJob(wf, arguments) ?: return ToolResult("现在没有进行中的计划流程。", isError = true)
+        val job = resolveJob(wf, arguments) ?: return ToolResult(noOpenMessage(wf), isError = true)
         return ToolResult(
             buildString {
                 appendLine("计划流程 " + job.id + "（状态 " + job.state + "）：")
@@ -272,18 +405,19 @@ internal class PlanWorkflow(
     }
 
     private fun cancel(wf: PlanWorkflowStore, arguments: JsonObject): ToolResult {
-        val job = resolveJob(wf, arguments) ?: return ToolResult("现在没有进行中的计划流程。", isError = true)
+        val job = resolveJob(wf, arguments) ?: return ToolResult(noOpenMessage(wf), isError = true)
         wf.setJobState(job.id, "cancelled")
         onChecklist(job.id)
         // 草稿还没落成计划（第二段没跑）时，取消就把草稿删掉：它只是这段流程的中间产物，
         // 留着会在知识库里挂一份永远点不开的「总计划（草稿）」（2026-11-19 用户反馈）。
         // 已经落成计划的文档是计划资产，不在这里删 —— 放弃/删除计划时一起清。
         val hasPlan = !job.payload.stringField("planId").isNullOrBlank()
-        if (!hasPlan) job.payload.stringField("draftId")?.let { docStore()?.deleteDraft(it) }
-        return if (hasPlan) {
-            ToolResult("已取消这段计划流程。计划的文档和节点都保留；要删计划去计划页。")
-        } else {
-            ToolResult("已取消这段计划流程，这段的草稿也一起删掉了。")
+        val draftId = job.payload.stringField("draftId")
+        if (!hasPlan) draftId?.let { docStore()?.deleteDraft(it) }
+        return when {
+            hasPlan -> ToolResult("已取消这段计划流程。计划的文档和节点都保留；要删计划去计划页。")
+            draftId != null -> ToolResult("已取消这段计划流程，这段的草稿也一起删掉了。")
+            else -> ToolResult("已取消这段计划流程。目标还没定完，没有生成任何文档。")
         }
     }
 
@@ -302,6 +436,7 @@ internal class PlanWorkflow(
             else -> ToolResult("不认识的阶段：" + phase, isError = true)
         }
         if (result.isError) {
+            onLog("计划流程·" + phaseLabel(phase) + "失败：" + result.content.take(200))
             wf.setStep(job.id, phase, "failed", error = result.content)
             wf.setJobState(job.id, "running")
             onChecklist(job.id)
@@ -346,14 +481,21 @@ internal class PlanWorkflow(
         val goal = job.payload.stringField("goal").orEmpty()
         val deadline = job.payload.stringField("deadline").orEmpty()
         val daily = job.payload.stringField("dailyMinutes")?.toIntOrNull() ?: 60
+        // 「确定目标」段问出来的情况：阶段划分要按它调整（起点、预算、验收、时限）。
+        val brief = job.payload.stringField("brief").orEmpty()
         // 调研结果 = 宿主检索到的候选资源 + 用户的补充要求（revise 时带上）。
         val candidates = scout(goal)
-        val draft = draftMasterDoc(goal, deadline, daily, candidates, feedback)
-            ?: return ToolResult(
-                "总计划文档没生成出来（模型超时、输出被截断，或阶段区间和截止对不上且重试无效）。" +
-                    "这次没写成，可以 revise 重做这一段。",
-                isError = true,
-            )
+        val draft = draftMasterDoc(goal, deadline, daily, brief, candidates, feedback)
+            ?: run {
+                val reason = lastDocReject.ifBlank { lastCallFailure }.ifBlank { "模型没有返回可用内容" }
+                onLog("计划流程·总计划文档失败：" + reason)
+                return ToolResult(
+                    "总计划文档没生成出来：" + reason + "。这次没写成，可以 revise 重做这一段" +
+                        "（feedback 写具体一点更容易过，例如「精简到 3 个阶段、每阶段 2 个主题」）。",
+                    isError = true,
+                )
+            }
+        onLog("计划流程·总计划文档完成：" + draft.title)
         val store = docStore() ?: return ToolResult("计划文档存储没准备好，这次没写成。", isError = true)
         val draftId = "draft_" + UUID.randomUUID().toString().replace("-", "").take(16)
         runCatching { store.saveDraft(draftId, draft.markdown) }
@@ -413,10 +555,15 @@ internal class PlanWorkflow(
         val stageName = currentStage?.name?.takeIf { it.isNotBlank() } ?: "本周"
         val stageTopics = currentStage?.topics.orEmpty()
         val weekDoc = buildWeekDoc(week, goal, master, daily, stageName, stageTopics, feedback)
-            ?: return ToolResult(
-                "周文档没生成出来（模型超时，或两次输出都不成形的 Markdown）。可以 revise 重做这一段。",
-                isError = true,
-            )
+            ?: run {
+                onLog("计划流程·周文档失败：" + lastCallFailure.ifBlank { "两次输出都不成形的 Markdown" })
+                return ToolResult(
+                    "周文档没生成出来" +
+                        (lastCallFailure.takeIf { it.isNotBlank() }?.let { "：" + it } ?: "（两次输出都不成形的 Markdown）") +
+                        "。可以 revise 重做这一段。",
+                    isError = true,
+                )
+            }
         runCatching { store.saveWeek(planId, week, weekDoc.markdown) }
             .onFailure { return ToolResult("周文档没写成：" + (it.message ?: "未知原因"), isError = true) }
         wf.updatePayload(
@@ -504,6 +651,7 @@ internal class PlanWorkflow(
         goal: String,
         deadline: String,
         daily: Int,
+        brief: String,
         candidates: List<Candidate>,
         feedback: String?,
     ): MasterDraft? {
@@ -511,7 +659,11 @@ internal class PlanWorkflow(
         val thisWeek = isoWeekOf(today)
         val budgetDays = availableDays(deadline)
         val system = buildString {
-            appendLine("你是学习规划师。输入是一句目标和一批候选学习资源，输出一份总计划文档。")
+            appendLine("你是学习规划师。输入是一句目标、用户的情况和一批候选学习资源，输出一份总计划文档。")
+            if (brief.isNotBlank()) {
+                appendLine("用户已经说清自己的情况（见 <user_situation>）：阶段划分必须贴合他的起点和投入 ——")
+                appendLine("他已经会的内容不要重复安排；每天投入和完成时限是硬约束，验收标准按他说过的来写。")
+            }
             appendLine("只输出一个 JSON 对象，不要代码块、不要解释：")
             appendLine("{\"title\":\"计划标题（≤16 字）\",\"doc\":\"整份总计划 Markdown\"}")
             appendLine("doc 必须严格是这个结构（解析器只认这几个标题）：")
@@ -534,6 +686,8 @@ internal class PlanWorkflow(
             appendLine("1. 阶段 = 内容分组：名称 + 聚焦 + 主题清单 + 资源；不写 ISO 周，也不写日期。")
             appendLine("2. 主题 = 一块能连续学 1–5 天的内容（通常 2–4 天）：名字写具体内容（如「进程状态与上下文切换」），")
             appendLine("   不写「学习 / 掌握 / 复习」这类动作；体量写「（约 N 天）」。")
+            appendLine("   如果一块内容本身要 6 天以上（完整项目、综合练习），拆成几个相邻主题，每个仍 ≤5 天")
+            appendLine("   （例：「项目二 · 页面与路由」「项目二 · 数据请求与联调」）；超过 5 天的主题会被退回。")
             appendLine("3. 主题数量不设上下限：资料能自然切出几块就写几块，切不出更多就少写，")
             appendLine("   不要为了凑数拆分或合并；一个阶段通常 2–8 个主题。")
             appendLine("4. 主题必须能在候选资料的标题 / 目录 / 分集里找到依据；找不到依据的不许写。")
@@ -560,6 +714,12 @@ internal class PlanWorkflow(
                 appendLine("截止日期：没给（按内容自然分阶段）")
             }
             appendLine("每天投入：" + daily + " 分钟")
+            if (brief.isNotBlank()) {
+                appendLine()
+                appendLine("<user_situation>")
+                appendLine(brief)
+                appendLine("</user_situation>")
+            }
             if (!feedback.isNullOrBlank()) appendLine("用户对上一版的修改意见：" + feedback)
             appendLine()
             appendLine("<resource_candidates>")
@@ -586,18 +746,24 @@ internal class PlanWorkflow(
          * 「数量」不做硬约束（不设上下限）——数量应该由资料和预算决定，硬写数字只会逼模型凑数。
          * 2026-11-18：阶段与周解绑，阶段不再写周区间，所以这里校验的是主题体量而不是周区间。
          */
-        fun stagesAcceptable(markdown: String): Boolean {
+        fun stageRejectReason(markdown: String): String? {
             val stages = docStore()?.parse(markdown)?.stages.orEmpty()
-            if (stages.isEmpty()) return false
-            if (stages.any { it.topics.isEmpty() }) return false
+            if (stages.isEmpty()) return "文档里解析不出「## 阶段」"
+            stages.firstOrNull { it.topics.isEmpty() }?.let {
+                return "阶段「" + it.name + "」没有主题清单"
+            }
             val topics = stages.flatMap { it.topics }
-            if (topics.any { it.name.isBlank() }) return false
-            if (topics.any { (it.days ?: 0) !in 1..5 }) return false
+            if (topics.any { it.name.isBlank() }) return "有主题没有名字"
+            topics.firstOrNull { (it.days ?: 0) !in 1..5 }?.let {
+                return "主题「" + it.name + "」的体量不在 1–5 天"
+            }
             val total = topics.sumOf { (it.days ?: 0).coerceIn(1, 5) }
-            if (total <= 0) return false
-            if (budgetDays != null && total > budgetDays) return false
-            if (budgetDays == null && total > 120) return false
-            return true
+            if (total <= 0) return "主题天数合计为 0"
+            if (budgetDays != null && total > budgetDays) {
+                return "主题天数合计 " + total + " 天，超过截止前可用的 " + budgetDays + " 天"
+            }
+            if (budgetDays == null && total > 120) return "主题天数合计 " + total + " 天，超过 120 天"
+            return null
         }
         val raw = structuredCall(
             timeoutMs = MASTER_TIMEOUT_MS,
@@ -609,7 +775,12 @@ internal class PlanWorkflow(
             },
             accept = { text ->
                 val doc = parseRoot(text)?.get("doc")?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-                doc.isNotBlank() && stagesAcceptable(doc)
+                lastDocReject = if (doc.isBlank()) {
+                    "输出不是完整 JSON（可能被截断）"
+                } else {
+                    stageRejectReason(doc).orEmpty()
+                }
+                lastDocReject.isBlank()
             },
         ) { extra ->
             docLlm.complete(listOf(LlmMessage(LlmRole.System, system), LlmMessage(LlmRole.User, user + extra)))
@@ -701,7 +872,12 @@ internal class PlanWorkflow(
             accept = { text ->
                 val normalized = normalizeWeekDoc(week, text)
                 val items = store?.parse(normalized)?.weeks?.get(week).orEmpty()
-                items.isNotEmpty() && items.all { it.text.isNotBlank() }
+                lastDocReject = when {
+                    items.isEmpty() -> "解析不出「## " + week + "」下的条目"
+                    items.any { it.text.isBlank() } -> "有条目是空行"
+                    else -> ""
+                }
+                lastDocReject.isBlank()
             },
         ) { extra ->
             docLlm.completeText(listOf(LlmMessage(LlmRole.System, system), LlmMessage(LlmRole.User, user + extra)))
@@ -978,6 +1154,16 @@ internal class PlanWorkflow(
     private fun resolveJob(wf: PlanWorkflowStore, arguments: JsonObject): PlanWorkflowStore.Job? {
         val id = arguments.str("jobId")
         return if (id != null) wf.load(id) else wf.latestOpen("plan_flow")
+    }
+
+    /** 找不到 job 时的回话：带上真正开着的流程，模型就不会拿着编出来的 jobId 打转。 */
+    private fun noOpenMessage(wf: PlanWorkflowStore): String {
+        val open = runCatching { wf.latestOpen("plan_flow") }.getOrNull()
+            ?: return "现在没有进行中的计划流程；新建用 action=start。"
+        val current = open.steps.firstOrNull { it.state == "running" }
+            ?.let { phaseLabel(it.step) } ?: "进行中"
+        return "找不到这个 jobId。当前开着的是 " + open.id + "（" + current + "）；" +
+            "不传 jobId 就会用它。"
     }
 
     private fun noService(): String {

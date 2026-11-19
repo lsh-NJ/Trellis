@@ -53,10 +53,11 @@ class PlanWorkflowTest {
 
     private class FakeLlm(private val replies: List<String>) : LlmClient {
         var calls = 0
+        val userMessages = mutableListOf<String>()
         override suspend fun complete(messages: List<LlmMessage>): String {
-            val reply = replies.getOrElse(calls) { replies.last() }
             calls++
-            return reply
+            userMessages += messages.lastOrNull { it.role == dev.trellis.ai.LlmRole.User }?.content.orEmpty()
+            return replies.getOrElse(calls - 1) { replies.last() }
         }
     }
 
@@ -168,16 +169,37 @@ class PlanWorkflowTest {
         harnessRef = null
     }
 
-    private suspend fun start(h: Harness, deadline: String? = null): String {
+    /** 默认当成「目标已经说清楚」：带 brief 跳过提问段，直接进调研→总计划。 */
+    private val clearBrief: String =
+        "目标：两个月后期末考试复习操作系统\n动机：补基础\n起点：学过 C 语言\n" +
+            "约束：每天 60 分钟\n验收：每章能复述并做例题"
+
+    private suspend fun start(h: Harness, deadline: String? = null, brief: String? = clearBrief): String {
         val result = h.tool.call(
             buildJsonObject {
                 put("action", "start")
                 put("goal", "两个月后期末考试，复习操作系统")
                 if (deadline != null) put("deadline", deadline)
+                if (brief != null) put("brief", brief)
             },
         )
         assertTrue(!result.isError, result.content)
         return h.workflow.latestOpen("plan_flow")?.id ?: error("没有建出流程")
+    }
+
+    /** 模拟「问清了，把摘要交上去」：这一步只等用户确认，不写文档。 */
+    private suspend fun submitBrief(h: Harness) {
+        val result = h.tool.call(
+            buildJsonObject {
+                put("action", "brief")
+                put("goal", "三个月内达到能投前端实习的 JS 基础")
+                put("brief", "目标：三个月内能投前端实习\n动机：现在的岗位没成长\n起点：会一点 HTML/CSS\n" +
+                    "约束：每天 90 分钟\n验收：能独立做两个页面并部署\n时限：2027-02-19 前")
+                put("dailyMinutes", 90)
+                put("deadline", "2027-02-19")
+            },
+        )
+        assertTrue(!result.isError, result.content)
     }
 
     private suspend fun advance(h: Harness) {
@@ -380,6 +402,8 @@ class PlanWorkflowTest {
         val h = harness(listOf(tooLong, fits, weekDoc()))
         start(h, deadline = "2026-11-06")
         assertEquals(2, h.llm.calls, "主题天数超出截止预算应当重试一次")
+        // 重试要告诉模型「上一次具体错在哪」：只说「不合格」它会盲撞第二次。
+        assertTrue(h.llm.userMessages.last().contains("主题天数合计"), h.llm.userMessages.last())
         advance(h)
         val planId = h.service.plans().single().id
         val stages = h.service.stages(planId)
@@ -479,5 +503,132 @@ class PlanWorkflowTest {
         val cancelled = h.tool.call(buildJsonObject { put("action", "cancel") })
         assertFalse(cancelled.isError, cancelled.content)
         assertTrue(h.docStore.draftIds().isEmpty(), "取消后草稿应该删掉：" + h.docStore.draftIds())
+    }
+
+    // ---------------------------------------------------------------- 「确定目标」段
+
+    /**
+     * 空泛目标（「我想学编程」）不能直接进文档转换：流程先停在「确定目标」，
+     * 不写文档、不建计划、不调模型 —— 问题由模型自己在对话里问。
+     */
+    @Test
+    fun vagueGoalEntersClarifyPhaseWithoutWritingAnything() = runTest {
+        val h = harness()
+        val jobId = start(h, brief = null)
+
+        val job = assertNotNull(h.workflow.load(jobId))
+        assertEquals("running", job.state)
+        assertEquals("running", job.steps.first { it.step == "goal" }.state)
+        assertTrue(h.service.plans().isEmpty(), "澄清阶段不能建计划")
+        assertTrue(h.docStore.draftIds().isEmpty(), "澄清阶段不能写文档")
+        assertTrue(h.gates.isEmpty(), "澄清阶段不该摆「开始下一步」卡：" + h.gates)
+        assertEquals(0, h.llm.calls, "澄清阶段不调模型写文档")
+    }
+
+    /** 交摘要只把目标记进流程并摆确认卡：用户点头之前不开始调研。 */
+    @Test
+    fun submittingTheGoalBriefStopsForConfirmation() = runTest {
+        val h = harness()
+        val jobId = start(h, brief = null)
+        submitBrief(h)
+
+        val job = assertNotNull(h.workflow.load(jobId))
+        assertEquals("awaiting_user", job.state)
+        assertEquals("goal", h.gates.single().second, h.gates.toString())
+        assertTrue(job.payload.contains("三个月内能投前端实习"), job.payload)
+        assertTrue(job.payload.contains("2027-02-19"), job.payload)
+        assertTrue(job.payload.contains("dailyMinutes"), job.payload)
+        assertTrue(h.service.plans().isEmpty(), "确认前不能建计划")
+        assertTrue(h.docStore.draftIds().isEmpty(), "确认前不能写文档")
+    }
+
+    /** 摘要交过之后模型又调 brief：不能把确认卡重新摆一遍，要提示它 advance。 */
+    @Test
+    fun submittingTheBriefAgainWhileWaitingIsRejected() = runTest {
+        val h = harness()
+        val jobId = start(h, brief = null)
+        submitBrief(h)
+        val again = h.tool.call(
+            buildJsonObject {
+                put("action", "brief")
+                put("brief", "目标：又交了一遍\n动机：转行\n起点：零基础\n约束：每天两小时\n验收：做出两个项目")
+            },
+        )
+        assertTrue(again.isError, again.content)
+        assertTrue(again.content.contains("advance"), again.content)
+        assertEquals("awaiting_user", assertNotNull(h.workflow.load(jobId)).state)
+        assertEquals(1, h.gates.size, h.gates.toString())
+    }
+
+    /** 用户点了确认之后才跑调研/总计划：goal 收尾、master 停下等确认。 */
+    @Test
+    fun advancingAfterTheGoalConfirmationStartsTheResearchPhase() = runTest {
+        val h = harness()
+        val jobId = start(h, brief = null)
+        submitBrief(h)
+        advance(h)
+
+        val job = assertNotNull(h.workflow.load(jobId))
+        assertEquals("done", job.steps.first { it.step == "goal" }.state)
+        assertEquals("awaiting_user", job.state)
+        assertTrue(h.docStore.draftIds().isNotEmpty(), "确认之后应该写出总计划草稿")
+        assertEquals("master", h.gates.last().second, h.gates.toString())
+        // 问出来的情况要进总计划提示词（阶段划分按起点/预算来）。
+        assertTrue(h.service.plans().isEmpty(), "总计划这一段只写草稿")
+    }
+
+    /** 用户说「我要改一下」：流程退回对话继续问，不往下跑文档。 */
+    @Test
+    fun revisingTheGoalGoesBackToTheConversation() = runTest {
+        val h = harness()
+        val jobId = start(h, brief = null)
+        submitBrief(h)
+
+        val revised = h.tool.call(
+            buildJsonObject {
+                put("action", "revise")
+                put("feedback", "每天其实只有 40 分钟，而且想先做后端而不是前端")
+                put("goal", "四个月内达到能投后端实习的基础")
+            },
+        )
+        assertTrue(!revised.isError, revised.content)
+        val job = assertNotNull(h.workflow.load(jobId))
+        assertEquals("running", job.state)
+        assertEquals("running", job.steps.first { it.step == "goal" }.state)
+        assertTrue(job.payload.contains("四个月内"), job.payload)
+        assertEquals(1, h.gates.size, "退回对话后不该再多摆一张卡")
+        assertTrue(h.docStore.draftIds().isEmpty())
+    }
+
+    /**
+     * 总计划文档不合格时，错误里要写清哪一条不合格：
+     * 只知道「没生成出来」的模型下一轮还会盲撞同一个错。
+     */
+    @Test
+    fun masterFailureSaysWhyTheDocWasRejected() = runTest {
+        val noTopics = "{\"title\":\"前端\",\"doc\":\"# 目标与验收\\n- 目标：找实习\\n## 阶段\\n- 阶段 1 · 基础（约 30 天）：HTML\"}"
+        val h = harness(listOf(noTopics, noTopics))
+        val result = h.tool.call(
+            buildJsonObject {
+                put("action", "start")
+                put("goal", "学前端，找实习")
+                put("brief", "目标：找前端实习\n动机：转行\n起点：零基础\n约束：每天 2 小时\n验收：做出两个项目")
+            },
+        )
+        assertTrue(result.isError, result.content)
+        assertTrue(result.content.contains("没有主题清单"), result.content)
+    }
+
+    /** 目标本来就说清楚：start 带 brief，跳过提问段直接进调研。 */
+    @Test
+    fun aClearGoalSkipsTheClarifyPhase() = runTest {
+        val h = harness()
+        val jobId = start(h)
+
+        val job = assertNotNull(h.workflow.load(jobId))
+        assertEquals("done", job.steps.first { it.step == "goal" }.state)
+        assertEquals("awaiting_user", job.state)
+        assertEquals("master", h.gates.single().second, h.gates.toString())
+        assertTrue(h.docStore.draftIds().isNotEmpty())
     }
 }
