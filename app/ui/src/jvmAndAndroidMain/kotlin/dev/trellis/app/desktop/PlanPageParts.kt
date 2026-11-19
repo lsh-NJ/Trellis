@@ -120,6 +120,20 @@ internal fun PlanWeekTicker(runtime: AppRuntime) {
                 overflow = TextOverflow.Ellipsis,
             )
         }
+        if (!runtime.planPendingSelected) {
+            val pixelTasks = remember(
+                runtime.planDays,
+                runtime.planQueueUnits,
+                runtime.planScheduleMode,
+            ) {
+                planWeeklyPixelTasks(
+                    days = runtime.planDays,
+                    queueUnits = runtime.planQueueUnits,
+                    queueMode = runtime.planScheduleMode == "queue",
+                )
+            }
+            if (pixelTasks.isNotEmpty()) PlanWeeklyPixelProgress(pixelTasks)
+        }
         if (cards.isNotEmpty()) PlanWeekScale(runtime, cards)
     }
 }

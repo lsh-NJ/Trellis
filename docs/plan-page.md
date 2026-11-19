@@ -544,3 +544,27 @@ note 含「已经排过了」、单元与 occurrence 数不增。
 - **为什么**：只写分钟数分不清是刷视频还是读文档；写清具体网页/窗口标签，「项目聚合资源」的账才算对上。
 - 测试：`ActivityAutoCompleteE2ETest` 断言 `sourceTitle` 等于注入的窗口标题
   （「【高等数学】第 1 章 第 1 节 - 哔哩哔哩」）；`AutoCompletionStoreTest` 断言 `sourceTitle` 落盘往返。
+
+## 26. 2026-11-19：计划页页头接入「周像素拼图」
+
+用户把进度条方向定为二维像素骨牌，并明确要求 L 形内部的直角也要圆滑：
+
+> 9px 的不错……三格可选 L 型，可｜可——
+> L 型内部的直角也记得改成圆线，统一平滑过渡
+
+- **位置**：`PlanWeekTicker` 的选中周标题下方、周刻度上方；选中「待安排」时隐藏。
+- **输入**：day 模式取当前选中周 `planDays.flatMap { it.items }`，queue 模式取 `planQueueUnits`。
+  权重按现有 `PlanUnitBand.labelOf(minutes)`：小 = 1 格、中 = 2 格、大 = 3 格。
+  第一个未完成项染成「下一件」，其余未完成项是「待做」。
+- **布局**：`PlanPixelPacking.kt` 纯搜索。三格任务候选四向 L、竖线、横线；两格候选横/竖。
+  在最多三行内从面积下界开始枚举宽度，约束不重叠、单任务连通、后续任务不跑到前一个左侧、
+  新块贴住已有拼图。页头优先两行（更像进度条），两行无解才退回紧凑三行。
+- **渲染**：`PlanWeeklyPixel.kt`。单元 9dp、任务间 3dp、圆角 2dp。先把同一任务的格子与内部连接块
+  求并集，再沿联合轮廓做一次路径；**凸角和 L 形内侧凹角都走同一套二次贝塞尔圆角**，不是“圆角矩形 + 直角连接块”。
+- **验证**：`PlanPixelPackingTest`（三行 5×3 零洞、两行 8×2 一洞、形状集合与顺序约束）、
+  `PlanWeeklyPixelTest`（小中大权重、下一件状态、L 轮廓 bounds、两行优先、组件离屏渲染、真实计划页接入截图）。
+  `./gradlew :app:ui:jvmTest` 全绿。
+- 截图：`docs/design/plan-weekly-pixel-integrated.png`（真实计划页接入）、
+  `docs/design/plan-weekly-pixel-component.png`（组件 3× 离屏）、
+  `docs/design/plan-weekly-pixel-l-corners.png`（L 内外角圆滑检查）；
+  测试运行时也会重新写出 `app/ui/build/ui-shot-plan-weekly-pixels*.png`。
