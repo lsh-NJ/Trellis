@@ -501,3 +501,12 @@
   - 启动清理：`PlanDocStore.pruneOrphans(knownPlanIds, keepDraftIds)` —— 删「计划库里已经没有的文档目录」和「没有未结流程认领的草稿」；AppRuntime 启动时跑一次，删了东西写一行 app.log。只动 Markdown 文件，不碰计划库。
 - **实测**：用户的真实数据里清掉了孤儿草稿 `draft_1c91d882b0c041f7.md`（来自一段已取消的流程），进行中计划的文档完好；日志「清理计划文档孤儿：1 个文件」。
 - **测试**：`PlanDocStoreTest`（删计划文档 / pruneOrphans 保留与清理两类）、`PlanWorkflowTest`（取消流程删掉未收养的草稿）。
+
+### 21.11 2026-11-19：队列节点「取消完成」要解掉日期绑定
+
+- **反馈**：队列里的节点勾完成后会绑到「今天」；取消完成只把状态改回 planned，日期绑定没取消 —— 节点仍挂在今天那天、队列里也还显示已完成。
+- **根因**：`cmdCompleteUnit` 在队列模式会把节点铺到 today 并标 done；`cmdUncompleteOccurrence` 一律只 `status='planned'`（保留 day —— 按天模式的日期是用户排的，要留）。队列模式没有「用户排的日期」这回事。
+- **改法**：新增 `unbindQueueCompletion(occurrenceId)`：先 done→planned（清 completed_at），再 planned→superseded（superseded_by 自指）—— occurrence 不能物理删（触发器禁止），状态机也只允许这两步；所有读侧都过滤 superseded，节点因此回到队列。`cmdUncompleteOccurrence` 与「撤销完成」的 undo 都按 `schedule_mode` 走这条路；按天模式行为不变。UI 把命令 warnings 显示成「已取消完成：这条回到本周队列…」。
+- **测试**：`PlanQueueUncompleteTest`（取消完成 / 撤销完成两条路：节点不再 done、不再出现在任何一天）。
+- **实测**（临时数据 + 新构建）：完成节点 → 绑到 11-19 并出现在「周四」天卡 → 点一下取消完成 → 天卡消失、队列回到 0/2、DB 里 occurrence=superseded、done=0。
+- **已知边界**：superseded 行里的 day 字段还在（不可变），只是读侧不再用它；事件流里仍能查到当时完成绑的是哪天。

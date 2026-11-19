@@ -5459,7 +5459,12 @@ class AppRuntime private constructor() {
                 planMessage = "这次没改回来：" + (it.message ?: "未知原因")
                 null
             }
-        if (result != null && !result.ok) planMessage = result.error?.message
+        if (result != null && !result.ok) {
+            planMessage = result.error?.message
+        } else {
+            // 队列模式取消完成会把日期绑定一起取消（回到队列），宿主在 warnings 里说明。
+            result?.warnings?.firstOrNull()?.let { planMessage = it }
+        }
         // 用户手动改回「没做」的节点，以后不要再被笔记自动勾上。
         blockAutoCompletion(occurrenceId)
         refreshPlan()

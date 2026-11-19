@@ -1740,9 +1740,14 @@ internal fun SqliteLearningPlanService.cmdCompleteUnit(
             actor = env.actor, commandId = env.commandId,
         )
         val undo = registerUndo(env, planId, "撤销完成") {
-            connection.prepareStatement(
-                "UPDATE occurrence SET status = 'planned', completed_at = NULL WHERE id = ? AND status = 'done'",
-            ).use { ps -> ps.setString(1, occurrenceId); ps.executeUpdate() }
+            if (scheduleModeOf(planId) == "queue") {
+                // 队列模式完成时绑了「今天」，撤销完成也要把日期绑定一起取消（回到队列）。
+                unbindQueueCompletion(occurrenceId)
+            } else {
+                connection.prepareStatement(
+                    "UPDATE occurrence SET status = 'planned', completed_at = NULL WHERE id = ? AND status = 'done'",
+                ).use { ps -> ps.setString(1, occurrenceId); ps.executeUpdate() }
+            }
             appendEvent(
                 type = "occurrence.uncompleted", entity = "occurrence", entityId = occurrenceId, planId = planId,
                 payload = eventJson("undoOf" to JsonPrimitive(occurrenceId)),
@@ -1858,12 +1863,60 @@ internal fun SqliteLearningPlanService.cmdCompleteOccurrence(
     ok(OccurrenceRef(occurrenceId), undo = undo)
 }
 
+/**
+ * 队列模式的「取消完成」：把完成时绑在今天的 occurrence 收掉，节点回到队列。
+ *
+ * 只把 status 退回 planned 的话，节点会一直挂在今天那一天上（2026-11-19 用户反馈的 bug）。
+ * occurrence 行不能物理删（触发器禁止），状态机也只允许 done→planned、planned→superseded，
+ * 所以走两步；读侧（周视图/天条/进度）都过滤 superseded。
+ */
+internal fun SqliteLearningPlanService.unbindQueueCompletion(occurrenceId: String) {
+    connection.prepareStatement(
+        "UPDATE occurrence SET status = 'planned', completed_at = NULL WHERE id = ? AND status = 'done'",
+    ).use { ps ->
+        ps.setString(1, occurrenceId)
+        ps.executeUpdate()
+    }
+    connection.prepareStatement(
+        "UPDATE occurrence SET status = 'superseded', superseded_by = ? WHERE id = ? AND status = 'planned'",
+    ).use { ps ->
+        ps.setString(1, occurrenceId)
+        ps.setString(2, occurrenceId)
+        ps.executeUpdate()
+    }
+}
+
 internal fun SqliteLearningPlanService.cmdUncompleteOccurrence(
     env: CommandEnvelope,
     occurrenceId: String,
 ): CommandResult<OccurrenceRef> = write(env) {
     val row = occurrenceRow(occurrenceId) ?: return@write fail(ErrorCode.E_NOT_FOUND, "找不到这条任务。")
     if (row.status != "done") return@write fail(ErrorCode.E_STATE, "这条还没做完，不用改回来。")
+    // 队列模式：完成时宿主把节点绑到了「今天」（见 cmdCompleteUnit）。取消完成必须连日期绑定
+    // 一起取消、让它回到队列 —— 只把 status 改回 planned 的话，节点会一直挂在今天那一天上，
+    // 队列里也还显示「已完成」（2026-11-19 用户反馈）。
+    // occurrence 行不能物理删（触发器禁止），状态机也只允许 done→planned、planned→superseded，
+    // 所以走两步：先退回 planned，再 superseded 收掉（读侧都过滤 superseded）。
+    if (row.planId != null && scheduleModeOf(row.planId) == "queue") {
+        unbindQueueCompletion(occurrenceId)
+        appendEvent(
+            type = "occurrence.uncompleted", entity = "occurrence", entityId = occurrenceId, planId = row.planId,
+            payload = eventJson(
+                "week" to JsonPrimitive(row.week ?: ""),
+                "day" to JsonPrimitive(row.day),
+                "unitId" to JsonPrimitive(row.unitId ?: ""),
+                "minutes" to JsonPrimitive(row.minutes),
+                "mode" to JsonPrimitive("queue"),
+                "unbound" to JsonPrimitive(true),
+            ),
+            actor = env.actor, commandId = env.commandId,
+        )
+        return@write ok(
+            OccurrenceRef(occurrenceId),
+            warnings = listOf("已取消完成：这条回到本周队列，不再绑在今天的日期上。"),
+        )
+    }
+    // 按天模式：只把状态退回 planned，日期是用户排的，要保留。
     // 表上有 CHECK ((status='done') = (completed_at IS NOT NULL))，所以必须一起清掉完成时间。
     connection.prepareStatement(
         "UPDATE occurrence SET status = 'planned', completed_at = NULL WHERE id = ? AND status = 'done'",
