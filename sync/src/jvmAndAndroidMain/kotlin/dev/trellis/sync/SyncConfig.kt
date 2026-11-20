@@ -25,10 +25,11 @@ import java.io.File
  */
 data class SyncConfig(
     val enabled: Boolean = false,
-    val transport: String = TRANSPORT_FOLDER,
+    val transport: String = TRANSPORT_HTTP,
+    // 试用服务器：地址与网关口令内置成默认值，两端不用手填。
     val remotePath: String = "",
-    val baseUrl: String = "",
-    val token: String = "",
+    val baseUrl: String = DEFAULT_BASE_URL,
+    val token: String = DEFAULT_TOKEN,
     val domains: Set<String> = setOf(DOMAIN_NOTES, DOMAIN_PLAN_DOCS),
 ) {
     fun isValid(): Boolean = enabled && when (transport) {
@@ -37,6 +38,9 @@ data class SyncConfig(
     }
 
     companion object {
+        const val DEFAULT_BASE_URL: String = "https://sync.br3akm.top"
+        const val DEFAULT_TOKEN: String = "yaUx5ZQkgbGdUpdQfPowpLxMcbRIBGQ6"
+
         const val TRANSPORT_FOLDER: String = "folder"
         const val TRANSPORT_HTTP: String = "http"
         val SUPPORTED_TRANSPORTS: Set<String> = setOf(TRANSPORT_FOLDER, TRANSPORT_HTTP)
@@ -67,13 +71,15 @@ object SyncConfigStore {
             ?: SyncConfig().domains
         val transport = root["transport"]?.jsonPrimitive?.contentOrNull
             ?.takeIf { it in SyncConfig.SUPPORTED_TRANSPORTS }
-            ?: SyncConfig.TRANSPORT_FOLDER
+            ?: SyncConfig().transport
         return SyncConfig(
             enabled = root["enabled"]?.jsonPrimitive?.booleanOrNull ?: false,
             transport = transport,
             remotePath = root["remotePath"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-            baseUrl = root["baseUrl"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-            token = root["token"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+            baseUrl = root["baseUrl"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                .ifBlank { SyncConfig.DEFAULT_BASE_URL },
+            token = root["token"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                .ifBlank { SyncConfig.DEFAULT_TOKEN },
             domains = domains,
         )
     }

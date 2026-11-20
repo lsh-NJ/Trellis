@@ -40,6 +40,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -159,6 +161,7 @@ fun PhoneField(
     singleLine: Boolean = true,
     minLines: Int = 1,
     enabled: Boolean = true,
+    password: Boolean = false,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
@@ -185,6 +188,7 @@ fun PhoneField(
             TextStyle(color = MaterialTheme.colorScheme.onSurface),
         ),
         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+        visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
         decorationBox = { inner ->
             Box {
                 if (value.isEmpty()) {

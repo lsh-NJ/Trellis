@@ -57,6 +57,8 @@ import kotlinx.coroutines.launch
 fun MePage(runtime: AppRuntime, onOpen: (PhoneSubPage) -> Unit) {
     var importOpen by remember { mutableStateOf(false) }
     var activityOpen by remember { mutableStateOf(false) }
+    var accountOpen by remember { mutableStateOf(false) }
+    var syncOpen by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     LazyColumn(
@@ -237,6 +239,14 @@ fun MePage(runtime: AppRuntime, onOpen: (PhoneSubPage) -> Unit) {
         if (runtime.devModeEnabled) item { DevDataCard(runtime) }
 
         item {
+            AccountSyncCard(
+                runtime,
+                onOpenAccount = { accountOpen = true },
+                onOpenSync = { syncOpen = true },
+            )
+        }
+
+        item {
             CardBox(padding = 0.dp) {
                 EntryRow("插件", runtime.pluginInfos.size.toString() + " 个") { onOpen(PhoneSubPage.Plugins) }
                 DividerLine()
@@ -276,6 +286,26 @@ fun MePage(runtime: AppRuntime, onOpen: (PhoneSubPage) -> Unit) {
             containerColor = MaterialTheme.colorScheme.background,
         ) {
             ActivitySourceSheet(runtime) { activityOpen = false }
+        }
+    }
+
+    if (accountOpen) {
+        ModalBottomSheet(
+            onDismissRequest = { accountOpen = false },
+            sheetState = sheetState,
+            containerColor = MaterialTheme.colorScheme.background,
+        ) {
+            AccountSheet(runtime) { accountOpen = false }
+        }
+    }
+
+    if (syncOpen) {
+        ModalBottomSheet(
+            onDismissRequest = { syncOpen = false },
+            sheetState = sheetState,
+            containerColor = MaterialTheme.colorScheme.background,
+        ) {
+            SyncSheet(runtime) { syncOpen = false }
         }
     }
 }
