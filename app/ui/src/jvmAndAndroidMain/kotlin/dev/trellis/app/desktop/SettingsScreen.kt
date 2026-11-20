@@ -286,25 +286,13 @@ private fun SyncSection(runtime: AppRuntime) {
                     }
                     Spacer(Modifier.height(10.dp))
                     if (transport == SyncConfig.TRANSPORT_HTTP) {
-                        OutlinedTextField(
-                            value = baseUrl,
-                            onValueChange = { baseUrl = it },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                            placeholder = { Text("https://网关地址 或 http://127.0.0.1:8000") },
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        OutlinedTextField(
-                            value = token,
-                            onValueChange = { token = it },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                            placeholder = { Text("访问口令（X-Token）") },
-                            visualTransformation = PasswordVisualTransformation(),
+                        Text(
+                            "同步服务器固定在 " + SyncConfig.DEFAULT_BASE_URL + "，地址与口令已内置，无需填写。",
+                            style = MaterialTheme.typography.bodySmall,
                         )
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "口令只保存在本机配置；请求时放在 X-Token 头里。只同步笔记与计划文档。",
+                            "只同步知识库笔记与计划文档。",
                             style = MaterialTheme.typography.bodySmall,
                         )
                     } else {
@@ -353,12 +341,8 @@ private fun SyncSection(runtime: AppRuntime) {
 private fun AccountSection(runtime: AppRuntime) {
     val account = runtime.account
     var open by remember { mutableStateOf(false) }
-    var serverUrl by remember(account?.serverUrl, runtime.syncConfig.baseUrl) {
-        mutableStateOf(account?.serverUrl ?: runtime.syncConfig.baseUrl)
-    }
-    var gatewayToken by remember(account?.gatewayToken, runtime.syncConfig.token) {
-        mutableStateOf(account?.gatewayToken ?: runtime.syncConfig.token)
-    }
+    val serverUrl = SyncConfig.DEFAULT_BASE_URL
+    val gatewayToken = SyncConfig.DEFAULT_TOKEN
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var displayName by remember { mutableStateOf("") }
@@ -438,21 +422,10 @@ private fun AccountSection(runtime: AppRuntime) {
                         EditorChip("注册", active = mode == "register", onClick = { mode = "register" })
                     }
                     Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = serverUrl,
-                        onValueChange = { serverUrl = it },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("账号服务器，例如 https://xxx.trycloudflare.com") },
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    OutlinedTextField(
-                        value = gatewayToken,
-                        onValueChange = { gatewayToken = it },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("网关 trial token（可留空）") },
-                        visualTransformation = PasswordVisualTransformation(),
+                    Text(
+                        "服务器：" + SyncConfig.DEFAULT_BASE_URL,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.height(6.dp))
                     OutlinedTextField(

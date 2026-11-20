@@ -68,12 +68,8 @@ private fun syncStatusText(runtime: AppRuntime): String {
 fun AccountSheet(runtime: AppRuntime, onDone: () -> Unit) {
     val scope = rememberCoroutineScope()
     val account = runtime.account
-    var serverUrl by remember(account?.serverUrl) {
-        mutableStateOf(account?.serverUrl ?: runtime.syncConfig.baseUrl)
-    }
-    var gatewayToken by remember(account?.gatewayToken) {
-        mutableStateOf(account?.gatewayToken ?: runtime.syncConfig.token)
-    }
+    val serverUrl = SyncConfig.DEFAULT_BASE_URL
+    val gatewayToken = SyncConfig.DEFAULT_TOKEN
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var displayName by remember { mutableStateOf("") }
@@ -114,10 +110,12 @@ fun AccountSheet(runtime: AppRuntime, onDone: () -> Unit) {
             return@Column
         }
 
-        PhoneField(serverUrl, { serverUrl = it }, placeholder = "服务器地址，例如 https://xxx.trycloudflare.com")
+        Text(
+            "服务器：" + SyncConfig.DEFAULT_BASE_URL,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Spacer(Modifier.height(Gap.s))
-        PhoneField(gatewayToken, { gatewayToken = it }, placeholder = "网关 token（没有就留空）", password = true)
-        Spacer(Modifier.height(Gap.m))
         Segmented(
             items = listOf("登录", "注册"),
             selected = if (register) 1 else 0,
@@ -166,12 +164,8 @@ fun SyncSheet(runtime: AppRuntime, onDone: () -> Unit) {
     val scope = rememberCoroutineScope()
     val config = runtime.syncConfig
     val account = runtime.account
-    var baseUrl by remember(account?.serverUrl, config.baseUrl) {
-        mutableStateOf(config.baseUrl.ifBlank { account?.serverUrl.orEmpty() })
-    }
-    var token by remember(account?.gatewayToken, config.token) {
-        mutableStateOf(config.token.ifBlank { account?.gatewayToken.orEmpty() })
-    }
+    val baseUrl = SyncConfig.DEFAULT_BASE_URL
+    val token = SyncConfig.DEFAULT_TOKEN
     var message by remember { mutableStateOf<String?>(null) }
 
     Column(Modifier.fillMaxWidth().padding(horizontal = Gap.xl).padding(bottom = Gap.xxl)) {
@@ -190,9 +184,11 @@ fun SyncSheet(runtime: AppRuntime, onDone: () -> Unit) {
             Spacer(Modifier.height(Gap.m))
         }
 
-        PhoneField(baseUrl, { baseUrl = it }, placeholder = "https://网关地址")
-        Spacer(Modifier.height(Gap.s))
-        PhoneField(token, { token = it }, placeholder = "访问口令（X-Token，没有就留空）", password = true)
+        Text(
+            "服务器：" + SyncConfig.DEFAULT_BASE_URL,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Spacer(Modifier.height(Gap.l))
 
         if (config.isValid()) {
