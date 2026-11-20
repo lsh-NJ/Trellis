@@ -46,8 +46,16 @@ class TrellisSyncServiceTest {
         val docsA = File(File(homeA, "knowledge"), "plan-docs/pln_1").apply { mkdirs() }
         File(docsA, "总览.md").writeText("# 总览", Charsets.UTF_8)
 
-        val serviceA = TrellisSyncService(homeA, SyncConfig(enabled = true, remotePath = remote), "test")
-        val serviceB = TrellisSyncService(homeB, SyncConfig(enabled = true, remotePath = remote), "test")
+        val serviceA = TrellisSyncService(
+            homeA,
+            SyncConfig(enabled = true, transport = SyncConfig.TRANSPORT_FOLDER, remotePath = remote),
+            "test",
+        )
+        val serviceB = TrellisSyncService(
+            homeB,
+            SyncConfig(enabled = true, transport = SyncConfig.TRANSPORT_FOLDER, remotePath = remote),
+            "test",
+        )
 
         serviceA.sync()
         serviceB.sync()

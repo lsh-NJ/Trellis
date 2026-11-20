@@ -1,6 +1,7 @@
 package dev.trellis.sync
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -40,6 +41,11 @@ class HttpSyncTransport(
 
     private val base: String = baseUrl.trim().trimEnd('/')
 
+    private companion object {
+        const val MAX_ATTEMPTS = 4
+        val RETRYABLE_STATUS = setOf(429, 502, 503, 504)
+    }
+
     init {
         require(base.startsWith("http://") || base.startsWith("https://")) {
             "同步地址必须以 http:// 或 https:// 开头：$baseUrl"
@@ -47,40 +53,76 @@ class HttpSyncTransport(
     }
 
     override suspend fun get(path: String): ByteArray? = withContext(Dispatchers.IO) {
-        val conn = open("GET", objectUrl(path))
-        try {
-            when (val code = conn.responseCode) {
-                200 -> conn.inputStream.use { it.readBytes() }
-                404 -> null
-                else -> throw errorOf(conn, code)
+        withRetry {
+            val conn = open("GET", objectUrl(path))
+            try {
+                when (val code = conn.responseCode) {
+                    200 -> conn.inputStream.use { it.readBytes() }
+                    404 -> null
+                    else -> throw errorOf(conn, code)
+                }
+            } finally {
+                conn.disconnect()
             }
-        } finally {
-            conn.disconnect()
         }
     }
 
     override suspend fun put(path: String, bytes: ByteArray): Unit = withContext(Dispatchers.IO) {
-        val conn = open("PUT", objectUrl(path), bytes)
-        try {
-            val code = conn.responseCode
-            if (code !in 200..299) throw errorOf(conn, code)
-            conn.inputStream?.use { it.readBytes() }
-        } finally {
-            conn.disconnect()
+        withRetry {
+            val conn = open("PUT", objectUrl(path), bytes)
+            try {
+                val code = conn.responseCode
+                if (code !in 200..299) throw errorOf(conn, code)
+                conn.inputStream?.use { it.readBytes() }
+            } finally {
+                conn.disconnect()
+            }
         }
     }
 
     override suspend fun list(prefix: String): List<RemoteFile> = withContext(Dispatchers.IO) {
-        val conn = open("GET", listUrl(prefix))
-        try {
-            when (val code = conn.responseCode) {
-                200 -> parseFileList(conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) })
-                404 -> emptyList()
-                else -> throw errorOf(conn, code)
+        withRetry {
+            val conn = open("GET", listUrl(prefix))
+            try {
+                when (val code = conn.responseCode) {
+                    200 -> parseFileList(conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) })
+                    404 -> emptyList()
+                    else -> throw errorOf(conn, code)
+                }
+            } finally {
+                conn.disconnect()
             }
-        } finally {
-            conn.disconnect()
         }
+    }
+
+    /**
+     * 网关/隧道偶尔会吐 502/503/504（Cloudflare 回源抖动），同步对象又是幂等的：
+     * GET/PUT/list 都值得重试。401/403/404/413 这类确定性错误不重试。
+     */
+    private suspend fun <T> withRetry(block: () -> T): T {
+        var last: Throwable? = null
+        for (attempt in 0 until MAX_ATTEMPTS) {
+            try {
+                return block()
+            } catch (t: Throwable) {
+                val retryable = when (t) {
+                    is SyncHttpException -> t.status in RETRYABLE_STATUS
+                    is java.net.SocketTimeoutException -> true
+                    is java.net.ConnectException -> true
+                    is IOException -> true
+                    else -> false
+                }
+                if (!retryable || attempt == MAX_ATTEMPTS - 1) {
+                    if (t is SyncHttpException && t.status in RETRYABLE_STATUS) {
+                        throw SyncHttpException(t.status, "网关/隧道暂时不可用，已重试 ${attempt + 1} 次")
+                    }
+                    throw t
+                }
+                last = t
+                delay(250L * (1L shl attempt))
+            }
+        }
+        throw last ?: IOException("HTTP 请求失败")
     }
 
     private fun open(method: String, url: String, body: ByteArray? = null): HttpURLConnection {

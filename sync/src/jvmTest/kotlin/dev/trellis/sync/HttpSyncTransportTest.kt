@@ -6,6 +6,7 @@ import kotlinx.coroutines.runBlocking
 import java.net.InetSocketAddress
 import java.net.URLDecoder
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -129,6 +130,31 @@ class HttpSyncTransportTest {
             assertEquals(key, transport.list("plan-docs/").single().path)
         } finally {
             fake.stop()
+        }
+    }
+
+    @Test
+    fun retriesTransient502() = runBlocking {
+        val calls = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/v1/object") { exchange ->
+            if (calls.incrementAndGet() <= 2) {
+                val body = "bad gateway".toByteArray()
+                exchange.sendResponseHeaders(502, body.size.toLong())
+                exchange.responseBody.use { it.write(body) }
+            } else {
+                val body = "ok".toByteArray()
+                exchange.sendResponseHeaders(200, body.size.toLong())
+                exchange.responseBody.use { it.write(body) }
+            }
+        }
+        server.start()
+        try {
+            val transport = HttpSyncTransport("http://127.0.0.1:${server.address.port}")
+            assertEquals("ok", transport.get("probe")!!.toString(Charsets.UTF_8))
+            assertEquals(3, calls.get())
+        } finally {
+            server.stop(0)
         }
     }
 
