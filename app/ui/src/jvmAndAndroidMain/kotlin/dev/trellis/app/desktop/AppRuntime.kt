@@ -7500,7 +7500,15 @@ class AppRuntime private constructor() {
             runtime.refreshPlan()
             // 账号：本地缓存先读出来（离线也能显示），后台用 token 校验一次。
             runtime.accountStore = AccountStore(home)
-            runtime.account = runtime.accountStore.load()
+            runtime.account = runtime.accountStore.load()?.let { saved ->
+                // 账号缓存里可能还留着旧的临时隧道地址：登录态迁移到内置的固定服务器。
+                val fixed = saved.copy(
+                    serverUrl = SyncConfig.DEFAULT_BASE_URL,
+                    gatewayToken = SyncConfig.DEFAULT_TOKEN,
+                )
+                if (fixed != saved) runCatching { runtime.accountStore.save(fixed) }
+                fixed
+            }
             // 多端同步：配置存在才启动；后台拉一次，然后每 60 秒一次。
             runtime.restartSync()
             runtime.syncScope.launch { runtime.refreshAccountSession() }

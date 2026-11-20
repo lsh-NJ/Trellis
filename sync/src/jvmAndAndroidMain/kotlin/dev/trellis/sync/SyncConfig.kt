@@ -76,10 +76,9 @@ object SyncConfigStore {
             enabled = root["enabled"]?.jsonPrimitive?.booleanOrNull ?: false,
             transport = transport,
             remotePath = root["remotePath"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-            baseUrl = root["baseUrl"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                .ifBlank { SyncConfig.DEFAULT_BASE_URL },
-            token = root["token"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                .ifBlank { SyncConfig.DEFAULT_TOKEN },
+            // 地址与口令是内置的固定值：不读旧配置，避免残留的临时隧道地址继续生效。
+            baseUrl = SyncConfig.DEFAULT_BASE_URL,
+            token = SyncConfig.DEFAULT_TOKEN,
             domains = domains,
         )
     }
